@@ -119,6 +119,9 @@ pub struct Weather: Clone {
     /// its clouds 1.8 to 3 km tall (0: none, the sky only what the cumulus and fair-weather
     /// clouds cover).
     pub overcast: f32 = 0.0,
+    /// How far an overcast thins between its banks (0: covered all over; 1: its thinner reaches
+    /// let the light through).
+    pub thin: f32 = 0.0,
 }
 
 /// What the dome's march and the clouds' shadows read: where the eye is, which of the dome's
@@ -312,6 +315,7 @@ pub fn cook_weather(
     fair: f32,
     gap: Gap,
     overcast: f32,
+    thin: f32,
     wind: vec2,
     from: u32,
     to: u32,
@@ -354,7 +358,7 @@ pub fn cook_weather(
         )
         let roll = smoothstep(0.35, 0.75, fbm2(w2 + vec2(41.0, 7.0), 4))
         let thick = smoothstep(0.3, 0.72, mass)
-        cover = max(cover, overcast * (0.6 + 0.35 * thick))
+        cover = max(cover, overcast * (0.6 - 0.35 * thin + (0.35 + 0.35 * thin) * thick))
         tall = max(tall, overcast * (DECK_BASE + 1500.0 + 1800.0 * thick))
         lifted = overcast * (DECK_BASE + 450.0 * (1.0 - roll) - 250.0 * thick)
     }
@@ -603,7 +607,8 @@ fn march(
                 let ambient = mix(below, above, vec3(smoothstep(0.08, 0.92, hf)))
                 // Under a storm's deck: the column over the point darkens it, down to near black
                 // at the base of a deck kilometres thick.
-                let over = max(local_top - h, 0.0) * max(w.r, 0.7 * c.gloom)
+                let over = max(local_top - h, 0.0) *
+                    max(w.r, 0.7 * c.gloom * smoothstep(0.0, 0.3, w.r))
                 let shut = mix(1.0, exp(-over * 0.0016), c.gloom)
                 let dim = mix(1.0, 0.12 + 0.88 * hf * hf, c.gloom)
                 let source = sun_light * to_sun * shut + ambient * dim
@@ -948,6 +953,7 @@ impl Sky {
                 fair: w.fair,
                 gap: w.gap,
                 overcast: w.overcast,
+                thin: w.thin,
                 wind: w.wind,
                 from: band * rows,
                 to: (band + 1) * rows,

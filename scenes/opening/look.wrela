@@ -11,6 +11,12 @@ pub const SUN = vec3(0.3725, 0.42, 0.9221)
 /// How overcast the sky is, 0 (the engine's open sky and its clouds) to 1 (a storm's deck over
 /// all of it, the sun behind it: `heavens`' weather, `engine::sky::Weather::overcast`).
 pub const OVERCAST: f32 = 1.0
+/// Under the overcast: how much brighter it's exposed than the storm's first grade (1 as it was);
+/// how wide a break in the deck far off toward the sun (m; 0 none); how far the deck thins
+/// between its banks, the sun's light glowing through (0 to 1).
+pub const LIFT: f32 = 1.0
+pub const BREAK: f32 = 0.0
+pub const THIN: f32 = 0.0
 
 /// The palette, linear: the ink, the paper, the shadow's cool and the light's warmth.
 pub const INK = vec3(0.045, 0.035, 0.07)

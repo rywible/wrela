@@ -5,7 +5,7 @@
 // lines fray: they break into strands, throw off static, and the palette drains toward black
 // and white. Quiet, it's a painting with ink; at the edges of a violent thing, chaos.
 
-use look::{INK, OVERCAST, PAPER, ROCK, SEA, SKIFF, SKY, Shot, band, hash2, luma, noise, ray}
+use look::{INK, LIFT, OVERCAST, PAPER, ROCK, SEA, SKIFF, SKY, Shot, band, hash2, luma, noise, ray}
 use engine::light::{LUMA, Light, aces, display, srgb}
 use std::gpu::{FragCoord, Rgba16Float, Rgba8, Texture}
 
@@ -652,7 +652,8 @@ pub fn ink(
     if OVERCAST > 0.0 {
         let l = luma(c)
         let cold = mix(vec3(l), c, 0.5) * vec3(0.93, 0.98, 1.05)
-        let pressed = cold * mix(0.78, 1.0, smoothstep(0.08, 0.6, l))
+        let pressed = cold *
+            mix(0.78 + 0.14 * saturate((LIFT - 1.0) / 0.45), 1.0, smoothstep(0.08, 0.6, l))
         c = mix(c, pressed, OVERCAST * s.style)
     }
     // A vignette, as a lens's edge darkens.

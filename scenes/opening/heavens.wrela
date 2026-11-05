@@ -9,7 +9,7 @@ use engine::sky::{Clouds, Gap, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky}
 use engine::switches::Switches
 use std::gpu::{Address, Sampler, sampler}
 use std::math::PI
-use look::OVERCAST
+use look::{BREAK, LIFT, OVERCAST, SUN, THIN}
 
 /// The engine's approved switches: the sky's march at full size.
 pub struct Approved {}
@@ -36,9 +36,15 @@ fn weather() -> Weather {
     Weather {
         clouds: Vec::new(),
         fair: 0.0,
-        gap: Gap { a: vec2(0.0, 0.0), b: vec2(0.0, 0.0), radius: 0.0 },
+        // (A break far off toward the sun: a lane across the view under it, `BREAK` m wide.)
+        gap: Gap {
+            a: normalize(vec2(SUN.x, SUN.z)) * 20000.0 + vec2(-SUN.z, SUN.x) * 9000.0,
+            b: normalize(vec2(SUN.x, SUN.z)) * 20000.0 - vec2(-SUN.z, SUN.x) * 9000.0,
+            radius: BREAK,
+        },
         wind: vec2(9.0, -14.0),
         overcast: OVERCAST,
+        thin: THIN,
     }
 }
 
@@ -60,8 +66,8 @@ pub fn heavens(sun: vec3, eye: f32) -> Heavens {
     // the rest of its light from the deck (`paint::storm_sky`). Exposed for that dimmer world.
     let open = sunlight(air)
     let light = Light {
-        exposure: 0.66 + 0.75 * OVERCAST,
-        sun_colour: open.sun_colour * mix(1.0, UNDER_DECK, OVERCAST),
+        exposure: (0.66 + 0.75 * OVERCAST) * mix(1.0, LIFT, OVERCAST),
+        sun_colour: open.sun_colour * mix(1.0, mix(UNDER_DECK, 0.3, THIN), OVERCAST),
         ..open,
     }
     // (A storm's deck: `engine::sky::Clouds::gloom`.)
