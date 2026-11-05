@@ -660,6 +660,8 @@ pub enum Step: Copy + Eq {
     PostingRead,
     PostingBest,
     BestRunsRead,
+    CharacterRead,
+    CharacterSave,
     WatchAccount,
     WatchRun,
     AdmitToken,

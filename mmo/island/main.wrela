@@ -8,6 +8,9 @@
 // What crosses the network is decisions (`Act`), and what's written is outcomes: the save is put
 // only when a mark is placed, never for a step.
 
+use platform::names
+use platform::names::Name
+use platform::wire::Look
 use std::input::{Event, events, payload}
 use std::io::Pending
 use std::net::{COMPACT_AFTER, Entry, JOURNAL, POISONED, ProposalId, Record, Reduce, Room, Verdict}
@@ -30,6 +33,13 @@ pub const TOO_FAR: u32 = 1
 pub const FULL: u32 = 2
 /// A step past `MAX_REACH` from the island's middle.
 pub const OFF_ISLAND: u32 = 3
+/// The most bodies an island holds in a visit: with its marks, its state stays well inside one
+/// message (64 KiB), which a peer far behind is sent. A newcomer past it takes the place of the
+/// body that acted longest ago (one whose peer has most likely left), so no crowd of peers that
+/// came and went, nor one that keeps coming, shuts anyone out.
+pub const MAX_BODIES: u32 = 512
+/// A card whose name the lists don't make, or whose look isn't one of the choices.
+pub const NO_SUCH_CARD: u32 = 4
 /// How far from the middle a peer may stand, each way: a position never overflows.
 pub const MAX_REACH: i32 = 1000000
 /// The most events held while the save is read; a connection past it is closed, to come back.
@@ -37,11 +47,71 @@ pub const MAX_HELD: u32 = 1024
 /// Failed reads of the save in a row before the held peers are let go.
 pub const MAX_TRIES: u32 = 3
 
-/// A peer on the island, and where it stands.
+/// Who a body is: its character's name, by its four numbers into the name lists (so it says
+/// nothing anyone typed: platform/names.wrela), and how it looks, a choice of each part
+/// (platform/wire.wrela's `Look`). Nothing yet checks it against an account: a pass from the
+/// account will.
+pub struct Card: Copy + Eq + Pack {
+    pub title: u32,
+    pub front: u32,
+    pub back: u32,
+    pub epithet: u32,
+    pub build: u32,
+    pub skin: u32,
+    pub hair: u32,
+    pub cloth: u32,
+}
+
+impl Card {
+    /// The card of a character whose name is `name` and whose look is `look`.
+    pub fn of(name: Name, look: Look) -> Card {
+        Card {
+            title: name.title,
+            front: name.front,
+            back: name.back,
+            epithet: name.epithet,
+            build: look.build,
+            skin: look.skin,
+            hair: look.hair,
+            cloth: look.cloth,
+        }
+    }
+
+    pub fn name(self) -> Name {
+        Name { title: self.title, front: self.front, back: self.back, epithet: self.epithet }
+    }
+
+    pub fn look(self) -> Look {
+        Look { build: self.build, skin: self.skin, hair: self.hair, cloth: self.cloth }
+    }
+
+    /// Whether its name is one the lists make and each part of its look one of the choices.
+    pub fn valid(self) -> bool {
+        names::valid(self.name()) && self.look().valid()
+    }
+}
+
+/// A peer on the island, and where it stands; and who it is, once it said (`worn`).
 pub struct Body: Clone + Pack {
     pub peer: u32,
     pub x: i32,
     pub z: i32,
+    pub worn: bool = false,
+    pub card: Card = NOBODY,
+    /// When it last acted, by the room's clock (`Entry::at`).
+    pub seen: u64 = 0,
+}
+
+/// The card of a body that hasn't said who it is.
+pub const NOBODY: Card = Card {
+    title: 0,
+    front: 0,
+    back: 0,
+    epithet: 0,
+    build: 0,
+    skin: 0,
+    hair: 0,
+    cloth: 0,
 }
 
 /// A mark a peer placed: what the island keeps.
@@ -63,6 +133,8 @@ pub enum Act: Clone + Pack {
     Step { dx: i32, dz: i32 },
     /// Place a mark where it stands.
     Place,
+    /// Say who it is: its character.
+    Wear { card: Card },
 }
 
 impl Island {
@@ -103,6 +175,9 @@ impl Reduce<Act> for Island {
             Act::Place => if self.marks.len() >= MAX_MARKS { Verdict::Reject(FULL) } else {
                 Verdict::Accept
             },
+            Act::Wear { card } => if card.valid() { Verdict::Accept } else {
+                Verdict::Reject(NO_SUCH_CARD)
+            },
         }
     }
 
@@ -111,9 +186,20 @@ impl Reduce<Act> for Island {
         var i = self.bodies.len()
         if let Some(k) = self.body_at(peer) {
             i = k
-        } else {
+        } else if self.bodies.len() < MAX_BODIES {
             self.bodies.push(Body { peer, x: 0, z: 0 })
+        } else {
+            // Full: the body that acted longest ago (the first such) gives its place.
+            var oldest = 0
+            for k in 1..self.bodies.len() {
+                if self.bodies[k].seen < self.bodies[oldest].seen {
+                    oldest = k
+                }
+            }
+            self.bodies[oldest] = Body { peer, x: 0, z: 0 }
+            i = oldest
         }
+        self.bodies[i].seen = entry.at
         match entry.value {
             Act::Step { dx, dz } => {
                 self.bodies[i].x += dx
@@ -123,6 +209,10 @@ impl Reduce<Act> for Island {
                 let x = self.bodies[i].x
                 let z = self.bodies[i].z
                 self.marks.push(Mark { by: peer, x, z })
+            },
+            Act::Wear { card } => {
+                self.bodies[i].worn = true
+                self.bodies[i].card = card
             },
         }
     }
@@ -402,6 +492,85 @@ fn a_step_off_the_island_is_refused() {
     }
     assert(island.check(near) == Verdict::Accept)
     assert(island.check(far) == Verdict::Reject(OFF_ISLAND))
+}
+
+@test
+fn a_body_wears_only_a_card_the_lists_and_choices_make() {
+    var island = Island::empty()
+    let wear = |card: Card| -> Entry<Act> {
+        Entry {
+            seq: 2,
+            id: ProposalId { peer: 4, session: 1, counter: 1 },
+            at: 0,
+            value: Act::Wear { card },
+        }
+    }
+    let good = Card::of(
+        Name { title: 1, front: 2, back: 3, epithet: 4 },
+        Look {
+            build: 1,
+            skin: 2,
+            hair: 3,
+            cloth: 7,
+        },
+    )
+    var bad_name = good
+    bad_name.epithet = u32(names::EPITHETS.len())
+    var bad_look = good
+    bad_look.cloth = platform::wire::LOOK_CHOICES
+    assert(island.check(wear(bad_name)) == Verdict::Reject(NO_SUCH_CARD), "a name past the lists")
+    assert(island.check(wear(bad_look)) == Verdict::Reject(NO_SUCH_CARD), "a look past the choices")
+    assert(island.check(wear(good)) == Verdict::Accept)
+    island.apply(wear(good))
+    assert(island.bodies.len() == 1 && island.bodies[0].worn && island.bodies[0].card == good)
+    assert(names::text(island.bodies[0].card.name()).len() > 0)
+}
+
+@test
+fn a_full_island_fits_one_message() {
+    var island = Island::empty()
+    let card = Card::of(
+        Name { title: 47, front: 63, back: 47, epithet: 127 },
+        Look {
+            build: 7,
+            skin: 7,
+            hair: 7,
+            cloth: 7,
+        },
+    )
+    for i in 0..MAX_BODIES {
+        island.bodies.push(
+            Body {
+                peer: 4000000000 + i,
+                x: -MAX_REACH,
+                z: MAX_REACH,
+                worn: true,
+                card,
+                seen: 1 << 50,
+            },
+        )
+    }
+    for i in 0..MAX_MARKS {
+        island.marks.push(Mark { by: 4000000000 + i, x: -MAX_REACH, z: MAX_REACH })
+    }
+    let size = pack(island.clone()).len()
+    assert(size < 60000, f"{size} bytes")
+    // A newcomer takes the place of the body that acted longest ago.
+    for i in 0..MAX_BODIES {
+        island.bodies[i].seen = 1000 + u64(i)
+    }
+    island.bodies[7].seen = 5
+    let newcomer = Entry {
+        seq: 2,
+        id: ProposalId { peer: 9, session: 1, counter: 1 },
+        at: 9000,
+        value: Act::Step { dx: 1, dz: 0 },
+    }
+    assert(island.check(newcomer) == Verdict::Accept)
+    island.apply(newcomer)
+    assert(island.bodies.len() == MAX_BODIES, "still full")
+    let b = island.bodies[7].clone()
+    assert(b.peer == 9 && b.x == 1 && !b.worn && b.seen == 9000, "in the stalest's place")
 }
 
 @test

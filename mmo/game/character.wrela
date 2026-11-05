@@ -1,0 +1,453 @@
+// The player's character: who the client plays as. It's the wrela account's (platform/wire.wrela's
+// `Character`), asked of the console's server with the session the browser already holds (its
+// cookie goes with a same-origin request; a change carries the session's CSRF token, which `Me`
+// gives). A character carries its account's name, which nobody types (platform/names.wrela), and a
+// look of a few parts, each one of `LOOK_CHOICES`: so nothing a player shows another was typed.
+//
+// Signed out, with a name not yet kept, or with the server out of reach, the player plays as a
+// guest (a wanderer, unnamed) and is told why. Signed in with no character, the client opens the
+// maker first; once it's made, the look can be changed again (C on the island).
+
+use island::main::Card
+use platform::names
+use platform::names::Name
+use platform::wire::{ACCOUNTS, LOOK_CHOICES, Look, Reply, Request}
+use std::http::{Header, fetch, response}
+use std::io::Pending
+use std::serialize::{LoadError, load, save}
+use ui::draw::{DrawList, Rect}
+
+/// Where the character is.
+pub enum Stage: Copy + Eq {
+    /// Asking whose session this is, or the account's character.
+    Asking,
+    /// Playing without a character, for `Why`.
+    Guest,
+    /// The maker is open: a character to make, or a look to change.
+    Making,
+    /// Saving what the maker made.
+    Saving,
+    /// Playing as the character.
+    Ready,
+}
+
+/// Why a player is a guest.
+pub enum Why: Copy + Eq {
+    SignedOut,
+    NameNotKept,
+    Unreachable,
+    /// Signed in, but no character made yet (the maker was left).
+    NotMade,
+}
+
+/// The parts of a look the maker changes, in its order.
+pub const PARTS: u32 = 4
+pub const PART_NAMES: [Text; 4] = ["Build", "Skin", "Hair", "Clothes"]
+
+/// What the client knows of its character, and the request under way.
+pub struct Character {
+    pub stage: Stage,
+    pub why: Why,
+    csrf: Vec<u8>,
+    pub name: Name,
+    /// The look made, and the look in the maker.
+    pub look: Look,
+    pub making: Look,
+    /// The part the maker has chosen, and whether a character was made before (the maker then
+    /// changes its look, and can be left).
+    pub part: u32,
+    pub made: bool,
+    pub message: String,
+    asked: Option<Pending<u8>>,
+}
+
+pub fn start() -> Character {
+    let look = Look { build: 0, skin: 0, hair: 0, cloth: 0 }
+    var c = Character {
+        stage: Stage::Asking,
+        why: Why::Unreachable,
+        csrf: Vec::new(),
+        name: Name { title: 0, front: 0, back: 0, epithet: 0 },
+        look,
+        making: look,
+        part: 0,
+        made: false,
+        message: String::new(),
+        asked: None,
+    }
+    ask(mut c, Request::Me)
+    c
+}
+
+fn ask(c: mut Character, request: Request) {
+    let kind = Header {
+        name: String::from("content-type"),
+        value: String::from("application/octet-stream"),
+    }
+    c.asked = Some(fetch("POST", ACCOUNTS, [take kind], save(request)))
+}
+
+/// The card the island is told: the character's, once it's ready.
+pub fn card(c: Character) -> Option<Card> {
+    if c.stage == Stage::Ready { Some(Card::of(c.name, c.look)) } else { None }
+}
+
+/// Polls the request under way.
+pub fn update(c: mut Character) {
+    let answer = match mut c.asked {
+        Some(p) => p.poll(),
+        None => None,
+    }
+    let Some(result) = answer else { return }
+    c.asked = None
+    let reply = match result {
+        Ok(bytes) => reply_of(bytes),
+        Err(_) => None,
+    }
+    if let Some(next) = heard(mut c, reply) {
+        ask(mut c, next)
+    }
+}
+
+/// The server's reply's bytes, read: none if it isn't one (the server out of reach, or no server).
+fn reply_of(bytes: [u8]) -> Option<Reply> {
+    let r = response(bytes)?
+    if r.status != 200 {
+        return None
+    }
+    let read: Result<Reply, LoadError> = load(r.body.clone())
+    (take read).ok()
+}
+
+/// What a reply (or none: out of reach) does to where the character is: the request to make
+/// next, if one is.
+pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
+    let Some(reply) = reply else {
+        if c.stage == Stage::Saving {
+            c.stage = Stage::Making
+            c.message = String::from("Couldn't save. Enter tries again.")
+        } else {
+            c.stage = Stage::Guest
+            c.why = Why::Unreachable
+        }
+        return None
+    }
+    var next: Option<Request> = None
+    match reply {
+        Reply::Welcome { me, csrf } => {
+            c.csrf = csrf.clone()
+            if !me.signed_in || me.must_add_passkey {
+                c.stage = Stage::Guest
+                c.why = Why::SignedOut
+            } else if !me.fixed {
+                c.stage = Stage::Guest
+                c.why = Why::NameNotKept
+            } else {
+                next = Some(Request::Character)
+            }
+        },
+        Reply::Character { made, name, look } => {
+            c.name = name
+            c.made = made
+            c.message = String::new()
+            if made {
+                c.look = look
+                c.making = look
+                c.stage = Stage::Ready
+            } else {
+                c.stage = Stage::Making
+            }
+        },
+        Reply::Refused { why } => {
+            if c.stage == Stage::Saving {
+                c.stage = Stage::Making
+                c.message = why.clone()
+            } else {
+                c.stage = Stage::Guest
+                c.why = Why::Unreachable
+            }
+        },
+        _ => {
+            c.stage = Stage::Guest
+            c.why = Why::Unreachable
+        },
+    }
+    next
+}
+
+/// Opens the maker on the character made, to change its look.
+pub fn change(c: mut Character) {
+    if c.stage == Stage::Ready || (c.stage == Stage::Guest && c.why == Why::NotMade) {
+        c.making = c.look
+        c.part = 0
+        c.stage = Stage::Making
+    }
+}
+
+/// The maker's keys, sending what they ask. A save left (Escape) is no longer waited on.
+pub fn keys(c: mut Character, dx: i32, dy: i32, enter: bool, escape: bool) {
+    let r = maker_input(mut c, dx, dy, enter, escape)
+    if c.stage != Stage::Saving {
+        c.asked = None
+    }
+    if let Some(r) = r {
+        ask(mut c, r)
+    }
+}
+
+/// The maker's keys: up and down choose a part (`dy`), left and right its choice (`dx`), Enter
+/// saves, Escape leaves, while saving too: to the look made before, or as a guest who may come
+/// back (C). The request to make, if one is.
+pub fn maker_input(
+    c: mut Character,
+    dx: i32,
+    dy: i32,
+    enter: bool,
+    escape: bool,
+) -> Option<Request> {
+    if escape && (c.stage == Stage::Making || c.stage == Stage::Saving) {
+        c.making = c.look
+        c.message = String::new()
+        if c.made {
+            c.stage = Stage::Ready
+        } else {
+            c.stage = Stage::Guest
+            c.why = Why::NotMade
+        }
+        return None
+    }
+    if c.stage != Stage::Making {
+        return None
+    }
+    if dy != 0 {
+        c.part = u32((i32(c.part) + dy + i32(PARTS)) % i32(PARTS))
+    }
+    if dx != 0 {
+        let now = part_of(c.making, c.part)
+        let next = u32((i32(now) + dx + i32(LOOK_CHOICES)) % i32(LOOK_CHOICES))
+        c.making = with_part(c.making, c.part, next)
+    }
+    if enter {
+        c.stage = Stage::Saving
+        c.message = String::new()
+        return Some(Request::SaveCharacter { csrf: c.csrf.clone(), look: c.making })
+    }
+    None
+}
+
+pub fn part_of(look: Look, part: u32) -> u32 {
+    if part == 0 {
+        look.build
+    } else if part == 1 {
+        look.skin
+    } else if part == 2 {
+        look.hair
+    } else {
+        look.cloth
+    }
+}
+
+pub fn with_part(look: Look, part: u32, choice: u32) -> Look {
+    var l = look
+    if part == 0 {
+        l.build = choice
+    } else if part == 1 {
+        l.skin = choice
+    } else if part == 2 {
+        l.hair = choice
+    } else {
+        l.cloth = choice
+    }
+    l
+}
+
+/// What the player is told of who they play as.
+pub fn line(c: Character) -> String {
+    match c.stage {
+        Stage::Asking => String::from("Finding your character…"),
+        Stage::Guest => match c.why {
+            Why::SignedOut => String::from(
+                "Playing as a guest. Sign in at wrela.dev to make your character.",
+            ),
+            Why::NameNotKept => String::from(
+                "Playing as a guest. Keep your name at wrela.dev to make your character.",
+            ),
+            Why::Unreachable => String::from(
+                "Playing as a guest: your account couldn't be reached.",
+            ),
+            Why::NotMade => String::from("Playing as a guest. C makes your character."),
+        },
+        Stage::Making | Stage::Saving => String::from("Making your character"),
+        Stage::Ready => String::from(f"{names::text(c.name)}. C changes your look."),
+    }
+}
+
+// ---- the look -----------------------------------------------------------------------------------
+
+const SKINS: [vec4; 8] = [
+    vec4(0.98, 0.86, 0.74, 1.0),
+    vec4(0.94, 0.78, 0.62, 1.0),
+    vec4(0.85, 0.66, 0.5, 1.0),
+    vec4(0.74, 0.55, 0.4, 1.0),
+    vec4(0.6, 0.42, 0.3, 1.0),
+    vec4(0.47, 0.32, 0.22, 1.0),
+    vec4(0.36, 0.24, 0.17, 1.0),
+    vec4(0.26, 0.18, 0.13, 1.0),
+]
+
+const HAIRS: [vec4; 8] = [
+    vec4(0.1, 0.08, 0.07, 1.0),
+    vec4(0.3, 0.2, 0.12, 1.0),
+    vec4(0.55, 0.36, 0.2, 1.0),
+    vec4(0.85, 0.7, 0.42, 1.0),
+    vec4(0.62, 0.22, 0.12, 1.0),
+    vec4(0.82, 0.82, 0.84, 1.0),
+    vec4(0.25, 0.32, 0.6, 1.0),
+    vec4(0.75, 0.35, 0.55, 1.0),
+]
+
+const CLOTHS: [vec4; 8] = [
+    vec4(0.85, 0.3, 0.25, 1.0),
+    vec4(0.95, 0.62, 0.2, 1.0),
+    vec4(0.88, 0.8, 0.3, 1.0),
+    vec4(0.35, 0.65, 0.35, 1.0),
+    vec4(0.25, 0.6, 0.7, 1.0),
+    vec4(0.3, 0.4, 0.85, 1.0),
+    vec4(0.55, 0.35, 0.75, 1.0),
+    vec4(0.9, 0.9, 0.88, 1.0),
+]
+
+/// How broad a build is, against the slightest.
+fn breadth(build: u32) -> f32 {
+    0.8 + 0.08 * f32(build % LOOK_CHOICES)
+}
+
+pub fn skin(look: Look) -> vec4 {
+    SKINS[look.skin % LOOK_CHOICES]
+}
+
+pub fn hair(look: Look) -> vec4 {
+    HAIRS[look.hair % LOOK_CHOICES]
+}
+
+pub fn cloth(look: Look) -> vec4 {
+    CLOTHS[look.cloth % LOOK_CHOICES]
+}
+
+/// A figure of `look`, standing on `feet`, `tall` pixels high: flat, as the client draws all.
+pub fn figure(list: mut DrawList, look: Look, feet: vec2, tall: f32) {
+    let wide = tall * 0.36 * breadth(look.build)
+    let head = tall * 0.26
+    // Legs, body, then head and hair.
+    let legs = vec4(0.18, 0.18, 0.2, 1.0)
+    list.rect(
+        Rect::new(x: feet.x - wide * 0.38, y: feet.y - tall * 0.34, w: wide * 0.3, h: tall * 0.34),
+        legs,
+    )
+    list.rect(
+        Rect::new(x: feet.x + wide * 0.08, y: feet.y - tall * 0.34, w: wide * 0.3, h: tall * 0.34),
+        legs,
+    )
+    list.rect(
+        Rect::new(x: feet.x - wide / 2.0, y: feet.y - tall * 0.74, w: wide, h: tall * 0.42),
+        cloth(look),
+        radius: wide * 0.18,
+    )
+    let top = feet.y - tall
+    list.ellipse(
+        Rect::new(x: feet.x - head / 2.0, y: top + tall * 0.02, w: head, h: head),
+        skin(look),
+    )
+    list.rect(
+        Rect::new(x: feet.x - head * 0.55, y: top, w: head * 1.1, h: head * 0.42),
+        hair(look),
+        radius: head * 0.2,
+    )
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+fn me(signed_in: bool, fixed: bool) -> Reply {
+    Reply::Welcome {
+        me: platform::wire::Me {
+            signed_in,
+            name: String::from("Sir Somebody"),
+            fixed,
+            rerolls: 0,
+            must_add_passkey: false,
+        },
+        csrf: Vec::from([7; 16]),
+    }
+}
+
+fn blank() -> Character {
+    let look = Look { build: 0, skin: 0, hair: 0, cloth: 0 }
+    Character {
+        stage: Stage::Asking,
+        why: Why::Unreachable,
+        csrf: Vec::new(),
+        name: Name { title: 0, front: 0, back: 0, epithet: 0 },
+        look,
+        making: look,
+        part: 0,
+        made: false,
+        message: String::new(),
+        asked: None,
+    }
+}
+
+@test
+fn a_guest_is_told_why() {
+    var c = blank()
+    let _ = heard(mut c, Some(me(signed_in: false, fixed: false)))
+    assert(c.stage == Stage::Guest && c.why == Why::SignedOut)
+    var c = blank()
+    let _ = heard(mut c, Some(me(signed_in: true, fixed: false)))
+    assert(c.stage == Stage::Guest && c.why == Why::NameNotKept)
+    var c = blank()
+    let _ = heard(mut c, None)
+    assert(c.stage == Stage::Guest && c.why == Why::Unreachable && card(c).is_none())
+}
+
+@test
+fn no_character_opens_the_maker_and_a_save_plays_as_it() {
+    var c = blank()
+    let next = heard(mut c, Some(me(signed_in: true, fixed: true)))
+    assert(c.stage == Stage::Asking && c.csrf.len() == 16, "the character asked next")
+    let Some(Request::Character) = next else { panic("asked") }
+    let name = Name { title: 1, front: 2, back: 3, epithet: 4 }
+    let none = Look { build: 0, skin: 0, hair: 0, cloth: 0 }
+    let _ = heard(mut c, Some(Reply::Character { made: false, name, look: none }))
+    assert(c.stage == Stage::Making && !c.made)
+    // Escape leaves a maker with nothing made: a guest, who may come back.
+    let _ = maker_input(mut c, dx: 0, dy: 0, enter: false, escape: true)
+    assert(c.stage == Stage::Guest && c.why == Why::NotMade && card(c).is_none())
+    change(mut c)
+    assert(c.stage == Stage::Making)
+    // Down to skin, two choices left (wrapping), then clothes, one right.
+    let _ = maker_input(mut c, dx: 0, dy: 1, enter: false, escape: false)
+    let _ = maker_input(mut c, dx: -2, dy: 0, enter: false, escape: false)
+    let _ = maker_input(mut c, dx: 0, dy: 2, enter: false, escape: false)
+    let save = maker_input(mut c, dx: 1, dy: 0, enter: true, escape: false)
+    let Some(Request::SaveCharacter { csrf, look }) = save else { panic("saved") }
+    assert(csrf.len() == 16 && look == c.making && c.stage == Stage::Saving)
+    assert(c.making == Look { build: 0, skin: LOOK_CHOICES - 2, hair: 0, cloth: 1 })
+    let _ = heard(mut c, Some(Reply::Refused { why: String::from("No.") }))
+    assert(c.stage == Stage::Making && c.message.as_str() == "No.", "refused: the maker stays")
+    // A save waited on can be left too.
+    let _ = maker_input(mut c, dx: 0, dy: 0, enter: true, escape: false)
+    let _ = maker_input(mut c, dx: 0, dy: 0, enter: false, escape: true)
+    assert(c.stage == Stage::Guest, "left while saving")
+    change(mut c)
+    c.stage = Stage::Saving
+    let saved = c.making
+    let _ = heard(mut c, Some(Reply::Character { made: true, name, look: saved }))
+    assert(c.stage == Stage::Ready && c.look == saved)
+    let Some(k) = card(c) else { panic("a card") }
+    assert(k.valid() && k.name() == name && k.look() == saved)
+    // Changing the look: Escape leaves it as it was.
+    change(mut c)
+    let _ = maker_input(mut c, dx: 1, dy: 0, enter: false, escape: false)
+    let _ = maker_input(mut c, dx: 0, dy: 0, enter: false, escape: true)
+    assert(c.stage == Stage::Ready && c.look == saved && c.making == saved)
+}

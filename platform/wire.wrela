@@ -168,6 +168,39 @@ pub enum Request: Clone + Serialize {
     /// empty part matches any, but an epithet alone is too wide), at most `MOST_FOUND`, each with
     /// its runs on the boards.
     Names { game: String, title: String, noun: String, epithet: String },
+    /// The account's character in wrela's MMO: answered by `Character`.
+    Character,
+    /// Makes the account's character, or changes how it looks. It carries the account's name, so
+    /// the name must be kept first.
+    SaveCharacter { csrf: Vec<u8>, look: Look },
+    /// Lets the account's character go: answered by `Character`, with none.
+    RemoveCharacter { csrf: Vec<u8> },
+}
+
+/// How many choices each part of a character's look has (`Look`): 0 to `LOOK_CHOICES - 1`.
+pub const LOOK_CHOICES: u32 = 8
+
+/// How a character in wrela's MMO looks: a choice of each part, by number. What each number
+/// shows is the game's; the server only keeps them in range. Nobody types anything about a
+/// character: it carries its account's name, which nobody types either (names.wrela).
+pub struct Look: Copy + Eq + Serialize {
+    pub build: u32,
+    pub skin: u32,
+    pub hair: u32,
+    pub cloth: u32,
+}
+
+impl Look {
+    /// Whether each part is one of the choices.
+    pub fn valid(self) -> bool {
+        let parts = [self.build, self.skin, self.hair, self.cloth]
+        for p in parts {
+            if p >= LOOK_CHOICES {
+                return false
+            }
+        }
+        true
+    }
 }
 
 /// Whether `r` is a public read, sent by `GET` to `PUBLIC`: the same answer for everyone, so a
@@ -270,6 +303,9 @@ pub enum Reply: Clone + Serialize {
     /// account exists.
     Unplaced,
     Names { found: Vec<Found> },
+    /// The account's character in wrela's MMO, if it has made one (`made`): its name (the
+    /// account's, by its numbers into the lists, names.wrela) and how it looks.
+    Character { made: bool, name: names::Name, look: Look },
     /// The request isn't one the server takes now: why, said for a person.
     Refused { why: String },
 }

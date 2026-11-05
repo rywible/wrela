@@ -5,15 +5,21 @@
 // back when they arrive, and sends its own log to the room at the end, which runs the fight again
 // to settle it. Its input layer is the bandwidth bench's four winners (combat::codec).
 //
+// The player plays as their wrela account's character (character.wrela), whose name and look the
+// island shows to everyone there; a player who isn't signed in plays as a guest.
+//
 // Keys: WASD or the arrows walk and move; F waits for a fight (again: stops waiting); Enter begins
-// it; E places a mark. In a fight, J or Space attacks, K parries, L or Shift dodges. A pad: the
+// it; E places a mark; C changes the character's look. In the maker, up and down choose a part,
+// left and right its look, Enter saves and Escape leaves. In a fight, J or Space attacks, K parries, L or Shift dodges. A pad: the
 // left stick, West attacks, North parries, South dodges, Start begins, Select waits.
 
 use combat::codec::{Encoder, LOOK_AHEAD, Link, Pad}
 use combat::main::{Fight, PLAYER_CHANGES}
 use std::math::{cos, sin}
 use combat::sim::{ATTACK, Change, DODGE, MAX_FRAMES, PARRY, Seen, Winner, World, step}
-use island::main::{Island, MAX_STEP}
+use character::{Character, Stage}
+use island::main::{Card, Island, MAX_STEP}
+use platform::names
 use std::gpu::begin_screen_pass
 use std::hash::Hasher
 use std::input::{Event, Key, PadAxis, PadButton, events, payload}
@@ -44,6 +50,10 @@ const MOST_STEPS: u32 = 30
 /// between proposals to settle a fight that's taking too long (the room says when it may).
 const REJOIN: f32 = 30.0
 const SETTLE_EVERY: f32 = 15.0
+/// Seconds between tellings of who this player is, until the island shows it.
+const WEAR_EVERY: f32 = 3.0
+/// Tellings of who this player is before giving up (the island refused it), until it changes.
+const WEAR_TRIES: u32 = 5
 const NONE: u32 = 4294967295
 
 // Held keys and buttons, as bits.
@@ -126,6 +136,11 @@ pub struct Client {
     settle_at: f32,
     time: Option<f32>,
     note: String,
+    character: Option<Character>,
+    wear_at: f32,
+    /// The card last told the island, and how many times.
+    told: Option<Card>,
+    tellings: u32,
 }
 
 pub fn init() -> Client {
@@ -150,6 +165,10 @@ pub fn init() -> Client {
         settle_at: 0.0,
         time: None,
         note: String::from("Connecting…"),
+        character: None,
+        wear_at: 0.0,
+        told: None,
+        tellings: 0,
     }
 }
 
@@ -396,11 +415,24 @@ pub fn frame(s: mut Client, time: f32, width: u32, height: u32) {
         s.island = Some(Log::new(Island::empty(), token))
         s.fight = Some(Log::new(Fight::empty(), token))
     }
+    if s.character.is_none() {
+        s.character = Some(character::start())
+    }
+    match mut s.character {
+        Some(c) => character::update(mut c),
+        None => {},
+    }
+    let making = maker_open(s)
     keep_open(mut s.island_conn, ISLAND, ISLAND_ROOM, time)
     keep_open(mut s.fight_conn, FIGHT, FIGHT_ROOM, time)
     var pressed_join = false
     var pressed_begin = false
     var pressed_mark = false
+    var pressed_change = false
+    var maker_dx: i32 = 0
+    var maker_dy: i32 = 0
+    var maker_enter = false
+    var maker_escape = false
     for e in events() {
         match e {
             Event::Connection { conn, open, .. } => connection(mut s, conn, open, time),
@@ -408,9 +440,30 @@ pub fn frame(s: mut Client, time: f32, width: u32, height: u32) {
                 let Some(bytes) = payload(e) else { continue }
                 message(mut s, conn, take bytes)
             },
+            Event::KeyDown { key, .. } if making => {
+                let bit = key_bit(key)
+                if bit == LEFT {
+                    maker_dx -= 1
+                } else if bit == RIGHT {
+                    maker_dx += 1
+                } else if bit == UP {
+                    maker_dy -= 1
+                } else if bit == DOWN {
+                    maker_dy += 1
+                }
+                if key == Key::Enter {
+                    maker_enter = true
+                }
+                if key == Key::Escape {
+                    maker_escape = true
+                }
+            },
             Event::KeyDown { key, repeat, .. } => {
                 s.held = s.held | key_bit(key)
                 if !repeat {
+                    if key == Key::C {
+                        pressed_change = true
+                    }
                     if key == Key::F {
                         pressed_join = true
                     }
@@ -460,13 +513,79 @@ pub fn frame(s: mut Client, time: f32, width: u32, height: u32) {
         s.relay_conn.opening = true
         relay(RELAY, FIGHT)
     }
+    if making {
+        // The maker has the keys: nothing walks or fights meanwhile.
+        s.held = 0
+        match mut s.character {
+            Some(c) => character::keys(mut c, maker_dx, maker_dy, maker_enter, maker_escape),
+            None => {},
+        }
+    }
+    // Not while waiting for a fight: the maker would hide one that begins.
+    let waiting = match s.fight {
+        Some(l) => l.view().waiting(l.peer()),
+        None => false,
+    }
+    if pressed_change && s.play.is_none() && !waiting {
+        match mut s.character {
+            Some(c) => character::change(mut c),
+            None => {},
+        }
+    }
     let pad = pad_of(s.held, s.stick)
+    if maker_open(s) {
+        draw(mut s, width, height)
+        return
+    }
     if s.play.is_some() {
         fight_frame(mut s, pad, dt, time)
     } else {
         island_frame(mut s, pad, dt, time, pressed_join, pressed_begin, pressed_mark)
     }
     draw(mut s, width, height)
+}
+
+/// Whether the character maker has the screen.
+fn maker_open(s: Client) -> bool {
+    match s.character {
+        Some(c) => c.stage == Stage::Making || c.stage == Stage::Saving,
+        None => false,
+    }
+}
+
+/// Tells the island who this player is, until its view shows it: the character's card.
+fn wear(s: mut Client, time: f32) {
+    let Some(card) = (match s.character {
+        Some(c) => character::card(c),
+        None => None,
+    }) else { return }
+    let (me, worn) = match s.island {
+        Some(l) => (l.peer(), worn_by(l.view(), l.peer())),
+        None => return,
+    }
+    if me == 0 || !s.island_conn.open || worn == Some(card) || time < s.wear_at {
+        return
+    }
+    if s.told != Some(card) {
+        s.told = Some(card)
+        s.tellings = 0
+    }
+    if s.tellings >= WEAR_TRIES {
+        return
+    }
+    s.tellings += 1
+    s.wear_at = time + WEAR_EVERY
+    propose_island(mut s, island::main::Act::Wear { card })
+}
+
+/// The card peer `peer` wears on `island`, if it said who it is.
+fn worn_by(island: Island, peer: u32) -> Option<Card> {
+    for b in island.bodies {
+        if b.peer == peer && b.worn {
+            return Some(b.card)
+        }
+    }
+    None
 }
 
 fn connection(s: mut Client, conn: u32, is_open: bool, time: f32) {
@@ -541,7 +660,7 @@ fn propose_fight(s: mut Client, act: take combat::main::Act) {
 
 fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: bool, mark: bool) {
     // Walking: the stick's way, a step proposed every `STEP_EVERY` seconds while it moves.
-    s.walk = s.walk + vec2(pad.x, -pad.z) * WALK_SPEED * dt
+    s.walk = s.walk + vec2(pad.x, pad.z) * WALK_SPEED * dt
     if time >= s.step_at && (abs(s.walk.x) >= 1.0 || abs(s.walk.y) >= 1.0) {
         let most = f32(MAX_STEP)
         let dx = clamp(round(s.walk.x), -most, most)
@@ -556,6 +675,7 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
     if mark && s.island_conn.open {
         propose_island(mut s, island::main::Act::Place)
     }
+    wear(mut s, time)
     // The fight room: wait, stop waiting, begin; and a fight that began for this player.
     let (me, view, room) = match s.fight {
         Some(l) => (l.peer(), l.view().clone(), l.committed().clone()),
@@ -598,6 +718,13 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
         )
     } else {
         String::from(f"F waits for a fight ({view.lobby.len()} waiting). E places a mark.")
+    }
+    match s.character {
+        Some(c) => {
+            let who = character::line(c)
+            s.note = String::from(f"{who}  {s.note}")
+        },
+        None => {},
     }
 }
 
@@ -701,12 +828,17 @@ fn draw(s: mut Client, width: u32, height: u32) {
     let size = min(w, h)
     let middle = vec2(w / 2.0, h / 2.0)
     let fight_on = s.play.is_some()
-    if fight_on {
+    let making = maker_open(s)
+    if making {
+        draw_maker(mut s, middle, size)
+    } else if fight_on {
         draw_fight(mut s, middle, size)
     } else {
         draw_island(mut s, middle, size)
     }
-    let title = if fight_on { "The fight" } else { "The island" }
+    let title = if making { "Your character" } else if fight_on { "The fight" } else {
+        "The island"
+    }
     let _ = s.list.text(s.fonts, Face::Sans, title, 28.0, vec2(24.0, 20.0), INK)
     let note = s.note.clone()
     let _ = s.list.text(s.fonts, Face::Sans, note.as_str(), 18.0, vec2(24.0, h - 44.0), MUTED)
@@ -726,17 +858,74 @@ fn draw_island(s: mut Client, middle: vec2, size: f32) {
         Some(l) => (l.peer(), l.view().clone()),
         None => return,
     }
-    for m in view.marks {
-        let at = middle + vec2(f32(m.x), -f32(m.z)) * px
-        s.list.diamond(Rect::new(x: at.x - 6.0, y: at.y - 6.0, w: 12.0, h: 12.0), MARK)
-    }
     for b in view.bodies {
         let at = middle + vec2(f32(b.x), -f32(b.z)) * px
-        circle(mut s.list, at, 9.0, if b.peer == me { MINE } else { OTHER })
+        let ring = if b.peer == me { MINE } else { OTHER }
+        if b.worn {
+            // A ring at its feet says whose it is; its figure and name say who.
+            s.list.ellipse(
+                Rect::new(x: at.x - 12.0, y: at.y - 4.0, w: 24.0, h: 8.0),
+                ring,
+                width: 2.0,
+            )
+            character::figure(mut s.list, b.card.look(), at, 34.0)
+            let name = names::text(b.card.name())
+            let _ = s.list.text(
+                s.fonts,
+                Face::Sans,
+                name.as_str(),
+                13.0,
+                at + vec2(-3.2 * f32(name.len()), -54.0),
+                INK,
+            )
+        } else {
+            circle(mut s.list, at, 9.0, ring)
+        }
+    }
+    // Marks over the bodies: one is placed where its body stands.
+    for m in view.marks {
+        let at = middle + vec2(f32(m.x), -f32(m.z)) * px
+        s.list.diamond(Rect::new(x: at.x - 8.0, y: at.y - 8.0, w: 16.0, h: 16.0), BG)
+        s.list.diamond(Rect::new(x: at.x - 6.0, y: at.y - 6.0, w: 12.0, h: 12.0), MARK)
     }
     let count = view.bodies.len()
     let line = String::from(f"{count} on the island, {view.marks.len()} marks")
     let _ = s.list.text(s.fonts, Face::Sans, line.as_str(), 16.0, vec2(24.0, 58.0), MUTED)
+}
+
+fn draw_maker(s: mut Client, middle: vec2, size: f32) {
+    let (cname, making, part, saving, message, made) = match s.character {
+        Some(c) => (c.name, c.making, c.part, c.stage == Stage::Saving, c.message.clone(), c.made),
+        None => return,
+    }
+    let name = names::text(cname)
+    let _ = s.list.text(s.fonts, Face::Sans, name.as_str(), 24.0, vec2(24.0, 62.0), INK)
+    // The figure, and beside it each part and its choice, the chosen part marked.
+    let tall = size * 0.5
+    let feet = middle + vec2(-size * 0.18, tall * 0.5)
+    circle(mut s.list, feet, tall * 0.18, SAND)
+    character::figure(mut s.list, making, feet, tall)
+    let x = middle.x + size * 0.04
+    for i in 0..character::PARTS {
+        let y = middle.y - 80.0 + 44.0 * f32(i)
+        let chosen = i == part
+        let color = if chosen { MINE } else { MUTED }
+        let n = character::part_of(making, i) + 1
+        let line = String::from(
+            f"{character::PART_NAMES[i]}   ‹ {n} of {platform::wire::LOOK_CHOICES} ›",
+        )
+        let _ = s.list.text(s.fonts, Face::Sans, line.as_str(), 20.0, vec2(x, y), color)
+    }
+    let hint = if saving {
+        String::from("Saving…")
+    } else if !message.is_empty() {
+        String::from(f"{message}  Escape leaves.")
+    } else if made {
+        String::from("Up and down choose, left and right change. Enter saves, Escape leaves.")
+    } else {
+        String::from("Up and down choose, left and right change. Enter makes your character.")
+    }
+    s.note = take hint
 }
 
 fn place(middle: vec2, px: f32, x: i32, z: i32) -> vec2 {

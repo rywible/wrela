@@ -109,6 +109,14 @@ pub struct GameToken: Clone + Serialize {
     pub session: Vec<u8>,
 }
 
+/// The account's character in wrela's MMO (`m`): how it looks, and when it was made and last
+/// changed. Its name is the account's.
+pub struct Character: Clone + Serialize {
+    pub look: wire::Look,
+    pub made: u64,
+    pub changed: u64,
+}
+
 /// What an account agreed to when it was made (`g`): the Terms' and the Privacy Policy's versions
 /// and that its player is 13 or older, and when.
 pub struct Agreement: Clone + Serialize {
@@ -151,6 +159,7 @@ pub const ACCOUNT: Text = "a"
 pub const AGREED: Text = "g"
 pub const POSTING: Text = "o"
 pub const POST_BEST: Text = "e"
+pub const CHARACTER: Text = "m"
 pub const COUNTERS: Text = "k"
 /// The mark a deleted account's instance keeps when its store is cleared: its handle was used, so a
 /// registration replayed onto it is refused, and nothing it held comes back.
