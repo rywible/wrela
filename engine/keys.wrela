@@ -529,8 +529,8 @@ pub fn hilt_held(
     // down low stops on the ground, and the hands hold it there.
     if blade > 0.0 {
         let u = f.rotate(vec3(0.0, 0.0, 1.0))
-        if grip.y + u.y * blade < 0.04 && grip.y > 0.1 {
-            let want = clamp((0.04 - grip.y) / blade, -1.0, 1.0)
+        if grip.y + u.y * blade < 0.08 && grip.y > 0.12 {
+            let want = clamp((0.08 - grip.y) / blade, -1.0, 1.0)
             let flat = normalize(vec3(u.x, 0.0, u.z) + vec3(0.0, 0.0, 1.0e-4))
             let nu = normalize(flat * sqrt(max(1.0 - want * want, 0.0)) + vec3(0.0, want, 0.0))
             f = humanoid::arc(u, nu).mul(f)

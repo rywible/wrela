@@ -189,7 +189,36 @@ fn leapt_cut(
 ) -> Move {
     let m = leapt(once_of(file, from, to), up: 0.27, down: 0.73, height: 0.4)
     let blow = max(blow_of(m.clone(), lo, hi, at) - 0.03, 0.0)
-    playback::struck(m, blow, snap, quicken, hold, cancel, tail)
+    settled(playback::struck(m, blow, snap, quicken, hold, cancel, tail), 0.3)
+}
+
+/// `m` with its last pose held `secs` longer (a heavy's planted settle): its recovery and its
+/// window to be cut short run on to the new end.
+fn settled(m: Move, secs: f32) -> Move {
+    var out = m.clone()
+    let n = out.clip.bones
+    let last = out.clip.frames - 1
+    let extra = u32(secs * out.clip.fps + 0.5)
+    for _ in 0..extra {
+        for b in 0..n {
+            let q = out.clip.turns[last * n + b]
+            out.clip.turns.push(q)
+        }
+        let h = out.clip.hips[last]
+        out.clip.hips.push(h)
+        let r = out.root[last]
+        out.root.push(r)
+        let y = out.heading[last]
+        out.heading.push(y)
+    }
+    out.clip.frames += extra
+    let end = out.clip.length()
+    for i in 0..out.marks.len() {
+        if out.marks[i].kind == playback::RECOVER || out.marks[i].kind == playback::CANCEL {
+            out.marks[i].till = end
+        }
+    }
+    out
 }
 
 /// A hit taken, its knock played quickened (its first `knock` seconds `quicken` times as fast)
@@ -228,13 +257,15 @@ fn leapt(m: Move, up: f32, down: f32, height: f32) -> Move {
     out
 }
 
-/// A pose breathing (`on`, 0 to 1, how much): the chest rising and falling, the trunk's
-/// weight shifting slowly side to side.
+/// A pose breathing (`on`, 0 to 1, how much): the chest and shoulders rising and falling, the
+/// blade's point bobbing with them, the trunk's weight shifting slowly side to side; drawn on
+/// twos (its time stepped twelve times a second), as the moves are.
 pub fn breathed(p: Pose, time: f32, on: f32) -> Pose {
     var out = p
     let rig = HERO.rig.clone()
-    let breath = sin(time * 6.2831853 / 3.4) * on
-    let shift = sin(time * 6.2831853 / 5.3 + 0.7) * on
+    let drawn = floor(time * 12.0) / 12.0
+    let breath = sin(drawn * 6.2831853 / 3.0) * on
+    let shift = sin(drawn * 6.2831853 / 5.3 + 0.7) * on
     let deg = 0.017453292
     let turn = |name: str, axis: vec3, a: f32| {
         let b = rig.find(name)
@@ -242,10 +273,12 @@ pub fn breathed(p: Pose, time: f32, on: f32) -> Pose {
             out.turns[b] = out.turns[b].mul(Quat::axis_angle(axis, a * deg))
         }
     }
-    turn("spine", vec3(0.0, 0.0, 1.0), 3.5 * shift)
-    turn("chest", vec3(1.0, 0.0, 0.0), -4.5 * breath)
-    turn("upperChest", vec3(1.0, 0.0, 0.0), -3.0 * breath)
-    turn("rightHand", vec3(1.0, 0.0, 0.0), 4.0 * breath)
+    turn("spine", vec3(0.0, 0.0, 1.0), 4.5 * shift)
+    turn("chest", vec3(1.0, 0.0, 0.0), -6.0 * breath)
+    turn("upperChest", vec3(1.0, 0.0, 0.0), -4.0 * breath)
+    turn("rightShoulder", vec3(0.0, 0.0, 1.0), 3.0 * breath)
+    turn("leftShoulder", vec3(0.0, 0.0, 1.0), -3.0 * breath)
+    turn("rightHand", vec3(1.0, 0.0, 0.0), 6.0 * breath)
     turn("neck", vec3(1.0, 0.0, 0.0), 2.2 * breath)
     turn("neck", vec3(0.0, 0.0, 1.0), -1.2 * shift)
     out
@@ -355,14 +388,22 @@ pub const MOCAP_LOOKS: [Look; 6] = [
     Look { twos: true, held: true },
 ]
 
-/// How far a hit taken drops the guard's point forward and down (0 to 1), `time` into act
-/// `act`: at once as it lands, eased back up as it ends.
-pub fn lean_of(act: u32, time: f32) -> f32 {
-    if act != M_HIT && act != M_HIT_HARD {
-        return 0.0
+/// Which way and how far (0 to 1) act `act` leans the blade's point, `time` into it: a hit
+/// taken drops the guard forward and down at once, eased back up as it ends; the heavy drives
+/// its point down at the floor ahead from its blow on, through its hold and settle.
+pub fn lean_of(act: u32, time: f32) -> (vec3, f32) {
+    if act == M_HIT || act == M_HIT_HARD {
+        let len = MOCAP_ACTS[act].length()
+        let on = 0.85 * smoothstep(0.0, 0.08, time) * (1.0 - smoothstep(len - 0.4, len - 0.05, time))
+        return (vec3(0.35, -0.2, 0.9), on)
     }
-    let len = MOCAP_ACTS[act].length()
-    0.85 * smoothstep(0.0, 0.08, time) * (1.0 - smoothstep(len - 0.4, len - 0.05, time))
+    if act == M_HEAVY {
+        let len = MOCAP_ACTS[act].length()
+        let blow = MOCAP_ACTS[act].mark(playback::ACTIVE).unwrap().from
+        let on = smoothstep(blow - 0.06, blow, time) * (1.0 - smoothstep(len - 0.2, len, time))
+        return (vec3(0.0, -0.6, 0.8), 0.9 * on)
+    }
+    (vec3(0.0, 0.0, 1.0), 0.0)
 }
 
 /// Whether an act is a cut (its blade smeared through its strike).
