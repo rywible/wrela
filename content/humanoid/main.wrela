@@ -69,6 +69,10 @@ pub const FOCUS: f32 = 0.95
 /// its profile.
 pub const SIDE: f32 = 0.75
 
+/// The crosses' drawings a second when drawn as anime (`SHOW=13`, `14`): a strike's snap needs
+/// more than twelve.
+pub const DRAWINGS: f32 = 24.0
+
 /// Which side the guard and its crosses (`SHOW=12` to `14`) are seen from.
 pub const CROSS_SIDE: f32 = -1.6
 
@@ -296,7 +300,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                 s.mask,
                 pose,
                 place,
-                Anime {},
+                Anime { drawings: DRAWINGS },
                 dt,
             )
         } else {
