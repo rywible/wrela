@@ -49,12 +49,16 @@ const MENU_LABELS: [Text; 3] = ["Resume", "Play online", "Title screen"]
 
 /// The bands of rows a drawing of the scene is painted in, one a frame (`play`).
 const BANDS: u32 = 2
-/// Seconds the scene takes to come up out of black once its first drawing is ready, and how far
-/// through that the name begins to come; and the seconds after which the name comes over the
-/// black anyway, if the scene never does.
+/// The opening: the name comes up over black at once (`NAME_AT` seconds in), a title card while
+/// the sky cooks; the scene then rises behind it (`RISE` seconds once its first drawing is
+/// ready), and Play comes in `CONTROLS_AFTER` of the way through that, or over the black anyway
+/// after `WORDS_GIVE_UP` seconds if the scene never does.
+const NAME_AT: f32 = 0.35
 const RISE: f32 = 2.4
-const WORDS_AFTER: f32 = 0.55
+const CONTROLS_AFTER: f32 = 0.55
 const WORDS_GIVE_UP: f32 = 12.0
+/// Seconds the name takes to come up over the black.
+const NAME_IN: f32 = 1.4
 /// Seconds the words take to go as the player takes the paddle, and to come back.
 const LEAVE: f32 = 0.45
 const RETURN: f32 = 0.6
@@ -135,6 +139,9 @@ pub struct Front {
     shown: f32,
     words: f32,
     menu: f32,
+    /// How far the title's controls (Play, the account's chip) are in, 0 to 1: they come once the
+    /// scene is up, after the name.
+    controls: f32,
     /// Seconds since the scene first showed.
     since: f32,
     /// The scene's height as the budget would draw it (pixels); the frames' average seconds, and
@@ -194,6 +201,7 @@ pub fn init(fonts: take Fonts) -> Front {
         shown: 0.0,
         words: 0.0,
         menu: 0.0,
+        controls: 0.0,
         since: 0.0,
         tall: 720.0,
         spent: 1.0 / 60.0,
@@ -267,7 +275,7 @@ fn wrapped(a: f32) -> f32 {
 
 /// Whether the account's chip is there to press: on the title, once its words are in.
 pub fn chip_live(f: Front) -> bool {
-    f.stage == Stage::Page && f.words >= 0.5
+    f.stage == Stage::Page && min(f.words, f.controls) >= 0.5
 }
 
 /// Whether the screen, `w` by `h` logical pixels, is a phone's.
@@ -393,7 +401,7 @@ pub fn frame<A: Account>(
         if f.stage == Stage::Page {
             // Nothing of the title's is pressed before it shows, the account's chip included;
             // once its pages are open, they take every input.
-            if f.words < 0.5 && !account.shown() {
+            if min(f.words, f.controls) < 0.5 && !account.shown() {
                 continue
             }
             if account.event(e) || account.shown() {
@@ -427,19 +435,24 @@ pub fn frame<A: Account>(
     if f.stage == Stage::Rowing && f.time - f.saved_at > SAVE_EVERY {
         save(mut f)
     }
-    // The scene, once the sky has cooked, comes up out of black; the name after it.
+    // The name comes over black at once; the scene, once the sky has cooked, rises behind it,
+    // and Play after.
     f.drawings += 1
     if f.cooked {
         f.since += dt
     }
     let rise = if reduced { 0.4 } else { RISE }
     f.shown = smoothstep(0.0, 1.0, clamp(f.since / rise, 0.0, 1.0))
-    let due = f.since > rise * WORDS_AFTER || f.time > WORDS_GIVE_UP
+    let due = f.time > NAME_AT || reduced
+    let up = f.since > rise * CONTROLS_AFTER || f.time > WORDS_GIVE_UP
     // (Under the account's pages, the title's own words step back: one thing to read at a time.)
     let words_target = if f.stage == Stage::Page && due && !account.shown() { 1.0 } else { 0.0 }
-    let rising = f.since < rise * 1.5
-    let pace = if words_target <= f.words { LEAVE } else if rising { rise * 0.6 } else { RETURN }
-    f.words = kit::ease(f.words, words_target, dt, seconds: pace)
+    let opening = f.controls < 0.999
+    let pace = if words_target <= f.words { LEAVE } else if opening { NAME_IN } else { RETURN }
+    f.words = kit::ease(f.words, words_target, dt, seconds: (if reduced { 0.0 } else { pace }))
+    f.controls = kit::ease(f.controls, if up { 1.0 } else { 0.0 }, dt, seconds: (if reduced {
+        0.0
+    } else { rise * 0.4 }))
     f.menu = kit::ease(f.menu, if f.stage == Stage::Paused { 1.0 } else {
         0.0
     }, dt, seconds: (if reduced { 0.0 } else { MENU_FADE }))
@@ -489,7 +502,9 @@ pub fn frame<A: Account>(
     }
     if f.stage == Stage::Page {
         // The chip comes and goes with the words; the pages, once opened, are wholly there.
-        f.list.alpha = if account.shown() { 1.0 } else { clamp(f.words * 1.5, 0.0, 1.0) }
+        f.list.alpha = if account.shown() { 1.0 } else {
+            clamp(min(f.words, f.controls) * 1.5, 0.0, 1.0)
+        }
         account.draw(mut f.list, f.fonts, width, height)
         f.list.alpha = 1.0
     }
@@ -656,13 +671,18 @@ fn draw_title(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
     let margin = round(clamp(min(w, h) * 0.075, 24.0 * k, 72.0 * k))
     let bottom = h - round(clamp(h * 0.06, 24.0 * k, 56.0 * k))
     var hand = false
-    // Play, along the bottom; on a phone, the line in its place.
+    // Play, along the bottom, coming in once the scene is up (`controls`); on a phone, the line in
+    // its place. The name sits over where they rest, rising with its own fade.
+    let c = clamp(f.controls, 0.0, 1.0)
+    let shown_c = c * c * (3.0 - 2.0 * c)
+    let c_lift = if f.reduced { 0.0 } else { (1.0 - shown_c) * 8.0 * k }
+    f.list.alpha = eased * shown_c
     let bh = round(48.0 * k)
-    let top = round(bottom - bh + lift)
-    var under_name = top
+    let top = round(bottom - bh + c_lift)
+    var under_name = round(bottom - bh + lift)
     if on_phone {
         let size = 16.0 * k
-        let line_top = round(bottom - size * 1.3 + lift)
+        let line_top = round(bottom - size * 1.3 + c_lift)
         let _ = f.list.text(
             f.fonts,
             Face::Sans,
@@ -671,13 +691,15 @@ fn draw_title(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
             vec2(margin, line_top),
             MUTED,
         )
-        under_name = line_top
+        under_name = round(bottom - size * 1.3 + lift)
     } else {
         let label = if f.saved { "Continue" } else { "Play" }
         let tw = f.fonts.font(Face::Sans).measure(label, 16.0 * k)
         let bw = round(max(tw + 64.0 * k, 168.0 * k))
-        hand = action(mut f, PLAY, Rect::new(margin, top, bw, bh), label, main: true, k: k)
+        hand = action(mut f, PLAY, Rect::new(margin, top, bw, bh), label, main: true, k: k) &&
+            c > 0.5
     }
+    f.list.alpha = eased
     // The name: Facet's capitals stand 0.70 em on their baseline, with nothing under it. As large
     // as fits between Play and the horizon (with room to breathe under the sea's line) and across
     // the screen, up to a cap height of 120 pixels; sized where it rests, so it keeps its size as
