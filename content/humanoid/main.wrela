@@ -657,6 +657,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         bones[dummy::SLOT] = b
         bones[dummy::HEAD_SLOT] = h
         bones[dummy::SPARK_SLOT] = sp
+        bones[dummy::BASE_SLOT] = if SHOW == 15 && ONE == 1 { shown_at * translate(vec3(0.0, 0.0, DUMMY_AT)) } else { none }
     }
     write(mut s.palette, 0, bones)
     if SHOW == 15 && ONE == 1 {
@@ -1264,14 +1265,17 @@ fn cue_cut(s: mut State, at: mat4) {
     let place = (at * vec4(0.0, 0.0, 0.0, 1.0)).xyz
     let _ = s.cues.push(Cue::Listen { at: place + vec3(-2.5, 1.6, -1.5), forward: vec2(0.6, 0.8) })
     let passed = |t: f32| -> bool { now >= t && was < t }
-    // (The whoosh peaks a little after it starts: cued two frames into the snap, so its peak
-    // lands on the blade's fastest frames.)
-    if passed(mixamo::V_GO + 2.0 / 60.0) {
+    // (The whoosh leads the blade: cued two frames before the snap, so it's heard rising into
+    // the cut and apart from the blow.)
+    if passed(mixamo::V_GO - 2.0 / 60.0) {
         let _ = s.cues.push(Cue::Whoosh { at: place + vec3(0.0, 1.6, 0.6), kind: cutsound::SWING, amount: 1.0, seed: 2 })
     }
     if passed(mixamo::V_BLOW) {
         let head = place + vec3(0.0, dummy::HEAD_AT.y, DUMMY_AT)
         let _ = s.cues.push(Cue::Impact { at: head, kind: cutsound::BLOW, strength: KNOCK.min(1.0), seed: 1 })
+    }
+    // The front foot's stamp a frame after the blow, its own beat under it.
+    if passed(mixamo::V_BLOW + 1.0 / 60.0) {
         let _ = s.cues.push(Cue::Step { at: place + vec3(-0.12, 0.0, 0.6), surface: cutsound::FLOOR, weight: 1.0, seed: 3 })
     }
 }

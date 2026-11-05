@@ -12,6 +12,8 @@ pub const PART: u32 = 10
 /// Palette slots: past the hero's 52 bones, before the sword's (55).
 pub const SLOT: u32 = 54
 pub const HEAD_SLOT: u32 = 53
+/// Its foot's plate: pinned to the floor (the last slot, past the sword's smear).
+pub const BASE_SLOT: u32 = 63
 /// Where its head's middle is (its own frame), and its head's radius.
 pub const HEAD_AT: vec3 = vec3(0.0, 1.2, 0.0)
 pub const HEAD_R: f32 = 0.12
@@ -132,7 +134,7 @@ fn ball(out: mut Humanoid, c: vec3, r: f32, colour: vec3, band: vec3, slot: u32)
 
 /// `out` with the dummy added after what's in it.
 pub fn added(out: mut Humanoid) {
-    block(mut out, vec3(-0.24, 0.0, -0.24), vec3(0.24, 0.06, 0.24), WOOD, SLOT)
+    block(mut out, vec3(-0.24, 0.0, -0.24), vec3(0.24, 0.06, 0.24), WOOD, BASE_SLOT)
     drum(mut out, 0.06, 0.61, 0.05, 0.045, WOOD, SLOT)
     drum(mut out, BODY_LOW, BODY_TOP, 0.15, 0.18, STRAW, SLOT)
     block(mut out, vec3(-0.42, 0.89, -0.045), vec3(0.42, 0.97, 0.045), WOOD, SLOT)
@@ -228,9 +230,9 @@ pub fn reaction(since: f32, stop: f32, knock: f32, shake: f32) -> Reaction {
     }
     let u = since - stop
     Reaction {
-        // Thrown back hard off the blade (past the point in four frames), then rocking slowly
-        // back up on its heavy post with a little wobble, never swinging back into the hero.
-        tilt: knock * (0.07 * exp(-6.0 * u) + 0.62 * (exp(-1.2 * u) - exp(-14.0 * u)) + 0.03 * exp(-3.0 * u) * sin(11.0 * u)),
+        // Thrown back off the blade (about 14 degrees at most), then rocking back up on its
+        // post with a small damped wobble, never swinging back into the hero.
+        tilt: knock * (0.07 * exp(-6.0 * u) + 0.36 * (exp(-2.0 * u) - exp(-14.0 * u)) + 0.035 * exp(-3.0 * u) * sin(11.0 * u)),
         nod: knock * 0.22 * exp(-4.5 * u) * cos(12.0 * u),
         back: knock * (0.015 + 0.075 * (1.0 - exp(-12.0 * u))),
         shake: vec3(0.0),
