@@ -839,7 +839,7 @@ fn maker_open(s: Client) -> bool {
 
 /// Tells the island who this player is, until its view shows it: the character's card.
 fn wear(s: mut Client, time: f32) {
-    let Some(card) = (match s.character {
+    let Some((card, seal)) = (match s.character {
         Some(c) => character::card(c),
         None => None,
     }) else { return }
@@ -859,7 +859,7 @@ fn wear(s: mut Client, time: f32) {
     }
     s.tellings += 1
     s.wear_at = time + WEAR_EVERY
-    propose_island(mut s, island::main::Act::Wear { card })
+    propose_island(mut s, island::main::Act::Wear { card, seal })
 }
 
 /// The card peer `peer` wears on `island`, if it said who it is.

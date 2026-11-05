@@ -7,16 +7,28 @@
 //
 // What crosses the network is decisions (`Act`), and what's written is outcomes: the save is put
 // only when a mark is placed, never for a step.
+//
+// Who a body is comes from its account: a peer wears its character's card with the pass its
+// account signed (platform/pass.wrela), and the server checks the pass before the room sees the
+// decision, with the Worker's ceremony keys (`std::server::secret`). It writes what it found into
+// the decision (`Seal::checked`) and takes the tag off, so the log tells every peer whether the
+// card is the account's and shows no one a pass to copy. Until the keys are read, events wait.
 
 use platform::names
 use platform::names::Name
+use platform::pass
+use platform::pass::{NO_TAG, Pass, Tag}
 use platform::wire::Look
 use std::input::{Event, events, payload}
 use std::io::Pending
-use std::net::{COMPACT_AFTER, Entry, JOURNAL, POISONED, ProposalId, Record, Reduce, Room, Verdict}
+use std::net::{
+    COMPACT_AFTER, Entry, JOURNAL, POISONED, ProposalId, Record, Reduce, Room, Up, Verdict,
+}
 use std::net::{carry_out, close, compact, room}
 use std::pack::{Pack, pack, unpack}
+use std::server::secret
 use std::store
+use std::time::{unix_ms, wall_clock}
 
 /// The save's format: its first byte. A save of another version is read by a migration, or the
 /// island starts empty.
@@ -46,11 +58,12 @@ pub const MAX_REACH: i32 = 1000000
 pub const MAX_HELD: u32 = 1024
 /// Failed reads of the save in a row before the held peers are let go.
 pub const MAX_TRIES: u32 = 3
+/// A card whose pass its account didn't sign (or that expired): the body stays a wanderer.
+pub const NOT_SIGNED: u32 = 5
 
 /// Who a body is: its character's name, by its four numbers into the name lists (so it says
 /// nothing anyone typed: platform/names.wrela), and how it looks, a choice of each part
-/// (platform/wire.wrela's `Look`). Nothing yet checks it against an account: a pass from the
-/// account will.
+/// (platform/wire.wrela's `Look`). It's worn with a pass (`Seal`), which the server checks.
 pub struct Card: Copy + Eq + Pack {
     pub title: u32,
     pub front: u32,
@@ -127,14 +140,67 @@ pub struct Island: Clone + Pack {
     pub marks: Vec<Mark>,
 }
 
+/// The pass a card is worn with, as a peer sends it (when it expires and its tag: pass.wrela's
+/// `Pass`), and as the room commits it: `checked` is the server's finding, and the expiry and tag
+/// are taken off. A peer's own `checked` is never believed.
+pub struct Seal: Copy + Eq + Pack {
+    pub expires: u64,
+    pub tag: Tag,
+    pub checked: bool,
+}
+
+/// A seal as the server leaves it: its finding alone.
+pub fn sealed(checked: bool) -> Seal {
+    Seal { expires: 0, tag: NO_TAG, checked }
+}
+
 /// A peer's decision.
 pub enum Act: Clone + Pack {
     /// Walk by (`dx`, `dz`).
     Step { dx: i32, dz: i32 },
     /// Place a mark where it stands.
     Place,
-    /// Say who it is: its character.
-    Wear { card: Card },
+    /// Say who it is: its character, with its account's pass.
+    Wear { card: Card, seal: Seal },
+}
+
+/// The pass of a card worn with `seal`.
+pub fn pass_of(card: Card, seal: Seal) -> Pass {
+    Pass {
+        title: card.title,
+        front: card.front,
+        back: card.back,
+        epithet: card.epithet,
+        build: card.build,
+        skin: card.skin,
+        hair: card.hair,
+        cloth: card.cloth,
+        expires: seal.expires,
+        tag: seal.tag,
+    }
+}
+
+/// The card and seal a peer wears for `pass` (its account's): what `Act::Wear` carries.
+pub fn worn(pass: Pass) -> (Card, Seal) {
+    (
+        Card::of(pass.name(), pass.look()),
+        Seal { expires: pass.expires, tag: pass.tag, checked: true },
+    )
+}
+
+/// A peer's message as the room is to see it: a proposal to wear a card has its seal checked
+/// against `keys` at `now` (Unix milliseconds) and its pass taken off; anything else is as it
+/// came, a message that isn't the protocol's included (the room refuses it).
+pub fn checked_message(bytes: take Vec<u8>, keys: [[u8; 32]], now: u64) -> Vec<u8> {
+    let Ok(up) = unpack::<Up<Act>>(bytes.clone()) else { return take bytes }
+    match up {
+        Up::Propose { peer, session, counter, value: Act::Wear { card, seal } } => {
+            let ok = pass::opens(keys, pass_of(card, seal), now)
+            let value = Act::Wear { card, seal: sealed(ok) }
+            pack(Up::<Act>::Propose { peer, session, counter, value })
+        },
+        _ => take bytes,
+    }
 }
 
 /// A client on the island says it's still there this often (a step of nothing), and a body that
@@ -214,8 +280,12 @@ impl Reduce<Act> for Island {
             Act::Place => if self.marks.len() >= MAX_MARKS { Verdict::Reject(FULL) } else {
                 Verdict::Accept
             },
-            Act::Wear { card } => if card.valid() { Verdict::Accept } else {
+            Act::Wear { card, seal } => if !card.valid() {
                 Verdict::Reject(NO_SUCH_CARD)
+            } else if !seal.checked {
+                Verdict::Reject(NOT_SIGNED)
+            } else {
+                Verdict::Accept
             },
         }
     }
@@ -249,7 +319,7 @@ impl Reduce<Act> for Island {
                 let z = self.bodies[i].z
                 self.marks.push(Mark { by: peer, x, z })
             },
-            Act::Wear { card } => {
+            Act::Wear { card, .. } => {
                 self.bodies[i].worn = true
                 self.bodies[i].card = card
             },
@@ -331,6 +401,16 @@ pub struct Server {
     unreadable: bool,
     /// Failed reads of the save in a row.
     tries: u32,
+    /// The reads of the pass keys' secrets (`pass::SECRETS`) and of the wall clock, once asked
+    /// and until all are answered, and their answers so far (none: failed, or not yet).
+    asked_keys: Vec<Pending<u8>>,
+    answered_keys: Vec<bool>,
+    key_answers: Vec<Option<Vec<u8>>>,
+    /// Whether the keys were read (`keys`, those long enough: none, and no pass checks).
+    keyed: bool,
+    keys: Vec<[u8; 32]>,
+    /// The Unix milliseconds at the room's time 0, as the wall clock said when the keys came.
+    epoch: u64,
 }
 
 impl Server {
@@ -343,6 +423,12 @@ impl Server {
             saved: 0,
             unreadable: false,
             tries: 0,
+            asked_keys: Vec::new(),
+            answered_keys: Vec::new(),
+            key_answers: Vec::new(),
+            keyed: false,
+            keys: Vec::new(),
+            epoch: 0,
         }
     }
 
@@ -351,13 +437,79 @@ impl Server {
         self.room.state()
     }
 
-    /// An event: taken by the room once it's live, held before.
+    /// Asks for the pass keys and the wall clock, once.
+    fn ask_keys(mut self) {
+        if self.keyed || !self.asked_keys.is_empty() {
+            return
+        }
+        for name in pass::SECRETS {
+            self.asked_keys.push(secret(name))
+        }
+        self.asked_keys.push(wall_clock())
+        for _ in 0..self.asked_keys.len() {
+            self.answered_keys.push(false)
+            self.key_answers.push(None)
+        }
+    }
+
+    /// The keys' and the clock's answers, once all came: a secret that isn't there, or is too
+    /// short, makes no key, and a clock that didn't answer leaves every pass expired; then the
+    /// held events go to the room, if it's live.
+    fn keys_read(mut self, at: u64) {
+        if self.keyed {
+            return
+        }
+        let n = self.asked_keys.len()
+        var all = n > 0
+        for i in 0..n {
+            if self.answered_keys[i] {
+                continue
+            }
+            match self.asked_keys[i].poll() {
+                Some(a) => {
+                    self.answered_keys[i] = true
+                    self.key_answers[i] = (take a).ok()
+                },
+                None => all = false,
+            }
+        }
+        if !all {
+            return
+        }
+        self.asked_keys.clear()
+        let answers = replace(mut self.key_answers, Vec::new())
+        for i in 0..n {
+            let Some(bytes) = answers[i].clone() else { continue }
+            if i + 1 < n {
+                if let Some(k) = pass::key_of(bytes) {
+                    self.keys.push(k)
+                }
+            } else if let Some(ms) = unix_ms(bytes) {
+                self.epoch = if ms > at { ms - at } else { 0 }
+            }
+        }
+        self.keyed = true
+        self.release(at)
+    }
+
+    /// The held events, to the room, once it's live and the keys are read.
+    fn release(mut self, at: u64) {
+        if self.phase != LIVE || !self.keyed {
+            return
+        }
+        let held = replace(mut self.held, Vec::new())
+        for h in held {
+            self.feed(h.clone(), at)
+        }
+    }
+
+    /// An event: taken by the room once it's live and the keys are read, held before.
     fn arrive(mut self, h: take Held, at: u64) {
         if self.phase == FRESH {
             self.phase = LOADING
             self.asked.push(store::get(key_of(room().as_str())))
         }
-        if self.phase == LOADING {
+        if self.phase == LOADING || !self.keyed {
             if self.held.len() >= MAX_HELD {
                 // Too much waits: this connection goes, and its peer comes back (what it
                 // proposed is proposed again, once). Its close is held like any other.
@@ -382,7 +534,8 @@ impl Server {
                 if conn >= POISONED {
                     carry_out(self.room.poisoned(conn - POISONED, take bytes))
                 } else {
-                    carry_out(self.room.receive(conn, take bytes, at))
+                    let seen = checked_message(take bytes, self.keys, self.epoch + at)
+                    carry_out(self.room.receive(conn, take seen, at))
                 }
             },
         }
@@ -433,10 +586,7 @@ impl Server {
         compact(pack(start))
         self.room = take fresh
         self.phase = LIVE
-        let held = replace(mut self.held, Vec::new())
-        for h in held {
-            self.feed(h.clone(), at)
-        }
+        self.release(at)
     }
 
     /// The save put again once the marks changed: an outcome, so it's written with the call's
@@ -456,6 +606,8 @@ pub fn serve_init() -> Server {
 
 pub fn serve(s: mut Server, time: f32) {
     let at = u64(time * 1000.0)
+    s.ask_keys()
+    s.keys_read(at)
     s.loaded(at)
     for e in events() {
         match e {
@@ -541,7 +693,7 @@ fn a_body_wears_only_a_card_the_lists_and_choices_make() {
             seq: 2,
             id: ProposalId { peer: 4, session: 1, counter: 1 },
             at: 0,
-            value: Act::Wear { card },
+            value: Act::Wear { card, seal: sealed(true) },
         }
     }
     let good = Card::of(
@@ -560,9 +712,62 @@ fn a_body_wears_only_a_card_the_lists_and_choices_make() {
     assert(island.check(wear(bad_name)) == Verdict::Reject(NO_SUCH_CARD), "a name past the lists")
     assert(island.check(wear(bad_look)) == Verdict::Reject(NO_SUCH_CARD), "a look past the choices")
     assert(island.check(wear(good)) == Verdict::Accept)
+    let unsigned = Entry {
+        seq: 2,
+        id: ProposalId { peer: 4, session: 1, counter: 1 },
+        at: 0,
+        value: Act::Wear { card: good, seal: sealed(false) },
+    }
+    assert(island.check(unsigned) == Verdict::Reject(NOT_SIGNED), "a card its account didn't sign")
     island.apply(wear(good))
     assert(island.bodies.len() == 1 && island.bodies[0].worn && island.bodies[0].card == good)
     assert(names::text(island.bodies[0].card.name()).len() > 0)
+}
+
+/// A peer's proposal to wear `card` with `seal`, as its bytes cross the network.
+fn wear_bytes(card: Card, seal: Seal) -> Vec<u8> {
+    pack(Up::<Act>::Propose { peer: 3, session: 1, counter: 2, value: Act::Wear { card, seal } })
+}
+
+/// What the room is given for a peer's message: its wear's seal.
+fn seal_seen(bytes: take Vec<u8>) -> Seal {
+    let Ok(
+        Up::Propose { peer: 3, session: 1, counter: 2, value: Act::Wear { seal, .. } },
+    ) = unpack::<Up<Act>>(take bytes) else { panic("still the proposal it was") }
+    seal
+}
+
+@test
+fn the_server_believes_only_a_pass_the_account_signed() {
+    var secret: Vec<u8> = Vec::new()
+    for i in 0..40 {
+        secret.push(u8(i))
+    }
+    let Some(key) = pass::key_of(secret) else { panic("a key") }
+    let name = Name { title: 1, front: 2, back: 3, epithet: 4 }
+    let look = Look { build: 1, skin: 2, hair: 3, cloth: 4 }
+    let now: u64 = 1_800_000_000_000
+    let (card, seal) = worn(pass::sign(key, name, look, now + 1000))
+    let seen = seal_seen(checked_message(wear_bytes(card, seal), [key], now))
+    assert(seen == sealed(true), "the account's pass: checked, and its tag taken off")
+    var other = card
+    other.cloth = 5
+    let forged = seal_seen(checked_message(wear_bytes(other, seal), [key], now))
+    assert(forged == sealed(false), "the pass on another card isn't believed")
+    let no_keys: [[u8; 32]; 0] = []
+    let keyless = seal_seen(checked_message(wear_bytes(card, seal), no_keys, now))
+    assert(!keyless.checked, "without the keys, nothing is")
+    let late = seal_seen(checked_message(wear_bytes(card, seal), [key], now + 1000))
+    assert(!late.checked, "nor an expired pass")
+    let step = pack(
+        Up::<Act>::Propose { peer: 3, session: 1, counter: 2, value: Act::Step { dx: 1, dz: 0 } },
+    )
+    assert(checked_message(step.clone(), [key], now) == step, "a step goes as it came")
+    let junk = Vec::from([1, 2, 3])
+    assert(
+        checked_message(junk.clone(), [key], now) == junk,
+        "and bytes that aren't the protocol's",
+    )
 }
 
 @test

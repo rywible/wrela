@@ -1218,6 +1218,9 @@ fn the_consoles_server_runs_in_a_worker_of_its_own_on_its_paths() {
     let Some(vars) = c.get(top, "vars") else { panic("vars") }
     let Some(origins) = c.get(vars, "WRELA_ORIGINS") else { panic("WRELA_ORIGINS") }
     assert(c.text(origins) == Some(String::from("https://wrela.dev")))
+    // The program reads the ceremonies' keys itself, the pass keys' secrets (platform/pass.wrela).
+    let Some(secrets) = c.get(vars, site::SECRETS_VARIABLE) else { panic("WRELA_SECRETS") }
+    assert(c.text(secrets) == Some(String::from("WRELA_CEREMONY_KEY,WRELA_CEREMONY_KEY_OLD")))
     let Some(given) = c.get(vars, "WRELA_LIMITS") else { panic("WRELA_LIMITS") }
     let Some(listed) = std::json::parse(c.text(given).unwrap().as_str()) else { panic("a list") }
     assert(listed.count(top) == site::RATE_LIMITS.len())

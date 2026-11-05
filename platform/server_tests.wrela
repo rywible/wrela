@@ -3420,7 +3420,10 @@ fn no_boards_has_no_courses_and_claims_no_replay() {
 
 /// What `Character` answers the account in browser `conn`: whether it has one, and its look.
 fn character(h: mut Host, conn: u32) -> (bool, String, wire::Look) {
-    let Reply::Character { made, name, look } = h.say(conn, Request::Character)[0].clone() else {
+    let Reply::Character { made, name, look, .. } = h.say(
+        conn,
+        Request::Character,
+    )[0].clone() else {
         panic("a character")
     }
     (made, names::text(name), look)
@@ -3441,12 +3444,19 @@ fn a_character_carries_its_accounts_name_and_a_look_in_range() {
     let wide = wire::Look { build: 1, skin: wire::LOOK_CHOICES, hair: 0, cloth: 0 }
     assert(refused(h.say(1, Request::SaveCharacter { csrf: s.csrf.clone(), look: wide })))
     let at = h.time
-    let Reply::Character { made: true, .. } = h.say(
+    let Reply::Character { made: true, name: signed_as, pass: signed, .. } = h.say(
         1,
         Request::SaveCharacter { csrf: s.csrf.clone(), look },
     )[0].clone() else {
         panic("made")
     }
+    // Its pass is the Worker key's, for this name and look, and lasts a pass's life.
+    let Ok(p) = std::pack::unpack::<pass::Pass>(take signed) else { panic("a pass") }
+    let Some(k) = pass::key_of(Vec::from(String::from(KEY).as_bytes())) else {
+        panic("the test's key makes a pass key")
+    }
+    assert(p.name() == signed_as && p.look() == look && p.expires == at + pass::LIFE_MS)
+    assert(pass::opens([k], p, at), "a room believes it")
     let (made, name, kept) = character(mut h, 1)
     assert(made && name == s.name && kept == look, "read back")
     // A change keeps when it was made.

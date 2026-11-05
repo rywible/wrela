@@ -335,6 +335,24 @@ pub(package) fn contains(names: [String], name: str) -> bool {
 pub const KEY_SECRETS: [Text; 2] = ["WRELA_CEREMONY_KEY", "WRELA_CEREMONY_KEY_OLD"]
 pub const KEY_HEADERS: [Text; 2] = ["x-wrela-key", "x-wrela-key-old"]
 
+/// The Worker variable that names the secrets the server's program may read itself (toolchain
+/// 0.22.0's `std::server::secret`), comma-separated: the ceremonies' keys, which the MMO's rooms
+/// check a character's pass with (platform/pass.wrela), since a room's connection carries no
+/// request headers.
+pub const SECRETS_VARIABLE: Text = "WRELA_SECRETS"
+
+/// What `SECRETS_VARIABLE` holds: `KEY_SECRETS`, comma-separated.
+pub fn program_secrets() -> String {
+    var out = String::new()
+    for i in 0..KEY_SECRETS.len() {
+        if i > 0 {
+            out.push_str(",")
+        }
+        out.push_str(KEY_SECRETS[i])
+    }
+    out
+}
+
 /// The path of the requests whose ceremonies the keys are for: a `POST` there (platform/wire.wrela's
 /// `ACCOUNTS`, which a test checks) is the only request the Worker gives them to.
 pub const KEYED: Text = "/api/accounts"
@@ -625,13 +643,17 @@ fn server_members(
             var vars: Vec<(String, Json)> = Vec::new()
             if let Json::Obj(given) = v {
                 for (name, value) in given {
-                    if name.as_str() != "WRELA_ORIGINS" && name.as_str() != "WRELA_LIMITS" {
+                    let ours = name.as_str() == "WRELA_ORIGINS" ||
+                        name.as_str() == "WRELA_LIMITS" ||
+                        name.as_str() == SECRETS_VARIABLE
+                    if !ours {
                         vars.push((name.clone(), value.clone()))
                     }
                 }
             }
             vars.push(member("WRELA_ORIGINS", text(f"https://{domain}")))
             vars.push(member("WRELA_LIMITS", text(compact(Json::List(limits.clone())).as_str())))
+            vars.push(member(SECRETS_VARIABLE, text(program_secrets().as_str())))
             c.push(member("vars", Json::Obj(take vars)))
             continue
         }

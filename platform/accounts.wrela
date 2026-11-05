@@ -39,6 +39,7 @@ use server::{
 }
 use std::collections::replace
 use std::crypto::verified
+use std::pack::pack
 use std::fmt::json_text
 use std::hash::sha256::{hex, sha256}
 use std::serialize::{Serialize, save}
@@ -86,15 +87,23 @@ const SWEPT: Text = "y"
 const NAME_KEPT: u8 = 0
 const NAME_RELEASED: u8 = 1
 
-/// The account's character, as `Character` answers it: its name is the account's.
-fn character_of(a: Account, look: wire::Look) -> Reply {
-    Reply::Character { made: true, name: a.name, look }
+/// The account's character, as `Character` answers it: its name is the account's, and its pass
+/// (pass.wrela) is made with `secret`, the ceremony key the request came with, to expire
+/// `pass::LIFE_MS` after `now`; none, without a key.
+fn character_of(a: Account, look: wire::Look, secret: Option<Vec<u8>>, now: u64) -> Reply {
+    var bytes: Vec<u8> = Vec::new()
+    if let Some(s) = secret {
+        if let Some(k) = pass::key_of(s) {
+            bytes = pack(pass::sign(k, a.name, look, now + pass::LIFE_MS))
+        }
+    }
+    Reply::Character { made: true, name: a.name, look, pass: bytes }
 }
 
-/// The answer for an account with no character.
+/// The answer for an account with no character: no pass.
 fn no_character(a: Account) -> Reply {
     let look = wire::Look { build: 0, skin: 0, hair: 0, cloth: 0 }
-    Reply::Character { made: false, name: a.name, look }
+    Reply::Character { made: false, name: a.name, look, pass: Vec::new() }
 }
 
 fn me_of(a: Account, recovery: bool) -> Me {
@@ -1426,7 +1435,7 @@ impl<G: Game> Engine<G> {
                 let k = key(CHARACTER, [])
                 let c: Option<Character> = self.latest_as(k, answer)
                 let reply = match c {
-                    Some(c) => character_of(a, c.look),
+                    Some(c) => character_of(a, c.look, self.signing_key(conn), self.now),
                     None => no_character(a),
                 }
                 self.reply(conn, take reply)
@@ -1442,7 +1451,7 @@ impl<G: Game> Engine<G> {
                 }
                 let c = Character { look, made, changed: self.now }
                 self.keep(key(CHARACTER, []), save(c))
-                self.reply(conn, character_of(a, look))
+                self.reply(conn, character_of(a, look, self.signing_key(conn), self.now))
             },
             Step::PostingRead => {
                 let p: Option<Posting> = got(answer)
