@@ -21,7 +21,8 @@
 // - Each foot held where it comes to rest while it's down: whichever of heel and ball is lower
 //   held most, eased in as it lands and out as it leaves, on the floor (its pad giving up to
 //   `PAD` under the weight, no more); the legs reach the feet by two-bone IK, the hips lowered
-//   (smoothly) where a leg can't reach; in a walk, the hips and the foot eased about each
+//   (smoothly) where a leg can't reach; a swinging foot kept clear of the floor (`CLEAR`, not
+//   scuffing it); in a walk, the hips and the foot eased about each
 //   touch (a run's landing jolt is its own).
 // - A take without fingers given loose hands (`stride::loose_hands`), a run's loosely in fists.
 
@@ -73,6 +74,12 @@ const SETTLE: f32 = 0.05
 const PAD: f32 = 0.003
 const REACH: f32 = 0.995
 const DROP_WIDTH: f32 = 2.5
+
+/// How high (m) a swinging foot's lowest point clears the floor, and how fast (m/s, along the
+/// floor) a heel lands: Winter 1992's least toe clearance (1.29 cm) and heel-contact speed
+/// (0.87 m/s). A heel or ball going twice that fast clears the floor by `CLEAR`.
+const CLEAR: f32 = 0.0129
+const LANDS: f32 = 0.87
 
 /// How high (m) both feet are, at least, when the body's in the air, and the share of its frames
 /// a run is in the air, at least (`engine::review`'s).
@@ -553,11 +560,22 @@ fn hold_feet(rig: Rig, two: mut Vec<Rigid>, n: u32, looped: bool, fps: f32, trav
                 }
             }
         }
-        // Nowhere under the floor (beyond the pad's give), smoothly.
+        // Nowhere under the floor (beyond the pad's give), and a heel or ball that goes along it
+        // faster than a heel lands clear of it as it swings, smoothly.
         var under: Vec<f32> = Vec::filled(n, 0.0)
         for f in 0..n {
             let lowest = min(heels[f].y, balls[f].y) + eased[f].y - l.floor
             under[f] = max(-PAD - lowest, 0.0)
+        }
+        for pi in 0..2 {
+            let ps = if pi == 0 { heels.clone() } else { balls.clone() }
+            for f in 0..n {
+                let d = at_frame(ps, i32(f) + 1, looped, travel) -
+                    at_frame(ps, i32(f) - 1, looped, travel)
+                let speed = 0.5 * length(vec2(d.x, d.z)) * fps
+                let need = mix(-PAD, CLEAR, smoothstep(LANDS, 2.0 * LANDS, speed))
+                under[f] = max(under[f], need - (ps[f].y + eased[f].y - l.floor))
+            }
         }
         let lifted = smoothed_above(under, DROP_WIDTH, looped)
         for f in 0..n {

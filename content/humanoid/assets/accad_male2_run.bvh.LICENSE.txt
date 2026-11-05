@@ -1,0 +1,18 @@
+accad_male2_run.bvh: from ACCAD's Open Motion Project, The Ohio State University
+(https://accad.osu.edu/research/motion-lab/mocap-system-and-data). "Open Motion Project by
+ACCAD/The Ohio State University is licensed under a Creative Commons Attribution 3.0 Unported
+License" (https://creativecommons.org/licenses/by/3.0/), as the page states it, read 2026-11-05.
+The page asks no other credit and states no other terms.
+
+What this file is: Male2_C3_Run.bvh of the actor's BVH archive,
+https://accad.osu.edu/sites/accad.osu.edu/files/Male2_bvh.zip (sha256
+f30dc56f8557d4b9f1bd6b8b0c4218c076471de0a9c1a20f3bc4a8b776cc14b1): Male 2 running (30 frames a
+second). Optical marker capture (ACCAD publishes each set's markers as C3D too), in centimetres.
+
+sha256 ef33bc8c0c3472f35cb01f494265bdf383dcff006efbe88d0762ab1572f0021c
+
+Changes made here: none to the file. engine::humanoid rests it as the actor's first frame
+standing (its skeleton's own rest isn't a pose), retargets it onto the Quaternius body at build
+time (turned to face +z, scaled by the legs' lengths, looped, its feet kept as flat as the
+body's own and its neck and head carried as the body's on average) and engine::cleanup cleans
+it.

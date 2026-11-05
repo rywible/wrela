@@ -5,12 +5,15 @@
 // into what the ink reads (`paint`), then the ink and the paper (`ink`).
 //
 // `--set SHOW=1` holds the T-pose, `2` the idle, `3` the walk, `4` the run, `5` the walking
-// turns, `6` the jog; `0` (the default) plays them in turn: two seconds of T-pose, six of idle,
+// turns, `6` the jog, `7` and `8` ACCAD's two walks (Male 1's, Male 2's), `9` and `10` their
+// runs; `0` (the default) plays them in turn: two seconds of T-pose, six of idle,
 // then the walk. `--set RAW=1` plays a clip as its take has it, before its cleanup
 // (`engine::cleanup`; the walk's, `engine::stride`).
 
 use body::{
-    HERO, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
+    ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
+    ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_RAW, HERO, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN,
+    RUN_RAW, T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
 }
 use engine::cleanup
 use engine::cleanup::Cleanup
@@ -90,6 +93,10 @@ fn pose_at(time: f32) -> Pose {
         4 => if raw { RUN_RAW.pose(time) } else { RUN.pose(time) },
         5 => if raw { TURNS_RAW.pose(time) } else { TURNS.pose(time) },
         6 => if raw { JOG_RAW.pose(time) } else { JOG.pose(time) },
+        7 => if raw { ACCAD_M1_WALK_RAW.pose(time) } else { ACCAD_M1_WALK.pose(time) },
+        8 => if raw { ACCAD_M2_WALK_RAW.pose(time) } else { ACCAD_M2_WALK.pose(time) },
+        9 => if raw { ACCAD_M1_RUN_RAW.pose(time) } else { ACCAD_M1_RUN.pose(time) },
+        10 => if raw { ACCAD_M2_RUN_RAW.pose(time) } else { ACCAD_M2_RUN.pose(time) },
         _ => if time < IDLE_AT {
             T_POSE.pose(0.0)
         } else if time < WALK_AT {
@@ -110,6 +117,10 @@ fn steady_hips(time: f32) -> vec3 {
         4 => RUN.length(),
         5 => 1.0,
         6 => JOG.length(),
+        7 => ACCAD_M1_WALK.length(),
+        8 => ACCAD_M2_WALK.length(),
+        9 => ACCAD_M1_RUN.length(),
+        10 => ACCAD_M2_RUN.length(),
         _ => WALK.length(),
     }
     var sum = vec3(0.0)
@@ -280,14 +291,50 @@ fn the_walk_plants_its_feet() {
 /// Every clip that's ready passes its review (`engine::review`: what an animator's eye looks
 /// for, measured): the walk made human (`engine::stride`), and the idle and the run as the
 /// cleanup every clip goes through leaves them (`engine::cleanup`), untuned. The walk's take
-/// passes too, cleaned up in place of the walk's own making.
+/// passes too, cleaned up in place of the walk's own making, and so does a walk from mocap the
+/// cleanup was never tuned on (ACCAD's Male 1).
 @test
 fn every_clip_passes_its_review() {
     let r = HERO.rig.clone()
     passes("the walk", WALK.clone(), r.clone())
     passes("the idle", IDLE.clone(), r.clone())
     passes("the run", RUN.clone(), r.clone())
-    passes("the walk's take, cleaned", cleanup::cleaned(WALK_RAW.clone(), r.clone(), Cleanup {}), r)
+    passes(
+        "the walk's take, cleaned",
+        cleanup::cleaned(WALK_RAW.clone(), r.clone(), Cleanup {}),
+        r.clone(),
+    )
+    passes("ACCAD's Male 1 walk", ACCAD_M1_WALK.clone(), r)
+}
+
+/// A foot that swings low clears the floor: ACCAD's Male 2 walk's left heel skims it at 6 m/s
+/// as it swings (8 mm over it as the take comes, under it once its feet are set on the floor),
+/// and the cleanup lifts every heel and ball going faster than twice a heel lands clear of it
+/// (`engine::cleanup`'s `CLEAR`, 1.29 cm).
+@test
+fn a_swinging_foot_clears_the_floor() {
+    let rig = HERO.rig.clone()
+    let clip = ACCAD_M2_WALK.clone()
+    let n = clip.frames - 1
+    for side in [1.0, -1.0] {
+        let l = stride::leg_of(rig.clone(), side)
+        var was = (vec3(0.0), vec3(0.0))
+        for f in 0..n {
+            let w = stride::worlds(rig.clone(), clip.clone(), f)
+            let (a, t) = (w[l.ankle], w[l.toes])
+            let (heel, ball) = (a.t + a.q.rotate(l.heel), t.t + t.q.rotate(l.ball))
+            if f > 0 {
+                for (p, q) in [(heel, was.0), (ball, was.1)] {
+                    let speed = length(vec2(p.x - q.x, p.z - q.z)) * clip.fps
+                    assert(
+                        speed < 1.74 || p.y - l.floor > 0.012,
+                        f"frame {f}: a foot {(p.y - l.floor) * 100.0:.2} cm over the floor at {speed:.2} m/s",
+                    )
+                }
+            }
+            was = (heel, ball)
+        }
+    }
 }
 
 /// What the cleanup can't make right, the review sends for a look: the walking turns' take
