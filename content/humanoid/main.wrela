@@ -649,7 +649,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             let at = if ANIME == 1 && s.drawer.on { s.drawer.at } else { s.mover.act_time }
             let since = if cutting { at - mixamo::V_BLOW } else { -1.0 }
             let r = dummy::reaction(since, mixamo::V_FREE - mixamo::V_BLOW, KNOCK, SHAKE)
-            shake = r.shake * 1.6
+            shake = r.shake * 3.0
             dummy::palette_of(shown_at * translate(vec3(0.0, 0.0, DUMMY_AT)), r)
         } else {
             (none, none, none)
@@ -1263,7 +1263,9 @@ fn cue_cut(s: mut State, at: mat4) {
     let place = (at * vec4(0.0, 0.0, 0.0, 1.0)).xyz
     let _ = s.cues.push(Cue::Listen { at: place + vec3(-2.5, 1.6, -1.5), forward: vec2(0.6, 0.8) })
     let passed = |t: f32| -> bool { now >= t && was < t }
-    if passed(mixamo::V_GO) {
+    // (The whoosh peaks a little after it starts: cued two frames into the snap, so its peak
+    // lands on the blade's fastest frames.)
+    if passed(mixamo::V_GO + 2.0 / 60.0) {
         let _ = s.cues.push(Cue::Whoosh { at: place + vec3(0.0, 1.6, 0.6), kind: cutsound::SWING, amount: 1.0, seed: 2 })
     }
     if passed(mixamo::V_BLOW) {

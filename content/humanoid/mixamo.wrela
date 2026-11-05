@@ -414,9 +414,9 @@ const HIPS_AT: [vec4; 12] = [
     vec4(0.0, 0.84, 0.08, 0.0),
     vec4(0.0, 0.78, 0.26, 0.0),
     vec4(0.0, 0.78, 0.26, 0.0),
-    vec4(0.0, 0.79, 0.28, 0.0),
-    vec4(0.0, 0.79, 0.28, 0.0),
-    vec4(0.0, 0.79, 0.27, 0.0),
+    vec4(0.0, 0.75, 0.29, 0.0),
+    vec4(0.0, 0.755, 0.28, 0.0),
+    vec4(0.0, 0.77, 0.27, 0.0),
     vec4(0.0, 0.82, 0.13, 0.0),
     vec4(0.0, 0.835, 0.02, 0.0),
     vec4(0.0, 0.84, 0.0, 0.0),
@@ -426,8 +426,8 @@ const LEFT_AT: [vec4; 12] = [
     vec4(0.13, -0.16, 0.0, 20.0),
     vec4(0.13, -0.16, 0.0, 20.0),
     vec4(0.13, -0.16, 0.0, 30.0),
-    vec4(0.13, -0.16, 0.0, 40.0),
-    vec4(0.13, -0.16, 0.0, 40.0),
+    vec4(0.13, -0.16, 0.0, 28.0),
+    vec4(0.13, -0.16, 0.0, 28.0),
     vec4(0.13, -0.16, 0.0, 30.0),
     vec4(0.13, -0.16, 0.0, 30.0),
     vec4(0.13, -0.16, 0.0, 30.0),
@@ -477,7 +477,7 @@ fn vertical() -> Move {
     // The trunk's pitch (degrees, + forward): arched up tall into jodan, a little over the
     // front knee at the blow (the depth from the hips and the step, not the spine folding).
     let times = [0.0, V_UP, V_GO, V_BLOW, V_FREE, V_SETTLE, V_STILL, V_DONE]
-    let pitches = [-8.0, -16.0, -16.0, -3.0, -3.0, -1.0, -1.0, -8.0]
+    let pitches = [-8.0, -16.0, -16.0, -3.0, -3.0, 4.0, 3.0, -8.0]
     // Into the blow (degrees): the right shoulder driven forward and the trunk turned a little
     // after it (the right side leads, as the right hand's further up the hilt), the left
     // shoulder drawn back, so both arms reach long down the hilt.
@@ -541,33 +541,38 @@ fn vertical() -> Move {
 /// the blade level at the foe's head, held dead, the point dipping as the body sinks, and
 /// straight back up the middle to guard.
 pub fn vertical_sword(time: f32) -> (vec3, vec3, vec3) {
-    let times = [0.0, V_UP, V_GO, V_BLOW, V_FREE, V_SETTLE, V_STILL, V_DONE]
+    // (Back to guard the hands come home first, the point kept low under the struck head as it
+    // swings back, then it rises to the throat.)
+    let times = [0.0, V_UP, V_GO, V_BLOW, V_FREE, V_SETTLE, V_STILL, V_STILL + 0.55 * f32(V_FRAMES.back) / FPS, V_DONE]
     let holds = [
         vec3(0.0, -0.32, 0.48),
-        vec3(0.0, 0.83, 0.28),
-        vec3(0.0, 0.83, 0.28),
-        vec3(0.0, 0.06, 1.0),
-        vec3(0.0, 0.06, 1.0),
-        vec3(0.0, -0.04, 0.96),
-        vec3(0.0, -0.04, 0.96),
+        vec3(0.0, 0.83, 0.34),
+        vec3(0.0, 0.83, 0.34),
+        vec3(0.0, 0.2, 1.0),
+        vec3(0.0, 0.2, 1.0),
+        vec3(0.0, 0.0, 0.98),
+        vec3(0.0, 0.0, 0.98),
+        vec3(0.0, -0.22, 0.64),
         vec3(0.0, -0.32, 0.48),
     ]
-    let angles = [15.0, 138.0, 138.0, 10.0, 10.0, 2.0, 2.0, 15.0]
-    var hold = holds[7]
-    var angle = angles[7]
+    let angles = [15.0, 138.0, 138.0, -4.0, -4.0, -26.0, -26.0, -18.0, 15.0]
+    var hold = holds[8]
+    var angle = angles[8]
     if time <= 0.0 {
         hold = holds[0]
         angle = angles[0]
     }
-    for i in 1..8 {
+    for i in 1..9 {
         if time >= times[i - 1] && time <= times[i] {
             let x = (time - times[i - 1]) / (times[i] - times[i - 1])
             // The snap down runs even (all speed, no ease); the rest ease in and out.
-            let k = if i == 3 { x } else { smoothstep(0.0, 1.0, x) }
+            // The drop after the hit-stop waits a drawing for the struck head to go back off
+            // the edge, then snaps the point down (the wrists wrung in).
+            let k = if i == 3 { x } else if i == 5 { smoothstep(0.45, 1.0, x) } else { smoothstep(0.0, 1.0, x) }
             hold = mix(holds[i - 1], holds[i], k)
             // Coming over the top, the hands arc up and out ahead rather than cutting a corner.
             if i == 3 {
-                hold += vec3(0.0, 0.12, 0.14) * sin(3.14159265 * k)
+                hold += vec3(0.0, 0.12, 0.22) * sin(3.14159265 * k)
             }
             angle = mix(angles[i - 1], angles[i], k)
         }

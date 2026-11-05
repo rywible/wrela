@@ -13,10 +13,11 @@ pub const PART: u32 = 10
 pub const SLOT: u32 = 54
 pub const HEAD_SLOT: u32 = 53
 /// Where its head's middle is (its own frame), and its head's radius.
-pub const HEAD_AT: vec3 = vec3(0.0, 1.35, 0.0)
+pub const HEAD_AT: vec3 = vec3(0.0, 1.2, 0.0)
 pub const HEAD_R: f32 = 0.12
-/// How tall it stands to its head's top.
-pub const TALL: f32 = 1.47
+/// How tall it stands to its head's top: a head shorter than the hero, so the cut comes down
+/// on its crown with the arms long.
+pub const TALL: f32 = 1.32
 
 const WOOD = vec3(0.42, 0.29, 0.18)
 const STRAW = vec3(0.80, 0.68, 0.42)
@@ -127,10 +128,10 @@ fn ball(out: mut Humanoid, c: vec3, r: f32, colour: vec3, band: vec3, slot: u32)
 /// `out` with the dummy added after what's in it.
 pub fn added(out: mut Humanoid) {
     block(mut out, vec3(-0.24, 0.0, -0.24), vec3(0.24, 0.06, 0.24), WOOD, SLOT)
-    drum(mut out, 0.06, 0.76, 0.05, 0.045, WOOD, SLOT)
-    drum(mut out, 0.72, 1.18, 0.15, 0.18, STRAW, SLOT)
-    block(mut out, vec3(-0.42, 1.04, -0.045), vec3(0.42, 1.12, 0.045), WOOD, SLOT)
-    drum(mut out, 1.16, 1.26, 0.05, 0.05, WOOD, HEAD_SLOT)
+    drum(mut out, 0.06, 0.61, 0.05, 0.045, WOOD, SLOT)
+    drum(mut out, 0.57, 1.03, 0.15, 0.18, STRAW, SLOT)
+    block(mut out, vec3(-0.42, 0.89, -0.045), vec3(0.42, 0.97, 0.045), WOOD, SLOT)
+    drum(mut out, 1.01, 1.11, 0.05, 0.05, WOOD, HEAD_SLOT)
     ball(mut out, HEAD_AT, HEAD_R, STRAW, BAND, HEAD_SLOT)
 }
 
@@ -217,12 +218,12 @@ pub fn reaction(since: f32, stop: f32, knock: f32, shake: f32) -> Reaction {
             nod: 0.22 * knock,
             back: 0.015 * knock,
             shake: vec3(s * 0.012, 0.0, -s * 0.006) * shake * (0.4 + 0.6 * fade),
-            spark: 0.32 + 0.3 * (since / max(stop, 1.0e-3)),
+            spark: 0.5 + 0.45 * (since / max(stop, 1.0e-3)),
         }
     }
     let u = since - stop
     Reaction {
-        tilt: knock * (0.07 * exp(-6.0 * u) + 0.26 * exp(-3.2 * u) * sin(9.0 * u)),
+        tilt: knock * (0.07 * exp(-6.0 * u) + 0.42 * exp(-4.0 * u) * sin(9.0 * u)),
         nod: knock * 0.22 * exp(-4.5 * u) * cos(12.0 * u),
         back: knock * (0.015 + 0.075 * (1.0 - exp(-12.0 * u))),
         shake: vec3(0.0),
@@ -235,7 +236,7 @@ pub fn reaction(since: f32, stop: f32, knock: f32, shake: f32) -> Reaction {
 pub fn palette_of(place: mat4, r: Reaction) -> (mat4, mat4, mat4) {
     let tipped = Quat::axis_angle(vec3(1.0, 0.0, 0.0), r.tilt)
     let body = place * rigid(tipped, vec3(0.0, 0.0, r.back) + r.shake)
-    let neck = vec3(0.0, 1.18, 0.0)
+    let neck = vec3(0.0, 1.03, 0.0)
     let nod = Quat::axis_angle(vec3(1.0, 0.0, 0.0), r.nod)
     let head = body * rigid(nod, neck - nod.rotate(neck))
     let hit = HEAD_AT + vec3(0.0, HEAD_R, -0.03)
