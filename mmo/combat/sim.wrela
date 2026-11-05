@@ -223,6 +223,17 @@ impl World {
         if p.hp > 0 && p.act == IDLE { STICK_BITS | BUTTON_BITS } else { 0 }
     }
 
+    /// What the rules will read of player `i`'s input `frames` steps from now, if every input
+    /// stays as `inputs` (the look-ahead): a sender sends a bit a little before it's read, so its
+    /// peers have it by then, and holds it while it isn't.
+    pub fn soon(self, i: u32, inputs: [u32], frames: u32) -> u32 {
+        var w = self.clone()
+        for _ in 0..frames {
+            step(mut w, inputs)
+        }
+        w.reads(i)
+    }
+
     /// The outcome so far: who dealt what, and the boss's health.
     pub fn outcome(self) -> Outcome {
         var dealt: Vec<u32> = Vec::new()
@@ -263,7 +274,10 @@ pub fn step(w: mut World, inputs: [u32]) {
             continue
         }
         step_player(mut p, stick, pressed)
-        if p.act == ACTIVE && !p.landed && w.boss.hp > 0 && reach(p.x, p.z, w.boss.x, w.boss.z) <= ATTACK_REACH {
+        if p.act == ACTIVE &&
+            !p.landed &&
+            w.boss.hp > 0 &&
+            reach(p.x, p.z, w.boss.x, w.boss.z) <= ATTACK_REACH {
             p.landed = true
             w.boss.hp -= ATTACK_DAMAGE
             p.dealt += u32(ATTACK_DAMAGE)
@@ -520,7 +534,8 @@ fn a_bit_the_rules_dont_read_changes_nothing_then_or_later() {
                 }
                 var mine = later.clone()
                 for i in 0..4 {
-                    mine[i] = (mine[i] & !BUTTON_BITS) | (d.before[i] ^ (later[i] ^ c.before[i]) & BUTTON_BITS)
+                    mine[i] = (mine[i] & !BUTTON_BITS) |
+                        (d.before[i] ^ (later[i] ^ c.before[i]) & BUTTON_BITS)
                 }
                 step(mut c, later)
                 step(mut d, mine)
