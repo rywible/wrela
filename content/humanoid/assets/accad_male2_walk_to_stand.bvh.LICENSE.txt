@@ -1,0 +1,19 @@
+accad_male2_walk_to_stand.bvh: from ACCAD's Open Motion Project, The Ohio State University
+(https://accad.osu.edu/research/motion-lab/mocap-system-and-data). "Open Motion Project by
+ACCAD/The Ohio State University is licensed under a Creative Commons Attribution 3.0 Unported
+License" (https://creativecommons.org/licenses/by/3.0/), as the page states it, read 2026-11-05.
+The page asks no other credit and states no other terms.
+
+What this file is: Male2_B2_WalkToStand.bvh of the actor's BVH archive,
+https://accad.osu.edu/sites/accad.osu.edu/files/Male2_bvh.zip (sha256
+f30dc56f8557d4b9f1bd6b8b0c4218c076471de0a9c1a20f3bc4a8b776cc14b1): Male 2 walking, then coming to
+a stand (120 frames a second); its stop (frames 190 to 400) is the body's stop from a walk.
+Optical marker capture (ACCAD publishes each set's markers as C3D too), in centimetres.
+
+sha256 793c7f48418c9eee4dea95077e2a2685a786f66a74dc0046b55510ed00075347
+
+Changes made here: none to the file. engine::humanoid rests it as the actor's first frame
+standing (its skeleton's own rest isn't a pose) and retargets its stop onto the Quaternius body
+at build time (turned to face +z, scaled by the legs' lengths, its feet kept as flat as the
+body's own); engine::cleanup cleans it and engine::playback plays it, its root's travel carrying
+the body.

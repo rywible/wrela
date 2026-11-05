@@ -195,6 +195,47 @@ pub const ACCAD_M2_RUN_RAW: Clip = humanoid::retarget(
     HERO.rig.clone(),
     Retarget { face_ahead: true, looped: true, carried: true, stood: true },
 )
+/// Male 2's own start from standing (his stand-to-walk, from the frame before he shifts his
+/// weight to his third step) and stop (his walk-to-stand, from the step before he slows to his
+/// feet set), played as a body sets off and comes to a stand (`playback::Gaits::start`, `stop`).
+@fuel(2 ** 40)
+pub const ACCAD_M2_START_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/accad_male2_stand_to_walk.bvh")),
+        ACCAD,
+        NO_NAMES,
+        from: 100,
+        to: 330,
+    )
+        .rested_as(ACCAD_M2_STAND.clone(), 0),
+    HERO.rig.clone(),
+    Retarget { face_ahead: true, looped: false, carried: true, stood: true },
+)
+@fuel(2 ** 40)
+pub const ACCAD_M2_STOP_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/accad_male2_walk_to_stand.bvh")),
+        ACCAD,
+        NO_NAMES,
+        from: 190,
+        to: 400,
+    )
+        .rested_as(ACCAD_M2_STAND.clone(), 0),
+    HERO.rig.clone(),
+    Retarget { face_ahead: true, looped: false, carried: true, stood: true },
+)
+@fuel(2 ** 40)
+pub const ACCAD_M2_START: Clip = cleanup::cleaned(
+    ACCAD_M2_START_RAW.clone(),
+    HERO.rig.clone(),
+    Cleanup {},
+)
+@fuel(2 ** 40)
+pub const ACCAD_M2_STOP: Clip = cleanup::cleaned(
+    ACCAD_M2_STOP_RAW.clone(),
+    HERO.rig.clone(),
+    Cleanup {},
+)
 @fuel(2 ** 40)
 pub const ACCAD_M1_WALK: Clip = cleanup::cleaned(
     ACCAD_M1_WALK_RAW.clone(),
@@ -238,19 +279,22 @@ pub const ROLL_RAW: Clip = humanoid::retarget(
 // ---- the moves a game plays (`engine::playback`) ------------------------------------------
 
 /// The idle, and ACCAD Male 2's walk and run (Ryan's pick of the walks; his run is a real
-/// 4 m/s run), in place, their footfalls marked: the body's gaits.
+/// 4 m/s run), in place, their footfalls marked, and his start and stop: the body's gaits.
 @fuel(2 ** 40)
-pub const GAITS: Gaits = Gaits {
-    idle: playback::with_steps(playback::moved(IDLE.clone(), HERO.rig.clone()), HERO.rig.clone()),
-    walk: playback::with_steps(
+pub const GAITS: Gaits = Gaits::of(
+    playback::with_steps(playback::moved(IDLE.clone(), HERO.rig.clone()), HERO.rig.clone()),
+    playback::with_steps(
         playback::moved(ACCAD_M2_WALK.clone(), HERO.rig.clone()),
         HERO.rig.clone(),
     ),
-    run: playback::with_steps(
+    playback::with_steps(
         playback::moved(ACCAD_M2_RUN.clone(), HERO.rig.clone()),
         HERO.rig.clone(),
     ),
-}
+    playback::moved(ACCAD_M2_START.clone(), HERO.rig.clone()),
+    playback::moved(ACCAD_M2_STOP.clone(), HERO.rig.clone()),
+    HERO.rig.clone(),
+)
 
 /// A player's attack's frames in the fight, at its 60 a second: windup (the tell), active (when
 /// it hits), recovery (committed and open): mmo/combat/sim.wrela's `ATTACK_WINDUP`,

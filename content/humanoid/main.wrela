@@ -11,8 +11,9 @@
 // (`engine::cleanup`; the walk's, `engine::stride`).
 //
 // `--set SHOW=11` plays the body as a game would (`engine::playback`): a scripted stick walks it
-// off, turns it, runs it, throws a punch over the run (timed to the fight's attack frames),
-// stops it, rolls it, and walks it back, each change inertial.
+// off (in the actor's own first steps), turns it, runs it, throws a punch over the run (timed
+// to the fight's attack frames), stops it (in his own last steps), rolls it, turns it on the spot
+// (stepping round) and walks it back, each change inertial.
 
 use body::{
     ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
@@ -118,7 +119,7 @@ pub fn script(last: f32, time: f32) -> (vec3, u32, bool) {
         dir(-70.0) * walk
     } else if time < 14.5 {
         vec3(0.0)
-    } else if time < 18.5 {
+    } else if time < 18.0 {
         dir(150.0) * walk
     } else {
         vec3(0.0)
@@ -145,7 +146,9 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
         stick,
         act,
         upper,
-        if CUT == 1 { Handling { change_half: 1.0e-4, act_half: 1.0e-4, plant: false } } else {
+        if CUT == 1 {
+            Handling { change_half: 1.0e-4, act_half: 1.0e-4, plant: false, clips: false }
+        } else {
             Handling {}
         },
         dt,
@@ -624,7 +627,7 @@ fn played_by(how: Handling) -> Played {
     var prev_r = vec3(0.0)
     var low_l = 0
     var low_r = 0
-    for f in 1..u32(20.0 * hz) {
+    for f in 1..u32(21.5 * hz) {
         let time = f32(f) / hz
         let (stick, act, upper) = script(last, time)
         let pose = playback::step(
@@ -722,7 +725,9 @@ fn played_by(how: Handling) -> Played {
 @test
 fn a_played_body_moves_without_a_pop() {
     let p = played_by(Handling {})
-    let c = played_by(Handling { change_half: 1.0e-4, act_half: 1.0e-4, plant: false })
+    let c = played_by(
+        Handling { change_half: 1.0e-4, act_half: 1.0e-4, plant: false, clips: false },
+    )
     print(
         f"inertial and planted: a joint moves {p.worst * 100.0:.1} cm a frame at most about a change; a foot on the floor goes {p.slide:.2} m/s steadily, {p.slide_change:.2} m/s about a change",
     )
@@ -731,8 +736,7 @@ fn a_played_body_moves_without_a_pop() {
     )
     assert(p.stood, "the body didn't stop at the end")
     assert(p.worst < 0.5 * c.worst, f"a change jumps a joint {p.worst} m a frame (a cut {c.worst})")
-    // What's left: a running foot that's slow to be judged down at 4 m/s, and a foot dragged
-    // through a turn of 140 degrees on the spot (which wants a turning clip, not a hold).
+    // What's left: a running foot that's slow to be judged down at 4 m/s.
     assert(p.slide < 0.8 && p.slide < c.slide, f"a foot on the floor skates at {p.slide} m/s")
     assert(
         p.slide_change < 0.25 * c.slide_change,
