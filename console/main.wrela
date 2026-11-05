@@ -1740,7 +1740,9 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                     mmo::front::Next::Stay { hand } => {
                         // A hand over the page's actions, and over the account's chip.
                         let hand = hand
-                        || (!account::shown(s.account) && account::over_chip(s.account))
+                        || (mmo::front::chip_live(f) &&
+                            !account::shown(s.account) &&
+                            account::over_chip(s.account))
                         if hand != s.pointing {
                             s.pointing = hand
                             s.cursor = Some(host::cursor(if hand { "pointer" } else { "default" }))

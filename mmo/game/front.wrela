@@ -66,7 +66,8 @@ const QUICK: f32 = 1.0 / 57.0
 const SETTLE: f32 = 0.2
 
 /// Where the horizon lies on the screen in the page's shot (a fraction of its height, from the
-/// top): the name stands wholly under it, so the sea's line never cuts through its letters.
+/// top): the name stands wholly under it where the screen is tall enough, so the sea's line
+/// never cuts through its letters.
 const HORIZON: f32 = 0.715
 
 /// The page's colours: the name's warm ivory, Play's fill and its hover, and the ink on it.
@@ -116,6 +117,8 @@ pub struct Front {
     tall: f32,
     spent: f32,
     base: f32,
+    quickest: f32,
+    window_began: f32,
     resized_at: f32,
     /// The size the scene is drawn at, the size last asked for, and since when (`SETTLE`).
     drawn_at: (u32, u32),
@@ -163,6 +166,8 @@ pub fn init(fonts: take Fonts) -> Front {
         tall: 720.0,
         spent: 1.0 / 60.0,
         base: 1.0 / 60.0,
+        quickest: 1.0,
+        window_began: 0.0,
         resized_at: 0.0,
         drawn_at: (0, 0),
         asked: (0, 0),
@@ -233,6 +238,16 @@ fn laid(pixel: FragCoord, v: Veil, image: Texture<Rgba8>, smp: Sampler) -> vec4 
     vec4(c * (1.0 - dark), 1.0)
 }
 
+/// Angle `a` (rad) brought within -π to π: the short way round.
+fn wrapped(a: f32) -> f32 {
+    a - 6.2831853 * floor((a + 3.1415927) / 6.2831853)
+}
+
+/// Whether the account's chip is there to press: on the page, once its words are in.
+pub fn chip_live(f: Front) -> bool {
+    f.stage == Stage::Page && f.words >= 0.5
+}
+
 /// Whether the screen, `w` by `h` logical pixels, is a phone's.
 fn phone(w: f32, h: f32) -> bool {
     min(w, h) < PHONE_SIDE
@@ -291,11 +306,16 @@ pub fn frame<A: Account>(
     f.reduced = reduced
     if f.drawings > 2 && dt > 0.0 {
         f.spent += (dt - f.spent) * 0.1
-        // The quickest frame, let go upward by a twentieth each second in case it was a fluke.
-        f.base = min(dt, f.base * (1.0 + 0.05 * dt))
+        // The screen's own frame: the quickest of each second's frames, a second at a time.
+        f.quickest = min(f.quickest, dt)
+        if f.time - f.window_began >= 1.0 {
+            f.base = f.quickest
+            f.quickest = 1.0
+            f.window_began = f.time
+        }
     }
     let k = zoom
-    let (w, h) = (f32(width), f32(height))
+    let (w, h) = (max(f32(width), 1.0), max(f32(height), 1.0))
     let on_phone = phone(w / k, h / k)
     for e in events() {
         if f.stage == Stage::Rowing {
@@ -366,8 +386,8 @@ pub fn frame<A: Account>(
         }
     }
     if on_phone { f.focus = ONLINE }
-    // The scene, once the sky has cooked, comes up from black; the words just after it, or over
-    // the black if the scene is slow to come (a cold load compiles its shaders first).
+    // The scene, once the sky has cooked, comes up over its poster; the words just after it, or
+    // over the poster if the scene is slow to come (a cold load compiles its shaders first).
     f.drawings += 1
     if f.cooked {
         f.since += dt
@@ -402,7 +422,7 @@ pub fn frame<A: Account>(
     let (wide, high) = f.drawn_at
     let bearing = if f.stage == Stage::Page { -swung(f.scene) } else { 0.0 }
     f.orbit = if reduced { bearing } else {
-        f.orbit + (bearing - f.orbit) * (1.0 - exp(-dt / SWING))
+        f.orbit + wrapped(bearing - f.orbit) * (1.0 - exp(-dt / SWING))
     }
     if play(mut f.scene, f.time, wide, high, orbit: f.orbit, bands: BANDS) && ready(f.scene) {
         f.cooked = true
@@ -575,12 +595,17 @@ fn draw_page(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
     )
     // The name: Facet's capitals stand 0.70 em on their baseline, with nothing under it. As large
     // as fits between the line and the horizon (with room to breathe under the sea's line) and
-    // across the screen, up to a cap height of 100 pixels.
+    // across the screen, up to a cap height of 100 pixels; sized where it rests, so it keeps its
+    // size as it rises in. A screen too short for it under the horizon (a phone on its side)
+    // sets it by its width alone, over the sea's line.
     let baseline = line_top - round(20.0 * k)
+    let resting = baseline - round(lift)
     let horizon = h * HORIZON + 24.0 * k
     let width_at_one = f.fonts.font(Face::Mono).measure("WRELA", 1.0) + 4.0 * 0.02
-    let room = min((baseline - horizon) / facet_cap(), (w - margin * 2.0) / width_at_one)
-    let size = round(clamp(room, 40.0 * k, 100.0 * k / facet_cap()))
+    let across = (w - margin * 2.0) / width_at_one
+    let under = (resting - horizon) / facet_cap()
+    let room = if under >= 40.0 * k { min(under, across) } else { across }
+    let size = round(clamp(room, 24.0 * k, 100.0 * k / facet_cap()))
     let name_top = baseline - f.fonts.font(Face::Mono).ascender * size
     // Facet sets its letters a little in from the pen: the W's foot lines up with the words.
     let at = vec2(margin - round(size * 0.095), name_top)
