@@ -573,8 +573,9 @@ fn tick(p: mut Play, pad: Pad) -> Option<Vec<u8>> {
     if !p.world.over && p.log.len() < PLAYER_CHANGES {
         var now = inputs_at(p, f)
         now[p.slot] = p.prev
-        let reads = p.world.reads(p.slot) | p.world.soon(p.slot, now, LOOK_AHEAD)
-        input = p.enc.input(pad, prev: p.prev, reads: reads)
+        let ready = p.world.reads(p.slot)
+        let reads = ready | p.world.soon(p.slot, now, LOOK_AHEAD)
+        input = p.enc.input(pad, prev: p.prev, reads: reads, now: ready)
     }
     if input != p.prev {
         p.log.push(Change { frame: f, input })

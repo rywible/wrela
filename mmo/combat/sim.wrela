@@ -204,8 +204,8 @@ fn reach(ax: i32, az: i32, bx: i32, bz: i32) -> i32 {
 /// Which bits of a player's input the rules read: its stick, and its buttons.
 pub const STICK_BITS: u32 = 63
 pub const BUTTON_BITS: u32 = 960
-/// The light and heavy attack's bits: what the rules read in a recovery a combo goes on from.
-const CHAIN_BITS: u32 = (ATTACK | HEAVY) << 6
+/// The light attack's bit: what the rules read in a recovery a combo goes on from.
+const CHAIN_BITS: u32 = ATTACK << 6
 
 /// The fight at a frame: what each player and the boss are doing, each player's buttons as the
 /// rules last took them, and whether it's over. Stepped one frame at a time (`step`), so a client
