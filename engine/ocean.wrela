@@ -544,25 +544,34 @@ fn on_tile(p: vec2, side: f32) -> vec2 {
     p / side + vec2(0.5 / f32(SIDE))
 }
 
+/// How much wider than a pixel's footprint the two short tiles are read: the shortest waves,
+/// read through the footprint alone, alias it, a shimmer that crawls as the eye moves (over
+/// half the near water's change frame to frame, measured); read through twice it, a mip
+/// coarser, they hold still, and the slopes the coarser read loses go to the roughness
+/// (`surface_at`).
+const STEADY: f32 = 2.0
+
 /// The ocean's shape at lattice point `p` (x, z, m: where the water rests, before it's carried):
 /// its displacement along x, its height, its displacement along z and its foam, each tile
 /// weighted by `w`, read through a footprint `du`, `dv` (m: how `p` changes a pixel across and a
 /// pixel down).
 pub fn shape_at(o: Waves, p: vec2, du: vec2, dv: vec2, w: vec4) -> vec4 {
     let s = o.sea.sides
+    let (fu, fv) = (du * STEADY, dv * STEADY)
     o.big_shape.sample_grad(o.s, on_tile(p, s.x), du / s.x, dv / s.x) * w.x +
         o.mid_shape.sample_grad(o.s, on_tile(p, s.y), du / s.y, dv / s.y) * w.y +
-        o.fine_shape.sample_grad(o.s, on_tile(p, s.z), du / s.z, dv / s.z) * w.z +
-        o.ripple_shape.sample_grad(o.s, on_tile(p, s.w), du / s.w, dv / s.w) * w.w
+        o.fine_shape.sample_grad(o.s, on_tile(p, s.z), fu / s.z, fv / s.z) * w.z +
+        o.ripple_shape.sample_grad(o.s, on_tile(p, s.w), fu / s.w, fv / s.w) * w.w
 }
 
 /// Its slopes and stretches at lattice point `p` (∂h/∂x, ∂h/∂z, ∂Dx/∂x, ∂Dz/∂z), as `shape_at`.
 pub fn tilt_at(o: Waves, p: vec2, du: vec2, dv: vec2, w: vec4) -> vec4 {
     let s = o.sea.sides
+    let (fu, fv) = (du * STEADY, dv * STEADY)
     o.big_tilt.sample_grad(o.s, on_tile(p, s.x), du / s.x, dv / s.x) * w.x +
         o.mid_tilt.sample_grad(o.s, on_tile(p, s.y), du / s.y, dv / s.y) * w.y +
-        o.fine_tilt.sample_grad(o.s, on_tile(p, s.z), du / s.z, dv / s.z) * w.z +
-        o.ripple_tilt.sample_grad(o.s, on_tile(p, s.w), du / s.w, dv / s.w) * w.w
+        o.fine_tilt.sample_grad(o.s, on_tile(p, s.z), fu / s.z, fv / s.z) * w.z +
+        o.ripple_tilt.sample_grad(o.s, on_tile(p, s.w), fu / s.w, fv / s.w) * w.w
 }
 
 /// The ocean's height at `p` (x, z: a place on the level, not which water is there), as a
@@ -607,8 +616,8 @@ pub fn surface_at(
     // what a side holds, half the octave's (one slope of its two), most of it in the slope along
     // that side (the waves a side averages out run mostly along it) and the rest across.
     let finest = o.sea.finest * w.w
-    let past_u = max(log2(finest * length(du) / PI), 0.0)
-    let past_v = max(log2(finest * length(dv) / PI), 0.0)
+    let past_u = max(log2(finest * length(du) * STEADY / PI), 0.0)
+    let past_v = max(log2(finest * length(dv) * STEADY / PI), 0.0)
     let lost = vec2(past_u * 0.75 + past_v * 0.25, past_v * 0.75 + past_u * 0.25) *
         (o.sea.octave * 0.5)
     (d.y, n, d.w, sx * sz, lost, q)

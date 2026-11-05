@@ -586,7 +586,7 @@ pub fn ink(
         // A glint on the water far past white burns white, through the grade.
         if m0.y == SEA {
             let hot = dot(at(colour, px, size).xyz, LUMA) * light.exposure
-            c = mix(c, vec3(1.0, 0.99, 0.96), smoothstep(5.0, 15.0, hot) * s.style)
+            c = mix(c, vec3(1.0, 0.98, 0.93), smoothstep(3.5, 10.0, hot) * s.style)
         }
         // The painted look's canvas: a weave under the strokes.
         // (And the strokes' own grain, laid along the water and slantwise on what stands.)
