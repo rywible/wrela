@@ -20,6 +20,8 @@ use body::{
     ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_RAW, ACT_PUNCH, ACT_ROLL, ACTS, GAITS, HERO,
     PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
 }
+use engine::anime
+use engine::anime::{Anime, Drawer}
 use engine::cleanup
 use engine::cleanup::Cleanup
 use engine::humanoid
@@ -46,6 +48,10 @@ pub const RAW: u32 = 0
 /// `SHOW=11` as a game without this layer's help would play it, for comparison: `--set CUT=1`
 /// cuts from move to move and lets the feet go where the moves put them.
 pub const CUT: u32 = 0
+
+/// `SHOW=11`'s fight moves drawn as anime is (`engine::anime`: on twos, the strike pushed past
+/// and held, fists and feet smeared): `--set ANIME=0` draws them smooth.
+pub const ANIME: u32 = 1
 
 /// How kinetic the moment is (0 quiet): `--set KINETIC=0.6` frays the ink.
 pub const KINETIC: f32 = 0.0
@@ -78,6 +84,7 @@ pub struct State {
     mover: Mover,
     last: f32,
     mask: [f32; 64],
+    drawer: Drawer,
 }
 
 pub fn init() -> State {
@@ -97,6 +104,7 @@ pub fn init() -> State {
         mover: Mover::standing(vec3(0.0), 0.0, GAITS),
         last: 0.0,
         mask: playback::upper_body(HERO.rig),
+        drawer: Drawer::new(),
     }
 }
 
@@ -216,8 +224,25 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.height = height
     }
     let game = SHOW == 11
+    let dt = clamp(time - s.last, 1.0e-4, 0.1)
     let (pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
-    let bones = palette(HERO.rig, pose, place)
+    var bones = palette(HERO.rig, pose, place)
+    var kinetic = KINETIC
+    if game && ANIME == 1 {
+        let d = anime::drawn(
+            mut s.drawer,
+            s.mover,
+            ACTS,
+            HERO.rig,
+            s.mask,
+            pose,
+            place,
+            Anime {},
+            dt,
+        )
+        bones = anime::smeared(palette(HERO.rig, d.pose, d.place), HERO.rig, d.smears)
+        kinetic = max(kinetic, d.impact)
+    }
     write(mut s.palette, 0, bones)
     // The camera follows the hips along the ground, steadily: where they are on average over a
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
@@ -234,7 +259,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         height,
         FAR,
         side,
-        KINETIC,
+        kinetic,
         left,
     )
     let p = begin_pass3_with_depth(
@@ -760,4 +785,74 @@ fn a_keyed_move_may_snap() {
     print(keyed.text("the idle with a snap, as a keyed move"))
     assert(judged.score < 10.0, "the locomotion review missed the snap")
     assert(keyed.score == 10.0, "the keyed review flagged the snap")
+}
+
+/// Drawn as anime is (`engine::anime`), the punch and the roll change drawing about twelve times
+/// a second (on twos) where the walk and run change every frame; the punch strikes once, its
+/// impact frame shown for a few frames and held, its fist smeared on the way in.
+@test
+fn the_fight_is_drawn_on_twos() {
+    let hz = 60.0
+    let rig = HERO.rig.clone()
+    let mask = playback::upper_body(rig)
+    var m = Mover::standing(vec3(0.0), 0.0, GAITS)
+    var d = Drawer::new()
+    var last = 0.0
+    var acting_frames = 0
+    var acting_changes = 0
+    var impact_frames = 0
+    var fist_smears = 0
+    var before = Pose { turns: [Quat::identity(); 64], hips: vec3(0.0) }
+    let arm = rig.find("rightLowerArm")
+    for f in 1..u32(15.0 * hz) {
+        let time = f32(f) / hz
+        let (stick, act, upper) = script(last, time)
+        let pose = playback::step(
+            mut m,
+            GAITS,
+            ACTS,
+            rig,
+            mask,
+            stick,
+            act,
+            upper,
+            Handling {},
+            1.0 / hz,
+        )
+        last = time
+        let shown = anime::drawn(
+            mut d,
+            m,
+            ACTS,
+            rig,
+            mask,
+            pose,
+            playback::placed(m),
+            Anime {},
+            1.0 / hz,
+        )
+        if m.acting != humanoid::NONE {
+            acting_frames += 1
+            if length(shown.pose.turns[arm].v - before.turns[arm].v) > 1.0e-6 {
+                acting_changes += 1
+            }
+            if shown.impact > 0.0 {
+                impact_frames += 1
+            }
+            if shown.smears[1].on && m.acting == ACT_PUNCH {
+                fist_smears += 1
+            }
+        }
+        before = shown.pose
+    }
+    let rate = f32(acting_changes) / (f32(acting_frames) / hz)
+    print(
+        f"acting {acting_frames} frames, {acting_changes} drawings ({rate:.1} a second); impact {impact_frames} frames; the fist smeared {fist_smears} frames",
+    )
+    assert(rate > 9.0 && rate < 14.0, f"the fight's drawn {rate} times a second")
+    assert(
+        impact_frames >= 2 && impact_frames <= 4,
+        f"the impact frame showed {impact_frames} frames",
+    )
+    assert(fist_smears > 0, "the punch's fist never smeared")
 }

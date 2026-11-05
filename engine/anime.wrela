@@ -1,0 +1,356 @@
+// Anime timing over a body's fight moves, for the drawing alone: the fight keeps its own exact
+// frames (`playback::timed`), and gameplay its body's place; what's shown of a one-off is drawn
+// on twos (a new drawing twelve times a second, each held), its strike snapped out past itself
+// for a moment (the impact frame) and held on contact (the hit's hold), and a fist or foot that
+// travels far between drawings smeared back along its path. Walking and running stay smooth.
+//
+// After the animator's practice in limited animation (Japanese TV animation's drawings on twos
+// and threes, holds and impact frames) as Arc System Works brought it to 3D: Junya Motomura,
+// "GuiltyGearXrd's Art Style: The X Factor Between 2D and 3D", GDC 2015.
+
+use humanoid::{NONE, Pose, Rig, Rigid}
+use playback::{ACTIVE, Move, Mover, exp_of, layered, log_of}
+
+/// How the fight's moves are drawn: drawings a second (on twos at 24, twelve); how long (s) the
+/// strike's held on contact, and how long of that its impact frame shows, pushed past the strike
+/// by `push` of the last drawing's move into it, and how hard the picture flashes on it (the
+/// frame's kinetic, 0 to 1); and how far back a smear trails (`smear` of the travel since the
+/// last drawing, the limb stretched at most `smear_most` times its length), from how fast (m/s,
+/// against the body) a fist or foot must go to smear.
+pub struct Anime: Copy {
+    pub drawings: f32 = 12.0,
+    pub hold: f32 = 0.1,
+    pub impact: f32 = 0.05,
+    pub push: f32 = 0.35,
+    pub flash: f32 = 0.5,
+    pub smear: f32 = 0.6,
+    pub smear_most: f32 = 1.8,
+    pub smear_from: f32 = 2.5,
+}
+
+/// A limb stretched back along its path: its end (the world) now, the way (unit) back toward
+/// where it was, and by how much (1 none).
+pub struct Smear: Copy {
+    pub on: bool,
+    pub from: vec3,
+    pub back: vec3,
+    pub by: f32,
+}
+
+impl Smear {
+    pub fn none() -> Smear {
+        Smear { on: false, from: vec3(0.0), back: vec3(0.0, 0.0, 1.0), by: 1.0 }
+    }
+}
+
+/// The limbs that smear, each by its end and the bones it stretches from: the forearms with the
+/// hands (and fingers), the shins with the feet (and toes).
+const ENDS = ["leftHand", "rightHand", "leftFoot", "rightFoot"]
+const FROM = ["leftLowerArm", "rightLowerArm", "leftLowerLeg", "rightLowerLeg"]
+
+/// What's drawn of a body: the drawing it holds, where it was drawn (a whole-body move's drawn
+/// place steps with it), how long it's held, which one-off it's drawing, whether its strike's
+/// struck, how long the hit's hold and impact frame have left, where each limb's end was at the
+/// last drawing, and each limb's smear.
+pub struct Drawer: Copy {
+    pub drawing: Pose,
+    pub place: mat4,
+    pub since: f32,
+    pub on: bool,
+    pub acting: u32,
+    pub struck: bool,
+    pub contact: f32,
+    pub hold_left: f32,
+    pub impact_left: f32,
+    pub ends: [vec3; 4],
+    pub smears: [Smear; 4],
+}
+
+impl Drawer {
+    pub fn new() -> Drawer {
+        Drawer {
+            drawing: Pose { turns: [Quat::identity(); 64], hips: vec3(0.0) },
+            place: std::transform::identity(),
+            since: 0.0,
+            on: false,
+            acting: NONE,
+            struck: false,
+            contact: -1.0,
+            hold_left: 0.0,
+            impact_left: 0.0,
+            ends: [vec3(0.0); 4],
+            smears: [Smear::none(); 4],
+        }
+    }
+}
+
+/// A body as it's drawn: its pose, where (its place), how much of an impact frame this is (1 at
+/// the hit, for the picture to flash on), and its limbs' smears.
+pub struct Drawn: Copy {
+    pub pose: Pose,
+    pub place: mat4,
+    pub impact: f32,
+    pub smears: [Smear; 4],
+}
+
+/// `strike` pushed on past itself by `push` of the move into it from `before`: the impact
+/// frame's pose, every bone turned further the way it was turning, the hips carried on.
+pub fn pushed_past(strike: Pose, before: Pose, push: f32, bones: u32) -> Pose {
+    var out = strike
+    for b in 0..bones {
+        let into = strike.turns[b].mul(before.turns[b].inverse())
+        out.turns[b] = exp_of(log_of(into) * push).mul(strike.turns[b])
+    }
+    out.hips = strike.hips + (strike.hips - before.hips) * push
+    out
+}
+
+/// Where each limb's end is, drawn as `pose` at `place`.
+fn ends_of(rig: Rig, pose: Pose, place: mat4) -> [vec3; 4] {
+    var world = [Rigid::identity(); 64]
+    for b in 0..rig.bones.len() {
+        borrow rb = rig.bones[b]
+        let up = if rb.parent == NONE { rig.base } else { world[rb.parent] }
+        let t = if rb.parent == NONE { pose.hips } else { rb.rest.t }
+        world[b] = up.then(Rigid { q: pose.turns[b], t })
+    }
+    var out = [vec3(0.0); 4]
+    for i in 0..4 {
+        let b = rig.find(ENDS[i])
+        if b != NONE {
+            out[i] = (place * vec4(world[b].t, 1.0)).xyz
+        }
+    }
+    out
+}
+
+/// The length (m) of a limb at rest, from the bone it stretches from to its end.
+fn limb_length(rig: Rig, i: u32) -> f32 {
+    let a = rig.find(FROM[i])
+    let e = rig.find(ENDS[i])
+    if a == NONE || e == NONE {
+        return 0.3
+    }
+    let rw = rig.rest_world()
+    max(length(rw[e].t - rw[a].t), 0.1)
+}
+
+/// A new drawing, `pose` at `place`: each limb drawn (the arms alone, `arms`, over an upper-body
+/// move) whose end has come far against the body since the last smears back toward where it was.
+fn draw_new(d: mut Drawer, rig: Rig, pose: Pose, place: mat4, how: Anime, smear: bool, arms: bool) {
+    // Against the body: a fist carried along by a run hasn't moved.
+    let ends = ends_of(rig, pose, std::transform::identity())
+    let world = ends_of(rig, pose, place)
+    for i in 0..4 {
+        let way = d.ends[i] - ends[i]
+        let far = length(way)
+        d.smears[i] = Smear::none()
+        let drawn = !arms || i < 2
+        if smear && d.on && drawn && far * how.drawings > how.smear_from {
+            let back = normalize((place * vec4(way, 0.0)).xyz)
+            d.smears[i] = Smear {
+                on: true,
+                from: world[i],
+                back,
+                by: min(1.0 + how.smear * far / limb_length(rig, i), how.smear_most),
+            }
+        }
+    }
+    d.ends = ends
+    d.drawing = pose
+    d.place = place
+}
+
+/// When (s) one-off `mv` lands: from the start of its hit window (`ACTIVE`), the moment the limb
+/// end that's travelled furthest through it reaches furthest from the hips (a fist at full
+/// stretch), or the window's middle if none goes anywhere.
+pub fn contact_of(mv: Move, rig: Rig) -> f32 {
+    let a = match mv.mark(ACTIVE) {
+        Some(a) => a,
+        None => return -1.0,
+    }
+    let start = ends_of(rig, mv.pose(a.from), std::transform::identity())
+    let end = ends_of(rig, mv.pose(a.till), std::transform::identity())
+    var limb = 0
+    var most = 0.0
+    for i in 0..4 {
+        let d = length(end[i] - start[i])
+        if d > most {
+            most = d
+            limb = i
+        }
+    }
+    if most < 0.05 {
+        return 0.5 * (a.from + a.till)
+    }
+    let hips_at = |t: f32| -> vec3 {
+        let p = mv.pose(t)
+        rig.base.t + rig.base.q.rotate(p.hips)
+    }
+    var best = a.from
+    var reach = 0.0
+    let span = min(mv.length() - a.from, 3.0 * (a.till - a.from) + 0.1)
+    for k in 0..40 {
+        let t = a.from + span * f32(k) / 39.0
+        let e = ends_of(rig, mv.pose(t), std::transform::identity())[limb]
+        let r = length(e - hips_at(t))
+        if r > reach {
+            reach = r
+            best = t
+        }
+    }
+    best
+}
+
+/// One frame of body `m` (`pose`, shown at `place`, as `playback::step` gave it) as it's drawn:
+/// smooth while it walks and runs, its one-offs (`acts`) drawn on twos, struck, held and
+/// smeared by `how`. `mask` is the upper body's (a one-off over it alone steps it alone, the
+/// legs going on smooth). `dt` (s) on.
+pub fn drawn(
+    d: mut Drawer,
+    m: Mover,
+    acts: [Move],
+    rig: Rig,
+    mask: [f32; 64],
+    pose: Pose,
+    place: mat4,
+    how: Anime,
+    dt: f32,
+) -> Drawn {
+    let bones = rig.bones.len()
+    if m.acting == NONE || m.acting >= acts.len() {
+        d.on = false
+        d.acting = NONE
+        return Drawn { pose, place, impact: 0.0, smears: [Smear::none(); 4] }
+    }
+    let period = 1.0 / max(how.drawings, 1.0)
+    borrow mv = acts[m.acting]
+    if !d.on || d.acting != m.acting {
+        // A one-off begun: its first drawing, now.
+        draw_new(mut d, rig, pose, place, how, smear: false, arms: m.upper)
+        d.on = true
+        d.acting = m.acting
+        d.struck = false
+        d.contact = contact_of(mv, rig)
+        d.since = 0.0
+        d.hold_left = 0.0
+        d.impact_left = 0.0
+    } else {
+        // The strike: the drawing's the strike pushed past itself (the impact frame), then the
+        // strike itself, held.
+        let strike = d.contact
+        if !d.struck && strike >= 0.0 && m.act_time >= strike {
+            d.struck = true
+            d.hold_left = how.hold
+            d.impact_left = how.impact
+            let at = mv.pose(strike)
+            let before = mv.pose(strike - period)
+            let shown = if m.upper { layered(pose, at, mask, 1.0, bones) } else { at }
+            let shown_before = if m.upper { layered(pose, before, mask, 1.0, bones) } else {
+                before
+            }
+            draw_new(
+                mut d,
+                rig,
+                pushed_past(shown, shown_before, how.push, bones),
+                place,
+                how,
+                smear: true,
+                arms: m.upper,
+            )
+            d.since = 0.0
+        } else if d.hold_left > 0.0 {
+            d.hold_left -= dt
+            if d.impact_left > 0.0 {
+                d.impact_left -= dt
+                if d.impact_left <= 0.0 {
+                    // The impact frame's done: the strike, held, unsmeared.
+                    let at = mv.pose(strike)
+                    d.drawing = if m.upper { layered(pose, at, mask, 1.0, bones) } else { at }
+                    d.smears = [Smear::none(); 4]
+                }
+            }
+            if d.hold_left <= 0.0 {
+                // Let go: the move as it's got to, at once, as a drawing does.
+                draw_new(mut d, rig, pose, place, how, smear: false, arms: m.upper)
+                d.since = 0.0
+            }
+        } else {
+            d.since += dt
+            if d.since >= period {
+                d.since -= period
+                draw_new(mut d, rig, pose, place, how, smear: true, arms: m.upper)
+            } else if d.since >= 0.5 * period {
+                // A smear's an in-between: half a drawing, then the limb's whole.
+                d.smears = [Smear::none(); 4]
+            }
+        }
+    }
+    let impact = if d.impact_left > 0.0 { how.flash } else { 0.0 }
+    if m.upper {
+        // Over the upper body alone: the arms and trunk drawn, the legs going on smooth under
+        // them, where gameplay has the body.
+        let shown = layered(pose, d.drawing, mask, 1.0, bones)
+        return Drawn { pose: shown, place, impact, smears: d.smears }
+    }
+    Drawn { pose: d.drawing, place: d.place, impact, smears: d.smears }
+}
+
+/// A palette (`humanoid::palette`) with its smears: each smearing limb's bones, from the one it
+/// stretches from down to its tips, stretched along the way back from its end.
+pub fn smeared(palette: [mat4; 64], rig: Rig, smears: [Smear; 4]) -> [mat4; 64] {
+    var out = palette
+    for i in 0..4 {
+        let s = smears[i]
+        if !s.on {
+            continue
+        }
+        let root = rig.find(FROM[i])
+        if root == NONE {
+            continue
+        }
+        // Stretched by `by` along `back` about the end: x + (by - 1) (x - from)·back back.
+        let u = s.back
+        let k = s.by - 1.0
+        let c0 = vec3(1.0, 0.0, 0.0) + u * (k * u.x)
+        let c1 = vec3(0.0, 1.0, 0.0) + u * (k * u.y)
+        let c2 = vec3(0.0, 0.0, 1.0) + u * (k * u.z)
+        let shift = s.from - (c0 * s.from.x + c1 * s.from.y + c2 * s.from.z)
+        let stretch = mat4(vec4(c0, 0.0), vec4(c1, 0.0), vec4(c2, 0.0), vec4(shift, 1.0))
+        for b in 0..rig.bones.len() {
+            if descends(rig, b, root) {
+                out[b] = stretch * out[b]
+            }
+        }
+    }
+    out
+}
+
+/// Whether bone `b` is `root` or below it.
+fn descends(rig: Rig, b: u32, root: u32) -> bool {
+    var at = b
+    for _ in 0..64 {
+        if at == root {
+            return true
+        }
+        if at == NONE {
+            return false
+        }
+        at = rig.bones[at].parent
+    }
+    false
+}
+
+// ---- tests -----------------------------------------------------------------------------------
+
+@test
+fn a_strike_pushed_past_turns_further_the_way_it_turned() {
+    let a = Pose { turns: [Quat::identity(); 64], hips: vec3(0.0) }
+    var b = a
+    b.turns[3] = Quat::axis_angle(vec3(0.0, 1.0, 0.0), 0.4)
+    b.hips = vec3(0.0, 0.0, 0.1)
+    let p = pushed_past(b, a, 0.5, 4)
+    let angle = 2.0 * acos(min(abs(p.turns[3].v.w), 1.0))
+    assert(abs(angle - 0.6) < 1.0e-3, f"pushed past to {angle} rad, not 0.6")
+    assert(abs(p.hips.z - 0.15) < 1.0e-5)
+}
