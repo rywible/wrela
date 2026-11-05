@@ -163,6 +163,10 @@ pub struct Client {
     play: Option<Play>,
     last_began: u64,
     joined_at: f32,
+    /// The room time the last fight this player played to its end finished at, once its client
+    /// said it's still there for the next (`AGAIN_MS`), and whether it's back at the doors.
+    again_for: u64,
+    again: bool,
     settle_at: f32,
     time: Option<f32>,
     note: String,
@@ -241,6 +245,8 @@ pub fn init(origin: str) -> Client {
         play: None,
         last_began: 0,
         joined_at: 0.0,
+        again_for: 0,
+        again: false,
         settle_at: 0.0,
         time: None,
         note: String::from("Connecting…"),
@@ -1159,7 +1165,16 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
         Some(l) => (l.peer(), l.view().clone(), l.committed().clone()),
         None => return,
     }
+    // The room put this player back at the doors after a fight it played: say it's still here,
+    // or the room lets it go (`combat::main::AGAIN_MS`).
+    if me != 0 && room.fought_last(me) && view.waiting(me) && room.finished_at != s.again_for {
+        s.again_for = room.finished_at
+        s.again = true
+        s.joined_at = time
+        propose_fight(mut s, combat::main::Act::Join { weapon: LONGSWORD })
+    }
     if join && me != 0 {
+        s.again = false
         if view.waiting(me) {
             propose_fight(mut s, combat::main::Act::Leave)
         } else {
@@ -1183,6 +1198,7 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
     if room.on() && room.began_at != s.last_began && me != 0 {
         if let Some(slot) = slot_of(room.party, me) {
             s.last_began = room.began_at
+            s.again = false
             s.play = Some(new_play(room.began_at, slot, room.party.clone(), room.armed.clone()))
             // The party's fight began: its invite was used.
             s.invite = String::new()
@@ -1194,7 +1210,7 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
         String::from("Connecting…")
     } else if room.on() {
         String::from(f"A fight is on ({room.party.len()} fighting).")
-    } else if view.waiting(me) && view.fought_last(me) {
+    } else if view.waiting(me) && s.again {
         // Back at the doors after a fight: the party waits again, one press from the next.
         String::from(
             f"Back at the doors ({view.lobby.len()} ready). Enter goes again, F stops waiting.",
