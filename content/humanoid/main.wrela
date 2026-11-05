@@ -23,7 +23,9 @@ use body::{
 }
 use engine::anime
 use engine::anime::{Anime, Drawer}
-use fists::{ACT_CROSS, ACTS, FIGHT_GAITS, LOOKS}
+use fists::{
+    ACT_CROSS, ACT_STEP_IN, ACT_STEP_LEFT, ACT_STEP_OUT, ACT_STEP_RIGHT, ACTS, FIGHT_GAITS, LOOKS,
+}
 use engine::cleanup
 use engine::cleanup::Cleanup
 use engine::humanoid
@@ -103,7 +105,11 @@ pub fn init() -> State {
         depth: depth_texture(width: 640, height: 360),
         width: 640,
         height: 360,
-        mover: Mover::standing(vec3(0.0), 0.0, if SHOW == 12 { FIGHT_GAITS } else { GAITS }),
+        mover: if SHOW == 12 {
+            Mover::standing(vec3(0.0), 0.0, FIGHT_GAITS)
+        } else {
+            Mover::standing(vec3(0.0), 0.0, GAITS)
+        },
         last: 0.0,
         mask: playback::upper_body(HERO.rig),
         drawer: Drawer::new(),
@@ -143,11 +149,24 @@ pub fn script(last: f32, time: f32) -> (vec3, u32, bool) {
     (stick, humanoid::NONE, false)
 }
 
-/// `SHOW=12`'s script: the body stands and throws the cross, twice.
+/// `SHOW=12`'s script: the body bounces in its guard, steps in and throws the cross, steps back
+/// out, slips to its left and its right, steps in again and throws it again.
 pub fn stand_script(last: f32, time: f32) -> (vec3, u32, bool) {
     let at = |t: f32| -> bool { last < t && time >= t }
-    if at(1.0) || at(2.6) {
-        return (vec3(0.0), ACT_CROSS, false)
+    let beats = [
+        (1.2, ACT_STEP_IN),
+        (1.62, ACT_CROSS),
+        (2.6, ACT_STEP_OUT),
+        (3.3, ACT_STEP_LEFT),
+        (4.0, ACT_STEP_RIGHT),
+        (4.7, ACT_STEP_IN),
+        (5.12, ACT_CROSS),
+        (6.1, ACT_STEP_OUT),
+    ]
+    for (t, act) in beats {
+        if at(t) {
+            return (vec3(0.0), act, false)
+        }
     }
     (vec3(0.0), humanoid::NONE, false)
 }
@@ -158,22 +177,17 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
     let (stick, act, upper) = if SHOW == 12 { stand_script(s.last, time) } else {
         script(s.last, time)
     }
-    let pose = playback::step(
-        mut s.mover,
-        if SHOW == 12 { FIGHT_GAITS } else { GAITS },
-        ACTS,
-        HERO.rig,
-        s.mask,
-        stick,
-        act,
-        upper,
-        if CUT == 1 {
-            Handling { change_half: 1.0e-4, act_half: 1.0e-4, plant: false, clips: false }
-        } else {
-            Handling {}
-        },
-        dt,
-    )
+    let how = if CUT == 1 {
+        Handling { change_half: 1.0e-4, act_half: 1.0e-4, plant: false, clips: false }
+    } else {
+        Handling {}
+    }
+    // (Each gaits const passed whole: an `if` choosing between consts would move one out.)
+    let pose = if SHOW == 12 {
+        playback::step(mut s.mover, FIGHT_GAITS, ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
+    } else {
+        playback::step(mut s.mover, GAITS, ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
+    }
     s.last = time
     (pose, playback::placed(s.mover))
 }
@@ -237,9 +251,11 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.height = height
     }
     let game = SHOW == 11 || SHOW == 12
+
     let dt = clamp(time - s.last, 1.0e-4, 0.1)
     let (pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
     var bones = palette(HERO.rig, pose, place)
+
     var kinetic = KINETIC
     var force = anime::Force::none()
     if game && ANIME == 1 {
@@ -263,7 +279,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // The camera follows the hips along the ground, steadily: where they are on average over a
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
     // followed where gameplay puts it, which is steady already.
-    let hips = if game { s.mover.place } else { steady_hips(time) }
+    let hips = if SHOW == 12 { vec3(0.0, 0.0, 0.25) } else if game { s.mover.place } else {
+        steady_hips(time)
+    }
     let walking = SHOW != 12 && (SHOW >= 3 || (SHOW == 0 && time >= WALK_AT))
     let side = if SHOW == 12 { -1.6 } else if walking { SIDE } else { -0.55 }
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)

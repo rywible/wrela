@@ -35,7 +35,10 @@ pub const STEP: u32 = 4
 /// - `fists`: where each wrist goes (left, right), `elbows` which way each elbow points, and
 ///   `rolls` each forearm's roll about itself (degrees);
 /// - `feet`: each foot's ball on the floor (x, z), its yaw (toes toward the left) and its heel
-///   lifted (degrees, about the ball).
+///   lifted (degrees, about the ball), and `lifts`, how high each ball's off the floor (m: a
+///   hop, a step's swing);
+/// - `travel`: where the body's got to along the floor since the move began (its root, which
+///   gameplay carries; everything else is set where it is from the move's start).
 pub struct Key: Copy {
     pub at: f32,
     pub ease: u32 = SMOOTH,
@@ -48,6 +51,21 @@ pub struct Key: Copy {
     pub elbows: [vec3; 2] = [vec3(0.0, -1.0, 0.0); 2],
     pub rolls: [f32; 2] = [0.0; 2],
     pub feet: [vec4; 2],
+    pub lifts: [f32; 2] = [0.0; 2],
+    pub travel: vec3 = vec3(0.0),
+}
+
+/// `k` moved along the floor by `by`: its hips, fists, feet, look and travel.
+pub fn shifted(k: Key, by: vec3) -> Key {
+    var out = k
+    out.hips += by
+    out.look += by
+    out.travel += by
+    for i in 0..2 {
+        out.fists[i] += by
+        out.feet[i] = out.feet[i] + vec4(by.x, by.z, 0.0, 0.0)
+    }
+    out
 }
 
 /// `x` eased from 0 to 1 as `ease` says.
@@ -84,6 +102,11 @@ pub fn mixed(a: Key, b: Key, t: f32) -> Key {
             a.rolls[1] + (b.rolls[1] - a.rolls[1]) * t,
         ],
         feet: [m4(a.feet[0], b.feet[0]), m4(a.feet[1], b.feet[1])],
+        lifts: [
+            a.lifts[0] + (b.lifts[0] - a.lifts[0]) * t,
+            a.lifts[1] + (b.lifts[1] - a.lifts[1]) * t,
+        ],
+        travel: m(a.travel, b.travel),
     }
 }
 
@@ -175,7 +198,7 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
         let yaw = about(vec3(0.0, 1.0, 0.0), f.z * DEG)
         let heel = about(yaw.rotate(vec3(1.0, 0.0, 0.0)), f.w * DEG)
         let q = heel.mul(yaw)
-        let ball = vec3(f.x, rw[l.toes].t.y, f.y)
+        let ball = vec3(f.x, rw[l.toes].t.y + k.lifts[i], f.y)
         let ankle = ball + q.rotate(rw[l.ankle].t - rw[l.toes].t)
         let hinge = rw[l.knee].q.inverse().rotate(vec3(1.0, 0.0, 0.0))
         let (qu, ql) = reach(w[l.hip], w[l.knee], w[l.ankle].t, ankle, hinge)
@@ -215,7 +238,17 @@ pub fn key_at(keys: [Key], time: f32) -> Key {
     keys[n - 1]
 }
 
-/// A clip of `keys` at `fps`, its hands made fists (`fist`, as `stride::curled_hands`).
+/// Where `keys` have the body's root at each of `frames` frames at `fps`: their travel.
+pub fn travels(keys: [Key], fps: f32, frames: u32) -> Vec<vec3> {
+    var out: Vec<vec3> = Vec::with_capacity(frames)
+    for f in 0..frames {
+        out.push(key_at(keys, f32(f) / fps).travel)
+    }
+    out
+}
+
+/// A clip of `keys` at `fps`, about their root (each frame's travel taken off: gameplay carries
+/// that), its hands made fists (`fist`, as `stride::curled_hands`).
 pub fn keyed(rig: Rig, keys: [Key], fps: f32, fist: f32) -> Clip {
     let nb = rig.bones.len()
     let last = keys[keys.len() - 1].at
@@ -227,7 +260,8 @@ pub fn keyed(rig: Rig, keys: [Key], fps: f32, fist: f32) -> Clip {
     c.turns = Vec::with_capacity(n * nb)
     c.hips = Vec::with_capacity(n)
     for f in 0..n {
-        let p = posed(rig, key_at(keys, f32(f) / fps))
+        let k = key_at(keys, f32(f) / fps)
+        let p = posed(rig, shifted(k, -k.travel))
         for b in 0..nb {
             c.turns.push(p.turns[b])
         }

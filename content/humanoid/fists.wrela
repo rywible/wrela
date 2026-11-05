@@ -18,8 +18,8 @@ use engine::playback::{ACTIVE, CANCEL, Gaits, Mark, Move, RECOVER, WINDUP}
 use body::{GAITS, HERO}
 use engine::anime::{Look, PLAIN, STRIKE}
 
-/// The guard: an orthodox stance, the lead foot ahead and turned a little in, the rear foot
-/// back, turned out, its heel just off the floor; the hips sunk and turned to the right (the lead
+/// The guard: an orthodox stance, up on the balls of both feet, the lead foot ahead and turned a
+/// little in, the rear foot back and turned out; the hips sunk and turned to the right (the lead
 /// shoulder ahead), the trunk leaning in; the lead fist out at eye height, the rear at the chin,
 /// both elbows in and down.
 pub fn guard() -> Key {
@@ -32,7 +32,7 @@ pub fn guard() -> Key {
         fists: [vec3(0.10, 1.40, 0.30), vec3(-0.11, 1.40, 0.12)],
         elbows: [vec3(0.5, -1.0, -0.2), vec3(-0.5, -1.0, -0.2)],
         rolls: [0.0, 0.0],
-        feet: [vec4(0.10, 0.22, -15.0, 0.0), vec4(-0.17, -0.20, -40.0, 10.0)],
+        feet: [vec4(0.10, 0.22, -15.0, 12.0), vec4(-0.17, -0.20, -40.0, 18.0)],
     }
 }
 
@@ -142,28 +142,132 @@ fn cross_move() -> Move {
     m
 }
 
+// ---- footwork ---------------------------------------------------------------------------
+
+/// A step of a fighter's footwork, `by` along the floor (m, in the body's space: +z toward the
+/// foe, +x its left), in the guard and facing the foe all the while: the foot nearest the way it
+/// goes steps first (pushed off the other, which drives), lands, and the other follows it, so
+/// the stance never narrows or crosses; the body sinks as it lands and is back up bouncing.
+pub fn step_keys(by: vec3) -> Vec<Key> {
+    // Which foot leads: ahead or to the left, the lead (left) foot; back or to the right, the
+    // rear (right).
+    let first = if by.z > 0.05 || (abs(by.z) <= 0.05 && by.x > 0.0) { 0 } else { 1 }
+    let second = 1 - first
+    var out: Vec<Key> = Vec::new()
+    var k = guard()
+    k.hips = vec3(-0.01, -0.095, 0.0)
+    out.push(k)
+    // The push: off the second foot, its heel up, the body's weight going.
+    k = keys::shifted(guard(), by * 0.12)
+    k.at = 0.07
+    k.ease = SETTLE
+    k.hips.y = -0.085
+    k.feet[second] = guard().feet[second]
+    k.feet[second].w = 30.0
+    k.feet[first] = guard().feet[first] + vec4(by.x * 0.3, by.z * 0.3, 0.0, 0.0)
+    k.lifts[first] = 0.05
+    out.push(k)
+    // The first foot down where it's going; the second leaves the floor.
+    k = keys::shifted(guard(), by * 0.65)
+    k.at = 0.17
+    k.ease = SMOOTH
+    k.hips.y = -0.08
+    k.feet[first] = guard().feet[first] + vec4(by.x, by.z, 0.0, 0.0)
+    k.feet[first].w = 10.0
+    k.feet[second] = guard().feet[second] + vec4(by.x * 0.35, by.z * 0.35, 0.0, 0.0)
+    k.lifts = [0.0, 0.0]
+    k.lifts[second] = 0.045
+    out.push(k)
+    // The second foot down after it: the stance whole again, sunk to take the weight.
+    k = keys::shifted(guard(), by)
+    k.at = 0.27
+    k.ease = SETTLE
+    k.hips.y = -0.11
+    k.feet[0].w = 8.0
+    k.feet[1].w = 12.0
+    out.push(k)
+    // Back up, bouncing.
+    k = keys::shifted(guard(), by)
+    k.at = 0.38
+    k.ease = SMOOTH
+    k.hips.y = -0.08
+    out.push(k)
+    out
+}
+
+/// A step `by` as a move: its keys at 60 a second about its root, which carries the body.
+fn step_move(by: vec3) -> Move {
+    let keys = step_keys(by)
+    let c = keys::keyed(HERO.rig, keys, fps: 60.0, fist: 2.0)
+    let n = c.frames
+    var m = in_place(c)
+    m.root = keys::travels(keys, fps: 60.0, frames: n)
+    m
+}
+
+/// The footwork: a step in toward the foe, a step back out, and a step to either side.
+pub const STEP: f32 = 0.32
+@fuel(2 ** 40)
+pub const STEP_IN: Move = step_move(vec3(0.0, 0.0, STEP))
+@fuel(2 ** 40)
+pub const STEP_OUT: Move = step_move(vec3(0.0, 0.0, -STEP))
+@fuel(2 ** 40)
+pub const STEP_LEFT: Move = step_move(vec3(STEP * 0.85, 0.0, 0.0))
+@fuel(2 ** 40)
+pub const STEP_RIGHT: Move = step_move(vec3(-STEP * 0.85, 0.0, 0.0))
+
 /// The one-offs a body acts, by index: the running punch (`body::ACT_PUNCH`), the roll
 /// (`body::ACT_ROLL`) and the standing cross (`ACT_CROSS`); and how each is drawn (`LOOKS`): the
 /// strikes as strikes, the roll as it plays.
 pub const ACT_CROSS: u32 = 2
+pub const ACT_STEP_IN: u32 = 3
+pub const ACT_STEP_OUT: u32 = 4
+pub const ACT_STEP_LEFT: u32 = 5
+pub const ACT_STEP_RIGHT: u32 = 6
 @fuel(2 ** 40)
-pub const ACTS: [Move; 3] = [body::PUNCH.clone(), body::ROLL.clone(), CROSS.clone()]
-pub const LOOKS: [Look; 3] = [STRIKE, PLAIN, STRIKE]
+pub const ACTS: [Move; 7] = [
+    body::PUNCH.clone(),
+    body::ROLL.clone(),
+    CROSS.clone(),
+    STEP_IN.clone(),
+    STEP_OUT.clone(),
+    STEP_LEFT.clone(),
+    STEP_RIGHT.clone(),
+]
+pub const LOOKS: [Look; 7] = [STRIKE, PLAIN, STRIKE, PLAIN, PLAIN, PLAIN, PLAIN]
 
-/// The guard held as a body stands ready to fight, breathing: sinking a little and back over a
-/// second and a half.
+/// The guard as a body stands ready to fight: bouncing on the balls of its feet, twice a
+/// second, light, ready to go any way. It drops onto its feet fast (the floor takes it) and
+/// floats off them, just off the floor at the top; its fists ride the bounce a beat behind the
+/// body, its head steady.
+pub const BOUNCE: f32 = 0.5
+
 pub fn guard_keys() -> Vec<Key> {
     var out: Vec<Key> = Vec::new()
-    var k = guard()
+    var low = guard()
+    low.hips = vec3(-0.01, -0.095, 0.0)
+    low.feet[0].w = 8.0
+    low.feet[1].w = 12.0
+    low.fists = [vec3(0.10, 1.395, 0.30), vec3(-0.11, 1.395, 0.12)]
+    var high = guard()
+    high.hips = vec3(-0.01, -0.045, 0.0)
+    high.feet[0].w = 24.0
+    high.feet[1].w = 28.0
+    high.lifts = [0.012, 0.012]
+    high.fists = [vec3(0.10, 1.40, 0.30), vec3(-0.11, 1.40, 0.12)]
+    high.trunk = vec3(5.0, -5.0, 0.0)
+    // Off the floor and up, slowing; then dropped onto the feet, gathering speed.
+    var k = low
+    k.at = 0.0
     out.push(k)
-    k.at = 0.75
-    k.hips = vec3(-0.01, -0.07, 0.0)
-    k.trunk = vec3(7.0, -5.0, 0.0)
-    k.fists = [vec3(0.10, 1.39, 0.30), vec3(-0.11, 1.39, 0.12)]
+    k = high
+    k.at = BOUNCE * 0.55
+    k.ease = SETTLE
     out.push(k)
-    var g = guard()
-    g.at = 1.5
-    out.push(g)
+    k = low
+    k.at = BOUNCE
+    k.ease = SNAP
+    out.push(k)
     out
 }
 
@@ -173,19 +277,20 @@ pub const GUARD: Move = guard_move()
 fn guard_move() -> Move {
     var c = keys::keyed(HERO.rig, guard_keys(), fps: 60.0, fist: 2.0)
     c.looped = true
-    playback::with_steps(in_place(c), HERO.rig)
+    in_place(c)
 }
 
 /// The gaits of a body ready to fight: standing in its guard, walking and running as ever.
 @fuel(2 ** 40)
-pub const FIGHT_GAITS: Gaits = Gaits::of(
-    GUARD.clone(),
-    GAITS.walk.clone(),
-    GAITS.run.clone(),
-    GAITS.start.clone(),
-    GAITS.stop.clone(),
-    HERO.rig.clone(),
-)
+pub const FIGHT_GAITS: Gaits = Gaits {
+    idle: GUARD.clone(),
+    walk: GAITS.walk.clone(),
+    run: GAITS.run.clone(),
+    start: GAITS.start.clone(),
+    stop: GAITS.stop.clone(),
+    start_exit: GAITS.start_exit,
+    stop_entry: GAITS.stop_entry,
+}
 
 /// The cross reaches: its fist out to near full stretch on contact, there fastest just before
 /// and all but stopped just after (snapped into, then driven on a little), and its lead foot

@@ -65,59 +65,68 @@ fn screen_of(s: Shot, p: vec3) -> vec2 {
     vec2((ndc.x * 0.5 + 0.5) * s.resolution.x, (0.5 - ndc.y * 0.5) * s.resolution.y)
 }
 
-/// A strike's fury at pixel `px`: (ink, drain). Its speed lines, ruled behind the fist back
-/// along the limb's path in lanes of broken strokes, the thickest nearest its line; on contact,
-/// a burst of spokes round the fist, and the page there drained to ink and paper. The body
-/// (`on_body`) is left alone: its own lines fray (`paint_body`'s energy).
-fn strike(s: Shot, px: vec2, scale: f32, seed: f32, on_body: bool) -> vec2 {
+/// A strike's fury at pixel `px`: (ink, drain). The body's own form frays off it: fibres of
+/// its ink pulled from its edge where its energy runs high and trailed back off it against the
+/// way the force goes, each a hair that wanders and thins and breaks as it leaves him; and on
+/// contact the page round him drains to ink and paper. Off the body only (`on_body`: its own
+/// lines fray there, by its energy).
+fn strike(
+    s: Shot,
+    px: vec2,
+    scale: f32,
+    seed: f32,
+    on_body: bool,
+    marks: Texture<Rgba16Float>,
+    normal: Texture<Rgba8>,
+) -> vec2 {
     let by = s.force_to.w
     if by < 0.01 {
         return vec2(0.0)
     }
+    let size = s.resolution
     let a = screen_of(s, s.force_from.xyz)
     let b = screen_of(s, s.force_to.xyz)
     let ab = b - a
-    let len = max(length(ab), 1.0)
-    let dir = ab / len
-    let rel = px - b
-    let back = -dot(rel, dir)
-    let across = dot(rel, vec2(-dir.y, dir.x))
-    // Speed lines: lanes across the path, some ruled, each from its own start back a way.
-    let spread = 80.0 * scale
-    let gap = 6.0 * scale
-    let lane = floor(across / gap)
-    let keep = band(hash2(vec2(lane, seed * 1.7 + 3.0)), edge: 0.35, soft: 0.01)
-    let thin = 1.0 - band(abs(across - (lane + 0.5) * gap), edge: 0.9 * scale, soft: 0.5 * scale)
-    let reach = len * 2.4
-    let from = hash2(vec2(lane, seed * 0.9 + 11.0)) * reach * 0.35
-    let till = from + reach * (0.35 + 0.5 * hash2(vec2(lane, seed * 2.3 + 5.0)))
-    let dash = band(back, edge: from, soft: 3.0 * scale) *
-        (1.0 - band(back, edge: till, soft: 6.0 * scale))
-    let fade = saturate(1.0 - abs(across) / spread) * saturate(1.0 - back / reach)
-    var ink = keep * thin * dash * fade * band(by, edge: 0.15, soft: 0.1)
-    // The burst: on contact (the frame's flash), spokes round the fist, each its own length.
-    let r = length(rel)
+    let dir = ab / max(length(ab), 1.0)
+    let side = vec2(-dir.y, dir.x)
+    // The page drains round him on contact (the frame's flash): most at the fist.
     var drain = 0.0
     if s.kinetic > 0.15 {
-        let n = 20.0
-        let turn = atan2(rel.y, rel.x) / 6.2831853 * n + hash2(vec2(seed, 9.0)) * 3.0
-        let spoke = floor(turn)
-        let h = hash2(vec2(spoke, seed * 4.1 + 1.0))
-        let r0 = 22.0 * scale
-        let l = (40.0 + 70.0 * h) * scale
-        let x = saturate((r - r0) / l)
-        let w = (3.2 * scale) * (1.0 - x)
-        let off = abs(fract(turn) - 0.5) * 6.2831853 / n * r
-        let on = band(r, edge: r0, soft: 2.0 * scale) *
-            (1.0 - band(r, edge: r0 + l, soft: 2.0 * scale))
-        ink = max(
-            ink,
-            on * (1.0 - band(off, edge: w, soft: 1.0 * scale)) * band(h, edge: 0.25, soft: 0.01),
-        )
-        drain = 1.0 - band(r, edge: 150.0 * scale, soft: 60.0 * scale)
+        let r = min(length(px - b), length(px - a) * 1.4)
+        drain = 1.0 - band(r, edge: 170.0 * scale, soft: 90.0 * scale)
     }
     if on_body {
-        ink = 0.0
+        return vec2(0.0, drain)
+    }
+    // A fibre: this pixel's lane across the way the force goes, wandering as it trails. Look
+    // ahead along it (toward him) for his edge: the nearer, the thicker and surer the fibre.
+    let gap = 3.5 * scale
+    let wander = (noise(px / (scale * 22.0) + vec2(seed * 0.7, 3.0)) - 0.5) * 9.0 * scale
+    let across = dot(px, side) + wander
+    let lane = floor(across / gap)
+    let h = hash2(vec2(lane, seed * 1.3 + 7.0))
+    let core = abs(across - (lane + 0.5) * gap)
+    let reach = (26.0 + 90.0 * h * h) * scale * (0.5 + 0.5 * by)
+    var ink = 0.0
+    for k in 1..9 {
+        let d = f32(k) / 8.0 * reach
+        let q = clamp(px + dir * d, vec2(0.0), size - vec2(1.0))
+        let mq = marks.load(u32(q.x), u32(q.y))
+        if mq.y >= BODY {
+            let e = normal.load(u32(q.x), u32(q.y)).w
+            let t = d / reach
+            let width = scale * (1.3 - 1.0 * t) * (0.6 + 0.6 * e)
+            let thread = 1.0 - band(core, edge: width, soft: 0.6 * scale)
+            // It breaks as it goes: dashes, then specks, by its own slow noise along it.
+            let along = dot(px, dir) / (scale * 7.0)
+            let gaps = noise(vec2(along, lane * 3.1 + seed * 2.0))
+            let kept = 1.0 - band(gaps, edge: 1.0 - 0.75 * t, soft: 0.06)
+            ink = max(
+                ink,
+                thread * kept * band(e, edge: 0.25, soft: 0.1) * band(h, edge: 0.3, soft: 0.02),
+            )
+            break
+        }
     }
     vec2(ink, drain)
 }
@@ -225,14 +234,14 @@ pub fn ink(
         mix(mid, PAPER, clamp(tone * 2.0 - 1.0, 0.0, 1.0))
     }
     // The frame's own level drains it all; a strike's contact drains the page round its fist.
-    let fury = strike(s, px, scale, seed, m0.y >= BODY)
+    let fury = strike(s, px, scale, seed, m0.y >= BODY, marks, normal)
     c = mix(c, bw, max(band(s.kinetic, edge: 0.62, soft: 0.22), fury.y))
     // The ink, warmer and thinner far off (what the first pass weighed), dark near.
     // Quiet, the ink is the form's own colour, deepened: it sits on the 3D form, not over it.
     // Kinetic, it turns to ink.
     let ink_c = mix(c * c * 0.45, INK * 0.7, band(energy, edge: 0.25, soft: 0.15))
     c = mix(c, ink_c, ink_line)
-    // The strike's speed lines and burst, in ink, round the body (never over it).
+    // The strike's fibres, frayed off his form.
     c = mix(c, INK * 0.6, fury.x)
     // The paper: its tooth and fibres, and a vignette as a page's edge darkens.
     let tooth = noise(px / (1.3 * scale)) * 0.6 + noise(px / (6.0 * scale)) * 0.4
