@@ -43,6 +43,8 @@ const BANDS: u32 = 2
 /// Seconds the scene takes to come up from black, and the page's words after it.
 const RISE: f32 = 1.6
 const WORDS_AFTER: f32 = 0.35
+/// Seconds from the page's first frame the words wait for the scene at most.
+const WORDS_WAIT: f32 = 1.5
 /// Seconds the words take to go as the player takes the paddle, and to come back.
 const LEAVE: f32 = 0.45
 const RETURN: f32 = 0.6
@@ -91,6 +93,9 @@ pub struct Front {
     tall: f32,
     spent: f32,
     resized_at: f32,
+    /// The size that last ran slow, kept under until `ceiling_until` (s).
+    ceiling: f32,
+    ceiling_until: f32,
     /// The actions' rectangles as last drawn, their hovers, the one pressed, the keyboard's focus
     /// (shown once the keyboard moves it), and the pointer.
     rects: Vec<Rect>,
@@ -127,6 +132,8 @@ pub fn init() -> Front {
         tall: 720.0,
         spent: 1.0 / 60.0,
         resized_at: 0.0,
+        ceiling: TALLEST,
+        ceiling_until: 0.0,
         rects: Vec::new(),
         hovers: Vec::from([0.0, 0.0]),
         pressed: NONE,
@@ -175,15 +182,16 @@ fn phone(w: f32, h: f32) -> bool {
 fn budget(f: mut Front, height: f32) {
     let most = min(height, TALLEST)
     let least = min(SHORTEST, most)
-    if f.time - f.resized_at < 2.0 {
-        f.tall = clamp(f.tall, least, most)
-        return
-    }
+    // A size that ran slow isn't tried again for a while: the scene would only pop between two.
+    let ceiling = if f.time < f.ceiling_until { min(f.ceiling, most) } else { most }
+    let since = f.time - f.resized_at
     let was = f.tall
-    if f.spent > SLOW {
-        f.tall = max(least, round(f.tall * 0.8 / 8.0) * 8.0)
-    } else if f.spent < QUICK && f.tall < most {
-        f.tall = min(most, round(f.tall * 1.15 / 8.0) * 8.0)
+    if f.spent > SLOW && since > 1.5 {
+        f.ceiling = f.tall - 8.0
+        f.ceiling_until = f.time + 30.0
+        f.tall = max(least, round(f.tall * 0.85 / 8.0) * 8.0)
+    } else if f.spent < QUICK && since > 3.0 && f.tall < ceiling {
+        f.tall = min(ceiling, round(f.tall * 1.12 / 8.0) * 8.0)
     }
     f.tall = clamp(f.tall, least, most)
     if f.tall != was {
@@ -235,7 +243,7 @@ pub fn frame<A: Account>(
         if account.event(e) {
             continue
         }
-        if f.words < 0.5 {
+        if f.words < 0.5 || account.shown() {
             continue
         }
         match e {
@@ -289,16 +297,17 @@ pub fn frame<A: Account>(
         f.stage = Stage::Page
         f.focus = PLAY
     }
-    // The scene, once the sky has cooked, comes up from black; the words after it.
+    // The scene, once the sky has cooked, comes up from black; the words just after it, or over
+    // the black if the scene is slow to come (a cold load compiles its shaders first).
     f.drawings += 1
     if f.cooked {
         f.since += dt
     }
     let rise = if reduced { 0.4 } else { RISE }
     f.shown = smoothstep(0.0, 1.0, clamp(f.since / rise, 0.0, 1.0))
-    let words_target = if f.stage == Stage::Page && f.since > rise * WORDS_AFTER { 1.0 } else {
-        0.0
-    }
+    let due = f.since > rise * WORDS_AFTER || f.time > WORDS_WAIT
+    // (Under the account's pages, the page's own words step back: one thing to read at a time.)
+    let words_target = if f.stage == Stage::Page && due && !account.shown() { 1.0 } else { 0.0 }
     let pace = if words_target > f.words { if f.since < rise { rise * 0.8 } else { RETURN } } else {
         LEAVE
     }
@@ -330,7 +339,8 @@ pub fn frame<A: Account>(
         draw_keys(mut f, w, h, k)
     }
     if f.stage == Stage::Page {
-        f.list.alpha = clamp(f.words * 1.5, 0.0, 1.0)
+        // The chip comes and goes with the words; the pages, once opened, are wholly there.
+        f.list.alpha = if account.shown() { 1.0 } else { clamp(f.words * 1.5, 0.0, 1.0) }
         account.draw(mut f.list, f.fonts, width, height)
         f.list.alpha = 1.0
     }
@@ -459,7 +469,7 @@ fn draw_page(f: mut Front, w: f32, h: f32, k: f32, on_phone: bool) -> bool {
     hand
 }
 
-/// The rowing's keys, bottom centre, while the player finds them: each key in a small cap, and
+/// The rowing's keys, bottom left, while the player finds them: each key in a small cap, and
 /// what it does.
 fn draw_keys(f: mut Front, w: f32, h: f32, k: f32) {
     let alpha = f.keys
@@ -479,8 +489,10 @@ fn draw_keys(f: mut Front, w: f32, h: f32, k: f32) {
         total += kw + 8.0 * k + f.fonts.font(Face::Sans).measure(p.1, size) + 22.0 * k
     }
     total -= 22.0 * k
-    let y = round(h - 40.0 * k - cap_h)
-    var x = round((w - total) * 0.5)
+    // At the bottom left, where the page's actions stood: the skiff is in the middle.
+    let margin = round(clamp(min(w, h) * 0.075, 24.0 * k, 72.0 * k))
+    let y = round(h - margin - cap_h + 10.0 * k)
+    var x = margin + round(14.0 * k)
     // A quiet plate under them, so they read over bright water.
     let plate = Rect::new(x - 14.0 * k, y - 10.0 * k, total + 28.0 * k, cap_h + 20.0 * k)
     f.list.rect(plate, vec4(0.0, 0.0, 0.0, 0.42), kit::RADIUS * k + 4.0 * k)
