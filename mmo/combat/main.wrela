@@ -9,15 +9,27 @@
 // waiting. When a fight ends, its players who played it wait for the next at once, after anyone who
 // waited during it, so a party that fell is one press from going again (`Fight::finish`).
 //
+// Who the players are comes from their accounts, as on the island (mmo/island): a player joins
+// wearing its character's card with the pass its account signed, which the server checks before
+// the room sees the join, and the room keeps who each player is. When a party wins, the server
+// writes each winner down, by name, where the rooms' store keeps it (platform/progress.wrela),
+// and the winner's account counts it when its client asks (`Request::Record`, by `Fight::id`).
+// A guest (no card, or one its account didn't sign) fights all the same, and nothing is written.
+//
 // The costs this shape is for (the server design doc's budget): a fight of four is five proposals
 // and one store write, however long it lasts; its inputs cost the room nothing.
 
+use island::main::{Card, NOBODY, Seal, pass_of, sealed}
+use platform::pass
+use platform::progress
 use sim::{Change, LONGSWORD, Log, MAX_CHANGES, MAX_FRAMES, MAX_PARTY, Outcome, WEAPONS, Winner}
 use std::input::{Event, events, payload}
-use std::net::{COMPACT_AFTER, Entry, JOURNAL, POISONED, Record, Reduce, Room, Verdict}
+use std::net::{COMPACT_AFTER, Entry, JOURNAL, POISONED, Record, Reduce, Room, Up, Verdict}
 use std::net::{carry_out, compact, room}
 use std::pack::{Pack, pack, unpack}
+use std::server::secret
 use std::store
+use std::time::unix_now
 
 /// How long after the first log the rest may take, in ms, before anyone may settle the fight
 /// without them (a player who left counts as standing still).
@@ -39,6 +51,12 @@ pub const NOT_WAITING: u32 = 5
 pub const TOO_LONG: u32 = 6
 /// A join with a weapon that isn't one (`sim::WEAPONS`).
 pub const BAD_WEAPON: u32 = 7
+/// A join with a card whose name the lists don't make, or whose look isn't one of the choices.
+pub const BAD_CARD: u32 = 8
+
+/// The bosses, by the number an account's progress counts them by (platform/wire.wrela's
+/// `Beaten`): the cathedral's idol, the only one yet.
+pub const IDOL: u32 = 1
 
 /// How long a peer waits in the lobby, in room ms, unless it joins again: a peer that left
 /// without a word stops counting once it's past.
@@ -68,6 +86,50 @@ fn slot_in(peers: [u32], peer: u32) -> Option<u32> {
     None
 }
 
+/// Who waits, as `Fight`'s lobby keeps it, in parallel.
+struct Lobby {
+    peers: Vec<u32>,
+    times: Vec<u64>,
+    weapons: Vec<u32>,
+    cards: Vec<Card>,
+    signed: Vec<bool>,
+}
+
+fn no_one() -> Lobby {
+    Lobby {
+        peers: Vec::new(),
+        times: Vec::new(),
+        weapons: Vec::new(),
+        cards: Vec::new(),
+        signed: Vec::new(),
+    }
+}
+
+impl Lobby {
+    fn add(mut self, peer: u32, at: u64, weapon: u32, card: Card, signed: bool) {
+        self.peers.push(peer)
+        self.times.push(at)
+        self.weapons.push(weapon)
+        self.cards.push(card)
+        self.signed.push(signed)
+    }
+}
+
+/// A peer's message as the room is to see it: a join has its seal checked against `keys` at `now`
+/// (Unix milliseconds) and its pass taken off; anything else is as it came, a message that isn't
+/// the protocol's included (the room refuses it).
+pub fn checked_message(bytes: take Vec<u8>, keys: [[u8; 32]], now: u64) -> Vec<u8> {
+    let Ok(up) = unpack::<Up<Act>>(bytes.clone()) else { return take bytes }
+    match up {
+        Up::Propose { peer, session, counter, value: Act::Join { weapon, card, seal } } => {
+            let ok = card != NOBODY && pass::opens(keys, pass_of(card, seal), now)
+            let value = Act::Join { weapon, card, seal: sealed(ok) }
+            pack(Up::<Act>::Propose { peer, session, counter, value })
+        },
+        _ => take bytes,
+    }
+}
+
 /// The room's state: who's waiting to fight, the fight on (or the last one), and how many it has
 /// finished.
 pub struct Fight: Clone + Pack {
@@ -77,11 +139,19 @@ pub struct Fight: Clone + Pack {
     pub joined: Vec<u64>,
     /// The weapon each brings (`sim::WEAPONS`).
     pub wielding: Vec<u32>,
-    /// The players, by peer, in their slots (empty: none yet), and their weapons.
+    /// Who each is (`NOBODY`, a guest), and whether its account signed it (the server checked).
+    pub cards: Vec<Card>,
+    pub signed: Vec<bool>,
+    /// The players, by peer, in their slots (empty: none yet), their weapons, who each is and
+    /// whether its account signed it.
     pub party: Vec<u32>,
     pub armed: Vec<u32>,
+    pub faces: Vec<Card>,
+    pub named: Vec<bool>,
     pub logs: Vec<Log>,
     pub sent: Vec<bool>,
+    /// Once settled, whether each player played it: its log came, with inputs in it.
+    pub played: Vec<bool>,
     /// When the fight began (room ms).
     pub began_at: u64,
     /// When the first log came (room ms).
@@ -95,8 +165,10 @@ pub struct Fight: Clone + Pack {
 
 /// A peer's decision.
 pub enum Act: Clone + Pack {
-    /// The proposer waits for the next fight, bringing weapon `weapon` (`sim::WEAPONS`).
-    Join { weapon: u32 },
+    /// The proposer waits for the next fight, bringing weapon `weapon` (`sim::WEAPONS`), as
+    /// `card` (its character's, or `NOBODY`), worn with its account's pass (`seal`), which the
+    /// server checks (`checked_message`).
+    Join { weapon: u32, card: Card, seal: Seal },
     /// The proposer stops waiting.
     Leave,
     /// A fight starts, for whoever waits (the proposer among them).
@@ -113,10 +185,15 @@ impl Fight {
             lobby: Vec::new(),
             joined: Vec::new(),
             wielding: Vec::new(),
+            cards: Vec::new(),
+            signed: Vec::new(),
             party: Vec::new(),
             armed: Vec::new(),
+            faces: Vec::new(),
+            named: Vec::new(),
             logs: Vec::new(),
             sent: Vec::new(),
+            played: Vec::new(),
             began_at: 0,
             first_at: 0,
             settled: false,
@@ -160,26 +237,35 @@ impl Fight {
         false
     }
 
-    /// The lobby at room time `at`: who joined within `LOBBY_MS`, but `without`, when, and with
-    /// what weapon.
-    fn fresh(self, at: u64, without: u32) -> (Vec<u32>, Vec<u64>, Vec<u32>) {
-        var peers: Vec<u32> = Vec::new()
-        var times: Vec<u64> = Vec::new()
-        var weapons: Vec<u32> = Vec::new()
+    /// The lobby at room time `at`: who joined within `LOBBY_MS`, but `without`.
+    fn fresh(self, at: u64, without: u32) -> Lobby {
+        var l = no_one()
         for i in 0..self.lobby.len() {
             if self.lobby[i] != without && at < self.joined[i] + LOBBY_MS {
-                peers.push(self.lobby[i])
-                times.push(self.joined[i])
-                weapons.push(self.wielding[i])
+                l.add(
+                    self.lobby[i],
+                    self.joined[i],
+                    self.wielding[i],
+                    self.cards[i],
+                    self.signed[i],
+                )
             }
         }
-        (peers, times, weapons)
+        l
     }
 
     /// Who's in the lobby at room time `at`, but `without`.
     fn fresh_peers(self, at: u64, without: u32) -> Vec<u32> {
-        let (peers, _, _) = self.fresh(at, without)
-        peers
+        self.fresh(at, without).peers.clone()
+    }
+
+    fn wait_as(mut self, l: take Lobby) {
+        let w = take l
+        self.lobby = take w.peers
+        self.joined = take w.times
+        self.wielding = take w.weapons
+        self.cards = take w.cards
+        self.signed = take w.signed
     }
 
     fn any_sent(self) -> bool {
@@ -198,26 +284,46 @@ impl Fight {
         // with, while there's room, so a party that fell is one press from going again. Each is
         // back for `AGAIN_MS` only, unless its client joins again to say it's still there: a
         // player who closed its tab, or stood still, isn't drafted into the next fight.
-        let (peers, times, weapons) = self.fresh(at, NONE_PEER)
-        var lobby = take peers
-        var joined = take times
-        var wielding = take weapons
+        self.played = Vec::new()
         for i in 0..self.party.len() {
-            let played = self.sent[i] && self.logs[i].changes.len() > 0
-            if played && lobby.len() < MAX_PARTY && slot_in(lobby, self.party[i]).is_none() {
-                lobby.push(self.party[i])
-                joined.push(if at + AGAIN_MS > LOBBY_MS { at + AGAIN_MS - LOBBY_MS } else { 0 })
-                wielding.push(self.armed[i])
+            self.played.push(self.sent[i] && self.logs[i].changes.len() > 0)
+        }
+        var lobby = self.fresh(at, NONE_PEER)
+        for i in 0..self.party.len() {
+            if self.played[i] &&
+                lobby.peers.len() < MAX_PARTY &&
+                slot_in(lobby.peers, self.party[i]).is_none() {
+                let since = if at + AGAIN_MS > LOBBY_MS { at + AGAIN_MS - LOBBY_MS } else { 0 }
+                lobby.add(self.party[i], since, self.armed[i], self.faces[i], self.named[i])
             }
         }
-        self.lobby = take lobby
-        self.joined = take joined
-        self.wielding = take wielding
+        self.wait_as(take lobby)
         // The outcome is what's kept: the logs would make the state too big to send a peer.
         self.logs = Vec::new()
         self.settled = true
         self.fights += 1
         self.finished_at = at
+    }
+
+    /// The last fight's id (platform/progress.wrela's `fight_id`) in room `room`: what a winner's
+    /// client asks its account to record.
+    pub fn id(self, room: str) -> Vec<u8> {
+        progress::fight_id(room, self.began_at, self.fights)
+    }
+
+    /// Who won the last fight, if its party did: each player who played it (`played`) and whose
+    /// account signed who it is.
+    pub fn winners(self) -> Vec<Card> {
+        var out: Vec<Card> = Vec::new()
+        if !self.settled || self.outcome.winner != Winner::Party {
+            return out
+        }
+        for i in 0..self.party.len() {
+            if self.named[i] && self.played[i] {
+                out.push(self.faces[i])
+            }
+        }
+        out
     }
 
     /// Whether `peer` fought the last fight to its end (its log came): the room may have put it
@@ -235,9 +341,12 @@ impl Reduce<Act> for Fight {
     fn check(self, entry: Entry<Act>) -> Verdict {
         let peer = entry.id.peer
         match entry.value {
-            Act::Join { weapon } => {
+            Act::Join { weapon, card, .. } => {
                 if weapon >= WEAPONS.len() {
                     return Verdict::Reject(BAD_WEAPON)
+                }
+                if card != NOBODY && !card.valid() {
+                    return Verdict::Reject(BAD_CARD)
                 }
                 // Joining again keeps a peer waiting (with the weapon it brings now).
                 let others = self.fresh_peers(entry.at, peer)
@@ -295,32 +404,27 @@ impl Reduce<Act> for Fight {
         let at = entry.at
         let peer = entry.id.peer
         match entry.value {
-            Act::Join { weapon } => {
-                let (peers, times, weapons) = self.fresh(at, peer)
-                self.lobby = take peers
-                self.joined = take times
-                self.wielding = take weapons
-                self.lobby.push(peer)
-                self.joined.push(at)
-                self.wielding.push(weapon)
+            Act::Join { weapon, card, seal } => {
+                var l = self.fresh(at, peer)
+                // Only the server's finding is believed: a peer's own `checked` never reaches
+                // the log (`checked_message`).
+                let signed = seal.checked && card != NOBODY
+                l.add(peer, at, weapon, if signed { card } else { NOBODY }, signed)
+                self.wait_as(take l)
             },
-            Act::Leave => {
-                let (peers, times, weapons) = self.fresh(at, peer)
-                self.lobby = take peers
-                self.joined = take times
-                self.wielding = take weapons
-            },
+            Act::Leave => self.wait_as(self.fresh(at, peer)),
             Act::Begin => {
-                // Whoever waits fights now, with what each brought.
-                let (party, _, weapons) = self.fresh(at, NONE_PEER)
-                let n = party.len()
-                self.lobby = Vec::new()
-                self.joined = Vec::new()
-                self.wielding = Vec::new()
-                self.party = party.clone()
-                self.armed = take weapons
+                // Whoever waits fights now, with what each brought, as who each is.
+                let l = self.fresh(at, NONE_PEER)
+                let n = l.peers.len()
+                self.wait_as(no_one())
+                self.party = take l.peers
+                self.armed = take l.weapons
+                self.faces = take l.cards
+                self.named = take l.signed
                 self.logs = Vec::new()
                 self.sent = Vec::new()
+                self.played = Vec::new()
                 for _ in 0..n {
                     self.logs.push(Log { changes: Vec::new() })
                     self.sent.push(false)
@@ -379,14 +483,40 @@ pub struct Server {
     room: Room<Fight, Act>,
     /// The fights whose outcome is in the store.
     written: u32,
+    /// Whether the keys were read (`keys`, those long enough: none, and no pass checks).
+    keyed: bool,
+    keys: Vec<[u8; 32]>,
+    /// The Unix milliseconds at the room's time 0, as the wall clock said when the keys came.
+    epoch: u64,
 }
 
 pub fn serve_init() -> Server {
-    Server { room: Room::new(Fight::empty()), written: 0 }
+    Server { room: Room::new(Fight::empty()), written: 0, keyed: false, keys: Vec::new(), epoch: 0 }
+}
+
+/// Reads the pass keys (platform/pass.wrela's `SECRETS`) and the wall clock, once, as the island
+/// does: a secret that isn't there, or is too short, makes no key, and a clock that didn't answer
+/// leaves every pass expired.
+fn read_keys(s: mut Server, at: u64) {
+    if s.keyed {
+        return
+    }
+    s.keyed = true
+    for name in pass::SECRETS {
+        if let Some(bytes) = secret(name) {
+            if let Some(k) = pass::key_of(bytes) {
+                s.keys.push(k)
+            }
+        }
+    }
+    if let Some(ms) = unix_now() {
+        s.epoch = if ms > at { ms - at } else { 0 }
+    }
 }
 
 pub fn serve(s: mut Server, time: f32) {
     let at = u64(time * 1000.0)
+    read_keys(mut s, at)
     var replayed = false
     for e in events() {
         match e {
@@ -405,7 +535,8 @@ pub fn serve(s: mut Server, time: f32) {
                 } else {
                     // A message decides one proposal at most, so it finishes one fight at most:
                     // its outcome is written before the next can replace it.
-                    carry_out(s.room.receive(conn, take bytes, at))
+                    let seen = checked_message(take bytes, s.keys, s.epoch + at)
+                    carry_out(s.room.receive(conn, take seen, at))
                     written(mut s)
                 }
             },
@@ -427,16 +558,31 @@ pub fn serve(s: mut Server, time: f32) {
     }
 }
 
-/// A fight just finished: its outcome, one row, written with the call's records.
+/// A fight just finished: its outcome, one row, written with the call's records; and, won, a row
+/// for each winner whose account signed who it is, for its account to count (`Request::Record`).
+/// When it ended is the room's clock, and the same in a call retried, so a retry writes the
+/// same rows.
 fn written(s: mut Server) {
     let f = s.room.state().clone()
     if f.fights != s.written && f.settled {
-        store::put(key_of(room().as_str(), f.began_at, f.fights), pack(f.outcome.clone()))
+        let name = room()
+        store::put(key_of(name.as_str(), f.began_at, f.fights), pack(f.outcome.clone()))
+        let fight = f.id(name.as_str())
+        let ended = s.epoch + f.finished_at
+        for c in f.winners() {
+            let row = progress::won_row(IDOL, f.outcome.frames, ended)
+            store::put(progress::won_key(c.name(), fight), row)
+        }
     }
     s.written = f.fights
 }
 
 // ---- tests --------------------------------------------------------------------------------------
+
+/// A guest's join (no card), with weapon `weapon`.
+fn joins(weapon: u32) -> Act {
+    Act::Join { weapon, card: NOBODY, seal: sealed(false) }
+}
 
 fn entry(peer: u32, at: u64, value: take Act) -> Entry<Act> {
     Entry { seq: 2, id: std::net::ProposalId { peer, session: 1, counter: 1 }, at, value }
@@ -445,7 +591,7 @@ fn entry(peer: u32, at: u64, value: take Act) -> Entry<Act> {
 /// A fight begun at `at` by the first of `peers`, each having joined just before.
 fn begun(fight: mut Fight, peers: [u32], at: u64) {
     for p in peers {
-        fight.apply(entry(p, at, Act::Join { weapon: LONGSWORD }))
+        fight.apply(entry(p, at, joins(LONGSWORD)))
     }
     let begin = entry(peers[0], at, Act::Begin)
     assert(fight.check(begin.clone()) == Verdict::Accept)
@@ -527,7 +673,7 @@ fn the_players_who_played_a_fight_wait_for_the_next_at_once() {
     var fight = Fight::empty()
     begun(mut fight, [u32(3), 5], 0)
     // Someone else waits in the room during the fight.
-    fight.apply(entry(8, 500, Act::Join { weapon: sim::FISTS }))
+    fight.apply(entry(8, 500, joins(sim::FISTS)))
     let logs = two_logs()
     fight.apply(entry(3, 1000, Act::Log { changes: logs[0].changes.clone(), end: 3000 }))
     fight.apply(entry(5, 1100, Act::Log { changes: logs[1].changes.clone(), end: 3000 }))
@@ -552,7 +698,7 @@ fn a_fighter_is_back_only_a_while_unless_it_says_its_still_there() {
     fight.apply(entry(3, end, Act::Log { changes: logs[0].changes.clone(), end: 3000 }))
     fight.apply(entry(5, end, Act::Log { changes: logs[1].changes.clone(), end: 3000 }))
     // 5's client joins again; 3's never does (its tab closed).
-    fight.apply(entry(5, end + 1000, Act::Join { weapon: LONGSWORD }))
+    fight.apply(entry(5, end + 1000, joins(LONGSWORD)))
     let late = end + AGAIN_MS + 1
     assert(fight.check(entry(3, late, Act::Begin)) == Verdict::Reject(NOT_WAITING), "3 let go")
     let begin = entry(5, late, Act::Begin)
@@ -580,7 +726,7 @@ fn a_full_lobby_keeps_who_waited_and_brings_back_fighters_while_theres_room() {
     begun(mut fight, [u32(1), 2], 0)
     var p: u32 = 10
     while p < 10 + MAX_PARTY - 1 {
-        fight.apply(entry(p, 500, Act::Join { weapon: LONGSWORD }))
+        fight.apply(entry(p, 500, joins(LONGSWORD)))
         p += 1
     }
     let logs = two_logs()
@@ -628,12 +774,12 @@ fn a_fight_no_one_finishes_is_settled_after_the_longest_fight() {
     begun(mut fight, [u32(3)], 1000)
     // Its player leaves without a log: a stranger can't settle it yet, nor begin another.
     assert(fight.check(entry(9, 2000, Act::Settle)) == Verdict::Reject(BAD_LOG))
-    fight.apply(entry(9, 2000, Act::Join { weapon: LONGSWORD }))
+    fight.apply(entry(9, 2000, joins(LONGSWORD)))
     assert(fight.check(entry(9, 2000, Act::Begin)) == Verdict::Reject(NOT_NOW))
     let late = 1000 + FIGHT_MS + SETTLE_MS
     assert(fight.check(entry(9, late, Act::Settle)) == Verdict::Accept)
     fight.apply(entry(9, late, Act::Settle))
-    fight.apply(entry(9, late, Act::Join { weapon: LONGSWORD }))
+    fight.apply(entry(9, late, joins(LONGSWORD)))
     assert(fight.check(entry(9, late, Act::Begin)) == Verdict::Accept)
 }
 
@@ -641,11 +787,11 @@ fn a_fight_no_one_finishes_is_settled_after_the_longest_fight() {
 fn players_wait_in_the_lobby_until_a_fight_begins() {
     var fight = Fight::empty()
     assert(fight.check(entry(3, 0, Act::Begin)) == Verdict::Reject(NOT_WAITING), "only a waiter")
-    fight.apply(entry(3, 0, Act::Join { weapon: LONGSWORD }))
-    fight.apply(entry(3, 1, Act::Join { weapon: LONGSWORD }))
+    fight.apply(entry(3, 0, joins(LONGSWORD)))
+    fight.apply(entry(3, 1, joins(LONGSWORD)))
     assert(fight.lobby.len() == 1, "joining again keeps one place")
-    fight.apply(entry(5, 2, Act::Join { weapon: LONGSWORD }))
-    fight.apply(entry(7, 3, Act::Join { weapon: LONGSWORD }))
+    fight.apply(entry(5, 2, joins(LONGSWORD)))
+    fight.apply(entry(7, 3, joins(LONGSWORD)))
     fight.apply(entry(7, 4, Act::Leave))
     assert(fight.check(entry(7, 5, Act::Leave)) == Verdict::Reject(NOT_WAITING))
     assert(fight.lobby.len() == 2)
@@ -653,21 +799,21 @@ fn players_wait_in_the_lobby_until_a_fight_begins() {
     assert(fight.on() && fight.party.len() == 2 && fight.lobby.len() == 0, "whoever waited")
     // Four waiting fill the lobby; one who joined a minute ago, and said nothing since, doesn't.
     for p in 10..14 {
-        fight.apply(entry(p, 8, Act::Join { weapon: LONGSWORD }))
+        fight.apply(entry(p, 8, joins(LONGSWORD)))
     }
     assert(
-        fight.check(entry(20, 9, Act::Join { weapon: LONGSWORD })) == Verdict::Reject(NOT_WAITING),
+        fight.check(entry(20, 9, joins(LONGSWORD))) == Verdict::Reject(NOT_WAITING),
         "a full lobby",
     )
     for p in 11..14 {
-        fight.apply(entry(p, 30000, Act::Join { weapon: LONGSWORD }))
+        fight.apply(entry(p, 30000, joins(LONGSWORD)))
     }
     let later = 8 + LOBBY_MS
     assert(
-        fight.check(entry(20, later, Act::Join { weapon: LONGSWORD })) == Verdict::Accept,
+        fight.check(entry(20, later, joins(LONGSWORD))) == Verdict::Accept,
         "a place the silent left",
     )
-    fight.apply(entry(20, later, Act::Join { weapon: LONGSWORD }))
+    fight.apply(entry(20, later, joins(LONGSWORD)))
     fight.apply(entry(3, later, Act::Settle))
     assert(fight.check(entry(10, later, Act::Begin)) == Verdict::Reject(NOT_WAITING))
 }
@@ -699,15 +845,14 @@ fn the_logs_of_a_fight_fit_the_state_a_peer_is_sent() {
 fn each_player_fights_with_the_weapon_it_brought() {
     var fight = Fight::empty()
     assert(
-        fight.check(entry(3, 0, Act::Join { weapon: WEAPONS.len() })) ==
-            Verdict::Reject(BAD_WEAPON),
+        fight.check(entry(3, 0, joins(WEAPONS.len()))) == Verdict::Reject(BAD_WEAPON),
         "a weapon that isn't one",
     )
-    fight.apply(entry(3, 0, Act::Join { weapon: sim::FISTS }))
-    fight.apply(entry(5, 1, Act::Join { weapon: LONGSWORD }))
+    fight.apply(entry(3, 0, joins(sim::FISTS)))
+    fight.apply(entry(5, 1, joins(LONGSWORD)))
     // Joining again changes what it brings.
-    fight.apply(entry(3, 2, Act::Join { weapon: LONGSWORD }))
-    fight.apply(entry(3, 3, Act::Join { weapon: sim::FISTS }))
+    fight.apply(entry(3, 2, joins(LONGSWORD)))
+    fight.apply(entry(3, 3, joins(sim::FISTS)))
     fight.apply(entry(5, 4, Act::Begin))
     assert(
         fight.party == Vec::from([u32(5), 3]) && fight.armed == Vec::from([LONGSWORD, sim::FISTS]),
@@ -718,4 +863,96 @@ fn each_player_fights_with_the_weapon_it_brought() {
     let armed: [u32; 2] = [LONGSWORD, sim::FISTS]
     assert(fight.outcome == sim::run_armed(armed, logs.clone()), "the fight its weapons give")
     assert(fight.outcome != sim::run(2, logs), "not the one all longswords give")
+}
+
+/// A join's bytes, as peer 3 proposes it, wearing `card` with `seal`.
+fn join_bytes(card: Card, seal: Seal) -> Vec<u8> {
+    let value = Act::Join { weapon: LONGSWORD, card, seal }
+    pack(Up::<Act>::Propose { peer: 3, session: 1, counter: 2, value })
+}
+
+/// What the room is given for a join's bytes: its seal.
+fn join_seal(bytes: take Vec<u8>) -> Seal {
+    let Ok(Up::Propose { value: Act::Join { seal, .. }, .. }) = unpack::<Up<Act>>(take bytes) else {
+        panic("still a join")
+    }
+    seal
+}
+
+fn test_key() -> [u8; 32] {
+    var secret: Vec<u8> = Vec::new()
+    for i in 0..40 {
+        secret.push(u8(i))
+    }
+    let Some(key) = pass::key_of(secret) else { panic("a key") }
+    key
+}
+
+@test
+fn a_join_is_believed_only_with_a_pass_its_account_signed() {
+    let key = test_key()
+    let name = platform::names::Name { title: 1, front: 2, back: 3, epithet: 4 }
+    let look = platform::wire::Look { build: 1, skin: 2, hair: 3, cloth: 4 }
+    let now: u64 = 1_800_000_000_000
+    let (card, seal) = island::main::worn(pass::sign(key, name, look, now + 1000))
+    assert(join_seal(checked_message(join_bytes(card, seal), [key], now)) == sealed(true))
+    var other = card
+    other.hair = 5
+    let forged = join_seal(checked_message(join_bytes(other, seal), [key], now))
+    assert(forged == sealed(false), "the pass on another card isn't believed")
+    let late = join_seal(checked_message(join_bytes(card, seal), [key], now + 1000))
+    assert(late == sealed(false), "nor an expired pass")
+    let guest = join_seal(checked_message(join_bytes(NOBODY, seal), [key], now))
+    assert(guest == sealed(false), "nor one worn as nobody")
+    let log = pack(
+        Up::<Act>::Propose {
+            peer: 3,
+            session: 1,
+            counter: 2,
+            value: Act::Log { changes: Vec::new(), end: 0 },
+        },
+    )
+    assert(checked_message(log.clone(), [key], now) == log, "anything else goes as it came")
+}
+
+/// A card of name numbers `n`, a valid look.
+fn card_of(n: u32) -> Card {
+    Card::of(
+        platform::names::Name { title: n, front: n, back: n, epithet: n },
+        platform::wire::Look { build: 1, skin: 1, hair: 1, cloth: 1 },
+    )
+}
+
+@test
+fn a_won_fights_winners_are_the_signed_players_who_played_it() {
+    var fight = Fight::empty()
+    // 3 and 5 are signed; 7's card wasn't (its pass didn't check); 9 is a guest.
+    fight.apply(entry(3, 0, Act::Join { weapon: LONGSWORD, card: card_of(1), seal: sealed(true) }))
+    fight.apply(entry(5, 0, Act::Join { weapon: LONGSWORD, card: card_of(2), seal: sealed(true) }))
+    fight.apply(entry(7, 0, Act::Join { weapon: LONGSWORD, card: card_of(3), seal: sealed(false) }))
+    fight.apply(entry(9, 0, joins(LONGSWORD)))
+    assert(fight.signed == Vec::from([true, true, false, false]) && fight.cards[2] == NOBODY)
+    let bad = Act::Join { weapon: LONGSWORD, card: card_of(100000), seal: sealed(true) }
+    assert(
+        fight.check(entry(11, 0, take bad)) == Verdict::Reject(BAD_CARD),
+        "a card past the lists",
+    )
+    fight.apply(entry(3, 1, Act::Begin))
+    assert(fight.named == Vec::from([true, true, false, false]) && fight.faces[0] == card_of(1))
+    let logs = two_logs()
+    // 5 stood still: its log came, with nothing in it.
+    fight.apply(entry(3, 100, Act::Log { changes: logs[0].changes.clone(), end: 3000 }))
+    fight.apply(entry(5, 100, Act::Log { changes: Vec::new(), end: 3000 }))
+    fight.apply(entry(7, 100, Act::Log { changes: logs[1].changes.clone(), end: 3000 }))
+    fight.apply(entry(9, 100, Act::Log { changes: logs[1].changes.clone(), end: 3000 }))
+    assert(fight.settled)
+    fight.outcome.winner = Winner::Party
+    assert(fight.winners() == Vec::from([card_of(1)]), "only the signed player who played")
+    fight.outcome.winner = Winner::Boss
+    assert(fight.winners().is_empty(), "a party that fell won nothing")
+    // Back at the doors, each is still who it was.
+    assert(
+        fight.lobby == Vec::from([u32(3), 7, 9]) && fight.cards[0] == card_of(1) && fight.signed[0],
+    )
+    assert(fight.id("fight-x") == progress::fight_id("fight-x", 1, 1))
 }

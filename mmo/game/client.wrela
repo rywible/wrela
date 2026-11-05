@@ -166,6 +166,8 @@ pub struct Client {
     /// The room time the last fight this player played to its end finished at, once its client
     /// said it's still there for the next (`AGAIN_MS`), and whether it's back at the doors.
     again_for: u64,
+    /// The last fight (by when it finished) this client looked at for a win to record.
+    recorded_for: u64,
     again: bool,
     settle_at: f32,
     time: Option<f32>,
@@ -246,6 +248,7 @@ pub fn init(origin: str) -> Client {
         last_began: 0,
         joined_at: 0.0,
         again_for: 0,
+        recorded_for: 0,
         again: false,
         settle_at: 0.0,
         time: None,
@@ -1010,6 +1013,33 @@ fn maker_open(s: Client) -> bool {
     }
 }
 
+/// A join of the fight room: the longsword, worn as the character, with its account's pass, so
+/// the room knows who won (or as a guest).
+fn join_act(s: Client) -> combat::main::Act {
+    let (card, seal) = match s.character {
+        Some(c) => character::card(c).unwrap_or(
+            (island::main::NOBODY, island::main::sealed(false)),
+        ),
+        None => (island::main::NOBODY, island::main::sealed(false)),
+    }
+    combat::main::Act::Join { weapon: LONGSWORD, card, seal }
+}
+
+/// Whether this player won the last fight as its character: the room wrote it down, so its
+/// account can count it.
+fn won_as_me(s: Client, room: Fight) -> bool {
+    let Some((card, _)) = (match s.character {
+        Some(c) => character::card(c),
+        None => None,
+    }) else { return false }
+    for w in room.winners() {
+        if w == card {
+            return true
+        }
+    }
+    false
+}
+
 /// Tells the island who this player is, until its view shows it: the character's card.
 fn wear(s: mut Client, time: f32) {
     let Some((card, seal)) = (match s.character {
@@ -1171,7 +1201,18 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
         s.again_for = room.finished_at
         s.again = true
         s.joined_at = time
-        propose_fight(mut s, combat::main::Act::Join { weapon: LONGSWORD })
+        propose_fight(mut s, join_act(s))
+    }
+    // A fight this player won as its character: its account records it, once.
+    if me != 0 && room.fought_last(me) && room.finished_at != s.recorded_for {
+        s.recorded_for = room.finished_at
+        if won_as_me(s, room) {
+            let fight = room.id(fight_room(s).as_str())
+            match mut s.character {
+                Some(c) => character::record(mut c, take fight),
+                None => {},
+            }
+        }
     }
     if join && me != 0 {
         s.again = false
@@ -1179,7 +1220,7 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
             propose_fight(mut s, combat::main::Act::Leave)
         } else {
             s.joined_at = time
-            propose_fight(mut s, combat::main::Act::Join { weapon: LONGSWORD })
+            propose_fight(mut s, join_act(s))
         }
     }
     if begin && me != 0 && view.waiting(me) && !view.on() {
@@ -1188,7 +1229,7 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
     // Waiting goes on while this page is open: the lobby forgets a player silent a minute.
     if me != 0 && view.waiting(me) && !view.on() && time - s.joined_at > REJOIN {
         s.joined_at = time
-        propose_fight(mut s, combat::main::Act::Join { weapon: LONGSWORD })
+        propose_fight(mut s, join_act(s))
     }
     // A fight whose players left holds the room: past the longest fight, anyone may settle it.
     if me != 0 && room.on() && slot_of(room.party, me).is_none() && time >= s.settle_at {
@@ -1241,7 +1282,10 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
     match s.character {
         Some(c) => {
             let who = character::line(c)
-            s.note = String::from(f"{who}  {s.note}")
+            let won = if c.recorded.is_empty() { String::new() } else {
+                String::from(f"{c.recorded}  ")
+            }
+            s.note = String::from(f"{won}{who}  {s.note}")
         },
         None => {},
     }
@@ -1280,7 +1324,9 @@ fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
             }
             // Over once every input it was run from is heard (before, a late one may undo it), or
             // five seconds on, when a player who's quiet has likely left.
-            let heard_all = p.link.known() + 1 >= p.world.frame
+            // A party of one hears no one: then nothing is waited for (`known` is `NONE`).
+            let known = p.link.known()
+            let heard_all = known == NONE || known + 1 >= p.world.frame
             if p.world.over && !p.logged && (heard_all || p.frame >= p.world.frame + 300) {
                 p.logged = true
                 // A change at or past the end, made while a late input hadn't ended it yet here,

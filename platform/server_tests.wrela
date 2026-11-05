@@ -3494,3 +3494,73 @@ fn a_character_carries_its_accounts_name_and_a_look_in_range() {
     let (made, _, _) = character(mut h, 1)
     assert(!made && record(h, s, account::CHARACTER).is_none(), "gone")
 }
+
+/// What `Progress` (or a `Record`) answers the account in browser `conn`: its bosses beaten.
+fn beaten_of(rs: [Reply]) -> Vec<wire::Beaten> {
+    let Reply::Progress { beaten } = rs[0].clone() else { panic(f"progress: {why_of(rs[0])}") }
+    beaten
+}
+
+/// A win a room wrote for `name` in fight `fight`, in the instance `server`'s store.
+fn room_wrote(h: mut Host, name: names::Name, fight: [u8], boss: u32, frames: u32, at: u64) {
+    let i = h.instance(progress::ROOMS)
+    put_entry(
+        mut h.instances[i].store,
+        progress::won_key(name, fight),
+        progress::won_row(boss, frames, at),
+    )
+}
+
+@test
+fn a_win_its_room_wrote_is_kept_on_the_account_once() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    let other = sign_up(mut h, 2, 6)
+    let Reply::Character { name, .. } = h.say(1, Request::Character)[0].clone() else {
+        panic("a name")
+    }
+    let Reply::Character { name: theirs, .. } = h.say(2, Request::Character)[0].clone() else {
+        panic("theirs")
+    }
+    assert(beaten_of(h.say(1, Request::Progress)).is_empty(), "nothing yet")
+    assert(refused(h.say(3, Request::Progress)), "not signed in")
+    let first = progress::fight_id("fight-ab", 1000, 1)
+    let second = progress::fight_id("fight-ab", 90000, 2)
+    room_wrote(mut h, name, first, boss: 1, frames: 5400, at: 1_800_000_000_000)
+    room_wrote(mut h, theirs, second, boss: 1, frames: 3000, at: 1_800_000_100_000)
+    // A fight it didn't win, one that isn't a fight, and a forged CSRF are refused.
+    assert(refused(h.say(1, Request::Record { csrf: s.csrf.clone(), fight: second.clone() })))
+    assert(refused(h.say(1, Request::Record { csrf: s.csrf.clone(), fight: Vec::from([1, 2]) })))
+    assert(refused(h.say(1, Request::Record { csrf: Vec::from([1; 16]), fight: first.clone() })))
+    let b = beaten_of(h.say(1, Request::Record { csrf: s.csrf.clone(), fight: first.clone() }))
+    assert(b.len() == 1 && b[0].boss == 1 && b[0].wins == 1 && b[0].best == 5400, "counted")
+    // Asked again, it counts nothing more.
+    let b = beaten_of(h.say(1, Request::Record { csrf: s.csrf.clone(), fight: first.clone() }))
+    assert(b[0].wins == 1, "once")
+    let b = beaten_of(h.say(1, Request::Progress))
+    assert(b.len() == 1 && b[0].first == 1_800_000_000_000, "read back")
+    // A later, quicker win is its best.
+    let third = progress::fight_id("fight-cd", 5, 1)
+    room_wrote(mut h, name, third, boss: 1, frames: 4000, at: 1_800_000_200_000)
+    let b = beaten_of(h.say(1, Request::Record { csrf: s.csrf.clone(), fight: third.clone() }))
+    assert(b[0].wins == 2 && b[0].best == 4000 && b[0].last == 1_800_000_200_000, "a best")
+    // The other account's is its own.
+    let b = beaten_of(h.say(2, Request::Record { csrf: other.csrf.clone(), fight: second.clone() }))
+    assert(b.len() == 1 && b[0].best == 3000, "theirs")
+    // The export says it.
+    let Reply::Export { text, .. } = h.say(
+        1,
+        Request::Export { after: Vec::new() },
+    )[0].clone() else {
+        panic("an export")
+    }
+    assert(text.as_str().find("\"mmo_progress\":[{\"boss\":1,\"wins\":2").is_some(), text.as_str())
+    // Deleted, its wins in the rooms' store go too; the other's stay.
+    assert(h.keys(progress::ROOMS, "won/") == 3, "three rows")
+    let Reply::Done = h.say(1, Request::Delete { csrf: s.csrf.clone() })[0].clone() else {
+        panic("deleted")
+    }
+    h.settle()
+    assert(nothing_left_of(h, s), "nothing of it left")
+    assert(h.keys(progress::ROOMS, "won/") == 1, "only the other's win is left")
+}

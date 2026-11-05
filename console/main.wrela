@@ -2772,9 +2772,9 @@ pub const SIGN_UPS: bool = true
 
 /// The server: the console's, taking the versions of the legal pages and of what posting makes
 /// public that this build shows (legal.wrela), and in a room's instance the MMO's rooms
-/// (mmo/game/rooms.wrela). A room's instance is named `server` (`std::server::SERVER`), a name
-/// the console's own instances never have (theirs are `account/…`, `names/…` and the like, and the
-/// edge's is empty).
+/// (mmo/game/rooms.wrela). A room's instance is named `server` (`std::server::SERVER`), as is the
+/// named instance whose store the rooms share, which the console's engine answers; a room alone
+/// has a room's name (`std::net::room_name`).
 pub struct Served {
     console: console_server::serve::Server,
     rooms: Option<mmo::rooms::Rooms>,
@@ -2797,8 +2797,12 @@ pub fn serve_init() -> Served {
 pub fn serve(s: mut Served, time: f32) {
     if !s.decided {
         s.decided = true
+        // A room answers `me()` as `server` too, and only a room has a name of its own: the
+        // instance `server` itself is the console's (platform/progress.wrela's wins).
         if std::server::me().as_str() == std::server::SERVER {
-            s.rooms = Some(mmo::rooms::init())
+            if let Some(name) = std::net::room_name() {
+                s.rooms = Some(mmo::rooms::of_name(name.as_str()))
+            }
         }
     }
     match mut s.rooms {

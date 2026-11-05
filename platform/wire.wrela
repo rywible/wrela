@@ -175,6 +175,23 @@ pub enum Request: Clone + Serialize {
     SaveCharacter { csrf: Vec<u8>, look: Look },
     /// Lets the account's character go: answered by `Character`, with none.
     RemoveCharacter { csrf: Vec<u8> },
+    /// What the account's character has done in the MMO's fights: answered by `Progress`.
+    Progress,
+    /// Keeps fight `fight` (progress.wrela's `fight_id`: its room, when it began and its number)
+    /// on the account, if its room wrote that the account's character won it: answered by
+    /// `Progress`, with it counted once.
+    Record { csrf: Vec<u8>, fight: Vec<u8> },
+}
+
+/// A boss the account's character has beaten: which (the game's number for it), how many times,
+/// its best time (the fight's frames, at the game's rate), and when it was first and last beaten
+/// (Unix milliseconds).
+pub struct Beaten: Clone + Eq + Serialize {
+    pub boss: u32,
+    pub wins: u32,
+    pub best: u32,
+    pub first: u64,
+    pub last: u64,
 }
 
 /// How many choices each part of a character's look has (`Look`): 0 to `LOOK_CHOICES - 1`.
@@ -307,6 +324,8 @@ pub enum Reply: Clone + Serialize {
     /// account's, by its numbers into the lists, names.wrela) and how it looks; and, made, its
     /// pass (pass.wrela's `Pass`, packed), which a room checks: empty if the server has no key.
     Character { made: bool, name: names::Name, look: Look, pass: Vec<u8> },
+    /// The bosses the account's character has beaten, by boss.
+    Progress { beaten: Vec<Beaten> },
     /// The request isn't one the server takes now: why, said for a person.
     Refused { why: String },
 }

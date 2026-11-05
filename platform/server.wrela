@@ -315,6 +315,9 @@ pub enum Inner: Clone + Serialize {
     Rank { best: Note, ticks: u32, handle: Vec<u8> },
     /// To a search shard: its names that a search's parts match, in the index's order (`Found`).
     Search { title: String, noun: String, epithet: String },
+    /// To the instance `server` (progress.wrela): name `name`'s win of fight `fight`, as its room
+    /// wrote it (`Won`), or none (`Missing`).
+    Won { name: Name, fight: Vec<u8> },
 }
 
 /// A call's reply.
@@ -338,6 +341,10 @@ pub enum Back: Clone + Serialize {
     Rejected { why: String },
     /// Not now: why.
     Refused { why: String },
+    /// A win its room wrote (progress.wrela).
+    Won { won: progress::Won },
+    /// No such thing.
+    Missing,
 }
 
 /// A name a search shard found, and where it is in the index's order.
@@ -370,6 +377,9 @@ pub enum Note: Clone + Serialize {
     /// To an account, from itself: finish its deletion (sent as it's marked, so a deletion an
     /// instance dropped part way is finished by the next).
     Finish,
+    /// To the instance `server`: forget name `name`'s wins (progress.wrela), its account being
+    /// deleted.
+    Forget { name: Name },
     /// Nothing.
     Nothing,
 }
@@ -401,6 +411,8 @@ pub enum Kind: Copy + Eq {
     Search,
     Board,
     Whole,
+    /// The instance `server`, whose store the rooms share (progress.wrela).
+    Rooms,
     /// A name of none of these: it answers nothing.
     Other,
 }
@@ -409,6 +421,9 @@ pub enum Kind: Copy + Eq {
 pub fn kind_of(name: str) -> Kind {
     if name.is_empty() {
         return Kind::Edge
+    }
+    if name == progress::ROOMS {
+        return Kind::Rooms
     }
     let Some(slash) = name.find("/") else { return Kind::Other }
     let kind = name.slice(0, slash)
@@ -662,6 +677,9 @@ pub enum Step: Copy + Eq {
     BestRunsRead,
     CharacterRead,
     CharacterSave,
+    ProgressRead,
+    RecordWon,
+    RecordProgress,
     WatchAccount,
     WatchRun,
     AdmitToken,
@@ -694,6 +712,9 @@ pub enum Step: Copy + Eq {
     AroundCount,
     AroundAbove,
     AroundBelow,
+    // The instance `server` (progress.wrela).
+    WonRead,
+    ForgetScan,
 }
 
 /// The server: one instance of it, the edge or a named one.
@@ -951,6 +972,7 @@ impl<G: Game> Engine<G> {
                 self.shard_called(conn, e.inner)
             },
             Kind::Board | Kind::Whole => self.board_called(conn, e.inner),
+            Kind::Rooms => self.rooms_called(conn, take e.inner),
             _ => self.back(conn, Back::Refused { why: String::from("Nothing here.") }),
         }
     }
@@ -976,6 +998,7 @@ impl<G: Game> Engine<G> {
                 take j,
             ),
             Kind::Board | Kind::Whole => self.board_delivered(take j),
+            Kind::Rooms => self.rooms_delivered(take j),
             _ => self.out.push(Command::Ack { conn }),
         }
     }
@@ -995,6 +1018,7 @@ impl<G: Game> Engine<G> {
                 Kind::Edge => self.edge_answer(take job, bytes),
                 Kind::Account => self.account_answer(take job, bytes),
                 Kind::Board | Kind::Whole => self.board_answer(take job, bytes),
+                Kind::Rooms => self.rooms_answer(take job, bytes),
                 _ => self.shard_answer(take job, bytes),
             },
             None => self.failed(take job),
@@ -1481,6 +1505,7 @@ fn instances_are_named_by_what_they_hold() {
     assert(kind_of("names/3f") == Kind::Names && kind_of("names/40") == Kind::Other)
     assert(kind_of("codes/00") == Kind::Codes && kind_of("replays/1a") == Kind::Replays)
     assert(kind_of("search/w") == Kind::Search && kind_of("search/W") == Kind::Other)
+    assert(kind_of(progress::ROOMS) == Kind::Rooms && kind_of("server/x") == Kind::Other)
     assert(
         kind_of(board_instance("toy", board: 7, course: 1, category: FULL).as_str()) == Kind::Board,
     )

@@ -354,6 +354,22 @@ impl<G: Game> Engine<G> {
                 self.forget(key(CHARACTER, []))
                 self.reply(conn, no_character(a))
             },
+            Request::Progress => {
+                let Some(_) = self.signed_in(conn, None, recovery: true) else { return }
+                self.get(key(progress::PROGRESS, []), Step::ProgressRead, take job)
+            },
+            Request::Record { csrf, fight } => {
+                let Some(_) = self.signed_in(conn, Some(csrf.clone()), recovery: false) else {
+                    return
+                }
+                if !progress::is_fight(fight) {
+                    self.refuse(conn, "That isn't a fight.")
+                    return
+                }
+                // Its room wrote down each winner, by name: the account's own name's row of it.
+                let inner = Inner::Won { name: a.name, fight: fight.clone() }
+                self.ask(progress::ROOMS, take inner, Step::RecordWon, take job)
+            },
             _ => self.refuse(conn, "That isn't something an account answers."),
         }
     }
@@ -1440,6 +1456,51 @@ impl<G: Game> Engine<G> {
                 }
                 self.reply(conn, take reply)
             },
+            Step::ProgressRead => {
+                let p: Option<progress::Progress> = self.latest_as(
+                    key(progress::PROGRESS, []),
+                    answer,
+                )
+                let beaten = match p {
+                    Some(p) => p.beaten.clone(),
+                    None => Vec::new(),
+                }
+                self.reply(conn, Reply::Progress { beaten })
+            },
+            Step::RecordWon => {
+                let back: Option<Back> = read(answer)
+                match back {
+                    Some(Back::Won { won }) => {
+                        j.n = won.boss
+                        j.ticks = won.frames
+                        j.expires = won.at
+                        self.get(key(progress::PROGRESS, []), Step::RecordProgress, take j)
+                    },
+                    Some(Back::Missing) => self.refuse(
+                        conn,
+                        "That fight wasn't won by your character, or its room hasn't said so.",
+                    ),
+                    _ => self.refuse(conn, "Couldn't reach the fights. Try again in a moment."),
+                }
+            },
+            Step::RecordProgress => {
+                let k = key(progress::PROGRESS, [])
+                let was: Option<progress::Progress> = self.latest_as(k, answer)
+                let p = match was {
+                    Some(p) => p.clone(),
+                    None => progress::no_progress(),
+                }
+                let won = progress::Won { boss: j.n, frames: j.ticks, at: j.expires }
+                // Counted once: a fight that ended no later than the last counted counts nothing.
+                let now = match progress::credited(p.clone(), won) {
+                    Some(q) => {
+                        self.keep(key(progress::PROGRESS, []), save(q.clone()))
+                        take q
+                    },
+                    None => take p,
+                }
+                self.reply(conn, Reply::Progress { beaten: now.beaten.clone() })
+            },
             Step::CharacterSave => {
                 let Some(a) = j.account.clone() else { return }
                 let Request::SaveCharacter { look, .. } = j.request else { return }
@@ -2033,6 +2094,8 @@ impl<G: Game> Engine<G> {
         // whoever holds the name next, so none of this account's may land after.
         let unlisted = Note::Listed { handle: self.handle.clone(), revision, listing: Vec::new() }
         self.pend(under("l"), search_instance(letter_of(a.name.front)).as_str(), unlisted)
+        // Its wins, as the rooms wrote them by its name (progress.wrela).
+        self.pend(under("f"), progress::ROOMS, Note::Forget { name: a.name })
         self.keep(under(SWEPT), Vec::from([NAME_KEPT]))
         // The mark that it's gone, kept now, before any of its store is cleared: a clear dropped
         // after its last page still leaves it, so a held sign-up for its handle is refused.
@@ -2171,6 +2234,25 @@ fn export_entry(out: mut String, k: [u8], value: [u8]) {
             Some(c) => one.push_str(
                 f"{{\"build\":{c.look.build},\"skin\":{c.look.skin},\"hair\":{c.look.hair},\"cloth\":{c.look.cloth},\"made\":{c.made},\"changed\":{c.changed}}}",
             ),
+            None => one.push_str("null"),
+        }
+        one.push_str("}")
+    } else if same_bytes(k, under(progress::PROGRESS)) {
+        one.push_str("{\"mmo_progress\":")
+        match read::<progress::Progress>(value) {
+            Some(p) => {
+                one.push_str("[")
+                for i in 0..p.beaten.len() {
+                    borrow b = p.beaten[i]
+                    if i > 0 {
+                        one.push_str(",")
+                    }
+                    one.push_str(
+                        f"{{\"boss\":{b.boss},\"wins\":{b.wins},\"best_frames\":{b.best},\"first\":{b.first},\"last\":{b.last}}}",
+                    )
+                }
+                one.push_str("]")
+            },
             None => one.push_str("null"),
         }
         one.push_str("}")
