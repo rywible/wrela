@@ -1740,6 +1740,9 @@ fn said(
             checked,
             disabled,
             focused,
+            // Each control's ring is drawn here (`focus_ring`), when the keyboard put it there:
+            // the host draws none of its own over it.
+            ringed: control.is_some(),
             level,
         },
     )
