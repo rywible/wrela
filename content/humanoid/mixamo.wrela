@@ -5,7 +5,8 @@
 use std::collections::Vec
 use engine::bvh
 use engine::humanoid
-use engine::humanoid::{Clip, MIXAMO, NO_NAMES, Retarget, Take}
+use engine::humanoid::{Clip, MIXAMO, NO_NAMES, Pose, Retarget, Take}
+
 use engine::playback
 use engine::playback::{Gaits, Move}
 use engine::anime::Look
@@ -151,7 +152,7 @@ pub fn blow_of(m: Move, lo: f32, hi: f32, at: vec3) -> f32 {
 /// A cut timed as an animator would over its mocap (frames `from` to `to` of it, its blow where
 /// its point goes fastest between `lo` and `hi` seconds into those): the last `snap` seconds
 /// into the blow quickened, stopped dead on it for `hold`, the next cut free to come `cancel`
-/// after.
+/// after, its follow-through played `tail` times as fast.
 fn cut_of(
     file: Bytes,
     from: u32,
@@ -163,18 +164,90 @@ fn cut_of(
     quicken: f32,
     hold: f32,
     cancel: f32,
+    tail: f32,
 ) -> Move {
     let m = once_of(file, from, to)
     // (Stopped on the drawing the blade meets its foe, a beat before it's gone fastest past.)
     let blow = max(blow_of(m.clone(), lo, hi, at) - 0.03, 0.0)
-    playback::struck(m, blow, snap, quicken, hold, cancel)
+    playback::struck(m, blow, snap, quicken, hold, cancel, tail)
+}
+
+/// A leaping cut (`cut_of`'s), its body lifted clear of the ground from `up` to `down` seconds
+/// into its frames (the mocap's hop made a leap).
+fn leapt_cut(
+    file: Bytes,
+    from: u32,
+    to: u32,
+    lo: f32,
+    hi: f32,
+    at: vec3,
+    snap: f32,
+    quicken: f32,
+    hold: f32,
+    cancel: f32,
+    tail: f32,
+) -> Move {
+    let m = leapt(once_of(file, from, to), up: 0.27, down: 0.73, height: 0.32)
+    let blow = max(blow_of(m.clone(), lo, hi, at) - 0.03, 0.0)
+    playback::struck(m, blow, snap, quicken, hold, cancel, tail)
 }
 
 /// A hit taken, its knock played quickened (its first `knock` seconds `quicken` times as fast)
 /// and held a moment at its worst.
 fn hit_of(file: Bytes, to: u32, knock: f32) -> Move {
-    let m = once_of(file, 0, to)
-    playback::struck(m, knock, knock, quicken: 3.5, hold: 0.07, cancel: 0.3)
+    var m = once_of(file, 0, to)
+    // The neck and head thrown back no more than half as far as the mocap's (its whiplash reads
+    // as a neck broken, not a blow taken).
+    let rig = HERO.rig.clone()
+    let n = m.clip.bones
+    for name in ["neck", "head"] {
+        let b = rig.find(name)
+        if b != humanoid::NONE {
+            let first = m.clip.turns[b]
+            for f in 1..m.clip.frames {
+                let i = f * n + b
+                m.clip.turns[i] = first.nlerp(m.clip.turns[i], 0.45)
+            }
+        }
+    }
+    playback::struck(m, knock, knock, quicken: 3.5, hold: 0.07, cancel: 0.3, tail: 1.0)
+}
+
+/// `m` with its hips lifted through a leap: from `up` to `down` seconds in, the body rising
+/// `height` (m) at most and falling back, both feet off the ground.
+fn leapt(m: Move, up: f32, down: f32, height: f32) -> Move {
+    var out = m.clone()
+    let fps = out.clip.fps
+    for f in 0..out.clip.frames {
+        let t = f32(f) / fps
+        if t > up && t < down {
+            let x = (t - up) / (down - up)
+            out.clip.hips[f] = out.clip.hips[f] + vec3(0.0, height * sin(3.14159265 * x), 0.0)
+        }
+    }
+    out
+}
+
+/// A pose breathing (`on`, 0 to 1, how much): the chest rising and falling, the trunk's
+/// weight shifting slowly side to side.
+pub fn breathed(p: Pose, time: f32, on: f32) -> Pose {
+    var out = p
+    let rig = HERO.rig.clone()
+    let breath = sin(time * 6.2831853 / 3.4) * on
+    let shift = sin(time * 6.2831853 / 5.3 + 0.7) * on
+    let deg = 0.017453292
+    let turn = |name: str, axis: vec3, a: f32| {
+        let b = rig.find(name)
+        if b != humanoid::NONE {
+            out.turns[b] = out.turns[b].mul(Quat::axis_angle(axis, a * deg))
+        }
+    }
+    turn("spine", vec3(0.0, 0.0, 1.0), 1.6 * shift)
+    turn("chest", vec3(1.0, 0.0, 0.0), -1.8 * breath)
+    turn("upperChest", vec3(1.0, 0.0, 0.0), -1.4 * breath)
+    turn("neck", vec3(1.0, 0.0, 0.0), 2.2 * breath)
+    turn("neck", vec3(0.0, 0.0, 1.0), -1.2 * shift)
+    out
 }
 
 @fuel(2 ** 40)
@@ -222,6 +295,7 @@ pub const MOCAP_ACTS: [Move; 6] = [
         quicken: 1.5,
         hold: 0.07,
         cancel: 0.1,
+        tail: 1.4,
     ),
     // A level cut back across.
     cut_of(
@@ -235,6 +309,7 @@ pub const MOCAP_ACTS: [Move; 6] = [
         quicken: 1.5,
         hold: 0.07,
         cancel: 0.1,
+        tail: 1.4,
     ),
     // The finisher: a spin, round into a cut.
     cut_of(
@@ -248,9 +323,10 @@ pub const MOCAP_ACTS: [Move; 6] = [
         quicken: 1.5,
         hold: 0.1,
         cancel: 0.2,
+        tail: 1.3,
     ),
     // The heavy: a leap, and the blade brought down with it.
-    cut_of(
+    leapt_cut(
         embed("private/great_sword_jump_attack.bvh"),
         from: 8,
         to: 37,
@@ -261,6 +337,7 @@ pub const MOCAP_ACTS: [Move; 6] = [
         quicken: 1.3,
         hold: 0.18,
         cancel: 0.3,
+        tail: 1.0,
     ),
     // Struck, the chest and head knocked back; struck hard, the knees buckling back.
     hit_of(embed("private/great_sword_impact_3.bvh"), 37, 0.45),

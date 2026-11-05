@@ -472,36 +472,6 @@ pub fn hilt_held(
     var w = humanoid::frame_world(rig, p.turns, 0, rig.base.t + rig.base.q.rotate(p.hips))
     let (grip, held) = sword_in_hands(rig, w, aim)
     var f = held
-    // Its blade kept out of the head: a line through the face bent clear of it.
-    let hd = rig.find("head")
-    if hd != NONE && blade > 0.0 {
-        let u = f.rotate(vec3(0.0, 0.0, 1.0))
-        let v = w[hd].t + vec3(0.0, 0.05, 0.0) - grip
-        let along = dot(v, u)
-        let clear = 0.2
-        if along > 0.05 && along < blade {
-            var perp = v - u * along
-            if length(perp) < 1.0e-3 {
-                perp = f.rotate(vec3(1.0, 0.0, 0.0))
-            }
-            let dist = length(perp)
-            if dist < clear {
-                let nu = normalize(u - normalize(perp) * ((clear - dist) / along))
-                f = humanoid::arc(u, nu).mul(f)
-            }
-        }
-    }
-    // Its point kept above the floor (the body's space: the ground at nought): a blade brought
-    // down low stops on the ground, and the hands hold it there.
-    if blade > 0.0 {
-        let u = f.rotate(vec3(0.0, 0.0, 1.0))
-        if grip.y + u.y * blade < 0.04 && grip.y > 0.1 {
-            let want = clamp((0.04 - grip.y) / blade, -1.0, 1.0)
-            let flat = normalize(vec3(u.x, 0.0, u.z) + vec3(0.0, 0.0, 1.0e-4))
-            let nu = normalize(flat * sqrt(max(1.0 - want * want, 0.0)) + vec3(0.0, want, 0.0))
-            f = humanoid::arc(u, nu).mul(f)
-        }
-    }
     let (u0, l0, h0) = (rig.find("leftUpperArm"), rig.find("leftLowerArm"), rig.find("leftHand"))
     if on <= 0.0 || u0 == NONE || l0 == NONE || h0 == NONE {
         return (p, grip, f)
@@ -525,6 +495,36 @@ pub fn hilt_held(
             } else {
                 k += 1
             }
+        }
+    }
+    // Its blade kept out of the head: a line through the face bent clear of it.
+    let hd = rig.find("head")
+    if hd != NONE && blade > 0.0 {
+        let u = f.rotate(vec3(0.0, 0.0, 1.0))
+        let v = w[hd].t + w[hd].q.mul(rw[hd].q.inverse()).rotate(vec3(0.0, 0.1, 0.0)) - grip
+        let along = dot(v, u)
+        let clear = 0.3
+        if along > 0.05 && along < blade {
+            var perp = v - u * along
+            if length(perp) < 1.0e-3 {
+                perp = f.rotate(vec3(1.0, 0.0, 0.0))
+            }
+            let dist = length(perp)
+            if dist < clear {
+                let nu = normalize(u - normalize(perp) * ((clear - dist) / along))
+                f = humanoid::arc(u, nu).mul(f)
+            }
+        }
+    }
+    // Its point kept above the floor (the body's space: the ground at nought): a blade brought
+    // down low stops on the ground, and the hands hold it there.
+    if blade > 0.0 {
+        let u = f.rotate(vec3(0.0, 0.0, 1.0))
+        if grip.y + u.y * blade < 0.04 && grip.y > 0.1 {
+            let want = clamp((0.04 - grip.y) / blade, -1.0, 1.0)
+            let flat = normalize(vec3(u.x, 0.0, u.z) + vec3(0.0, 0.0, 1.0e-4))
+            let nu = normalize(flat * sqrt(max(1.0 - want * want, 0.0)) + vec3(0.0, want, 0.0))
+            f = humanoid::arc(u, nu).mul(f)
         }
     }
     let u = f.rotate(vec3(0.0, 0.0, 1.0))

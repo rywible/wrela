@@ -533,10 +533,19 @@ pub fn timed(m: Move, strike: f32, windup: u32, active: u32, recovery: u32, hz: 
 
 /// `m` (a whole strike at its own pace: mocap) given an animator's timing about its strike
 /// (`strike`, s): its gather as it was, the last `snap` seconds into the blow played `quicken`
-/// times as fast, stopped dead on the blow for `hold` (the hit-stop), and the rest as it was.
+/// times as fast, stopped dead on the blow for `hold` (the hit-stop), and the rest (its follow
+/// through) played `tail` times as fast.
 /// Marked: the tell up to the blow, hitting through the hold and a little after, the recovery
 /// after, and the next move free to cut in `cancel` after the hold.
-pub fn struck(m: Move, strike: f32, snap: f32, quicken: f32, hold: f32, cancel: f32) -> Move {
+pub fn struck(
+    m: Move,
+    strike: f32,
+    snap: f32,
+    quicken: f32,
+    hold: f32,
+    cancel: f32,
+    tail: f32,
+) -> Move {
     borrow src = m.clip
     let len = src.length()
     let fps = src.fps
@@ -545,7 +554,7 @@ pub fn struck(m: Move, strike: f32, snap: f32, quicken: f32, hold: f32, cancel: 
     let gather = snap_from
     let blow = gather + (at - snap_from) / quicken
     let free = blow + hold
-    let total = free + (len - at)
+    let total = free + (len - at) / max(tail, 1.0e-3)
     let n = max(u32(total * fps + 0.5), 2) + 1
     var c = src.clone()
     c.frames = n
@@ -563,7 +572,7 @@ pub fn struck(m: Move, strike: f32, snap: f32, quicken: f32, hold: f32, cancel: 
         } else if t < free {
             at
         } else {
-            at + (t - free)
+            at + (t - free) * tail
         }
         let p = src.pose(min(s, len))
         for b in 0..src.bones {

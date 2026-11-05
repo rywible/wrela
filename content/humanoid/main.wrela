@@ -362,6 +362,13 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
         let (stick, act, upper) = script(s.last, time)
         playback::step(mut s.mover, GAITS, ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
     }
+    // The mocap guard breathes (fully standing, a little through a move).
+    let pose = if SHOW == 15 {
+        let on = if s.mover.acting == humanoid::NONE { 1.0 } else { 0.3 }
+        mixamo::breathed(pose, time, on)
+    } else {
+        pose
+    }
     s.last = time
     (pose, playback::placed(s.mover))
 }
