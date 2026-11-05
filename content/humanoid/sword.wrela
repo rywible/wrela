@@ -228,7 +228,7 @@ fn armed() -> Humanoid {
     for i in first..out.verts.len() {
         out.indices.push(i)
     }
-    // The smear: the blade's line from a third of the way up to its point, at each step's slot,
+    // The smear: the blade's outer half, out to its point, at each step's slot,
     // joined step to step on both faces.
     let rows = 10
     let base = out.verts.len()
@@ -237,7 +237,7 @@ fn armed() -> Humanoid {
             // A crescent: its tail drawn in toward the point, so it tapers back along the
             // way the point went.
             let fade = f32(j) / f32(SMEAR_STEPS - 1)
-            let t = mix(mix(0.3, 1.0, f32(r) / f32(rows)), 1.0, pow(fade, 1.3) * 0.8)
+            let t = mix(mix(0.55, 1.0, f32(r) / f32(rows)), 1.0, pow(fade, 0.8) * 0.97)
             let z = BLADE_FROM + BLADE_LONG * t
             let p = vec3(-0.022 * t * t, 0.0, z)
             let colour = mix(STREAK, vec3(1.0), vec3(fade * 0.5))

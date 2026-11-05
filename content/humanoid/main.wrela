@@ -302,7 +302,9 @@ fn blade_smeared(s: mut State, palette: [mat4; 64]) -> [mat4; 64] {
                 {
                     let m = mixamo::MOCAP_ACTS[act].clone()
                     let hit = m.mark(playback::ACTIVE).unwrap()
-                    s.mover.act_time > hit.from - 0.08 && s.mover.act_time < hit.from - 0.001
+                    // (The classic cut's smeared over its whole snap, its three drawings down.)
+                    let lead = if act == mixamo::M_VERTICAL { hit.from - mixamo::V_GO + 0.001 } else { 0.08 }
+                    s.mover.act_time > hit.from - lead && s.mover.act_time < hit.from - 0.001
                 }
         } else {
             act != humanoid::NONE && blade::sweeps(act) &&
@@ -313,6 +315,10 @@ fn blade_smeared(s: mut State, palette: [mat4; 64]) -> [mat4; 64] {
                 }
         }
         s.smearing = striking && far > 0.3
+    } else if SHOW == 15 && s.mover.acting == mixamo::M_VERTICAL {
+        // Held still (the blow's hit-stop): no smear on a drawing held.
+        let hit = mixamo::MOCAP_ACTS[mixamo::M_VERTICAL].clone().mark(playback::ACTIVE).unwrap()
+        s.smearing = s.smearing && s.mover.act_time < hit.from - 0.001
     }
     // Swept about the chest, not straight across: the hand's place turned round it from
     // where it was drawn to where it's drawn now, its turn along with it.
@@ -320,7 +326,8 @@ fn blade_smeared(s: mut State, palette: [mat4; 64]) -> [mat4; 64] {
     let at_rest = rw[hand].t
     let chest = HERO.rig.find("upperChest")
     // (Mocap's cuts swing from the shoulders and wrists both: swept about the hands' own way.)
-    let pivot = if SHOW == 15 {
+    // (The classic cut sweeps down the middle about the shoulders: its arc in the cut's plane.)
+    let pivot = if SHOW == 15 && s.mover.acting != mixamo::M_VERTICAL {
         ((s.hand_now * vec4(rw[hand].t, 1.0)).xyz + (s.hand_was * vec4(rw[hand].t, 1.0)).xyz) * 0.5
     } else {
         (palette[chest] * vec4(rw[chest].t, 1.0)).xyz
@@ -530,7 +537,8 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         // to the mocap.)
         let cutting = s.mover.acting == mixamo::M_VERTICAL
         let (held, grip, f) = if cutting || ONE == 1 {
-            let t = if cutting { floor(s.mover.act_time * 30.0) / 30.0 } else { 0.0 }
+            // (On the drawing's own count: the sword keyed when the body was last drawn.)
+            let t = if cutting { if ANIME == 1 && s.drawer.on { s.drawer.at } else { s.mover.act_time } } else { 0.0 }
             let on = 1.0
             let w = humanoid::frame_world(rig, shown.turns, 0, rig.base.t + rig.base.q.rotate(shown.hips))
             // Keyed in the body's space, straight ahead at the foe (the trunk's squared to it):
@@ -539,6 +547,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             let chest = w[rig.find("upperChest")].t
             let centre = vec3(w[rig.find("head")].t.x, chest.y, chest.z)
             let (hold, blade, edge) = mixamo::vertical_sword(t)
+            if PROBE == 2 {
+                print(f"time {time:.4} act {s.mover.act_time:.4} at {s.drawer.at:.4} t {t:.4} blade {blade.y:.2} {blade.z:.2}")
+            }
             let u = f.rotate(vec3(0.0, 0.0, 1.0))
             let e = f.rotate(vec3(1.0, 0.0, 0.0))
             keys::sword_keyed(
@@ -568,7 +579,11 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
     // followed where gameplay puts it, which is steady already.
     // The sword's loop is followed lagging, so a dodge's travel shows.
-    s.follow = s.follow + (s.mover.place - s.follow) * (1.0 - exp(-dt / if SHOW == 15 { 0.18 } else { 0.5 }))
+    // (The one cut alone is shot from a camera standing still, so it shows the body's own
+    // travel and holds.)
+    if ONE != 1 || length(s.follow) < 1.0e-6 {
+        s.follow = s.follow + (s.mover.place - s.follow) * (1.0 - exp(-dt / if SHOW == 15 { 0.18 } else { 0.5 }))
+    }
     let hips = if SHOW == 13 || SHOW == 15 { s.follow } else if game { s.mover.place } else {
         steady_hips(time)
     }

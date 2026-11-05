@@ -645,6 +645,31 @@ pub fn sword_keyed(
     var w = humanoid::frame_world(rig, p.turns, 0, rig.base.t + rig.base.q.rotate(p.hips))
     let f = frame_of(blade, edge)
     let u = f.rotate(vec3(0.0, 0.0, 1.0))
+    // The sword drawn back toward the body where it's out of either arm's reach: a hand never
+    // left short of the hilt, the sword floating ahead of it.
+    let rw = rig.rest_world()
+    var at = grip
+    for _ in 0..3 {
+        for side in [-1.0, 1.0] {
+            let name = if side > 0.0 { "left" } else { "right" }
+            let (u0, l0, h0) = (
+                rig.find(f"{name}UpperArm".as_str()),
+                rig.find(f"{name}LowerArm".as_str()),
+                rig.find(f"{name}Hand".as_str()),
+            )
+            if u0 != NONE && l0 != NONE && h0 != NONE {
+                let (g0, f0) = hold_at_rest(rig, side)
+                let hold = if side > 0.0 { at - u * span } else { at }
+                let wrist = hold + f.mul(f0.inverse()).rotate(rw[h0].t - g0)
+                let reach = (length(rw[l0].t - rw[u0].t) + length(rw[h0].t - rw[l0].t)) * 0.985
+                let to = wrist - w[u0].t
+                if length(to) > reach {
+                    at -= normalize(to) * (length(to) - reach)
+                }
+            }
+        }
+    }
+    let grip = at
     arm_onto(rig, mut w, -1.0, grip, f)
     arm_onto(rig, mut w, 1.0, grip - u * span, f)
     var out = p
