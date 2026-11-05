@@ -1724,6 +1724,14 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                         s.cursor = Some(host::cursor(if cursor { "pointer" } else { "default" }))
                     }
                 }
+                // A deploy since this page loaded: the new version loads, back to the same
+                // party (its invite link's fragment), once no fight is being played.
+                if mmo::client::reload_due(m) && !s.update.asked && account::idle(s.account) {
+                    if let Some(fragment) = mmo::client::party_fragment(m) {
+                        s.address = Some(host::replace_address(fragment.as_str()))
+                    }
+                    update::reload_now(mut s.update)
+                }
             },
             None => {},
         }

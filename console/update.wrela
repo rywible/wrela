@@ -129,6 +129,16 @@ pub fn update(u: mut Update, now: f32, safe: bool, active_at: f32) {
     }
 }
 
+/// Reloads now, once: the MMO's server runs another build (`mmo::client::reload_due`), so this
+/// release can't play there, whatever `deploys.json` says yet.
+pub fn reload_now(u: mut Update) {
+    if u.asked {
+        return
+    }
+    u.asked = true
+    u.reload = Some(std::host::reload())
+}
+
 const OWN: Text = "0123456789abcdef0123"
 const LIVE: Text = "fedcba9876543210fedc"
 
