@@ -11,6 +11,7 @@ use engine::ocean::{Ocean, Waves}
 use paint::paint
 use ink::ink
 use row::{Rig, key, let_go, rest, step}
+use std::collections::swap
 use std::input::Event
 use std::gpu::{
     ClipPosition, Rgba16Float, Rgba8, Texture, VertexIndex, begin_pass, begin_pass3, draw, texture,
@@ -29,10 +30,13 @@ pub struct State {
     pub(package) height: u32,
     /// The skiff as the player rows it.
     pub(package) rig: Rig,
-    /// The finished frame, inked, for a program that plays the scene behind its own screen
-    /// (`play`): what `play` draws into, `width` by `height`.
+    /// The last drawing finished, inked, for a program that plays the scene behind its own
+    /// screen (`play`), and its size; and the texture the next is inked into before they swap,
+    /// so `image` is never one half drawn, nor blank while the scene changes size.
     pub image: Texture<Rgba8>,
-    pub(package) imaged: bool,
+    pub(package) image_size: (u32, u32),
+    pub(package) spare: Texture<Rgba8>,
+    pub(package) spare_size: (u32, u32),
     /// The drawing (`sea::held`'s time) last begun for `image`, its shot, and the band of its rows
     /// to paint next (0: none under way).
     pub(package) drawn: f32,
@@ -51,7 +55,9 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         marks: texture(width: width, height: height),
         normal: texture(width: width, height: height),
         image: texture(width: 1, height: 1),
-        imaged: false,
+        image_size: (1, 1),
+        spare: texture(width: 1, height: 1),
+        spare_size: (1, 1),
         drawn: -1.0,
         shot,
         band: 0,
@@ -154,15 +160,15 @@ pub fn scene(width: u32, height: u32) -> State {
 /// is spread over the frames before the next: the scene moves on its own drawings (`HELD` a
 /// second, `sea::held`), so between them nothing in it changes. A new drawing's paint goes in
 /// `bands` bands of rows, one a frame, the ink after the last; `image` holds the last drawing
-/// inked meanwhile. Whether `image` was drawn again.
+/// inked meanwhile. A new size drops the drawing under way and begins one at once. Whether
+/// `image` is a new drawing.
 pub fn play(s: mut State, time: f32, width: u32, height: u32, orbit: f32, bands: u32) -> bool {
     step(mut s.rig, START + time)
-    if !s.imaged || width != s.width || height != s.height {
-        s.image = texture(width: width, height: height)
-        s.imaged = true
+    if width != s.width || height != s.height {
+        sized(mut s, width, height)
         s.band = 0
+        s.drawn = -1.0
     }
-    sized(mut s, width, height)
     let drawing = held(START + time)
     if s.band == 0 {
         if drawing == s.drawn {
@@ -181,8 +187,12 @@ pub fn play(s: mut State, time: f32, width: u32, height: u32, orbit: f32, bands:
         return false
     }
     s.band = 0
+    if s.spare_size != (width, height) {
+        s.spare = texture(width: width, height: height)
+        s.spare_size = (width, height)
+    }
     borrow hv = s.heavens
-    let p = begin_pass(mut s.image, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    let p = begin_pass(mut s.spare, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         p,
         cover,
@@ -190,6 +200,8 @@ pub fn play(s: mut State, time: f32, width: u32, height: u32, orbit: f32, bands:
         vertices: 3,
     )
     p.end()
+    swap(mut s.image, mut s.spare)
+    swap(mut s.image_size, mut s.spare_size)
     true
 }
 

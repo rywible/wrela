@@ -193,7 +193,8 @@ pub struct Console {
     mmo: Option<mmo::client::Client>,
     /// The front page the MMO opens on (mmo/game/front.wrela): the opening playing live behind
     /// the game's name, Play (offline, no account) and Play online, which hands the screen to
-    /// `mmo`'s client. None once it has, or for an invite link, which goes straight online.
+    /// `mmo`'s client. None once it has, for an invite link (which goes straight online), and for
+    /// the games' home (`#games`).
     front: Option<mmo::front::Front>,
     fonts: Fonts,
     renderer: Renderer,
@@ -364,11 +365,17 @@ fn page_icons() -> Vec<Pending<u8>> {
     out
 }
 
-pub fn init() -> Console {
+/// The console's faces: Manrope for words, and Wrela Facet (`Face::Mono`) for display.
+fn faces() -> Fonts {
     var fonts = Fonts::from_baked(MANROPE, facet::FONT)
     // Manrope set a little closer and a little heavier, so short labels hold together.
     fonts.sans.tracking = -0.012
     fonts.sans.weight = 0.012
+    fonts
+}
+
+pub fn init() -> Console {
+    let fonts = faces()
     let renderer = Renderer::new(fonts)
     Console {
         fonts,
@@ -408,7 +415,7 @@ pub fn init() -> Console {
         environment: Some(host::environment()),
         address: Some(host::address()),
         mmo: Some(mmo::client::init(ORIGIN)),
-        front: Some(mmo::front::init()),
+        front: Some(mmo::front::init(faces())),
         pending: None,
         closing: None,
         stale: false,
@@ -1731,6 +1738,9 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
                     mut s.account,
                 ) {
                     mmo::front::Next::Stay { hand } => {
+                        // A hand over the page's actions, and over the account's chip.
+                        let hand = hand
+                        || (!account::shown(s.account) && account::over_chip(s.account))
                         if hand != s.pointing {
                             s.pointing = hand
                             s.cursor = Some(host::cursor(if hand { "pointer" } else { "default" }))

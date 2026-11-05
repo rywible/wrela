@@ -1498,7 +1498,7 @@ pub fn paint(
     var count = 1
     var i = 0
     while i < count {
-        let off = if i == 0 { WITHIN[0] * k0 } else { WITHIN[i] }
+        let off = if i == 0 { WITHIN[0] * k0 * s.fine } else { WITHIN[i] }
         let (ck, mk, tk) = sample(s, light, clouds, view, aerial, dome, cloud, smp, waves, px + off)
         if i == 0 {
             c = ck
