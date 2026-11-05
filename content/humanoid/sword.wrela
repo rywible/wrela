@@ -32,11 +32,12 @@ pub const SLOT: u32 = 55
 pub const SMEAR_SLOT: u32 = 56
 pub const SMEAR_STEPS: u32 = 7
 
-/// Its colours, sRGB: pale steel, darkened bronze, a deep indigo wrap.
+/// Its colours, sRGB: pale steel, darkened bronze, a deep indigo wrap, and the smear a cool
+/// steel wash (dark enough to read as a filled sweep against the paper).
 pub const STEEL = vec3(0.93, 0.95, 0.98)
 pub const BRONZE = vec3(0.36, 0.26, 0.16)
 pub const CORD = vec3(0.52, 0.34, 0.20)
-pub const STREAK = vec3(0.98, 0.97, 0.93)
+pub const STREAK = vec3(0.70, 0.77, 0.88)
 
 /// Its measures (m, along the blade from the right hand's grip): the blade from its collar to
 /// its point, the guard, the hilt down to the pommel.

@@ -34,6 +34,10 @@ pub struct Shot: Copy + GpuData {
     /// 1), and where to: the ink piles its fury along it.
     pub force_from: vec4,
     pub force_to: vec4,
+    /// Where each foot meets the ground (the left's xz, the right's), a shadow pooled under each.
+    pub toes: vec4,
+    /// A prop standing on the ground (its xz, its shadow's radius, and 1 if there's one).
+    pub prop: vec4,
 }
 
 /// The shot of a body standing at `feet`, its left `left`: from `side` of its front (+x its left),
@@ -61,6 +65,8 @@ pub fn shot_at(
         left,
         force_from: vec4(0.0),
         force_to: vec4(0.0),
+        toes: vec4(feet.x, feet.z, feet.x, feet.z),
+        prop: vec4(0.0),
     }
 }
 

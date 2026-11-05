@@ -82,7 +82,14 @@ pub fn paint_ground(g: GroundVertex, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     let cast = band(along, edge: -0.15, soft: 0.1) *
         (1.0 - band(along, reach, 0.4)) *
         (1.0 - band(abs(across), 0.22 + 0.05 * along, 0.08))
-    let pool = 1.0 - band(length(off * vec2(1.0, 1.4)), edge: 0.32, soft: 0.12)
+    // (And a tight dark pool under each foot, so a planted foot reads planted; and under a prop.)
+    let left_pool = 1.0 - band(length((p.xz - shot.toes.xy) * vec2(1.0, 0.75)), edge: 0.13, soft: 0.06)
+    let right_pool = 1.0 - band(length((p.xz - shot.toes.zw) * vec2(1.0, 0.75)), edge: 0.13, soft: 0.06)
+    let prop_pool = shot.prop.w * (1.0 - band(length(p.xz - shot.prop.xy), edge: shot.prop.z, soft: 0.1))
+    let pool = max(
+        max(1.0 - band(length(off * vec2(1.0, 1.4)), edge: 0.32, soft: 0.12), prop_pool * 0.9),
+        max(left_pool, right_pool) * 1.1,
+    )
     let shade = max(cast * 0.7, pool * 0.85)
     // The page: paper with a little tooth, falling off into the wash far away.
     let tooth = noise(p.xz * 3.0) * 0.04

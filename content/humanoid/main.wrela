@@ -694,6 +694,17 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         kinetic,
         left,
     )
+    if SHOW == 15 && ONE == 1 {
+        // (Framed between the hero and the dummy, but the shadow pooled under the hero's own
+        // feet, each foot's (its ball and heel) and the dummy's.)
+        let rw = HERO.rig.rest_world()
+        let lf = (bone_at(bones, rw, "leftFoot") + bone_at(bones, rw, "leftToes")) * 0.5
+        let rf = (bone_at(bones, rw, "rightFoot") + bone_at(bones, rw, "rightToes")) * 0.5
+        shot.feet = vec3((lf.x + rf.x) * 0.5, 0.0, (lf.z + rf.z) * 0.5)
+        shot.toes = vec4(lf.x, lf.z, rf.x, rf.z)
+        let d = (shown_at * vec4(0.0, 0.0, DUMMY_AT, 1.0)).xyz
+        shot.prop = vec4(d.x, d.z, 0.36, 1.0)
+    }
     shot.force_from = vec4(force.from, if force.heavy { 1.0 } else { 0.0 })
     shot.force_to = vec4(force.to, force.by)
     let p = begin_pass3_with_depth(
@@ -1265,9 +1276,8 @@ fn cue_cut(s: mut State, at: mat4) {
     let place = (at * vec4(0.0, 0.0, 0.0, 1.0)).xyz
     let _ = s.cues.push(Cue::Listen { at: place + vec3(-2.5, 1.6, -1.5), forward: vec2(0.6, 0.8) })
     let passed = |t: f32| -> bool { now >= t && was < t }
-    // (The whoosh leads the blade: cued two frames before the snap, so it's heard rising into
-    // the cut and apart from the blow.)
-    if passed(mixamo::V_GO - 2.0 / 60.0) {
+    // (The whoosh with the snap, heard rising into the cut and apart from the blow.)
+    if passed(mixamo::V_GO) {
         let _ = s.cues.push(Cue::Whoosh { at: place + vec3(0.0, 1.6, 0.6), kind: cutsound::SWING, amount: 1.0, seed: 2 })
     }
     if passed(mixamo::V_BLOW) {
