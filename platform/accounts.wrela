@@ -22,12 +22,12 @@
 //   back. A message to itself (`Note::Finish`) finishes a deletion an instance dropped part way.
 
 use account::{
-    ACCOUNT, AGREED, Account, Agreement, CEREMONY_BYTES, CODES, CODE_BYTES, COUNTERS, CSRF_BYTES,
-    Counters, FRESH, GONE, GameToken, HANDLE_BYTES, HELD_BYTES, HOUR, MOST_PASSKEYS, POSTING,
-    POST_BEST, Passkey, PostBest, Posting, REROLLS, SESSION_LIFE, Session, TOKEN_BYTES, TOKEN_LIFE,
-    account_instance, code, code_hash, code_key, hashed, held, held_parts, key, outcome_key,
-    owned_key, part, passkey_key, pending_key, public_id, rate_key, run_key, session_key, spent_key,
-    token_key, u32_at, u64_at, under,
+    ACCOUNT, AGREED, Account, Agreement, CEREMONY_BYTES, CHARACTER, Character, CODES, CODE_BYTES,
+    COUNTERS, CSRF_BYTES, Counters, FRESH, GONE, GameToken, HANDLE_BYTES, HELD_BYTES, HOUR,
+    MOST_PASSKEYS, POSTING, POST_BEST, Passkey, PostBest, Posting, REROLLS, SESSION_LIFE, Session,
+    TOKEN_BYTES, TOKEN_LIFE, account_instance, code, code_hash, code_key, hashed, held, held_parts,
+    key, outcome_key, owned_key, part, passkey_key, pending_key, public_id, rate_key, run_key,
+    session_key, spent_key, token_key, u32_at, u64_at, under,
 }
 use names::{Name, draw}
 use server::{
@@ -85,6 +85,17 @@ pub enum Checked: Clone + Serialize {
 const SWEPT: Text = "y"
 const NAME_KEPT: u8 = 0
 const NAME_RELEASED: u8 = 1
+
+/// The account's character, as `Character` answers it: its name is the account's.
+fn character_of(a: Account, look: wire::Look) -> Reply {
+    Reply::Character { made: true, name: a.name, look }
+}
+
+/// The answer for an account with no character.
+fn no_character(a: Account) -> Reply {
+    let look = wire::Look { build: 0, skin: 0, hair: 0, cloth: 0 }
+    Reply::Character { made: false, name: a.name, look }
+}
 
 fn me_of(a: Account, recovery: bool) -> Me {
     Me {
@@ -307,6 +318,32 @@ impl<G: Game> Engine<G> {
                 self.put(key(POST_BEST, []), PostBest { on, at: self.now })
                 job.n = if on { 1 } else { 0 }
                 self.get(key(POSTING, []), Step::BestRunsRead, take job)
+            },
+            Request::Character => {
+                let Some(_) = self.signed_in(conn, None, recovery: true) else { return }
+                self.get(key(CHARACTER, []), Step::CharacterRead, take job)
+            },
+            Request::SaveCharacter { csrf, look } => {
+                let Some(_) = self.signed_in(conn, Some(csrf.clone()), recovery: false) else {
+                    return
+                }
+                if !a.fixed {
+                    self.refuse(conn, "Keep your name at the console first.")
+                    return
+                }
+                if !look.valid() {
+                    self.refuse(conn, "That look isn't one of the choices.")
+                    return
+                }
+                // When it was made comes from the one there, if there is one.
+                self.get(key(CHARACTER, []), Step::CharacterSave, take job)
+            },
+            Request::RemoveCharacter { csrf } => {
+                let Some(_) = self.signed_in(conn, Some(csrf.clone()), recovery: false) else {
+                    return
+                }
+                self.forget(key(CHARACTER, []))
+                self.reply(conn, no_character(a))
             },
             _ => self.refuse(conn, "That isn't something an account answers."),
         }
@@ -1384,6 +1421,29 @@ impl<G: Game> Engine<G> {
                 }
                 self.done(j)
             },
+            Step::CharacterRead => {
+                let Some(a) = j.account.clone() else { return }
+                let k = key(CHARACTER, [])
+                let c: Option<Character> = self.latest_as(k, answer)
+                let reply = match c {
+                    Some(c) => character_of(a, c.look),
+                    None => no_character(a),
+                }
+                self.reply(conn, take reply)
+            },
+            Step::CharacterSave => {
+                let Some(a) = j.account.clone() else { return }
+                let Request::SaveCharacter { look, .. } = j.request else { return }
+                let k = key(CHARACTER, [])
+                let was: Option<Character> = self.latest_as(k, answer)
+                let made = match was {
+                    Some(c) => c.made,
+                    None => self.now,
+                }
+                let c = Character { look, made, changed: self.now }
+                self.keep(key(CHARACTER, []), save(c))
+                self.reply(conn, character_of(a, look))
+            },
             Step::PostingRead => {
                 let p: Option<Posting> = got(answer)
                 j.n = if self.agreed_to(p) { 1 } else { 0 }
@@ -2093,6 +2153,15 @@ fn export_entry(out: mut String, k: [u8], value: [u8]) {
         one.push_str("{\"posting\":")
         match read::<Posting>(value) {
             Some(p) => one.push_str(f"{{\"agreed_version\":{p.version},\"at\":{p.at}}}"),
+            None => one.push_str("null"),
+        }
+        one.push_str("}")
+    } else if same_bytes(k, under(CHARACTER)) {
+        one.push_str("{\"mmo_character\":")
+        match read::<Character>(value) {
+            Some(c) => one.push_str(
+                f"{{\"build\":{c.look.build},\"skin\":{c.look.skin},\"hair\":{c.look.hair},\"cloth\":{c.look.cloth},\"made\":{c.made},\"changed\":{c.changed}}}",
+            ),
             None => one.push_str("null"),
         }
         one.push_str("}")

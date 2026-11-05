@@ -3417,3 +3417,70 @@ fn no_boards_has_no_courses_and_claims_no_replay() {
     assert(g.claim([0, 1, 2, 3, 4, 5]).is_err(), "a replay is refused")
     assert(g.claim([]).is_err(), "an empty replay is refused")
 }
+
+/// What `Character` answers the account in browser `conn`: whether it has one, and its look.
+fn character(h: mut Host, conn: u32) -> (bool, String, wire::Look) {
+    let Reply::Character { made, name, look } = h.say(conn, Request::Character)[0].clone() else {
+        panic("a character")
+    }
+    (made, names::text(name), look)
+}
+
+@test
+fn a_character_carries_its_accounts_name_and_a_look_in_range() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    let look = wire::Look { build: 1, skin: 2, hair: 3, cloth: 7 }
+    let (made, name, _) = character(mut h, 1)
+    assert(!made && name == s.name, "none yet")
+    assert(refused(h.say(2, Request::Character)), "not signed in")
+    // The name it carries must be kept first.
+    assert(refused(h.say(1, Request::SaveCharacter { csrf: s.csrf.clone(), look })), "not kept")
+    let _ = h.say(1, Request::Keep { csrf: s.csrf.clone() })
+    assert(refused(h.say(1, Request::SaveCharacter { csrf: Vec::from([1; 16]), look })), "csrf")
+    let wide = wire::Look { build: 1, skin: wire::LOOK_CHOICES, hair: 0, cloth: 0 }
+    assert(refused(h.say(1, Request::SaveCharacter { csrf: s.csrf.clone(), look: wide })))
+    let at = h.time
+    let Reply::Character { made: true, .. } = h.say(
+        1,
+        Request::SaveCharacter { csrf: s.csrf.clone(), look },
+    )[0].clone() else {
+        panic("made")
+    }
+    let (made, name, kept) = character(mut h, 1)
+    assert(made && name == s.name && kept == look, "read back")
+    // A change keeps when it was made.
+    h.time += 5000
+    let other = wire::Look { build: 0, skin: 0, hair: 0, cloth: 0 }
+    let _ = h.say(1, Request::SaveCharacter { csrf: s.csrf.clone(), look: other })
+    let Some(v) = record(h, s, account::CHARACTER) else { panic("kept") }
+    let c: Result<account::Character, LoadError> = load(take v)
+    let Ok(c) = c else { panic("a character record") }
+    assert(c.made >= at && c.changed > c.made && c.look == other, "made, then changed")
+    // A save and a read in one call: the read sees the save.
+    let rs = h.together(
+        1,
+        [
+            Request::SaveCharacter { csrf: s.csrf.clone(), look },
+            Request::Character,
+        ],
+    )
+    assert(rs.len() == 2, "both answered")
+    for a in rs {
+        let Reply::Character { look: seen, .. } = a.reply.clone() else { panic("read") }
+        assert(seen == look, "the save seen")
+    }
+    // The export says it.
+    let Reply::Export { text, .. } = h.say(
+        1,
+        Request::Export { after: Vec::new() },
+    )[0].clone() else {
+        panic("an export")
+    }
+    assert(text.as_str().find("\"mmo_character\":{\"build\":1").is_some(), text.as_str())
+    // Let go.
+    let rs = h.say(1, Request::RemoveCharacter { csrf: s.csrf.clone() })
+    let Reply::Character { made: false, .. } = rs[0].clone() else { panic("let go") }
+    let (made, _, _) = character(mut h, 1)
+    assert(!made && record(h, s, account::CHARACTER).is_none(), "gone")
+}

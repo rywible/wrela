@@ -3,3 +3,6 @@
 # peers in the tests speak `std::net`'s protocol directly.
 [package]
 name = "island"
+
+[dependencies]
+platform = { workspace = true }
