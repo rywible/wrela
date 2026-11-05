@@ -876,7 +876,7 @@ fn sea_shade(
         smoothstep(0.3, 0.55, noise(vec2(along * 3.0 - s.held * 4.0, across * 3.0))) *
         way
     // Where the paddle bites: a swirl of foam round the blade, left in the water behind it.
-    let (pg, pb, sunk) = paddle(s)
+    let (_, pb, sunk) = paddle(s)
     let blade_w = s.boat + s.boat_x * pb.x + s.boat_z * pb.z
     let swirl = (1.0 - band(abs(length(xz - vec2(blade_w.x, blade_w.z)) - 0.16), 0.07, 0.04)) *
         smoothstep(0.3, 0.6, noise(xz * 7.0 + vec2(s.held * 2.0))) *

@@ -367,15 +367,6 @@ fn church(p: vec3) -> vec2 {
     arm = max(arm, -rose_cut)
     stone = min(stone, min(arm, rose_bars))
     glass = min(glass, max(rose_o, abs(t.z - 45.0) - 0.08))
-    let tw = window(
-        lancet(t.x - 4.6 * sign(t.x) * step(1.5, abs(t.x)), t.y - 6.0, 1.6, 9.0),
-        t.x,
-        t.y - 6.0,
-        t.z - 45.0,
-        1.0,
-        1.6,
-        9.0,
-    )
     stone = min(stone, sd_box(vec3(abs(t.x) - 10.5, t.y - 24.0, t.z - 44.5), vec3(1.8, 24.0, 1.8)))
     stone = min(stone, sd_spire(vec3(abs(t.x) - 10.5, t.y - 48.0, t.z - 44.5), 1.9, 16.0))
     let gable = max(abs(t.z - 45.6) - 0.6, max(44.0 - t.y, abs(t.x) * 1.45 + t.y - 58.5))
