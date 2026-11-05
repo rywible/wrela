@@ -63,6 +63,8 @@ pub struct Character {
     /// The character's pass, from its account (platform/pass.wrela): the island believes the card
     /// only with it. None until a character is made, or if the server has no key.
     pass: Option<Pass>,
+    /// Whether the request under way is a refresh (`refresh`): one that fails changes nothing.
+    refreshing: bool,
     asked: Option<Pending<u8>>,
 }
 
@@ -79,6 +81,7 @@ pub fn start() -> Character {
         made: false,
         message: String::new(),
         pass: None,
+        refreshing: false,
         asked: None,
     }
     ask(mut c, Request::Me)
@@ -90,6 +93,7 @@ fn ask(c: mut Character, request: Request) {
         name: String::from("content-type"),
         value: String::from("application/octet-stream"),
     }
+    c.refreshing = false
     c.asked = Some(fetch("POST", ACCOUNTS, [take kind], save(request)))
 }
 
@@ -140,6 +144,17 @@ fn reply_of(bytes: [u8]) -> Option<Reply> {
 /// What a reply (or none: out of reach) does to where the character is: the request to make
 /// next, if one is.
 pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
+    if c.refreshing {
+        // A refresh keeps what it had unless the character came back made.
+        c.refreshing = false
+        let fresh = match reply {
+            Some(Reply::Character { made: true, .. }) => true,
+            _ => false,
+        }
+        if !fresh {
+            return None
+        }
+    }
     let Some(reply) = reply else {
         if c.stage == Stage::Saving {
             c.stage = Stage::Making
@@ -199,6 +214,7 @@ pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
 pub fn refresh(c: mut Character) {
     if c.stage == Stage::Ready && c.asked.is_none() {
         ask(mut c, Request::Character)
+        c.refreshing = true
     }
 }
 
@@ -420,6 +436,7 @@ fn blank() -> Character {
         made: false,
         message: String::new(),
         pass: None,
+        refreshing: false,
         asked: None,
     }
 }
@@ -498,6 +515,10 @@ fn no_character_opens_the_maker_and_a_save_plays_as_it() {
             },
         ),
     )
+    // A refresh that fails keeps the character and its pass.
+    c.refreshing = true
+    let _ = heard(mut c, None)
+    assert(c.stage == Stage::Ready && card(c).is_some(), "a failed refresh changes nothing")
     // Changing the look: Escape leaves it as it was.
     change(mut c)
     let _ = maker_input(mut c, dx: 1, dy: 0, enter: false, escape: false)
