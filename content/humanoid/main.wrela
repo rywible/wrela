@@ -77,6 +77,7 @@ pub const SIDE: f32 = 0.75
 pub const SWORD_SIDE: f32 = -0.5
 /// `SHOW=15`: how far the left hand is put on the hilt (0 as the mocap has it).
 pub const HELD: f32 = 1.0
+pub const DEBUG_HEAD: u32 = 0
 
 /// When the sequence moves on (s), and how long a change of clip blends.
 const IDLE_AT: f32 = 2.0
@@ -496,9 +497,19 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             mixamo::AIM,
             mixamo::FIST,
             sword::BLADE_FROM + sword::BLADE_LONG,
+            vec3(0.0, -0.5, 0.85),
+            mixamo::lean_of(s.mover.acting, s.mover.act_time),
         )
         bones = palette(rig, held, shown_at)
         bones[sword::SLOT] = shown_at * keys::sword_matrix(rig, grip, f)
+        if DEBUG_HEAD == 1 && time > 10.05 && time < 10.4 {
+            let w = humanoid::frame_world(rig, held.turns, 0, rig.base.t + rig.base.q.rotate(held.hips))
+            let hd = rig.find("head")
+            let u = f.rotate(vec3(0.0, 0.0, 1.0))
+            let v = w[hd].t - grip
+            let along = dot(v, u)
+            print(f"t {time:.3} grip {grip.x:.2} {grip.y:.2} {grip.z:.2} u {u.x:.2} {u.y:.2} {u.z:.2} head {w[hd].t.x:.2} {w[hd].t.y:.2} {w[hd].t.z:.2} along {along:.2} dist {length(v - u * along):.2}")
+        }
     } else if SHOW == 13 {
         bones[sword::SLOT] = bones[HERO.rig.find("rightHand")]
     } else if SHOW == 14 {

@@ -187,7 +187,7 @@ fn leapt_cut(
     cancel: f32,
     tail: f32,
 ) -> Move {
-    let m = leapt(once_of(file, from, to), up: 0.27, down: 0.73, height: 0.32)
+    let m = leapt(once_of(file, from, to), up: 0.27, down: 0.73, height: 0.45)
     let blow = max(blow_of(m.clone(), lo, hi, at) - 0.03, 0.0)
     playback::struck(m, blow, snap, quicken, hold, cancel, tail)
 }
@@ -210,7 +210,7 @@ fn hit_of(file: Bytes, to: u32, knock: f32) -> Move {
             }
         }
     }
-    playback::struck(m, knock, knock, quicken: 3.5, hold: 0.07, cancel: 0.3, tail: 1.0)
+    playback::struck(m, knock, knock, quicken: 3.5, hold: 0.07, cancel: 0.3, tail: 1.4)
 }
 
 /// `m` with its hips lifted through a leap: from `up` to `down` seconds in, the body rising
@@ -222,7 +222,7 @@ fn leapt(m: Move, up: f32, down: f32, height: f32) -> Move {
         let t = f32(f) / fps
         if t > up && t < down {
             let x = (t - up) / (down - up)
-            out.clip.hips[f] = out.clip.hips[f] + vec3(0.0, height * sin(3.14159265 * x), 0.0)
+            out.clip.hips[f] = out.clip.hips[f] + vec3(0.0, height * pow(sin(3.14159265 * x), 0.6), 0.0)
         }
     }
     out
@@ -242,9 +242,10 @@ pub fn breathed(p: Pose, time: f32, on: f32) -> Pose {
             out.turns[b] = out.turns[b].mul(Quat::axis_angle(axis, a * deg))
         }
     }
-    turn("spine", vec3(0.0, 0.0, 1.0), 1.6 * shift)
-    turn("chest", vec3(1.0, 0.0, 0.0), -1.8 * breath)
-    turn("upperChest", vec3(1.0, 0.0, 0.0), -1.4 * breath)
+    turn("spine", vec3(0.0, 0.0, 1.0), 2.6 * shift)
+    turn("chest", vec3(1.0, 0.0, 0.0), -3.0 * breath)
+    turn("upperChest", vec3(1.0, 0.0, 0.0), -2.2 * breath)
+    turn("rightHand", vec3(1.0, 0.0, 0.0), 3.0 * breath)
     turn("neck", vec3(1.0, 0.0, 0.0), 2.2 * breath)
     turn("neck", vec3(0.0, 0.0, 1.0), -1.2 * shift)
     out
@@ -300,10 +301,10 @@ pub const MOCAP_ACTS: [Move; 6] = [
     // A level cut back across.
     cut_of(
         embed("private/great_sword_slash_3.bvh"),
-        from: 17,
+        from: 11,
         to: 42,
-        lo: 0.1,
-        hi: 0.6,
+        lo: 0.45,
+        hi: 0.62,
         at: vec3(0.0, -0.1, 1.0),
         snap: 0.1,
         quicken: 1.5,
@@ -330,8 +331,8 @@ pub const MOCAP_ACTS: [Move; 6] = [
         embed("private/great_sword_jump_attack.bvh"),
         from: 8,
         to: 37,
-        lo: 0.5,
-        hi: 1.1,
+        lo: 0.8,
+        hi: 0.93,
         at: vec3(0.0, -0.75, 0.65),
         snap: 0.16,
         quicken: 1.3,
@@ -353,6 +354,16 @@ pub const MOCAP_LOOKS: [Look; 6] = [
     Look {},
     Look {},
 ]
+
+/// How far a hit taken drops the guard's point forward and down (0 to 1), `time` into act
+/// `act`: at once as it lands, eased back up as it ends.
+pub fn lean_of(act: u32, time: f32) -> f32 {
+    if act != M_HIT && act != M_HIT_HARD {
+        return 0.0
+    }
+    let len = MOCAP_ACTS[act].length()
+    0.85 * smoothstep(0.0, 0.08, time) * (1.0 - smoothstep(len - 0.4, len - 0.05, time))
+}
 
 /// Whether an act is a cut (its blade smeared through its strike).
 pub fn sweeps(act: u32) -> bool {

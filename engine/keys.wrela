@@ -458,6 +458,8 @@ pub fn hilt_held(
     aim: vec3,
     fist: Pose,
     blade: f32,
+    lean: vec3,
+    lean_on: f32,
 ) -> (Pose, vec3, Quat) {
     let nb = rig.bones.len()
     let rw = rig.rest_world()
@@ -496,6 +498,13 @@ pub fn hilt_held(
                 k += 1
             }
         }
+    }
+    // Its point leant `lean`'s way (`lean_on`, 0 to 1): a guard dropped forward and down as
+    // the body folds round a hit, the blade kept off the face.
+    if lean_on > 0.0 {
+        let u = f.rotate(vec3(0.0, 0.0, 1.0))
+        let nu = normalize(mix(u, normalize(lean), saturate(lean_on)))
+        f = humanoid::arc(u, nu).mul(f)
     }
     // Its blade kept out of the head: a line through the face bent clear of it.
     let hd = rig.find("head")
