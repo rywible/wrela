@@ -627,6 +627,7 @@ pub fn frame<A: Account>(
             island_frame(mut s, pad, dt, time, pressed_join, pressed_begin, pressed_mark)
         }
     }
+    still_here(mut s, time)
     draw(mut s, width, height, mut account)
     if !title_shown(s) || account.shown() {
         return Some(false)
@@ -711,6 +712,30 @@ fn title_event<A: Account>(s: mut Client, e: Event, account: mut A) {
         account.open(false)
     } else if c == AS_GUEST {
         s.guest = true
+    }
+}
+
+/// Tells the island this player is still there (a step of nothing) when it said nothing else for
+/// a while, in the maker and in a fight too: a body quiet too long isn't shown (`Island::present`).
+fn still_here(s: mut Client, time: f32) {
+    if s.said {
+        s.said = false
+        s.here_at = time + HERE_EVERY
+    } else if s.island_conn.open && time >= s.here_at && !title_shown(s) {
+        propose_island(mut s, island::main::Act::Step { dx: 0, dz: 0 })
+    }
+}
+
+/// Closes what the client opened: its rooms and the relay. The page shows something else.
+pub fn close_all(s: mut Client) {
+    if s.island_conn.open || s.island_conn.opening {
+        close(ISLAND)
+    }
+    if s.fight_conn.open || s.fight_conn.opening {
+        close(FIGHT)
+    }
+    if s.relay_conn.open || s.relay_conn.opening {
+        close(RELAY)
     }
 }
 
@@ -846,13 +871,6 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
         propose_island(mut s, island::main::Act::Place)
     }
     wear(mut s, time)
-    // Still here: a step of nothing, when nothing else was said for a while (`Island::present`).
-    if s.said {
-        s.said = false
-        s.here_at = time + HERE_EVERY
-    } else if s.island_conn.open && time >= s.here_at && !title_shown(s) {
-        propose_island(mut s, island::main::Act::Step { dx: 0, dz: 0 })
-    }
     // The fight room: wait, stop waiting, begin; and a fight that began for this player.
     let (me, view, room) = match s.fight {
         Some(l) => (l.peer(), l.view().clone(), l.committed().clone()),

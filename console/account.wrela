@@ -241,6 +241,7 @@ pub struct Accounts {
     code_seen: u32 = 0,
     code_read: Option<Pending<u8>> = None,
     code_sent: String = String::new(),
+    code_wanted: bool = false,
     /// The recovery codes were downloaded: saving them is the next step.
     codes_kept: bool = false,
 }
@@ -708,10 +709,19 @@ pub fn set_view(a: mut Accounts, zoom: f32, reduced: bool, semantics: bool) {
     a.in_game = true
 }
 
-/// The console started its one voice (the home's themes): the knighting's fanfare stays silent,
-/// since a program that starts a second voice traps.
-pub fn voice_taken(a: mut Accounts) {
+/// Takes the program's one voice for the console's themes, if the knighting's fanfare hasn't:
+/// then the fanfare stays silent, since a program that starts a second voice traps.
+pub fn take_voice(a: mut Accounts) -> bool {
+    if a.voice {
+        return false
+    }
     a.voice = true
+    true
+}
+
+/// The page shows the games' home, not the MMO: the account's words and steps are the home's.
+pub fn left_game(a: mut Accounts) {
+    a.in_game = false
 }
 
 // The account over the MMO (mmo/game/client.wrela's `Account`): its chip in the corner, and its
@@ -1194,10 +1204,34 @@ pub fn animating(a: Accounts) -> bool {
 
 const NO_FOCUS: u32 = 4294967295
 
+/// The control after the focused one (the first, if none is focused).
+fn next_focus(a: Accounts) -> u32 {
+    if a.shown.is_empty() {
+        0
+    } else if a.focus == NO_FOCUS { 0 } else { (a.focus + 1) % a.shown.len() }
+}
+
+/// The control before the focused one (the last, if none is focused).
+fn previous_focus(a: Accounts) -> u32 {
+    if a.shown.is_empty() {
+        0
+    } else if a.focus == NO_FOCUS {
+        a.shown.len() - 1
+    } else { (a.focus + a.shown.len() - 1) % a.shown.len() }
+}
+
 fn open_page(a: mut Accounts, page: Page) {
     a.page = page
     // The recovery code's page has its field focused, not a button.
     a.focus = if page == Page::Recover { NO_FOCUS } else { 0 }
+    if page == Page::Recover {
+        // A new field: its revisions start again.
+        a.code_heard = 0
+        a.code_seen = 0
+        a.code_read = None
+        a.code_sent.clear()
+        a.code_wanted = false
+    }
     a.message.clear()
     a.scroll = 0.0
     a.dirty = true
@@ -1341,6 +1375,15 @@ fn act(a: mut Accounts, x: Act) {
             open_page(mut a, Page::Recover)
         },
         Act::SubmitCode => {
+            if a.code_heard > a.code_seen || a.code_read.is_some() {
+                // The field has text not yet read (a paste, a password manager): sent once read.
+                a.doing = None
+                a.busy = false
+                a.code_wanted = true
+                return
+            }
+            a.code_wanted = false
+            a.code_sent = a.typed.clone()
             request(mut a, Request::Recover { code: a.typed.clone() }, Purpose::Other)
         },
         Act::Keep => {
@@ -1511,20 +1554,23 @@ pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
             if key == Key::Escape && !knighting {
                 act(mut a, Act::Back)
             } else if key == Key::Enter && !repeat && !knighting {
-                if a.focus < a.shown.len() {
+                if a.focus == NO_FOCUS && a.page == Page::Recover {
+                    // Enter in the code's field signs in.
+                    act(mut a, Act::SubmitCode)
+                } else if a.focus < a.shown.len() {
                     act(mut a, a.shown[a.focus].0)
                 }
             } else if key == Key::Down || key == Key::Right || (key == Key::Tab && !mods.shift) {
                 if a.page == Page::Legal && key == Key::Down {
                     a.scroll += 40.0
                 } else {
-                    a.focus = if a.shown.is_empty() { 0 } else { (a.focus + 1) % a.shown.len() }
+                    a.focus = next_focus(a)
                 }
             } else if key == Key::Up || key == Key::Left || (key == Key::Tab && mods.shift) {
                 if a.page == Page::Legal && key == Key::Up {
                     a.scroll = max(a.scroll - 40.0, 0.0)
                 } else if !a.shown.is_empty() {
-                    a.focus = (a.focus + a.shown.len() - 1) % a.shown.len()
+                    a.focus = previous_focus(a)
                 }
             } else if key == Key::Backspace && a.page == Page::Recover {
                 let n = a.typed.len()
@@ -1549,10 +1595,10 @@ pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
             } else if button == PadButton::East && !knighting {
                 act(mut a, Act::Back)
             } else if button == PadButton::Down || button == PadButton::Right {
-                a.focus = if a.shown.is_empty() { 0 } else { (a.focus + 1) % a.shown.len() }
+                a.focus = next_focus(a)
             } else if button == PadButton::Up || button == PadButton::Left {
                 if !a.shown.is_empty() {
-                    a.focus = (a.focus + a.shown.len() - 1) % a.shown.len()
+                    a.focus = previous_focus(a)
                 }
             }
         },
@@ -2488,7 +2534,9 @@ pub fn draw(
     if a.page != Page::Legal {
         legal_row(mut a, mut d, fonts, x, sheet.bottom() - 52.0, iw, zoom)
     }
-    a.focus = min(a.focus, max(a.controls.len(), 1) - 1)
+    if a.focus != NO_FOCUS {
+        a.focus = min(a.focus, max(a.controls.len(), 1) - 1)
+    }
     a.shown = a.controls.clone()
 }
 
@@ -2520,8 +2568,8 @@ fn read_code(a: mut Accounts) {
             letters += 1
         }
     }
-    if letters == 16 && !a.busy && a.typed != a.code_sent {
-        a.code_sent = a.typed.clone()
+    let caught_up = a.code_read.is_none() && a.code_heard <= a.code_seen
+    if caught_up && !a.busy && (a.code_wanted || (letters == 16 && a.typed != a.code_sent)) {
         act(mut a, Act::SubmitCode)
     }
 }

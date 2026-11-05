@@ -162,14 +162,16 @@ impl Island {
                 continue
             }
             var newer = false
-            for k in 0..self.bodies.len() {
-                borrow o = self.bodies[k]
-                if k != i &&
-                    b.worn &&
-                    o.worn &&
-                    o.card == b.card &&
-                    (o.seen > b.seen || (o.seen == b.seen && k > i)) {
-                    newer = true
+            if b.worn {
+                for k in 0..self.bodies.len() {
+                    borrow o = self.bodies[k]
+                    if k != i &&
+                        o.worn &&
+                        o.card == b.card &&
+                        (o.seen > b.seen || (o.seen == b.seen && k > i)) {
+                        newer = true
+                        break
+                    }
                 }
             }
             if !newer {

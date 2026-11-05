@@ -851,7 +851,13 @@ fn near_cover(index: u32, selected: u32) -> bool {
 fn update(s: mut Console) {
     if let Some(Ok(bytes)) = answer_of(mut s.address) {
         if is_games(bytes) {
+            // The games' home instead: the MMO's first frames let go of what they opened.
+            match mut s.mmo {
+                Some(m) => mmo::client::close_all(mut m),
+                None => {},
+            }
             s.mmo = None
+            account::left_game(mut s.account)
         }
         // The answer to the replacement is empty, so this happens once.
         if let Some(kept) = without_fragment(bytes) {
@@ -903,13 +909,15 @@ fn update(s: mut Console) {
             ),
         }
     }
-    if s.need_open && s.profile_ready && s.step == Step::Idle {
+    // The MMO's page opens no game of the home's, and fetches none of its art.
+    let home = s.mmo.is_none()
+    if home && s.need_open && s.profile_ready && s.step == Step::Idle {
         for i in 0..s.cards.len() { if s.cards[i].id == s.profile.game { s.selected = i } }
         open_selected(mut s)
     }
     // Only covers near the selection hold textures or requests, and only the chosen game's hero
     // and title art (and the one easing out's).
-    for i in 0..s.cards.len() {
+    for i in 0..(if home { s.cards.len() } else { 0 }) {
         borrow card = s.cards[i]
         let chosen = i == s.selected || i == s.title_shown
         let near = near_cover(i, s.selected)
@@ -2180,8 +2188,9 @@ fn voice_send(voice: mut Option<RingWriter<Cue>>, t: Theme) -> bool {
 fn drive_theme(s: mut Console, library: f32) {
     if s.cards.is_empty() { return }
     if s.voice.is_none() {
+        // The fanfare of a sign-up may have taken the program's one voice: then the home is quiet.
+        if !account::take_voice(mut s.account) { return }
         s.voice = Some(theme::start())
-        account::voice_taken(mut s.account)
     }
     let chosen = s.selected
     if s.theme_of != Some(chosen) {
