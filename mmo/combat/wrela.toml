@@ -3,3 +3,7 @@
 # inputs go between the players over the room's relay (std::net::relay), never through the room.
 [package]
 name = "combat"
+
+[dependencies]
+island = { workspace = true }
+platform = { workspace = true }

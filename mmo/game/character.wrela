@@ -7,12 +7,15 @@
 // Signed out, with a name not yet kept, or with the server out of reach, the player plays as a
 // guest (a wanderer, unnamed) and is told why. Signed in with no character, the client opens the
 // maker first; once it's made, the look can be changed again (C on the island).
+//
+// Its progress is the account's too (platform/progress.wrela): the bosses it beat, read once the
+// character is ready, and a fight it won recorded as soon as its room settles it (`record`).
 
 use island::main::{Card, Seal, worn}
 use platform::names
 use platform::pass::Pass
 use platform::names::Name
-use platform::wire::{ACCOUNTS, LOOK_CHOICES, Look, Reply, Request}
+use platform::wire::{ACCOUNTS, Beaten, LOOK_CHOICES, Look, Reply, Request}
 use std::http::{Header, fetch, response}
 use std::io::Pending
 use std::pack::unpack
@@ -66,6 +69,15 @@ pub struct Character {
     /// Whether the request under way is a refresh (`refresh`): one that fails changes nothing.
     refreshing: bool,
     asked: Option<Pending<u8>>,
+    /// The bosses it has beaten, as its account last said; and the progress request under way.
+    pub beaten: Vec<Beaten>,
+    progress: Option<Pending<u8>>,
+    /// Whether the request under way records a fight won (then its answer is said); whether the
+    /// bosses beaten are yet to be asked.
+    recording: bool,
+    wants_progress: bool,
+    /// What came of the last fight won, for the player.
+    pub recorded: String,
 }
 
 pub fn start() -> Character {
@@ -83,18 +95,95 @@ pub fn start() -> Character {
         pass: None,
         refreshing: false,
         asked: None,
+        beaten: Vec::new(),
+        progress: None,
+        recording: false,
+        wants_progress: false,
+        recorded: String::new(),
     }
     ask(mut c, Request::Me)
     c
 }
 
-fn ask(c: mut Character, request: Request) {
+fn posted(request: Request) -> Pending<u8> {
     let kind = Header {
         name: String::from("content-type"),
         value: String::from("application/octet-stream"),
     }
+    fetch("POST", ACCOUNTS, [take kind], save(request))
+}
+
+fn ask(c: mut Character, request: Request) {
     c.refreshing = false
-    c.asked = Some(fetch("POST", ACCOUNTS, [take kind], save(request)))
+    c.asked = Some(posted(request))
+}
+
+/// Asks the account to record fight `fight` (combat's `Fight::id`), which its room says this
+/// character won: once it's ready, whatever else is asked.
+pub fn record(c: mut Character, fight: Vec<u8>) {
+    if c.stage != Stage::Ready || c.csrf.is_empty() {
+        return
+    }
+    c.recording = true
+    c.recorded = String::from("Recording the win on your account…")
+    c.progress = Some(posted(Request::Record { csrf: c.csrf.clone(), fight: fight.clone() }))
+}
+
+/// What a fight's frames (`sim::HZ` a second) read as: minutes and seconds.
+pub fn clock(frames: u32) -> String {
+    let seconds = frames / combat::sim::HZ
+    let s = seconds % 60
+    let pad = if s < 10 { "0" } else { "" }
+    String::from(f"{seconds / 60}:{pad}{s}")
+}
+
+/// What the player is told of its bosses beaten: the idol's wins and best time, if any.
+pub fn beaten_line(beaten: [Beaten]) -> String {
+    for b in beaten {
+        if b.boss == 1 {
+            let times = if b.wins == 1 { String::from("once") } else {
+                String::from(f"{b.wins} times")
+            }
+            return String::from(f"Idol beaten {times}, best {clock(b.best)}.")
+        }
+    }
+    String::new()
+}
+
+/// Polls the progress request under way.
+fn update_progress(c: mut Character) {
+    let answer = match mut c.progress {
+        Some(p) => p.poll(),
+        None => None,
+    }
+    let Some(result) = answer else { return }
+    c.progress = None
+    let reply = match result {
+        Ok(bytes) => reply_of(bytes),
+        Err(_) => None,
+    }
+    heard_progress(mut c, reply)
+}
+
+/// What a progress reply (or none: out of reach) does: the bosses beaten, and for a recording,
+/// what came of it.
+pub fn heard_progress(c: mut Character, reply: Option<Reply>) {
+    let recording = c.recording
+    c.recording = false
+    match reply {
+        Some(Reply::Progress { beaten }) => {
+            c.beaten = beaten.clone()
+            if recording {
+                c.recorded = String::from("Win recorded on your account.")
+            }
+        },
+        Some(Reply::Refused { why }) => if recording {
+            c.recorded = String::from(f"The win wasn't recorded: {why}")
+        },
+        _ => if recording {
+            c.recorded = String::from("The win wasn't recorded: your account couldn't be reached.")
+        },
+    }
 }
 
 /// The card the island is told, with its pass: the character's, once it's ready and its account
@@ -114,8 +203,9 @@ fn pass_for(bytes: [u8], name: Name, look: Look) -> Option<Pass> {
     if p.name() == name && p.look() == look { Some(p) } else { None }
 }
 
-/// Polls the request under way.
+/// Polls the requests under way.
 pub fn update(c: mut Character) {
+    update_progress(mut c)
     let answer = match mut c.asked {
         Some(p) => p.poll(),
         None => None,
@@ -128,6 +218,10 @@ pub fn update(c: mut Character) {
     }
     if let Some(next) = heard(mut c, reply) {
         ask(mut c, next)
+    }
+    if c.wants_progress && c.progress.is_none() {
+        c.wants_progress = false
+        c.progress = Some(posted(Request::Progress))
     }
 }
 
@@ -188,6 +282,7 @@ pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
                 c.look = look
                 c.making = look
                 c.stage = Stage::Ready
+                c.wants_progress = c.beaten.is_empty()
             } else {
                 c.stage = Stage::Making
             }
@@ -321,7 +416,11 @@ pub fn line(c: Character) -> String {
             Why::NotMade => String::from("Playing as a guest. C makes your character."),
         },
         Stage::Making | Stage::Saving => String::from("Making your character"),
-        Stage::Ready => String::from(f"{names::text(c.name)}. C changes your look."),
+        Stage::Ready => {
+            let beaten = beaten_line(c.beaten)
+            let gap = if beaten.is_empty() { "" } else { " " }
+            String::from(f"{names::text(c.name)}.{gap}{beaten} C changes your look.")
+        },
     }
 }
 
@@ -438,7 +537,31 @@ fn blank() -> Character {
         pass: None,
         refreshing: false,
         asked: None,
+        beaten: Vec::new(),
+        progress: None,
+        recording: false,
+        wants_progress: false,
+        recorded: String::new(),
     }
+}
+
+@test
+fn a_win_recorded_is_said_with_the_best_time() {
+    var c = blank()
+    c.stage = Stage::Ready
+    let b = Beaten { boss: 1, wins: 2, best: 60 * 75, first: 1, last: 2 }
+    assert(clock(60 * 75) == "1:15" && clock(60 * 5) == "0:05")
+    c.recording = true
+    heard_progress(mut c, Some(Reply::Progress { beaten: Vec::from([take b]) }))
+    assert(c.recorded == "Win recorded on your account.", c.recorded.as_str())
+    assert(line(c).find("Idol beaten 2 times").is_some(), "and it's in the line")
+    c.recording = true
+    heard_progress(mut c, Some(Reply::Refused { why: String::from("No.") }))
+    assert(c.recorded == "The win wasn't recorded: No." && c.beaten.len() == 1, "kept")
+    // A plain read says nothing of a recording.
+    c.recorded = String::new()
+    heard_progress(mut c, Some(Reply::Progress { beaten: Vec::new() }))
+    assert(c.recorded.is_empty() && c.beaten.is_empty())
 }
 
 @test
