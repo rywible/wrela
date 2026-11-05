@@ -869,7 +869,7 @@ pub fn step(
         let q = Quat::axis_angle(vec3(0.0, 1.0, 0.0), m.heading)
         m.place += q.rotate(d)
         m.heading = wrapped(m.heading + turn)
-        m.carried = length(vec2(d.x, d.z)) / max(dt, 1.0e-4)
+        m.carried = length(vec2(d.x, d.z)) / max(t1 - t0, 1.0e-4)
         m.through = m.through + dt
         if starting {
             m.speed = m.carried
@@ -881,7 +881,10 @@ pub fn step(
             } else if m.through >= len {
                 next_doing = GOING
                 next_phase = g.start_exit
-                m.speed = max(m.carried, g.walk.speed * how.slowest)
+                // On at the pace the actor's feet were going as he hit his stride.
+                let len = g.start.length()
+                let (late, _) = g.start.root_between(len - 0.25, len)
+                m.speed = max(length(vec2(late.x, late.z)) / 0.25, g.walk.speed * how.slowest)
                 change = true
                 m.half = how.change_half
             }
