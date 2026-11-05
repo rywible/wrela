@@ -14,4 +14,5 @@ sha256 6cf2fcba98c7dc5c827896edccc16a8a9444350a8833a24e8ac7f6267c81cab3
 Changes made here: none to the file. engine::humanoid rests it as the actor's first frame
 standing (its skeleton's own rest isn't a pose), retargets it onto the Quaternius body at build
 time (turned to face +z, scaled by the legs' lengths, looped, its feet kept as flat as the
-body's own) and engine::cleanup cleans it.
+body's own and its neck and head carried as the body's on average) and engine::cleanup cleans
+it.
