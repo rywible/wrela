@@ -187,7 +187,7 @@ fn leapt_cut(
     cancel: f32,
     tail: f32,
 ) -> Move {
-    let m = leapt(once_of(file, from, to), up: 0.27, down: 0.73, height: 0.45)
+    let m = leapt(once_of(file, from, to), up: 0.27, down: 0.73, height: 0.4)
     let blow = max(blow_of(m.clone(), lo, hi, at) - 0.03, 0.0)
     playback::struck(m, blow, snap, quicken, hold, cancel, tail)
 }
@@ -222,7 +222,7 @@ fn leapt(m: Move, up: f32, down: f32, height: f32) -> Move {
         let t = f32(f) / fps
         if t > up && t < down {
             let x = (t - up) / (down - up)
-            out.clip.hips[f] = out.clip.hips[f] + vec3(0.0, height * pow(sin(3.14159265 * x), 0.6), 0.0)
+            out.clip.hips[f] = out.clip.hips[f] + vec3(0.0, height * sin(3.14159265 * x), 0.0)
         }
     }
     out
@@ -242,10 +242,10 @@ pub fn breathed(p: Pose, time: f32, on: f32) -> Pose {
             out.turns[b] = out.turns[b].mul(Quat::axis_angle(axis, a * deg))
         }
     }
-    turn("spine", vec3(0.0, 0.0, 1.0), 2.6 * shift)
-    turn("chest", vec3(1.0, 0.0, 0.0), -3.0 * breath)
-    turn("upperChest", vec3(1.0, 0.0, 0.0), -2.2 * breath)
-    turn("rightHand", vec3(1.0, 0.0, 0.0), 3.0 * breath)
+    turn("spine", vec3(0.0, 0.0, 1.0), 3.5 * shift)
+    turn("chest", vec3(1.0, 0.0, 0.0), -4.5 * breath)
+    turn("upperChest", vec3(1.0, 0.0, 0.0), -3.0 * breath)
+    turn("rightHand", vec3(1.0, 0.0, 0.0), 4.0 * breath)
     turn("neck", vec3(1.0, 0.0, 0.0), 2.2 * breath)
     turn("neck", vec3(0.0, 0.0, 1.0), -1.2 * shift)
     out
@@ -301,10 +301,10 @@ pub const MOCAP_ACTS: [Move; 6] = [
     // A level cut back across.
     cut_of(
         embed("private/great_sword_slash_3.bvh"),
-        from: 11,
+        from: 14,
         to: 42,
-        lo: 0.45,
-        hi: 0.62,
+        lo: 0.35,
+        hi: 0.52,
         at: vec3(0.0, -0.1, 1.0),
         snap: 0.1,
         quicken: 1.5,
@@ -330,12 +330,12 @@ pub const MOCAP_ACTS: [Move; 6] = [
     leapt_cut(
         embed("private/great_sword_jump_attack.bvh"),
         from: 8,
-        to: 37,
+        to: 35,
         lo: 0.8,
         hi: 0.93,
         at: vec3(0.0, -0.75, 0.65),
-        snap: 0.16,
-        quicken: 1.3,
+        snap: 0.35,
+        quicken: 1.6,
         hold: 0.18,
         cancel: 0.3,
         tail: 1.0,
@@ -347,10 +347,10 @@ pub const MOCAP_ACTS: [Move; 6] = [
 
 /// How each's drawn: the cuts on twos, the heavy flashed.
 pub const MOCAP_LOOKS: [Look; 6] = [
-    Look { twos: true },
-    Look { twos: true },
-    Look { twos: true },
-    Look { twos: true, flash: true, heavy: true },
+    Look { twos: true, held: true },
+    Look { twos: true, held: true },
+    Look { twos: true, held: true },
+    Look { twos: true, flash: true, heavy: true, held: true },
     Look {},
     Look {},
 ]

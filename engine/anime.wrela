@@ -35,6 +35,9 @@ pub struct Look: Copy {
     pub smear: bool = false,
     pub limb: u32 = 4,
     pub heavy: bool = false,
+    /// Its contact's drawing held through its whole hit-stop (`ACTIVE` but its last 0.05 s),
+    /// whatever else moves under it: a hard hold, not a drift.
+    pub held: bool = false,
 }
 
 /// A heavy strike's look (a counter, a finisher: the hits that decide something): on twos,
@@ -273,6 +276,10 @@ pub fn drawn(
         Some(a) => a.from,
         None => -1.0,
     }
+    let hold_till = match mv.mark(ACTIVE) {
+        Some(a) => if look.held { a.till - 0.05 } else { -1.0 },
+        None => -1.0,
+    }
     if !d.on || d.acting != m.acting {
         // A one-off begun: its first drawing, now.
         draw_new(mut d, rig, pose, place, how, smear: false, arms: m.upper)
@@ -286,6 +293,10 @@ pub fn drawn(
         d.struck = true
         d.impact_left = if look.flash { how.impact } else { 0.0 }
         draw_new(mut d, rig, pose, place, how, smear: look.smear, arms: m.upper)
+        d.since = 0.0
+    } else if d.struck && m.act_time < hold_till {
+        // The hit-stop: its contact's drawing held, dead still.
+        d.impact_left -= dt
         d.since = 0.0
     } else {
         d.impact_left -= dt

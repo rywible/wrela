@@ -363,9 +363,9 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
         let (stick, act, upper) = script(s.last, time)
         playback::step(mut s.mover, GAITS, ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
     }
-    // The mocap guard breathes (fully standing, a little through a move).
+    // The mocap guard breathes (standing; a move holds its own breath).
     let pose = if SHOW == 15 {
-        let on = if s.mover.acting == humanoid::NONE { 1.0 } else { 0.3 }
+        let on = if s.mover.acting == humanoid::NONE { 1.0 } else { 0.0 }
         mixamo::breathed(pose, time, on)
     } else {
         pose
@@ -497,7 +497,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             mixamo::AIM,
             mixamo::FIST,
             sword::BLADE_FROM + sword::BLADE_LONG,
-            vec3(0.0, -0.5, 0.85),
+            vec3(0.35, -0.2, 0.9),
             mixamo::lean_of(s.mover.acting, s.mover.act_time),
         )
         bones = palette(rig, held, shown_at)
