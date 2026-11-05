@@ -89,6 +89,7 @@ fn facing_attack(attack: u32) -> World {
     w.boss.act = WINDUP
     w.boss.attack = attack
     w.boss.timer = sim::ATTACKS[attack].windup
+    w.boss.wind = w.boss.timer
     w.boss.at_x = 0
     w.boss.at_z = w.boss.z - sim::SLAM_AHEAD
     w

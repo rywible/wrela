@@ -398,7 +398,7 @@ fn replaying(s: mut Game) {
         s.replayed = Some(r.world == w)
         s.replay = None
         print(
-            f"fight over: {if w.winner == Winner::Player { "won" } else { "fell" }} at {f32(w.frame) / 60.0:.1} s, Idol at {w.boss.hp}; {s.log.len()} changes, replay {if s.replayed == Some(true) { "matches" } else { "DIFFERS" }}",
+            f"fight over: {if w.winner == Winner::Player { "won" } else if w.winner == Winner::Boss { "died" } else { "out of time" }} at {f32(w.frame) / 60.0:.1} s, Idol at {w.boss.hp}; {s.log.len()} changes, replay {if s.replayed == Some(true) { "matches" } else { "DIFFERS" }}",
         )
     } else {
         s.replay = Some(r)
@@ -456,9 +456,9 @@ fn advance(s: mut Game, time: f32, dt: f32) {
             } else {
                 // Dead, or out of time (ten minutes): back to the doors either way.
                 s.fell_at = Some(time)
-                s.deaths += 1
-                if w.winner == Winner::Draw {
-                    say(mut s, "OUT OF TIME", time)
+                // Out of time isn't a death.
+                if w.winner == Winner::Boss {
+                    s.deaths += 1
                 }
             }
             // The log is played again over the next frames, a slice at a time.
@@ -820,9 +820,11 @@ fn hud(s: mut Game, time: f32, cam: Camera, boss_at: vec3) {
         let _ = s.list.text(
             s.fonts,
             Face::Sans,
-            "YOU DIED",
+            if s.world.winner == Winner::Draw { "OUT OF TIME" } else { "YOU DIED" },
             size,
-            vec2(w * 0.5 - 2.4 * size, h * 0.42),
+            vec2(w * 0.5 - (if s.world.winner == Winner::Draw { 3.2 } else {
+                2.4
+            }) * size, h * 0.42),
             RED,
         )
         let _ = s.list.text(
@@ -845,7 +847,7 @@ fn hud(s: mut Game, time: f32, cam: Camera, boss_at: vec3) {
             GOLD,
         )
         let t = f32(world.frame) / 60.0
-        let note = f"in {u32(t) / 60}:{u32(t) % 60 / 10}{u32(t) % 10}, after {s.deaths} deaths. Enter to fight again."
+        let note = f"in {u32(t) / 60}:{u32(t) % 60 / 10}{u32(t) % 10}, after {s.deaths} deaths. Press any key to fight again."
         let _ = s.list.text(
             s.fonts,
             Face::Sans,
