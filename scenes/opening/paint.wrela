@@ -54,7 +54,7 @@ fn trace_sea(s: Shot, o: vec3, d: vec3, far: f32) -> f32 {
     if plane > far {
         return far
     }
-    let level_k = smoothstep(60.0, 130.0, plane)
+    let level_k = smoothstep(120.0, 300.0, plane)
     if level_k >= 1.0 {
         return plane
     }
@@ -79,7 +79,7 @@ fn trace_sea(s: Shot, o: vec3, d: vec3, far: f32) -> f32 {
     if under {
         var lo = before
         var hi = t
-        for _ in 0..5 {
+        for _ in 0..8 {
             let mid = (lo + hi) * 0.5
             let p = o + d * mid
             let px = mid * 2.0 / (s.resolution.y * s.focal)
@@ -110,6 +110,27 @@ fn march_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
         i += 1
     }
     hit
+}
+
+/// The skiff seen in the water: where the ray meets it (or `hi`), and how near it came (for a
+/// soft edge to its reflection).
+fn mirror_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> vec2 {
+    var t = lo
+    var hit = hi
+    var closest = 1.0e5
+    var i = 0
+    while i < 48 && t < hi {
+        let h = skiff(s, o + d * t)
+        closest = min(closest, h)
+        if h < 0.004 {
+            hit = t
+            t = hi
+        } else {
+            t += h * 0.9
+        }
+        i += 1
+    }
+    vec2(hit, closest)
 }
 
 fn march_isle(o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
@@ -379,7 +400,7 @@ fn sea_shade(
     // long bands of brighter and duller sheen toward the horizon.)
     let lanes = noise(xz * vec2(0.004, 0.0012) + vec2(s.held * 0.003, 5.0))
     let lost = lost0 *
-        mix(1.0, mix(0.55, 1.5, smoothstep(0.3, 0.7, lanes)), smoothstep(60.0, 400.0, t))
+        mix(1.0, mix(0.3, 2.0, smoothstep(0.25, 0.75, lanes)), smoothstep(60.0, 400.0, t))
     // How many metres of water a pixel holds along the ray; and far off, the sea settled a little
     // toward the level, as the air flattens what's far.
     let foot = t / (s.focal * s.resolution.y * 0.5 * max(-d.y, 0.002))
@@ -462,21 +483,30 @@ fn sea_shade(
             }
         }
     }
-    // The skiff's own reflection beside it: its dark hull, broken by the ripples.
+    // The skiff's own reflection beside it: the hull's own colours in the shade it hangs in,
+    // its edge soft (how near the mirrored ray came to it) and broken by the ripples, and gone a
+    // few metres down it.
     let near_hull = skiff(s, p)
     if near_hull < 4.5 {
-        let tr = march_skiff(s, p + vec3(0.0, 0.02, 0.0), r, 0.02, 7.0)
-        if tr < 7.0 {
-            let hull_tone = vec3(0.16, 0.07, 0.045) * (h.light.sun_colour * 0.05 + vec3(0.6))
-            // (Soft, and gone a few metres down it: the ripples break a reflection up.)
-            mirrored = mix(mirrored, hull_tone, 0.45 * smoothstep(6.0, 1.0, tr))
+        let mr = mirror_skiff(s, p + vec3(0.0, 0.02, 0.0), r, 0.02, 7.0)
+        let cover = (1.0 - smoothstep(0.0, 0.06, mr.y)) * smoothstep(6.0, 1.0, mr.x)
+        if cover > 0.0 {
+            let q = p + vec3(0.0, 0.02, 0.0) + r * min(mr.x, 7.0)
+            let qn = skiff_normal(s, q)
+            let (albedo, _, _) = skiff_material(s, q, qn)
+            let shade = clouded_sky(view, h.light, vec3(y: 1.0), dome, smp) * PI * 0.35 +
+                h.light.sun_colour * 0.12
+            mirrored = mix(mirrored, albedo * shade, 0.6 * cover)
         }
     }
     let spread = clouded_sky(view, h.light, normalize(r + vec3(0.0, 0.5, 0.0)), dome, smp)
     let reflected = mix(mirrored, spread, 0.15 * detail)
+    // (Drawn brighter than the bare formula: under a low sun its path is the brightest thing on
+    // the water, well over the sky it lies under.)
     let glint = h.light.sun_colour *
         sun_reflection(n, l, v, sqrt(sqrt(0.0007 + 1.2 * lost)), 0.02) *
-        sun
+        sun *
+        3.0
     // The light that comes back up out of the water: deep blue-green, brighter through the
     // crests lit from behind.
     let sky_up = clouded_sky(view, h.light, vec3(y: 1.0), dome, smp) * PI
@@ -487,9 +517,9 @@ fn sea_shade(
     let through = vec3(0.004, 0.035, 0.03) *
         h.light.sun_colour *
         sun *
-        (0.35 + behind) *
-        max(wave + 0.15, 0.0) *
-        1.6 *
+        (0.2 + behind) *
+        max(wave + 0.1, 0.0) *
+        1.2 *
         clamp(1.0 - t / 400.0, 0.0, 1.0)
     var c = (body + through) * (1.0 - fresnel) + reflected * fresnel + glint
     // Foam where the sea meets the skiff, lit as a white surface is.
@@ -556,7 +586,10 @@ fn sea_shade(
     let foam = band(-near, -0.1 - 0.12 * noise(xz * 4.0 + vec2(s.held * 3.0)), 0.03) *
         smoothstep(0.25, 0.65, noise(xz * 9.0 - vec2(s.held * 2.0))) *
         0.8
-    let foam_light = vec3(0.8) * (h.light.sun_colour * max(dot(n, l), 0.0) * sun + sky_up) / PI
+    // (Foam against the light glows through: lit as a thin white surface is, from behind too.)
+    let foam_light = vec3(0.85) *
+        (h.light.sun_colour * (max(dot(n, l), 0.0) + 0.35 * behind) * sun + sky_up) /
+        PI
     c = mix(c, foam_light, max(foam * 0.85, wake))
     // Rings spreading from the hull as it rocks, three at a time, fading as they widen. (Read
     // round the hull's waterline as a capsule: the hull's own distance is true only close to it,
@@ -655,7 +688,7 @@ fn falls(
             let w = width /
                 k *
                 (0.38 + drop * 0.005) *
-                (0.85 + 0.35 * noise(vec2(drop * 0.012 - s.held * 0.3, f32(i) * 5.0)))
+                (0.92 + 0.16 * noise(vec2(drop * 0.012 - s.held * 0.3, f32(i) * 5.0)))
             // The strands, running down as the water does.
             let fi = f32(i) * 7.0
             let strand = noise(vec2(side / (w * 0.22 + 0.5) + fi, drop * 0.006 - s.held * 0.9)) *
@@ -677,7 +710,7 @@ fn falls(
             // (Softer at its edges, and thinning away down the cliff into its spray, not cut off.)
             let body = smoothstep(w, w * 0.15, across) *
                 smoothstep(0.0, 6.0, drop) *
-                smoothstep(640.0, 140.0, drop) *
+                smoothstep(900.0, 200.0, drop) *
                 step(1.0, f.w) *
                 mix(1.0, clump, smoothstep(80.0, 300.0, drop))
             let mist = exp(-(across * across) / (w * w * 14.0)) *
@@ -927,7 +960,10 @@ fn sample(
         let cel = s.look > 1.5 && s.look < 2.5
         let edge_soft = pow(1.0 - max(dot(rn, -d), 0.0), 3.0) * max(dot(rn, side), 0.0)
         let edge_on = if cel { band(edge_soft, 0.15, 0.02) * 0.4 } else { edge_soft }
-        let hot = if id == ROCK { 0.08 } else if id == GILT { 0.8 } else { 1.0 }
+        // (Far off, a rim along a spire finer than a pixel only beads: held down there.)
+        let hot = (if id == ROCK { 0.08 } else if id == GILT { 0.8 } else {
+            1.0
+        }) * (if id == ROCK { 1.0 } else { mix(1.0, 0.45, smoothstep(2500.0, 7000.0, t)) })
         c += light.sun_colour * vec3(1.0, 0.78, 0.45) * hot * edge_on * mix(1.0, sun, 0.6)
         // The rock's great planes modelled as a painter would against the light: those turned
         // toward the sun's side warmed by it as it wraps round, those turned away left in a

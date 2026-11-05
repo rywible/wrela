@@ -20,8 +20,8 @@ struct Wave: Copy {
 }
 
 const WAVES = [
-    Wave { dir: vec2(0.20, 0.98), length: 46.0, height: 0.55 },
-    Wave { dir: vec2(-0.62, 0.78), length: 23.0, height: 0.32 },
+    Wave { dir: vec2(0.20, 0.98), length: 46.0, height: 0.42 },
+    Wave { dir: vec2(-0.62, 0.78), length: 23.0, height: 0.25 },
     Wave { dir: vec2(0.85, 0.53), length: 13.0, height: 0.16 },
     Wave { dir: vec2(-0.30, 0.95), length: 7.1, height: 0.085 },
     Wave { dir: vec2(0.55, -0.83), length: 4.3, height: 0.05 },
@@ -103,7 +103,7 @@ fn kept(w: Wave, px: f32, d: vec3) -> f32 {
     let toward = dot(w.dir, v) / slant
     let side = dot(w.dir, vec2(-v.y, v.x))
     let foot = px * sqrt(toward * toward + side * side)
-    1.0 - smoothstep(0.06 * w.length, 0.16 * w.length, foot)
+    1.0 - smoothstep(0.05 * w.length, 0.2 * w.length, foot)
 }
 
 /// The sea at `p` as a pixel `px` m across, seen along `d`, sees it: each wave kept as far as
