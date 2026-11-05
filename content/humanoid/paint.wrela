@@ -1,0 +1,221 @@
+// The first pass: the scene painted in 3D into what the ink reads (the opening style test's
+// targets): its colour; (log₂ distance, what it is, a line field whose zero is a line, the line's
+// weight); and its normal with its energy. The backdrop is a wash of warm paper into a cool sky,
+// the ground a page of the same paper with the body's shadow pooled under it, and the body a
+// painted form in two values of its own colour, warm in the light and cool in the shade.
+
+use engine::humanoid::BodyVertex
+use look::{BACKDROP, BODY, COOL, GROUND, PAPER, Shot, WARM, band, noise}
+use std::gpu::{ClipPosition, Flat, FragCoord, Targets3, Unorm8x4, VertexIndex}
+
+/// How far the ground's page reaches round the body (m).
+pub const REACH: f32 = 40.0
+
+/// The backdrop: a triangle over the screen, behind everything (reverse depth's far is 0).
+@vertex
+pub fn backdrop(vertex: VertexIndex) -> ClipPosition {
+    let x = f32(vertex.index % 2) * 4.0 - 1.0
+    let y = f32(vertex.index / 2) * 4.0 - 1.0
+    ClipPosition { position: vec4(x, y, 1.0e-7, 1.0) }
+}
+
+fn targets(
+    c: vec3,
+    t: f32,
+    id: f32,
+    line: f32,
+    weight: f32,
+    n: vec3,
+) -> Targets3<vec4, vec4, vec4> {
+    Targets3 {
+        first: vec4(c, 1.0),
+        second: vec4(log2(max(t, 0.01)), id, line, weight),
+        third: vec4(n * 0.5 + 0.5, 0.0),
+    }
+}
+
+/// The wash behind: paper low, a cool sky high, a horizon's haze between.
+fn wash(d: vec3) -> vec3 {
+    let up = saturate(d.y * 2.2 + 0.1)
+    mix(PAPER * vec3(1.0, 0.97, 0.92), vec3(0.50, 0.60, 0.80), vec3(up * up))
+}
+
+@fragment
+pub fn paint_backdrop(pixel: FragCoord, shot: Shot) -> Targets3<vec4, vec4, vec4> {
+    let d = shot.cam.ray(pixel.position.xy)
+    targets(wash(d), 1.0e4, BACKDROP, line: 1.0, weight: 0.0, n: -d)
+}
+
+/// What the ground's vertex passes on: its point on the page.
+pub struct GroundVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+}
+
+/// The ground: a square page `REACH` round the body, in two triangles.
+@vertex
+pub fn ground(vertex: VertexIndex, shot: Shot) -> GroundVertex {
+    let corner = [
+        vec2(-1.0, -1.0),
+        vec2(1.0, -1.0),
+        vec2(1.0, 1.0),
+        vec2(-1.0, -1.0),
+        vec2(1.0, 1.0),
+        vec2(-1.0, 1.0),
+    ]
+    let c = corner[vertex.index]
+    let world = vec3(shot.feet.x + c.x * REACH, 0.0, shot.feet.z + c.y * REACH)
+    GroundVertex { clip: ClipPosition { position: shot.cam.clip(world) }, world }
+}
+
+@fragment
+pub fn paint_ground(g: GroundVertex, shot: Shot) -> Targets3<vec4, vec4, vec4> {
+    let p = g.world
+    let t = length(p - shot.cam.eye)
+    // Its shadow: pooled under the body's feet, and thrown away from the sun along the ground,
+    // a body's length, softening as it goes.
+    let off = p.xz - shot.feet.xz
+    let away = -normalize(shot.sun.xz)
+    let along = dot(off, away)
+    let across = dot(off, vec2(-away.y, away.x))
+    let reach = 1.8 * length(shot.sun.xz) / max(shot.sun.y, 0.2)
+    let cast = band(along, edge: -0.15, soft: 0.1) *
+        (1.0 - band(along, reach, 0.4)) *
+        (1.0 - band(abs(across), 0.22 + 0.05 * along, 0.08))
+    let pool = 1.0 - band(length(off * vec2(1.0, 1.4)), edge: 0.32, soft: 0.12)
+    let shade = max(cast * 0.7, pool * 0.85)
+    // The page: paper with a little tooth, falling off into the wash far away.
+    let tooth = noise(p.xz * 3.0) * 0.04
+    let lit = PAPER * (0.86 + tooth) * mix(vec3(1.0), WARM, vec3(0.12))
+    let dark = lit * mix(COOL, vec3(1.0), vec3(0.45)) * 0.72
+    let near = mix(lit, dark, vec3(shade))
+    let fade = band(t, edge: 14.0, soft: 8.0)
+    let c = mix(near, wash(normalize(p - shot.cam.eye)), vec3(fade))
+    // The shadow's edge, inked faintly where it's crisp (near the feet).
+    targets(
+        c,
+        t,
+        GROUND,
+        shade - 0.5,
+        0.25 * (1.0 - band(along, edge: 0.6, soft: 0.3)),
+        vec3(0.0, 1.0, 0.0),
+    )
+}
+
+/// The body's clothes, sRGB, blocked in value so its parts read in motion: a mid terracotta shirt,
+/// dark indigo trousers held by a darker belt, dark brown shoes, and pale wraps on its hands
+/// (light against the trousers they swing past).
+pub const SHIRT = vec3(0.76, 0.40, 0.28)
+pub const TROUSERS = vec3(0.21, 0.24, 0.37)
+pub const BELT = vec3(0.11, 0.085, 0.075)
+pub const SHOES = vec3(0.28, 0.18, 0.12)
+pub const WRAPS = vec3(0.90, 0.86, 0.76)
+
+/// What the body wears where, by its point at rest (the bind T-pose, metres, +y up, +x its left,
+/// +z ahead): the colour (sRGB; none for its own skin) and the side of the line field it's on, the
+/// sign flipping across each edge of a garment so the ink draws it. Arms (out along x at rest):
+/// a sleeve to above the elbow, bare forearm, a wrap from the wrist. The rest: bare neck and head
+/// above a round neckline that dips in front, the shirt, a belt at the waist, trousers, shoes.
+fn outfit(p: vec3) -> (Option<vec3>, f32) {
+    let ax = abs(p.x)
+    if ax > 0.25 && p.y > 1.2 {
+        if ax < 0.40 {
+            return (Some(SHIRT), -1.0)
+        }
+        if ax < 0.675 {
+            return (None, 1.0)
+        }
+        return (Some(WRAPS), -1.0)
+    }
+    // The neckline: a round scoop, lower in front, rising out over the shoulders.
+    let scoop = mix(1.5, 1.445, saturate(p.z * 14.0)) + 0.075 * (ax / 0.11) * (ax / 0.11)
+    if p.y > 1.64 || p.y > scoop {
+        return (None, 1.0)
+    }
+    if p.y > 1.02 {
+        return (Some(SHIRT), -1.0)
+    }
+    if p.y > 0.955 {
+        return (Some(BELT), 1.0)
+    }
+    if p.y > 0.135 {
+        return (Some(TROUSERS), -1.0)
+    }
+    (Some(SHOES), 1.0)
+}
+
+/// What the body's vertex passes on: its world point and normal, its colour and its part.
+pub struct BodyOut: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+    pub albedo: vec3,
+    pub rest: vec3,
+    pub part: Flat<u32>,
+}
+
+/// A vertex's skinning matrix: its four bones' matrices in the palette, blended by its weights.
+pub fn skin(v: BodyVertex, palette: [mat4]) -> mat4 {
+    let b = v.bones
+    let w = Unorm8x4 { bits: v.weights }.decode()
+    palette[b & 255] * w.x +
+        palette[(b >> 8) & 255] * w.y +
+        palette[(b >> 16) & 255] * w.z +
+        palette[b >> 24] * w.w
+}
+
+@vertex
+pub fn body(v: VertexIndex, verts: [BodyVertex], palette: [mat4], shot: Shot) -> BodyOut {
+    let sv = verts[v.index]
+    let m = skin(sv, palette)
+    let world = (m * vec4(sv.pos, 1.0)).xyz
+    let n = mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal
+    let c = Unorm8x4 { bits: sv.colour }.decode().rgb
+    BodyOut {
+        clip: ClipPosition { position: shot.cam.clip(world) },
+        world,
+        normal: n,
+        albedo: c * c,
+        rest: sv.pos,
+        part: Flat { value: sv.part },
+    }
+}
+
+/// The body painted in three values of what it wears (its skin where it's bare): light, a half
+/// tone where the form turns, and shade, the light warm and the shade cool; a thin rim round its
+/// edge, warm where the light's behind it and cool off the sky in the shade; a little darker
+/// toward its feet. Its far side's limbs (from the camera) are a step darker and cooler and their
+/// lines lighter, so the near and far arm and leg part as they cross.
+@fragment
+pub fn paint_body(b: BodyOut, shot: Shot) -> Targets3<vec4, vec4, vec4> {
+    let n = normalize(b.normal)
+    let v = normalize(shot.cam.eye - b.world)
+    let l = shot.sun
+    let (worn, field) = outfit(b.rest)
+    let albedo = match worn {
+        Some(c) => c * c,
+        None => b.albedo,
+    }
+    let ndl = dot(n, l)
+    let lit_side = band(ndl, edge: 0.02, soft: 0.035)
+    let full = band(ndl, edge: 0.45, soft: 0.035)
+    let light = WARM * 1.08
+    let shade = mix(COOL, vec3(0.62, 0.56, 0.62), vec3(0.35)) * 0.58
+    let half = mix(shade, light, vec3(0.68))
+    var c = albedo * mix(shade, mix(half, light, vec3(full)), vec3(lit_side))
+    // The sky above lifts the tops of forms a little; the ground darkens what faces it.
+    c *= 0.9 + 0.1 * n.y
+    c *= mix(0.82, 1.0, saturate(b.world.y - shot.feet.y))
+    let edge = band(1.0 - max(dot(n, v), 0.0), edge: 0.74, soft: 0.05)
+    let back = saturate(-dot(v, l) + 0.35)
+    c += albedo * WARM * edge * (0.25 + 0.5 * back) * lit_side
+    c += COOL * edge * 0.10 * (1.0 - lit_side)
+    // The far side: a limb's side (by its x at rest) against the side the camera's on.
+    let to_eye = shot.cam.eye - shot.feet
+    let facing = dot(shot.left, normalize(vec3(to_eye.x, 0.0, to_eye.z)))
+    let side = if abs(b.rest.x) > 0.07 { sign(b.rest.x) } else { 0.0 }
+    let far = saturate(-side * facing * 3.0)
+    c = mix(c, c * mix(COOL, vec3(1.0), vec3(0.55)) * 0.78, vec3(far))
+    let t = length(b.world - shot.cam.eye)
+    targets(c, t, BODY, line: field, weight: mix(0.8, 0.55, far), n: n)
+}

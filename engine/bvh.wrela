@@ -1,0 +1,213 @@
+// Biovision hierarchy (BVH) motion capture, read at build time from a file `embed` gives: its
+// joints (each a name, a parent, an offset from it, its channels and its end site) and its frames'
+// channel values. The format's informal definition, as motion capture tools write it:
+// research.cs.wisc.edu/graphics/Courses/cs-838-1999/Jeff/BVH.html. `engine::humanoid` retargets
+// a take onto a rig; this module knows nothing of bodies.
+//
+// A joint's rotation is its rotation channels' turns multiplied in the order they're listed (the
+// first outermost), each in degrees about its axis, right-handed.
+
+use std::collections::Vec
+use std::string::String
+
+/// No joint: a root's parent.
+pub const NONE: u32 = 4294967295
+
+/// A channel: a translation along an axis, or a rotation about one.
+pub enum Channel: Copy + Eq {
+    Xposition,
+    Yposition,
+    Zposition,
+    Xrotation,
+    Yrotation,
+    Zrotation,
+}
+
+/// A joint: its name, its parent (`NONE` for the root), its offset from its parent at rest, its
+/// channels in order and where they start in a frame's values, and its end site's offset (where
+/// it has one).
+pub struct Joint: Clone {
+    pub name: String,
+    pub parent: u32,
+    pub offset: vec3,
+    pub channels: Vec<Channel>,
+    pub first: u32,
+    pub end: Option<vec3>,
+}
+
+/// A take: its joints (each after its parent), its frames' count and length (s), and every
+/// frame's channel values, frame after frame.
+pub struct Bvh: Clone {
+    pub joints: Vec<Joint>,
+    pub frames: u32,
+    pub frame_time: f32,
+    pub values: Vec<f32>,
+    pub stride: u32,
+}
+
+/// A reader of a BVH's words.
+struct Words {
+    text: String,
+    at: u32,
+}
+
+impl Words {
+    /// The next word, as where it starts and ends; `None` past the end.
+    fn next(mut self) -> Option<(u32, u32)> {
+        let b = self.text.as_bytes()
+        let n = b.len()
+        while self.at < n && b[self.at] <= 32 {
+            self.at += 1
+        }
+        if self.at >= n {
+            return None
+        }
+        let start = self.at
+        while self.at < n && b[self.at] > 32 {
+            self.at += 1
+        }
+        Some((start, self.at))
+    }
+
+    /// The next word, which must be `w`.
+    fn expect(mut self, w: str) {
+        let Some((a, b)) = self.next() else { panic(f"a BVH ends where `{w}` should be") }
+        let got = self.text.as_str().slice(a, b).to_string()
+        assert(got.as_str() == w, f"a BVH has `{got}` where `{w}` should be")
+    }
+
+    /// The next word, owned.
+    fn word(mut self) -> String {
+        let Some((a, b)) = self.next() else { panic("a BVH ends early") }
+        self.text.as_str().slice(a, b).to_string()
+    }
+
+    /// The next word as a number.
+    fn number(mut self) -> f32 {
+        let Some((a, b)) = self.next() else { panic("a BVH ends where a number should be") }
+        let Some(x) = self.text.as_str().slice(a, b).parse_f32() else {
+            panic("a BVH has a word where a number should be")
+        }
+        x
+    }
+}
+
+/// The take `file` holds; a file that isn't one fails the build.
+pub fn read(file: Bytes) -> Bvh {
+    var bytes: Vec<u8> = Vec::with_capacity(file.len())
+    for i in 0..file.len() {
+        bytes.push(file.at(i))
+    }
+    let Some(text) = String::from_utf8(take bytes) else { panic("a BVH isn't UTF-8") }
+    var w = Words { text, at: 0 }
+    w.expect("HIERARCHY")
+    var joints: Vec<Joint> = Vec::new()
+    // The open joints, innermost last; an end site opens none.
+    var open: Vec<u32> = Vec::new()
+    var stride = 0
+    var in_end = false
+    loop {
+        let word = w.word()
+        match word.as_str() {
+            "ROOT" | "JOINT" => {
+                let name = w.word()
+                w.expect("{")
+                let parent = if open.is_empty() { NONE } else { open[open.len() - 1] }
+                w.expect("OFFSET")
+                let offset = vec3(w.number(), w.number(), w.number())
+                w.expect("CHANNELS")
+                let n = u32(w.number())
+                var channels: Vec<Channel> = Vec::new()
+                for _ in 0..n {
+                    let c = w.word()
+                    channels.push(
+                        match c.as_str() {
+                            "Xposition" => Channel::Xposition,
+                            "Yposition" => Channel::Yposition,
+                            "Zposition" => Channel::Zposition,
+                            "Xrotation" => Channel::Xrotation,
+                            "Yrotation" => Channel::Yrotation,
+                            "Zrotation" => Channel::Zrotation,
+                            _ => panic(f"a BVH channel `{c}` isn't one"),
+                        },
+                    )
+                }
+                open.push(joints.len())
+                joints.push(Joint { name, parent, offset, channels, first: stride, end: None })
+                stride += n
+            },
+            "End" => {
+                w.expect("Site")
+                w.expect("{")
+                w.expect("OFFSET")
+                let end = vec3(w.number(), w.number(), w.number())
+                let j = open[open.len() - 1]
+                joints[j].end = Some(end)
+                in_end = true
+            },
+            "}" => {
+                if in_end {
+                    in_end = false
+                } else {
+                    let _ = open.pop()
+                }
+            },
+            "MOTION" => break,
+            _ => panic(f"a BVH has `{word}` in its hierarchy"),
+        }
+    }
+    w.expect("Frames:")
+    let frames = u32(w.number())
+    w.expect("Frame")
+    w.expect("Time:")
+    let frame_time = w.number()
+    var values: Vec<f32> = Vec::with_capacity(frames * stride)
+    for _ in 0..frames * stride {
+        values.push(w.number())
+    }
+    Bvh { joints, frames, frame_time, values, stride }
+}
+
+impl Bvh {
+    /// The joint named `name`, or `NONE`.
+    pub fn find(self, name: str) -> u32 {
+        for i in 0..self.joints.len() {
+            if self.joints[i].name.as_str() == name {
+                return i
+            }
+        }
+        NONE
+    }
+
+    /// Joint `j`'s turn and its translation channels' values in frame `f` (none where it has
+    /// no translation: its offset holds).
+    pub fn local(self, j: u32, f: u32) -> (Quat, Option<vec3>) {
+        borrow joint = self.joints[j]
+        var q = Quat::identity()
+        var t = vec3(0.0)
+        var moved = false
+        let base = f * self.stride + joint.first
+        for k in 0..joint.channels.len() {
+            let x = self.values[base + k]
+            let a = x * 0.017453292
+            match joint.channels[k] {
+                Channel::Xposition => {
+                    t.x = x
+                    moved = true
+                },
+                Channel::Yposition => {
+                    t.y = x
+                    moved = true
+                },
+                Channel::Zposition => {
+                    t.z = x
+                    moved = true
+                },
+                Channel::Xrotation => q = q.mul(Quat::axis_angle(vec3(1.0, 0.0, 0.0), a)),
+                Channel::Yrotation => q = q.mul(Quat::axis_angle(vec3(0.0, 1.0, 0.0), a)),
+                Channel::Zrotation => q = q.mul(Quat::axis_angle(vec3(0.0, 0.0, 1.0), a)),
+            }
+        }
+        (q, if moved { Some(t) } else { None })
+    }
+}

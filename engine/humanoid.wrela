@@ -1,0 +1,1179 @@
+// Humanoids from files: a rigged, skinned body read from a glTF binary (`engine::gltf`) and motion
+// capture read from a BVH take (`engine::bvh`) or a glTF animation, converted at build time into
+// one skeleton named by VRM 1.0's humanoid bones, a mesh skinned to it, and clips retargeted onto
+// it. A program holds each as a constant (`const HERO = import(embed("hero.glb"), ...)`), so a
+// file that doesn't fit (a missing bone, more than `MAX_BONES`) fails the build, and nothing is
+// parsed at load.
+//
+// - The bones are VRM 1.0's (github.com/vrm-c/vrm-specification, `VRMC_vrm-1.0/humanoid.md`):
+//   a file's own names are mapped to them by a table (`UNREAL`, `HUNDRED_STYLE`), and a joint the
+//   table leaves out is folded into its nearest mapped ancestor (its weights go there, and its
+//   turn moves the bones below it).
+// - A clip is retargeted by each bone's turn in the world from the take's rest pose, applied to
+//   the rig's rest pose after the rig's bone is aimed where the take's points at rest (a T-pose
+//   against an A-pose, a longer forearm): `retarget`. Its hips travel by the ratio of the legs'
+//   lengths, and its feet are set on the rig's ground.
+// - A looped clip's last frame is its first again, a stride further on: the little that doesn't
+//   meet is spread across it, so it loops without a pop (`Retarget::looped`).
+// - Posing (`Clip::pose`) and the palette (`palette`) run on the CPU: 52 bones are a few
+//   microseconds a frame.
+
+use std::collections::Vec
+use std::string::String
+use creature::MAX_BONES
+use gltf::{Glb, Node, Track, Path}
+use bvh::Bvh
+
+/// No bone.
+pub const NONE: u32 = 4294967295
+
+/// The first of VRM's bones past its spine, neck, head and jaw.
+const AXIAL: u32 = 7
+
+/// VRM 1.0's humanoid bones, each parent before its children.
+pub const BONES: [Text; 55] = [
+    "hips",
+    "spine",
+    "chest",
+    "upperChest",
+    "neck",
+    "head",
+    "jaw",
+    "leftEye",
+    "rightEye",
+    "leftUpperLeg",
+    "leftLowerLeg",
+    "leftFoot",
+    "leftToes",
+    "rightUpperLeg",
+    "rightLowerLeg",
+    "rightFoot",
+    "rightToes",
+    "leftShoulder",
+    "leftUpperArm",
+    "leftLowerArm",
+    "leftHand",
+    "rightShoulder",
+    "rightUpperArm",
+    "rightLowerArm",
+    "rightHand",
+    "leftThumbMetacarpal",
+    "leftThumbProximal",
+    "leftThumbDistal",
+    "leftIndexProximal",
+    "leftIndexIntermediate",
+    "leftIndexDistal",
+    "leftMiddleProximal",
+    "leftMiddleIntermediate",
+    "leftMiddleDistal",
+    "leftRingProximal",
+    "leftRingIntermediate",
+    "leftRingDistal",
+    "leftLittleProximal",
+    "leftLittleIntermediate",
+    "leftLittleDistal",
+    "rightThumbMetacarpal",
+    "rightThumbProximal",
+    "rightThumbDistal",
+    "rightIndexProximal",
+    "rightIndexIntermediate",
+    "rightIndexDistal",
+    "rightMiddleProximal",
+    "rightMiddleIntermediate",
+    "rightMiddleDistal",
+    "rightRingProximal",
+    "rightRingIntermediate",
+    "rightRingDistal",
+    "rightLittleProximal",
+    "rightLittleIntermediate",
+    "rightLittleDistal",
+]
+
+/// The bone each bone aims at (its child along it), by VRM name; "" where it has none to aim
+/// at (the head, the eyes, a finger's tip).
+const AIMS: [(Text, Text); 24] = [
+    ("hips", "spine"),
+    ("spine", "chest"),
+    ("chest", "upperChest"),
+    ("upperChest", "neck"),
+    ("neck", "head"),
+    ("leftUpperLeg", "leftLowerLeg"),
+    ("leftLowerLeg", "leftFoot"),
+    ("leftFoot", "leftToes"),
+    ("rightUpperLeg", "rightLowerLeg"),
+    ("rightLowerLeg", "rightFoot"),
+    ("rightFoot", "rightToes"),
+    ("leftShoulder", "leftUpperArm"),
+    ("leftUpperArm", "leftLowerArm"),
+    ("leftLowerArm", "leftHand"),
+    ("leftHand", "leftMiddleProximal"),
+    ("rightShoulder", "rightUpperArm"),
+    ("rightUpperArm", "rightLowerArm"),
+    ("rightLowerArm", "rightHand"),
+    ("rightHand", "rightMiddleProximal"),
+    // A chest of two bones aims past the one it lacks.
+    ("chest", "neck"),
+    ("spine", "upperChest"),
+    ("spine", "neck"),
+    ("hips", "chest"),
+    ("upperChest", "head"),
+]
+
+/// The bones a humanoid must have: VRM 1.0's required fifteen.
+const REQUIRED: [Text; 15] = [
+    "hips",
+    "spine",
+    "head",
+    "leftUpperLeg",
+    "leftLowerLeg",
+    "leftFoot",
+    "rightUpperLeg",
+    "rightLowerLeg",
+    "rightFoot",
+    "leftUpperArm",
+    "leftLowerArm",
+    "leftHand",
+    "rightUpperArm",
+    "rightLowerArm",
+    "rightHand",
+]
+
+/// The bone named `name` (VRM's), or `NONE`.
+pub fn bone(name: str) -> u32 {
+    for i in 0..55 {
+        if BONES[i] == name {
+            return i
+        }
+    }
+    NONE
+}
+
+/// Unreal's mannequin names (Quaternius's Universal Base Characters and Universal Animation
+/// Library use them) against VRM's. Its `root`, its `*_leaf` bones and its fourth finger joints
+/// aren't mapped: they fold into their parents.
+pub const UNREAL: [(Text, Text); 52] = [
+    ("pelvis", "hips"),
+    ("spine_01", "spine"),
+    ("spine_02", "chest"),
+    ("spine_03", "upperChest"),
+    ("neck_01", "neck"),
+    ("Head", "head"),
+    ("thigh_l", "leftUpperLeg"),
+    ("calf_l", "leftLowerLeg"),
+    ("foot_l", "leftFoot"),
+    ("ball_l", "leftToes"),
+    ("thigh_r", "rightUpperLeg"),
+    ("calf_r", "rightLowerLeg"),
+    ("foot_r", "rightFoot"),
+    ("ball_r", "rightToes"),
+    ("clavicle_l", "leftShoulder"),
+    ("upperarm_l", "leftUpperArm"),
+    ("lowerarm_l", "leftLowerArm"),
+    ("hand_l", "leftHand"),
+    ("clavicle_r", "rightShoulder"),
+    ("upperarm_r", "rightUpperArm"),
+    ("lowerarm_r", "rightLowerArm"),
+    ("hand_r", "rightHand"),
+    ("thumb_01_l", "leftThumbMetacarpal"),
+    ("thumb_02_l", "leftThumbProximal"),
+    ("thumb_03_l", "leftThumbDistal"),
+    ("index_01_l", "leftIndexProximal"),
+    ("index_02_l", "leftIndexIntermediate"),
+    ("index_03_l", "leftIndexDistal"),
+    ("middle_01_l", "leftMiddleProximal"),
+    ("middle_02_l", "leftMiddleIntermediate"),
+    ("middle_03_l", "leftMiddleDistal"),
+    ("ring_01_l", "leftRingProximal"),
+    ("ring_02_l", "leftRingIntermediate"),
+    ("ring_03_l", "leftRingDistal"),
+    ("pinky_01_l", "leftLittleProximal"),
+    ("pinky_02_l", "leftLittleIntermediate"),
+    ("pinky_03_l", "leftLittleDistal"),
+    ("thumb_01_r", "rightThumbMetacarpal"),
+    ("thumb_02_r", "rightThumbProximal"),
+    ("thumb_03_r", "rightThumbDistal"),
+    ("index_01_r", "rightIndexProximal"),
+    ("index_02_r", "rightIndexIntermediate"),
+    ("index_03_r", "rightIndexDistal"),
+    ("middle_01_r", "rightMiddleProximal"),
+    ("middle_02_r", "rightMiddleIntermediate"),
+    ("middle_03_r", "rightMiddleDistal"),
+    ("ring_01_r", "rightRingProximal"),
+    ("ring_02_r", "rightRingIntermediate"),
+    ("ring_03_r", "rightRingDistal"),
+    ("pinky_01_r", "rightLittleProximal"),
+    ("pinky_02_r", "rightLittleIntermediate"),
+    ("pinky_03_r", "rightLittleDistal"),
+]
+
+/// The 100STYLE dataset's skeleton (Xsens's, as its BVH takes name it) against VRM's: its four
+/// chest joints are three of VRM's (`Chest3` folds into `Chest2`'s), and it has no fingers.
+pub const HUNDRED_STYLE: [(Text, Text); 20] = [
+    ("Hips", "hips"),
+    ("Chest", "spine"),
+    ("Chest2", "chest"),
+    ("Chest4", "upperChest"),
+    ("Neck", "neck"),
+    ("Head", "head"),
+    ("LeftHip", "leftUpperLeg"),
+    ("LeftKnee", "leftLowerLeg"),
+    ("LeftAnkle", "leftFoot"),
+    ("LeftToe", "leftToes"),
+    ("RightHip", "rightUpperLeg"),
+    ("RightKnee", "rightLowerLeg"),
+    ("RightAnkle", "rightFoot"),
+    ("RightToe", "rightToes"),
+    ("LeftCollar", "leftShoulder"),
+    ("LeftShoulder", "leftUpperArm"),
+    ("LeftElbow", "leftLowerArm"),
+    ("LeftWrist", "leftHand"),
+    ("RightCollar", "rightShoulder"),
+    ("RightShoulder", "rightUpperArm"),
+]
+
+/// The 100STYLE names' second half: its right arm's last two joints.
+pub const HUNDRED_STYLE_ARM: [(Text, Text); 2] = [
+    ("RightElbow", "rightLowerArm"),
+    ("RightWrist", "rightHand"),
+]
+
+// ---- rigid transforms ------------------------------------------------------------------
+
+/// A rotation then a translation: how a bone sits in its parent, or in the world.
+pub struct Rigid: Copy {
+    pub q: Quat,
+    pub t: vec3,
+}
+
+impl Rigid {
+    pub fn identity() -> Rigid {
+        Rigid { q: Quat::identity(), t: vec3(0.0) }
+    }
+
+    /// `self` after `b`: `b`'s frame placed in `self`'s.
+    pub fn then(self, b: Rigid) -> Rigid {
+        Rigid { q: self.q.mul(b.q), t: self.t + self.q.rotate(b.t) }
+    }
+
+    /// The opposite transform.
+    pub fn inverse(self) -> Rigid {
+        let qi = self.q.inverse()
+        Rigid { q: qi, t: -qi.rotate(self.t) }
+    }
+
+    pub fn matrix(self) -> mat4 {
+        let m = self.q.to_mat3()
+        mat4(vec4(m[0], 0.0), vec4(m[1], 0.0), vec4(m[2], 0.0), vec4(self.t, 1.0))
+    }
+}
+
+/// The shortest turn taking direction `a` onto `b` (both nonzero).
+pub fn arc(a: vec3, b: vec3) -> Quat {
+    let (u, v) = (normalize(a), normalize(b))
+    let d = dot(u, v)
+    if d > 0.999999 {
+        return Quat::identity()
+    }
+    if d < -0.999999 {
+        let side = if abs(u.x) < 0.9 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) }
+        return Quat::axis_angle(cross(u, side), 3.14159265)
+    }
+    Quat { v: normalize(vec4(cross(u, v), 1.0 + d)) }
+}
+
+// ---- the rig and its mesh -----------------------------------------------------------------
+
+/// A bone of a rig: which VRM bone it is, its parent in the rig (`NONE` for the hips), where it
+/// sits in its parent at rest, and its inverse bind matrix (the mesh's space to its own).
+pub struct RigBone: Copy {
+    pub vrm: u32,
+    pub parent: u32,
+    pub rest: Rigid,
+    pub ibm: mat4,
+}
+
+/// A rig: its bones (each after its parent), each VRM bone's place among them (`NONE` where it
+/// has none), and where the hips' parent sits in the body's space.
+pub struct Rig: Clone {
+    pub bones: Vec<RigBone>,
+    pub of: [u32; 55],
+    pub base: Rigid,
+}
+
+impl Rig {
+    /// The rig's bone for VRM bone `name`, or `NONE`.
+    pub fn find(self, name: str) -> u32 {
+        let v = bone(name)
+        if v == NONE { NONE } else { self.of[v] }
+    }
+
+    /// Each bone in the body's space, at rest.
+    pub fn rest_world(self) -> Vec<Rigid> {
+        var out: Vec<Rigid> = Vec::with_capacity(self.bones.len())
+        for b in 0..self.bones.len() {
+            let p = self.bones[b].parent
+            let up = if p == NONE { self.base } else { out[p] }
+            out.push(up.then(self.bones[b].rest))
+        }
+        out
+    }
+}
+
+/// A body's vertex: where it is at rest (the mesh's space, m), its four bones (a byte each, low
+/// first) and their weights (unorm bytes, summing to 255), its normal, its colour (rgba8, sRGB)
+/// and which part of the body it's on (`part_of`).
+pub struct BodyVertex: Copy + GpuData + Plain {
+    pub pos: vec3,
+    pub bones: u32,
+    pub normal: vec3,
+    pub weights: u32,
+    pub colour: u32,
+    pub part: u32,
+    pub pad0: u32,
+    pub pad1: u32,
+}
+
+/// A body: its rig, its vertices and triangles, and the box it lies in at rest.
+pub struct Humanoid: Clone {
+    pub rig: Rig,
+    pub verts: Vec<BodyVertex>,
+    pub indices: Vec<u32>,
+    pub lo: vec3,
+    pub hi: vec3,
+}
+
+/// A material's colour: the glTF material named `material` drawn in `albedo` (sRGB, 0 to 1).
+pub struct Paint: Copy {
+    pub material: Text,
+    pub albedo: vec3,
+}
+
+/// Which part of the body a VRM bone is in, for the lines where parts meet: 0 the trunk, 1 the
+/// head, 2 and 3 the left and right legs, 4 and 5 the left and right arms (a shoulder, its arm,
+/// its hand and fingers).
+pub fn part_of(vrm: u32) -> u32 {
+    if vrm <= 3 {
+        0
+    } else if vrm <= 8 {
+        1
+    } else if vrm <= 12 {
+        2
+    } else if vrm <= 16 {
+        3
+    } else if vrm <= 20 || (vrm >= 25 && vrm <= 39) {
+        4
+    } else {
+        5
+    }
+}
+
+/// The node `n` folds into: itself where `mapped`, else its nearest mapped ancestor (`NONE`
+/// where it has none).
+fn folded(nodes: [Node], mapped: [u32], n: u32) -> u32 {
+    var i = n
+    while i != gltf::NONE {
+        if mapped[i] != NONE {
+            return mapped[i]
+        }
+        i = nodes[i].parent
+    }
+    NONE
+}
+
+/// Node `n` in the scene at rest, as a rigid transform (its ancestors' scales must be 1).
+fn node_world(nodes: [Node], n: u32) -> Rigid {
+    var r = Rigid::identity()
+    var i = n
+    while i != gltf::NONE {
+        let s = nodes[i].s
+        assert(
+            abs(s.x - 1.0) < 1.0e-3 && abs(s.y - 1.0) < 1.0e-3 && abs(s.z - 1.0) < 1.0e-3,
+            f"a skeleton's node `{nodes[i].name}` is scaled: only rigid skeletons are read",
+        )
+        r = Rigid { q: nodes[i].r, t: nodes[i].t }.then(r)
+        i = nodes[i].parent
+    }
+    r
+}
+
+/// The VRM bone `table` names node name `name` as, or `NONE`.
+fn mapped_name(table: [(Text, Text)], name: str) -> u32 {
+    for (from, to) in table {
+        if from == name {
+            let v = bone(to)
+            assert(v != NONE, f"`{to}` isn't a VRM humanoid bone")
+            return v
+        }
+    }
+    NONE
+}
+
+/// The rig of a GLB's first skin: each joint `names` maps (its name to VRM's), in VRM's order.
+/// A missing required bone, a bone mapped twice or more than `MAX_BONES` fails the build.
+pub fn rig_of(g: Glb, nodes: [Node], names: [(Text, Text)]) -> (Rig, Vec<u32>) {
+    assert(g.count("skins") > 0, "a humanoid's GLB has no skin")
+    let skin = g.item("skins", 0)
+    let joints = g.indices(skin, "joints")
+    let ibms = g.matrices(g.index(skin, "inverseBindMatrices"))
+    // Each VRM bone's node.
+    var node_of = [NONE; 55]
+    for k in 0..joints.len() {
+        let v = mapped_name(names, nodes[joints[k]].name.as_str())
+        if v != NONE {
+            assert(node_of[v] == NONE, f"two joints are VRM's `{BONES[v]}`")
+            node_of[v] = k
+        }
+    }
+    for r in REQUIRED {
+        assert(node_of[bone(r)] != NONE, f"a humanoid has no `{r}` (VRM's required bone)")
+    }
+    // The rig's bones in VRM's order, which is parents first.
+    var of = [NONE; 55]
+    var mapped: Vec<u32> = Vec::filled(nodes.len(), NONE)
+    var count = 0
+    for v in 0..55 {
+        if node_of[v] != NONE {
+            of[v] = count
+            mapped[joints[node_of[v]]] = count
+            count += 1
+        }
+    }
+    assert(
+        count <= MAX_BONES,
+        f"a rig has at most {MAX_BONES} bones (`MAX_BONES`); this one {count}",
+    )
+    var bones: Vec<RigBone> = Vec::new()
+    let hips_node = joints[node_of[0]]
+    let base = if nodes[hips_node].parent == gltf::NONE {
+        Rigid::identity()
+    } else { node_world(nodes, nodes[hips_node].parent) }
+    var world: Vec<Rigid> = Vec::new()
+    for v in 0..55 {
+        if node_of[v] == NONE {
+            continue
+        }
+        let n = joints[node_of[v]]
+        let w = node_world(nodes, n)
+        let parent = if v == 0 { NONE } else { folded(nodes, mapped, nodes[n].parent) }
+        assert(v == 0 || parent != NONE, f"`{BONES[v]}` isn't below the hips")
+        assert(parent == NONE || parent < bones.len(), f"`{BONES[v]}` comes before its parent")
+        let up = if parent == NONE { base } else { world[parent] }
+        bones.push(RigBone { vrm: v, parent, rest: up.inverse().then(w), ibm: ibms[node_of[v]] })
+        world.push(w)
+    }
+    // Each skin joint's rig bone: its own, or its nearest mapped ancestor's (the hips' for one
+    // above them).
+    var joint_bone: Vec<u32> = Vec::new()
+    for k in 0..joints.len() {
+        let b = folded(nodes, mapped, joints[k])
+        joint_bone.push(if b == NONE { 0 } else { b })
+    }
+    (Rig { bones, of, base }, joint_bone)
+}
+
+/// Packs four bytes, low first.
+fn pack(a: u32, b: u32, c: u32, d: u32) -> u32 {
+    (a & 255) | ((b & 255) << 8) | ((c & 255) << 16) | ((d & 255) << 24)
+}
+
+fn srgb8(c: vec3) -> u32 {
+    let q = clamp(c, vec3(0.0), vec3(1.0)) * 255.0 + vec3(0.5)
+    pack(u32(q.x), u32(q.y), u32(q.z), 255)
+}
+
+/// The humanoid a GLB holds: its first skin's rig (its joints' names mapped by `names`), and every
+/// mesh skinned to it, each primitive drawn in its material's colour from `paints` (an unnamed
+/// one in `fallback`). A vertex's weights on unmapped joints go to their mapped ancestors.
+pub fn import(file: Bytes, names: [(Text, Text)], paints: [Paint], fallback: vec3) -> Humanoid {
+    let g = gltf::read(file)
+    let nodes = g.nodes()
+    let (rig, joint_bone) = rig_of(g, nodes, names)
+    var verts: Vec<BodyVertex> = Vec::new()
+    var indices: Vec<u32> = Vec::new()
+    var lo = vec3(1.0e9)
+    var hi = vec3(-1.0e9)
+    for n in 0..nodes.len() {
+        if nodes[n].mesh == gltf::NONE || nodes[n].skin != 0 {
+            continue
+        }
+        let mesh = g.item("meshes", nodes[n].mesh)
+        let Some(prims) = g.doc.get(mesh, "primitives") else { continue }
+        for p in 0..g.doc.count(prims) {
+            let Some(prim) = g.doc.at(prims, p) else { continue }
+            let mode = g.index(prim, "mode")
+            assert(mode == gltf::NONE || mode == 4, "only triangle lists are read")
+            let Some(attrs) = g.doc.get(prim, "attributes") else { continue }
+            let pos = g.floats(g.index(attrs, "POSITION"))
+            let nrm = g.floats(g.index(attrs, "NORMAL"))
+            let js = g.ints(g.index(attrs, "JOINTS_0"))
+            let ws = g.floats(g.index(attrs, "WEIGHTS_0"))
+            let mat = g.index(prim, "material")
+            var albedo = fallback
+            if mat != gltf::NONE {
+                let name = g.text(g.item("materials", mat), "name")
+                for paint in paints {
+                    if paint.material == name.as_str() {
+                        albedo = paint.albedo
+                    }
+                }
+            }
+            let first = verts.len()
+            let count = pos.len() / 3
+            for i in 0..count {
+                // Its weights by rig bone, folded, the four largest kept.
+                var w = [0.0; 64]
+                for k in 0..4 {
+                    w[joint_bone[js[i * 4 + k]]] += ws[i * 4 + k]
+                }
+                var idx = [0; 4]
+                var wq = [0.0; 4]
+                for k in 0..4 {
+                    var best = 0
+                    var bv = -1.0
+                    for b in 0..rig.bones.len() {
+                        if w[b] > bv {
+                            bv = w[b]
+                            best = b
+                        }
+                    }
+                    idx[k] = best
+                    wq[k] = max(bv, 0.0)
+                    w[best] = -1.0
+                }
+                let total = max(wq[0] + wq[1] + wq[2] + wq[3], 1.0e-6)
+                var q = [0; 4]
+                var sum = 0
+                for k in 0..4 {
+                    q[k] = u32(wq[k] / total * 255.0 + 0.5)
+                    sum += q[k]
+                }
+                // The rounding's remainder on the heaviest, so they sum to 255.
+                q[0] = u32(i32(q[0]) + 255 - i32(sum))
+                let at = vec3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2])
+                lo = min(lo, at)
+                hi = max(hi, at)
+                verts.push(
+                    BodyVertex {
+                        pos: at,
+                        bones: pack(idx[0], idx[1], idx[2], idx[3]),
+                        normal: normalize(vec3(nrm[i * 3], nrm[i * 3 + 1], nrm[i * 3 + 2])),
+                        weights: pack(q[0], q[1], q[2], q[3]),
+                        colour: srgb8(albedo),
+                        part: part_of(rig.bones[idx[0]].vrm),
+                        pad0: 0,
+                        pad1: 0,
+                    },
+                )
+            }
+            let ia = g.index(prim, "indices")
+            if ia == gltf::NONE {
+                for i in 0..count {
+                    indices.push(first + i)
+                }
+            } else {
+                for i in g.ints(ia) {
+                    indices.push(first + i)
+                }
+            }
+        }
+    }
+    assert(verts.len() > 0, "a humanoid's GLB has no mesh skinned to its skin")
+    Humanoid { rig, verts, indices, lo, hi }
+}
+
+// ---- takes: motion as a file has it --------------------------------------------------------
+
+/// A joint of a take: its parent (`NONE` for a root), where it sits in its parent at rest, and
+/// where its end site is (zero where it has none).
+pub struct TakeJoint: Copy {
+    pub parent: u32,
+    pub rest: Rigid,
+    pub end: vec3,
+}
+
+/// Motion as a file has it, on its own skeleton: its joints, an order of them that puts each
+/// after its parent, each VRM
+/// bone's joint (`NONE` where it has none), its frames a second, and every frame's turns (a
+/// frame's joints in order) and its hips' translation in their parent.
+pub struct Take: Clone {
+    pub joints: Vec<TakeJoint>,
+    pub order: Vec<u32>,
+    pub of: [u32; 55],
+    pub fps: f32,
+    pub frames: u32,
+    pub turns: Vec<Quat>,
+    pub hips: Vec<vec3>,
+}
+
+/// A BVH take's frames `from` to `to` (inclusive), its joints named by `names` (and
+/// `more`, a second table), as a take.
+pub fn take_of_bvh(
+    b: Bvh,
+    names: [(Text, Text)],
+    more: [(Text, Text)],
+    from: u32,
+    to: u32,
+) -> Take {
+    assert(from <= to && to < b.frames, "a BVH take's frames are past its end")
+    var joints: Vec<TakeJoint> = Vec::new()
+    var of = [NONE; 55]
+    for j in 0..b.joints.len() {
+        borrow bj = b.joints[j]
+        var v = mapped_name(names, bj.name.as_str())
+        if v == NONE {
+            v = mapped_name(more, bj.name.as_str())
+        }
+        if v != NONE {
+            of[v] = j
+        }
+        let end = match bj.end {
+            Some(e) => e,
+            None => vec3(0.0),
+        }
+        joints.push(
+            TakeJoint { parent: bj.parent, rest: Rigid { q: Quat::identity(), t: bj.offset }, end },
+        )
+    }
+    let hips = of[0]
+    assert(hips != NONE, "a BVH take has no hips")
+    var turns: Vec<Quat> = Vec::new()
+    var at: Vec<vec3> = Vec::new()
+    for f in from..to + 1 {
+        for j in 0..b.joints.len() {
+            let (q, t) = b.local(j, f)
+            turns.push(q)
+            if j == hips {
+                at.push(
+                    match t {
+                        Some(p) => p,
+                        None => b.joints[j].offset,
+                    },
+                )
+            }
+        }
+    }
+    var order: Vec<u32> = Vec::new()
+    for j in 0..joints.len() {
+        order.push(j)
+    }
+    Take {
+        joints,
+        order,
+        of,
+        fps: 1.0 / b.frame_time,
+        frames: to + 1 - from,
+        turns,
+        hips: at,
+    }
+}
+
+/// A glTF animation named `clip` of a GLB, sampled `fps` times a second, its skeleton's joints
+/// named by `names`.
+pub fn take_of_gltf(file: Bytes, clip: str, names: [(Text, Text)], fps: f32) -> Take {
+    let g = gltf::read(file)
+    let nodes = g.nodes()
+    let a = g.animation(clip)
+    assert(a != gltf::NONE, f"a GLB has no animation `{clip}`")
+    let tracks = g.tracks(a)
+    var of = [NONE; 55]
+    var joints: Vec<TakeJoint> = Vec::new()
+    for n in 0..nodes.len() {
+        let v = mapped_name(names, nodes[n].name.as_str())
+        if v != NONE {
+            of[v] = n
+        }
+        joints.push(
+            TakeJoint {
+                parent: nodes[n].parent,
+                rest: Rigid { q: nodes[n].r, t: nodes[n].t },
+                end: vec3(0.0),
+            },
+        )
+    }
+    assert(of[0] != NONE, f"the animation `{clip}`'s skeleton has no hips")
+    // Each node's rotation and translation track (`NONE` where it has none).
+    var rot: Vec<u32> = Vec::filled(nodes.len(), NONE)
+    var mov: Vec<u32> = Vec::filled(nodes.len(), NONE)
+    var length = 0.0
+    for k in 0..tracks.len() {
+        borrow t = tracks[k]
+        if t.path == Path::Rotation {
+            rot[t.node] = k
+        } else if t.path == Path::Translation {
+            mov[t.node] = k
+        }
+        length = max(length, t.times[t.times.len() - 1])
+    }
+    let frames = max(u32(length * fps + 0.5), 1) + 1
+    var turns: Vec<Quat> = Vec::new()
+    var hips: Vec<vec3> = Vec::new()
+    for f in 0..frames {
+        let time = min(f32(f) / fps, length)
+        for n in 0..nodes.len() {
+            turns.push(
+                if rot[n] == NONE { nodes[n].r } else {
+                    Quat { v: normalize(gltf::sample(tracks[rot[n]], time, 4)) }
+                },
+            )
+        }
+        let h = of[0]
+        hips.push(if mov[h] == NONE { nodes[h].t } else {
+            gltf::sample(tracks[mov[h]], time, 3).xyz
+        })
+    }
+    // Parents first: each node once its parent is placed.
+    var order: Vec<u32> = Vec::new()
+    var placed: Vec<bool> = Vec::filled(nodes.len(), value: false)
+    while order.len() < nodes.len() {
+        for n in 0..nodes.len() {
+            let p = nodes[n].parent
+            if !placed[n] && (p == gltf::NONE || placed[p]) {
+                placed[n] = true
+                order.push(n)
+            }
+        }
+    }
+    // A root's motion above the hips isn't read: the hips carry the take's travel.
+    Take { joints, order, of, fps, frames, turns, hips }
+}
+
+impl Take {
+    /// Each joint in the take's space in frame `f` (`NONE`: at rest).
+    pub fn world(self, f: u32) -> Vec<Rigid> {
+        let n = self.joints.len()
+        var out: Vec<Rigid> = Vec::filled(n, Rigid::identity())
+        for j in self.order {
+            borrow tj = self.joints[j]
+            var local = tj.rest
+            if f != NONE {
+                local.q = self.turns[f * n + j]
+                if j == self.of[0] {
+                    local.t = self.hips[f]
+                }
+            }
+            let up = if tj.parent == NONE { Rigid::identity() } else { out[tj.parent] }
+            out[j] = up.then(local)
+        }
+        out
+    }
+}
+
+impl Take {
+    /// Its frames `from` to `to` (inclusive).
+    pub fn cut(self, from: u32, to: u32) -> Take {
+        assert(from <= to && to < self.frames, "a cut past a take's end")
+        let n = self.joints.len()
+        var turns: Vec<Quat> = Vec::with_capacity((to + 1 - from) * n)
+        var hips: Vec<vec3> = Vec::new()
+        for f in from..to + 1 {
+            for j in 0..n {
+                turns.push(self.turns[f * n + j])
+            }
+            hips.push(self.hips[f])
+        }
+        Take {
+            joints: self.joints.clone(),
+            order: self.order.clone(),
+            of: self.of,
+            fps: self.fps,
+            frames: to + 1 - from,
+            turns,
+            hips,
+        }
+    }
+
+    /// How unlike frames `a` and `b` are, as a loop's seam would join them: each mapped joint's
+    /// turn but the hips' (their heading is the path's), the hips' tilt, height and speed (each
+    /// over the leg's length).
+    fn seam(self, a: u32, b: u32, legs: f32) -> f32 {
+        let n = self.joints.len()
+        var cost = 0.0
+        for v in 1..55 {
+            let j = self.of[v]
+            if j != NONE {
+                cost += 1.0 - abs(dot(self.turns[a * n + j].v, self.turns[b * n + j].v))
+            }
+        }
+        let h = self.of[0]
+        let up = vec3(0.0, 1.0, 0.0)
+        let ta = self.turns[a * n + h].rotate(up)
+        let tb = self.turns[b * n + h].rotate(up)
+        cost += 4.0 * dot(ta - tb, ta - tb)
+        let dy = (self.hips[a].y - self.hips[b].y) / legs
+        cost += 20.0 * dy * dy
+        cost
+    }
+
+    /// The cut of it that loops best: from frame `a` to frame `b`, `shortest` to `longest` frames
+    /// apart, where `b`'s pose and motion are most like `a`'s; its last `SEAM_EASE` frames eased
+    /// into the ones that lead into `a`.
+    pub fn looped(self, shortest: u32, longest: u32) -> Take {
+        let w = self.world(NONE)
+        let (u, l, f) = (
+            self.of[bone("leftUpperLeg")],
+            self.of[bone("leftLowerLeg")],
+            self.of[bone("leftFoot")],
+        )
+        let legs = length(w[l].t - w[u].t) + length(w[f].t - w[l].t)
+        var best = (0, 0)
+        var least = 1.0e9
+        for a in 1..self.frames {
+            for b in a + shortest..min(a + longest + 1, self.frames - 1) {
+                // Their motion too: the hips' speed and rise across the next frame.
+                let va = (self.hips[a + 1] - self.hips[a - 1]) / legs
+                let vb = (self.hips[b + 1] - self.hips[b - 1]) / legs
+                let dv = vec2(length(va.xz) - length(vb.xz), va.y - vb.y)
+                let cost = self.seam(a, b, legs) + 400.0 * dot(dv, dv)
+                if cost < least {
+                    least = cost
+                    best = (a, b)
+                }
+            }
+        }
+        assert(best.1 > best.0, "a take is too short to loop")
+        let (a, b) = best
+        var out = self.cut(a, b)
+        // Its last frames eased into the frames that lead into its first, so the seam meets in
+        // motion as well as in pose: at the end it moves as it moved into the start.
+        let k = min(min(a, SEAM_EASE), b - a)
+        let n = self.joints.len()
+        let on = self.hips[b] - self.hips[a]
+        for i in 1..k + 1 {
+            let (g, c) = (b - k + i, a - k + i)
+            let w = smoothstep(0.0, 1.0, f32(i) / f32(k))
+            for j in 0..n {
+                out.turns[(g - a) * n + j] = self.turns[g * n + j].nlerp(self.turns[c * n + j], w)
+            }
+            out.hips[g - a] = mix(self.hips[g], self.hips[c] + on, vec3(w))
+        }
+        out
+    }
+}
+
+// ---- clips: motion retargeted onto a rig ------------------------------------------------
+
+/// How a take is retargeted: whether its travel is turned to face +z (a take that walks off
+/// across a capture volume) and whether it loops (its last frame meets its first). A walk's feet
+/// are planted afterwards (`stride::humanised`).
+pub struct Retarget: Copy {
+    pub face_ahead: bool = false,
+    pub looped: bool = false,
+    /// Whether its neck and head are set to the rig's own carriage on average, keeping only how
+    /// they move: a take whose rest has a straight neck (100STYLE's) holds a real neck's forward
+    /// set as a turn, which on a rig whose rest is already set forward juts the head and drops
+    /// the face to the floor.
+    pub carried: bool = false,
+}
+
+/// A clip on a rig: its frames a second, its frames, every frame's local turn of each of the
+/// rig's bones (a frame's bones in order), its hips' translation in their parent, and for a
+/// looped clip how far it travels a loop (the body's space: a walk's stride pair).
+pub struct Clip: Clone {
+    pub fps: f32,
+    pub frames: u32,
+    pub bones: u32,
+    pub turns: Vec<Quat>,
+    pub hips: Vec<vec3>,
+    pub looped: bool,
+    pub travel: vec3,
+    /// Its travel in the hips' parent's space.
+    pub travel_local: vec3,
+}
+
+/// The direction from VRM bone `v` toward what it aims at, at rest: from `pos` (each bone's
+/// place by VRM bone, `NONE`'s skipped) and where it has none, `end` (its own end site, in the
+/// world, zero where none).
+fn aim(v: u32, has: [bool; 55], pos: [vec3; 55], end: vec3) -> Option<vec3> {
+    let me = BONES[v]
+    for (from, to) in AIMS {
+        if from == me {
+            let c = bone(to)
+            if has[c] && length(pos[c] - pos[v]) > 1.0e-5 {
+                return Some(pos[c] - pos[v])
+            }
+        }
+    }
+    if length(end) > 1.0e-5 {
+        return Some(end)
+    }
+    None
+}
+
+/// A leg's length at rest: its upper bone's and its lower bone's, from VRM bones' places.
+fn leg(pos: [vec3; 55]) -> f32 {
+    let (u, l, f) = (bone("leftUpperLeg"), bone("leftLowerLeg"), bone("leftFoot"))
+    length(pos[l] - pos[u]) + length(pos[f] - pos[l])
+}
+
+/// `src` retargeted onto `rig`, as `how` says.
+pub fn retarget(src: Take, rig: Rig, how: Retarget) -> Clip {
+    let nb = rig.bones.len()
+    // The rig at rest, each bone by VRM bone.
+    let rw = rig.rest_world()
+    var t_has = [false; 55]
+    var t_pos = [vec3(0.0); 55]
+    for b in 0..nb {
+        t_has[rig.bones[b].vrm] = true
+        t_pos[rig.bones[b].vrm] = rw[b].t
+    }
+    // The take at rest.
+    let sw = src.world(NONE)
+    var s_has = [false; 55]
+    var s_pos = [vec3(0.0); 55]
+    var s_end = [vec3(0.0); 55]
+    for v in 0..55 {
+        let j = src.of[v]
+        if j != NONE {
+            s_has[v] = true
+            s_pos[v] = sw[j].t
+            s_end[v] = sw[j].q.rotate(src.joints[j].end)
+        }
+    }
+    // Each limb's bone aimed where the take's points at rest (a T-pose against an A-pose). The
+    // spine, neck and head (VRM's first seven) and the collarbones keep the rig's own set: a
+    // take's straight rest spine would otherwise pitch the rig's chest and head forward, a
+    // slouch, and its collarbones straight out would round the rig's shoulders forward.
+    var align = [Quat::identity(); 55]
+    let (lc, rc) = (bone("leftShoulder"), bone("rightShoulder"))
+    for v in AXIAL..55 {
+        if t_has[v] && s_has[v] && v != lc && v != rc {
+            if let Some(dt) = aim(v, t_has, t_pos, vec3(0.0)) {
+                if let Some(ds) = aim(v, s_has, s_pos, s_end[v]) {
+                    align[v] = arc(dt, ds)
+                }
+            }
+        }
+    }
+    let k = leg(t_pos) / leg(s_pos)
+    let hips = src.of[0]
+    let first = src.world(0)
+    let last = src.world(src.frames - 1)
+    // The turn that faces its travel ahead (+z).
+    var yaw = Quat::identity()
+    if how.face_ahead {
+        let d = last[hips].t - first[hips].t
+        yaw = Quat::axis_angle(vec3(0.0, 1.0, 0.0), -atan2(d.x, d.z))
+    }
+    // Its feet's lowest, set on the rig's ground: the rig's feet's height at rest.
+    var low = 1.0e9
+    for f in 0..src.frames {
+        let w = src.world(f)
+        for foot in ["leftFoot", "rightFoot"] {
+            low = min(low, w[src.of[bone(foot)]].t.y)
+        }
+    }
+    let ground = t_pos[bone("leftFoot")].y - k * low
+    let start = vec3(first[hips].t.x, 0.0, first[hips].t.z)
+    // The neck's and head's mean turns from rest, taken off each frame's (`Retarget::carried`):
+    // each frame's about the way the body faces then (its travel, for a take turned to face
+    // ahead; else its hips', which a take that turns turns with), so where it faces isn't taken
+    // for how the neck's carried.
+    var carry = [Quat::identity(); 55]
+    if how.carried {
+        let (lu, ru) = (src.of[bone("leftUpperLeg")], src.of[bone("rightUpperLeg")])
+        let across = if lu != NONE && ru != NONE { sw[lu].t - sw[ru].t } else { vec3(0.0) }
+        let by_hips = !how.face_ahead && length(vec2(across.x, across.z)) > 1.0e-6
+        for v in [bone("neck"), bone("head")] {
+            let j = src.of[v]
+            if j != NONE {
+                var sum = vec4(0.0)
+                var first_v = vec4(0.0)
+                for f in 0..src.frames {
+                    let w = src.world(f)
+                    var faces = Quat::identity()
+                    if by_hips {
+                        let l = w[hips].q.mul(sw[hips].q.inverse()).rotate(across)
+                        faces = Quat::axis_angle(
+                            vec3(0.0, 1.0, 0.0),
+                            atan2(l.x, l.z) - atan2(across.x, across.z),
+                        )
+                    }
+                    let d = faces.inverse().mul(yaw.mul(w[j].q).mul(sw[j].q.inverse())).v
+                    if f == 0 {
+                        first_v = d
+                    }
+                    sum += if dot(d, first_v) < 0.0 { -d } else { d }
+                }
+                carry[v] = Quat { v: normalize(sum) }.inverse()
+            }
+        }
+    }
+    var turns: Vec<Quat> = Vec::with_capacity(src.frames * nb)
+    var at: Vec<vec3> = Vec::with_capacity(src.frames)
+    var world: Vec<Rigid> = Vec::filled(nb, Rigid::identity())
+    for f in 0..src.frames {
+        let w = src.world(f)
+        for b in 0..nb {
+            borrow rb = rig.bones[b]
+            let up = if rb.parent == NONE { rig.base } else { world[rb.parent] }
+            let j = src.of[rb.vrm]
+            let q = if j == NONE {
+                up.q.mul(rb.rest.q)
+            } else {
+                let delta = yaw.mul(w[j].q).mul(sw[j].q.inverse())
+                delta.mul(carry[rb.vrm]).mul(align[rb.vrm]).mul(rw[b].q)
+            }
+            var t = up.t + up.q.rotate(rb.rest.t)
+            if rb.parent == NONE {
+                let s = yaw.rotate(w[hips].t - start) * k
+                t = vec3(s.x + rw[b].t.x, w[hips].t.y * k + ground, s.z + rw[b].t.z)
+            }
+            world[b] = Rigid { q, t }
+            turns.push(up.q.inverse().mul(q))
+            if rb.parent == NONE {
+                at.push(t)
+            }
+        }
+    }
+    // The hips' places so far are the body's; their travel a loop is along the ground.
+    var travel = vec3(0.0)
+    if how.looped && src.frames > 1 {
+        let n = src.frames - 1
+        // How far a loop goes, and what of its last frame doesn't meet its first: spread over
+        // its frames, so the last is the first again.
+        let d = at[n] - at[0]
+        travel = vec3(d.x, 0.0, d.z)
+        let miss = d - travel
+        for f in 0..src.frames {
+            let s = f32(f) / f32(n)
+            at[f] = at[f] - miss * s
+            for b in 0..nb {
+                let fix = turns[b].mul(turns[n * nb + b].inverse())
+                let i = f * nb + b
+                turns[i] = Quat::identity().nlerp(fix, s).mul(turns[i])
+            }
+        }
+    }
+    // Its feet on the rig's ground: the lowest either ankle goes is where it stands at rest.
+    let (lf, rf) = (rig.find("leftFoot"), rig.find("rightFoot"))
+    var lowest = 1.0e9
+    for f in 0..src.frames {
+        let w = frame_world(rig, turns, f, at[f])
+        lowest = min(lowest, min(w[lf].t.y, w[rf].t.y))
+    }
+    let lift = rw[lf].t.y - lowest
+    for f in 0..src.frames {
+        at[f].y += lift
+    }
+    // The hips in their parent's space.
+    let inv = rig.base.inverse()
+    for f in 0..src.frames {
+        at[f] = inv.t + inv.q.rotate(at[f])
+    }
+    Clip {
+        fps: src.fps,
+        frames: src.frames,
+        bones: nb,
+        turns,
+        hips: at,
+        looped: how.looped,
+        travel,
+        travel_local: inv.q.rotate(travel),
+    }
+}
+
+/// Each bone in the body's space in frame `f` of `turns` (a frame's bones in order), the hips
+/// at `hips` (the body's space).
+pub fn frame_world(rig: Rig, turns: [Quat], f: u32, hips: vec3) -> Vec<Rigid> {
+    let nb = rig.bones.len()
+    var out: Vec<Rigid> = Vec::filled(nb, Rigid::identity())
+    for b in 0..nb {
+        borrow rb = rig.bones[b]
+        let q = turns[f * nb + b]
+        if rb.parent == NONE {
+            out[b] = Rigid { q: rig.base.q.mul(q), t: hips }
+        } else {
+            out[b] = out[rb.parent].then(Rigid { q, t: rb.rest.t })
+        }
+    }
+    out
+}
+
+/// The frames a looped take's end eases into its start's lead-in (`Take::looped`).
+pub const SEAM_EASE: u32 = 16
+
+/// A rig's rest pose as a clip of one frame: the bind pose (a T-pose for Quaternius's bodies).
+pub fn rest_clip(rig: Rig) -> Clip {
+    var turns: Vec<Quat> = Vec::new()
+    for b in rig.bones {
+        turns.push(b.rest.q)
+    }
+    Clip {
+        fps: 30.0,
+        frames: 1,
+        bones: rig.bones.len(),
+        turns,
+        hips: Vec::from([rig.bones[0].rest.t]),
+        looped: false,
+        travel: vec3(0.0),
+        travel_local: vec3(0.0),
+    }
+}
+
+/// A pose: each bone's local turn, and the hips' translation in their parent.
+pub struct Pose: Copy {
+    pub turns: [Quat; 64],
+    pub hips: vec3,
+}
+
+impl Clip {
+    /// How long one play of it lasts (s): from its first frame to its last.
+    pub fn length(self) -> f32 {
+        f32(max(self.frames, 2) - 1) / self.fps
+    }
+
+    /// Its pose at `time` (s): looped, a loop further on each time round (its travel added; a
+    /// loop back before 0); else held at its first frame before 0 and its last after its end.
+    pub fn pose(self, time: f32) -> Pose {
+        var p = Pose { turns: [Quat::identity(); 64], hips: vec3(0.0) }
+        if self.frames == 1 {
+            for b in 0..self.bones {
+                p.turns[b] = self.turns[b]
+            }
+            p.hips = self.hips[0]
+            return p
+        }
+        let span = f32(self.frames - 1)
+        var x = time * self.fps
+        var loops = 0.0
+        if self.looped {
+            loops = floor(x / span)
+            x = x - loops * span
+        } else {
+            x = clamp(x, 0.0, span)
+        }
+        let i = min(u32(x), self.frames - 2)
+        let f = x - f32(i)
+        let nb = self.bones
+        for b in 0..nb {
+            p.turns[b] = self.turns[i * nb + b].nlerp(self.turns[(i + 1) * nb + b], f)
+        }
+        p.hips = mix(self.hips[i], self.hips[i + 1], vec3(f)) + self.travel_local * loops
+        p
+    }
+}
+
+/// A pose's palette: each bone's matrix from the mesh's space at rest to the world, the body
+/// placed by `place` (its feet's spot and its heading). The bones past the rig's are `place`.
+pub fn palette(rig: Rig, pose: Pose, place: mat4) -> [mat4; 64] {
+    var out = [place; 64]
+    var world = [Rigid::identity(); 64]
+    for b in 0..rig.bones.len() {
+        borrow rb = rig.bones[b]
+        let up = if rb.parent == NONE { rig.base } else { world[rb.parent] }
+        let t = if rb.parent == NONE { pose.hips } else { rb.rest.t }
+        world[b] = up.then(Rigid { q: pose.turns[b], t })
+        out[b] = place * world[b].matrix() * rb.ibm
+    }
+    out
+}
+
+/// Two poses mixed: `a` where `t` is 0, `b` where it's 1.
+pub fn blend(a: Pose, b: Pose, t: f32, bones: u32) -> Pose {
+    var p = a
+    for i in 0..bones {
+        p.turns[i] = a.turns[i].nlerp(b.turns[i], t)
+    }
+    p.hips = mix(a.hips, b.hips, vec3(t))
+    p
+}

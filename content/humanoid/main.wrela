@@ -1,0 +1,352 @@
+// A humanoid character base, drawn in Kinetic Ink: Quaternius's Superhero Male, converted from
+// its glTF when the program is built onto VRM 1.0's bones (`engine::humanoid`), standing in its
+// T-pose, then idling (Quaternius's Universal Animation Library), then walking a 100STYLE take
+// retargeted onto it and looped. Two passes, as the opening style test's: the scene painted in 3D
+// into what the ink reads (`paint`), then the ink and the paper (`ink`).
+//
+// `--set SHOW=1` holds the T-pose, `2` the idle, `3` the walk, `4` the run, `5` the walking
+// turns, `6` the jog; `0` (the default) plays them in turn: two seconds of T-pose, six of idle,
+// then the walk. `--set RAW=1` plays a clip as its take has it, before its cleanup
+// (`engine::cleanup`; the walk's, `engine::stride`).
+
+use body::{
+    HERO, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
+}
+use engine::cleanup
+use engine::cleanup::Cleanup
+use engine::humanoid
+use engine::humanoid::{BodyVertex, Clip, Pose, blend, palette}
+use engine::review::review
+use engine::stride
+use ink::ink
+use look::{Shot, shot_at}
+use paint::{backdrop, body, ground, paint_backdrop, paint_body, paint_ground}
+use std::gpu::{
+    ClipPosition, Cull, DepthTexture, GpuBuffer, Rgba16Float, Rgba8, Texture, VertexIndex,
+    begin_pass3_with_depth, begin_screen_pass, buffer_of, depth_texture, draw, texture, write,
+}
+use std::io::print
+use std::transform::identity
+
+/// What plays: 0 each in turn, 1 the T-pose, 2 the idle, 3 the walk, 4 the run, 5 the walking
+/// turns, 6 the jog; and whether as its take has it (1), before its cleanup.
+pub const SHOW: u32 = 0
+pub const RAW: u32 = 0
+
+/// How kinetic the moment is (0 quiet): `--set KINETIC=0.6` frays the ink.
+pub const KINETIC: f32 = 0.0
+
+/// The camera: how far off (m), and the height it frames (m): `--set FAR=1.2 --set FOCUS=0.2`
+/// looks at the feet.
+pub const FAR: f32 = 3.7
+pub const FOCUS: f32 = 0.95
+
+/// Which side of its front the camera sees the walk from (+ its left): `--set SIDE=8` is near
+/// its profile.
+pub const SIDE: f32 = 0.75
+
+/// When the sequence moves on (s), and how long a change of clip blends.
+const IDLE_AT: f32 = 2.0
+const WALK_AT: f32 = 8.0
+const BLEND: f32 = 0.5
+
+pub struct State {
+    verts: GpuBuffer<BodyVertex>,
+    indices: GpuBuffer<u32>,
+    palette: GpuBuffer<mat4>,
+    colour: Texture<Rgba16Float>,
+    marks: Texture<Rgba16Float>,
+    normal: Texture<Rgba8>,
+    depth: DepthTexture,
+    width: u32,
+    height: u32,
+}
+
+pub fn init() -> State {
+    print(
+        f"humanoid: {HERO.rig.bones.len()} bones, {HERO.verts.len()} vertices, {HERO.indices.len() / 3} triangles; idle {IDLE.frames} frames, walk {WALK.frames} frames ({WALK.travel.z:.2} m a loop)",
+    )
+    State {
+        verts: buffer_of(HERO.verts),
+        indices: buffer_of(HERO.indices),
+        palette: buffer_of([identity(); 64]),
+        colour: texture(width: 640, height: 360),
+        marks: texture(width: 640, height: 360),
+        normal: texture(width: 640, height: 360),
+        depth: depth_texture(width: 640, height: 360),
+        width: 640,
+        height: 360,
+    }
+}
+
+/// The pose at `time`, and how far into its clip it's walked (for the camera to follow).
+fn pose_at(time: f32) -> Pose {
+    let n = HERO.rig.bones.len()
+    let raw = RAW == 1
+    match SHOW {
+        1 => T_POSE.pose(0.0),
+        2 => if raw { IDLE_RAW.pose(time) } else { IDLE.pose(time) },
+        3 => if raw { WALK_RAW.pose(time) } else { WALK.pose(time) },
+        4 => if raw { RUN_RAW.pose(time) } else { RUN.pose(time) },
+        5 => if raw { TURNS_RAW.pose(time) } else { TURNS.pose(time) },
+        6 => if raw { JOG_RAW.pose(time) } else { JOG.pose(time) },
+        _ => if time < IDLE_AT {
+            T_POSE.pose(0.0)
+        } else if time < WALK_AT {
+            let t = time - IDLE_AT
+            blend(T_POSE.pose(0.0), IDLE.pose(t), smoothstep(0.0, BLEND * 2.0, t), n)
+        } else {
+            let t = time - WALK_AT
+            blend(IDLE.pose(WALK_AT - IDLE_AT + t), WALK.pose(t), smoothstep(0.0, BLEND, t), n)
+        },
+    }
+}
+
+/// The hips' place, on average over a loop (or a second) round `time`: a walk's steady path,
+/// an idle's spot.
+fn steady_hips(time: f32) -> vec3 {
+    let base = HERO.rig.base
+    let span = match SHOW {
+        4 => RUN.length(),
+        5 => 1.0,
+        6 => JOG.length(),
+        _ => WALK.length(),
+    }
+    var sum = vec3(0.0)
+    for k in 0..16 {
+        let t = time + span * ((f32(k) + 0.5) / 16.0 - 0.5)
+        sum += base.t + base.q.rotate(pose_at(t).hips)
+    }
+    sum / 16.0
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if width != s.width || height != s.height {
+        s.colour = texture(width: width, height: height)
+        s.marks = texture(width: width, height: height)
+        s.normal = texture(width: width, height: height)
+        s.depth = depth_texture(width, height)
+        s.width = width
+        s.height = height
+    }
+    let pose = pose_at(time)
+    let bones = palette(HERO.rig, pose, identity())
+    write(mut s.palette, 0, bones)
+    // The camera follows the hips along the ground, steadily: where they are on average over a
+    // stride, so it neither surges with each step nor sways with the hips.
+    let hips = steady_hips(time)
+    let walking = SHOW >= 3 || (SHOW == 0 && time >= WALK_AT)
+    let side = if walking { SIDE } else { -0.55 }
+    let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
+    let shot = shot_at(
+        time,
+        FOCUS,
+        vec3(hips.x, 0.0, hips.z),
+        width,
+        height,
+        FAR,
+        side,
+        KINETIC,
+        left,
+    )
+    let p = begin_pass3_with_depth(
+        mut s.colour,
+        mut s.marks,
+        mut s.normal,
+        mut s.depth,
+        clear: vec4(0.0),
+        clear_depth: 0.0,
+    )
+    draw(p, backdrop, paint_backdrop.bind(shot: shot), vertices: 3, depth: engine::view::NEAREST)
+    draw(
+        p,
+        ground.bind(shot: shot),
+        paint_ground.bind(shot: shot),
+        vertices: 6,
+        depth: engine::view::NEAREST,
+    )
+    draw(
+        p,
+        body.bind(verts: s.verts.items(), palette: s.palette.items(), shot: shot),
+        paint_body.bind(shot: shot),
+        indices: s.indices,
+        index_count: HERO.indices.len(),
+        cull: Cull::Back,
+        depth: engine::view::NEAREST,
+    )
+    p.end()
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(
+        screen,
+        backdrop,
+        ink.bind(shot: shot, colour: s.colour, marks: s.marks, normal: s.normal),
+        vertices: 3,
+    )
+    screen.present()
+}
+
+/// The body converts onto VRM's bones within the engine's 64, and its clips with it: the walk
+/// goes ahead (+z) a stride (two steps) a loop, and the idle stays where it stands.
+@test
+fn the_body_and_its_clips_convert() {
+    let r = HERO.rig.clone()
+    assert(r.bones.len() == 52, f"the rig has {r.bones.len()} bones, not 52")
+    assert(r.find("hips") == 0 && r.find("leftToes") != humanoid::NONE)
+    assert(HERO.verts.len() > 8000 && HERO.indices.len() % 3 == 0)
+    assert(HERO.hi.y > 1.7 && HERO.hi.y < 1.9, f"the body stands {HERO.hi.y} m tall")
+    assert(WALK.travel.z > 1.0 && WALK.travel.z < 1.4, f"a walk's loop goes {WALK.travel} m")
+    assert(abs(WALK.travel.x) < 0.05)
+    assert(length(IDLE.travel) < 0.05, f"the idle wanders {IDLE.travel} m a loop")
+}
+
+/// At rest, each bone's palette matrix is the identity: the rig's rest pose is the mesh's bind.
+@test
+fn the_t_pose_is_the_bind_pose() {
+    let m = palette(HERO.rig, T_POSE.pose(0.0), identity())
+    var worst = 0.0
+    for b in 0..HERO.rig.bones.len() {
+        for c in 0..4 {
+            worst = max(worst, length(m[b][c] - identity()[c]))
+        }
+    }
+    assert(worst < 1.0e-3, f"a bone's rest palette is {worst} from the identity")
+}
+
+/// A walk's loop meets itself: its last frame's turns are its first's.
+@test
+fn the_walk_loops_without_a_pop() {
+    let n = WALK.frames - 1
+    var worst = 0.0
+    for b in 0..WALK.bones {
+        let a = WALK.turns[b].v
+        let z = WALK.turns[n * WALK.bones + b].v
+        worst = max(worst, min(length(a - z), length(a + z)))
+    }
+    assert(worst < 1.0e-3, f"the walk's seam is {worst} apart")
+}
+
+/// Each frame records draws the host accepts.
+@test(frames: 2)
+fn frames_record_valid_draws() {}
+
+fn bone_at(m: [mat4; 64], rw: [humanoid::Rigid], b: str) -> vec3 {
+    let i = HERO.rig.find(b)
+    (m[i] * vec4(rw[i].t, 1.0)).xyz
+}
+
+/// The walk faces where it goes: through a loop and into the next, its hips go ahead (+z), its
+/// left is +x and its toes point ahead (within 45°: a foot rolls in as it pushes off).
+@test
+fn the_walk_faces_ahead() {
+    let rw = HERO.rig.rest_world()
+    var last = -1.0
+    for k in 0..12 {
+        let t = f32(k) * 0.25
+        let m = palette(HERO.rig, WALK.pose(t), identity())
+        let h = bone_at(m, rw, "hips")
+        let left = bone_at(m, rw, "leftUpperLeg") - bone_at(m, rw, "rightUpperLeg")
+        let toes = bone_at(m, rw, "leftToes") - bone_at(m, rw, "leftFoot")
+        assert(h.z > last, f"at {t} s the hips went back, to {h.z}")
+        assert(left.x > 0.15 && abs(left.z) < 0.08, f"at {t} s the pelvis turned: {left}")
+        assert(toes.z > abs(toes.x), f"at {t} s the left toes point {toes}")
+        last = h.z
+    }
+}
+
+/// A planted foot stays put: frame to frame, an ankle down on the ground (within 2 cm of its
+/// height at rest) moves no more than 1.5 cm along it (a stance eases in and out).
+@test
+fn the_walk_plants_its_feet() {
+    let rw = HERO.rig.rest_world()
+    let n = WALK.frames - 1
+    for foot in ["leftFoot", "rightFoot"] {
+        let rest = rw[HERO.rig.find(foot)].t.y
+        var last = vec3(0.0)
+        var down = false
+        for f in 0..n {
+            let t = f32(f) / WALK.fps
+            let a = bone_at(palette(HERO.rig, WALK.pose(t), identity()), rw, foot)
+            let now = a.y < rest + 0.01
+            if now && down {
+                let slide = length(vec2(a.x - last.x, a.z - last.z))
+                assert(slide < 0.015, f"at {t} s the planted {foot} slid {slide} m")
+            }
+            down = now
+            last = a
+        }
+    }
+}
+
+/// Every clip that's ready passes its review (`engine::review`: what an animator's eye looks
+/// for, measured): the walk made human (`engine::stride`), and the idle and the run as the
+/// cleanup every clip goes through leaves them (`engine::cleanup`), untuned. The walk's take
+/// passes too, cleaned up in place of the walk's own making.
+@test
+fn every_clip_passes_its_review() {
+    let r = HERO.rig.clone()
+    passes("the walk", WALK.clone(), r.clone())
+    passes("the idle", IDLE.clone(), r.clone())
+    passes("the run", RUN.clone(), r.clone())
+    passes("the walk's take, cleaned", cleanup::cleaned(WALK_RAW.clone(), r.clone(), Cleanup {}), r)
+}
+
+/// What the cleanup can't make right, the review sends for a look: the walking turns' take
+/// hops mid-turn, and the jog (a library's cartoon, not a person's) bounds, its steps too long
+/// and too few for how fast its feet sweep.
+@test
+fn the_review_sends_the_rest_for_a_look() {
+    let r = HERO.rig.clone()
+    flags("the walking turns", TURNS.clone(), r.clone(), "the body hops")
+    flags("the jog", JOG.clone(), r, "the steps are too long")
+}
+
+/// A take that turns as it goes keeps its head on its body: the neck's carriage (the take's
+/// mean neck and head, `Retarget::carried`) is taken about the way the body faces each frame,
+/// not the room's, so the head faces with the chest on average (looking into each turn).
+@test
+fn the_turns_keep_the_head_with_the_body() {
+    let rig = HERO.rig.clone()
+    let rw = rig.rest_world()
+    let (head, chest) = (rig.find("head"), rig.find("upperChest"))
+    let ahead = |w: [humanoid::Rigid], b: u32| -> f32 {
+        let d = w[b].q.mul(rw[b].q.inverse()).rotate(vec3(0.0, 0.0, 1.0))
+        atan2(d.x, d.z)
+    }
+    var sum = 0.0
+    for f in 0..TURNS.frames {
+        let w = stride::worlds(rig.clone(), TURNS.clone(), f)
+        var off = ahead(w.clone(), head) - ahead(w, chest)
+        off -= 6.2831853 * floor((off + 3.14159265) / 6.2831853)
+        sum += off
+    }
+    let mean = sum / f32(TURNS.frames) * 57.29578
+    assert(abs(mean) < 5.0, f"the walking turns' head faces {mean:.1}° off the chest on average")
+}
+
+/// That a clip's review flags nothing.
+fn passes(name: str, clip: Clip, rig: humanoid::Rig) {
+    let rv = review(clip, rig)
+    assert(rv.flags.len() == 0, rv.text(name).as_str())
+}
+
+/// The review sees what's wrong with the takes as they come: the walk's feet sliding, the
+/// idle's sinking into the floor, the run's cut seam jumping, the jog running on the spot.
+@test
+fn the_review_sees_the_takes_faults() {
+    let r = HERO.rig.clone()
+    flags("the walk's take", WALK_RAW.clone(), r.clone(), "the left foot slides")
+    flags("the walk's take", WALK_RAW.clone(), r.clone(), "the left foot slips")
+    flags("the idle's take", IDLE_RAW.clone(), r.clone(), "the left foot sinks")
+    flags("the run's take", RUN_RAW.clone(), r.clone(), "the neck pops")
+    flags("the jog's take", JOG_RAW.clone(), r, "the left foot slides along the floor as on a")
+}
+
+/// That a clip's review has a flag that starts `what`.
+fn flags(name: str, clip: Clip, rig: humanoid::Rig, what: str) {
+    let rv = review(clip, rig)
+    var seen = false
+    for f in rv.flags.clone() {
+        seen = seen || f.as_str().starts_with(what)
+    }
+    assert(seen, f"{name}: no flag says {what}\n{rv.text(name)}")
+}

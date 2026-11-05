@@ -1,0 +1,108 @@
+// What both passes read (`Shot`: the camera, the light, where the body stands), the palette, and
+// the noise the ink draws with. The palette and the noise are the world's look's (Kinetic Ink),
+// so the body is judged in the look the world is.
+
+use engine::view::{Camera, first_camera}
+
+/// The light's direction (toward the sun), warm, from the right, above and a little ahead.
+pub const SUN = vec3(0.7, 0.6, 0.38)
+
+/// The palette, linear: the ink, the paper, the shadow's cool and the light's warmth.
+pub const INK = vec3(0.045, 0.035, 0.07)
+pub const PAPER = vec3(0.97, 0.94, 0.88)
+pub const COOL = vec3(0.32, 0.36, 0.58)
+pub const WARM = vec3(1.0, 0.82, 0.58)
+
+/// What a pixel met: nothing (the backdrop), the ground, or the body (`BODY` plus its part,
+/// `engine::humanoid::part_of`), so a line is drawn where parts meet.
+pub const BACKDROP: f32 = 1.0
+pub const GROUND: f32 = 2.0
+pub const BODY: f32 = 10.0
+
+/// What the passes read: the screen, the camera, the light, where the body stands and which way
+/// it faces, the held time (drawings change on twos), and how kinetic the moment is.
+pub struct Shot: Copy + GpuData {
+    pub resolution: vec2,
+    pub held: f32,
+    pub kinetic: f32,
+    pub cam: Camera,
+    pub sun: vec3,
+    pub feet: vec3,
+    /// The body's left (its hips'), so its far side's limbs are drawn a step back.
+    pub left: vec3,
+}
+
+/// The shot of a body standing at `feet`, its left `left`: from `side` of its front (+x its left),
+/// a little above, `far` metres off, framed on the point `focus` metres over its feet.
+pub fn shot_at(
+    time: f32,
+    focus: f32,
+    feet: vec3,
+    width: u32,
+    height: u32,
+    far: f32,
+    side: f32,
+    kinetic: f32,
+    left: vec3,
+) -> Shot {
+    let at = feet + vec3(0.0, focus, 0.0)
+    let eye = at + normalize(vec3(side, 0.18, 1.0)) * far
+    Shot {
+        resolution: vec2(f32(width), f32(height)),
+        held: floor(time * 12.0) / 12.0,
+        kinetic,
+        cam: first_camera(eye, at, 0.62, width, height),
+        sun: normalize(SUN),
+        feet,
+        left,
+    }
+}
+
+// ---- noise -------------------------------------------------------------------------------
+
+/// A hash of a point in [0, 1): David Hoskins's "Hash without Sine"
+/// (https://www.shadertoy.com/view/4djSRW, its `hash12`), transcribed, under its licence:
+///
+/// Copyright (c) 2014 David Hoskins.
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+/// and associated documentation files (the "Software"), to deal in the Software without
+/// restriction, including without limitation the rights to use, copy, modify, merge, publish,
+/// distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+/// Software is furnished to do so, subject to the following conditions:
+///
+/// The above copyright notice and this permission notice shall be included in all copies or
+/// substantial portions of the Software.
+///
+/// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+/// BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+/// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+/// DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+pub fn hash2(p: vec2) -> f32 {
+    var q = fract(vec3(p.x, p.y, p.x) * 0.1031)
+    q += dot(q, vec3(q.y, q.z, q.x) + 33.33)
+    fract((q.x + q.y) * q.z)
+}
+
+/// Value noise in [0, 1].
+pub fn noise(p: vec2) -> f32 {
+    let i = floor(p)
+    let f = p - i
+    let u = f * f * (vec2(3.0) - 2.0 * f)
+    let a = hash2(i)
+    let b = hash2(i + vec2(1.0, 0.0))
+    let c = hash2(i + vec2(0.0, 1.0))
+    let d = hash2(i + vec2(1.0, 1.0))
+    mix(mix(a, b, u.x), mix(c, d, u.x), u.y)
+}
+
+/// A soft step of `x` across `edge`, `soft` wide: a painted tone's edge.
+pub fn band(x: f32, edge: f32, soft: f32) -> f32 {
+    smoothstep(edge - soft, edge + soft, x)
+}
+
+/// The luma of a linear colour.
+pub fn luma(c: vec3) -> f32 {
+    dot(c, vec3(0.2126, 0.7152, 0.0722))
+}

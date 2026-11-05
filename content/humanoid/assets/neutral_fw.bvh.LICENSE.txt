@@ -1,0 +1,18 @@
+neutral_fw.bvh: from "The 100STYLE Dataset - Ian Mason", licensed under Creative Commons
+Attribution 4.0 International (https://creativecommons.org/licenses/by/4.0/).
+
+Ian Mason, Sebastian Starke and Taku Komura, "Real-Time Style Modelling of Human Locomotion via
+Feature-Wise Transformations and Local Motion Phases", Proceedings of the ACM on Computer Graphics
+and Interactive Techniques 5(1), 2022, doi:10.1145/3522618. Dataset: https://www.ianxmason.com/100style/,
+Zenodo record 8127870 (100STYLE.zip, md5 3cf627852fd8192024c04a8d0ef49583).
+
+What this file is: frames 1836 to 1974 (from 0) of 100STYLE/Neutral/Neutral_FW.bvh, a walk forward
+of three strides from a left footfall to a left footfall at 0.83 m/s, Xsens inertial capture at 60
+frames a second in centimetres; the skeleton and the frames exactly as the dataset has them. The
+cut is github.com/aether-lang-dev/ae3d's (tests/fixtures/people/100style/neutral_fw.bvh, its
+README.md records the source file, the frames and this sha256):
+
+sha256 fb0aeb4ab1bb4c56beddd1a8be2f7c08715a30b84b01afa483cd2688d8d7fcc7
+
+Changes made here: none to the file. engine::humanoid retargets it onto the Quaternius body at
+build time (turned to face +z, scaled by the legs' lengths, its loop's seam spread across it).
