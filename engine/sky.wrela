@@ -312,6 +312,7 @@ pub fn cook_weather(
     fair: f32,
     gap: Gap,
     overcast: f32,
+    wind: vec2,
     from: u32,
     to: u32,
     out: mut Texels<Rgba16Float>,
@@ -340,12 +341,22 @@ pub fn cook_weather(
     }
     // An overcast's deck over all of it, thicker and thinner in broad swells, its base lifted
     // `DECK_BASE` over the layer's.
+    // Its masses: great dark banks where it's thick (`mass`), thinner lighter reaches between;
+    // and under it rolls laid along the wind, their bases hanging lower, so it's seen in bands
+    // going away, not one even field of lumps.
     var lifted = 0.0
     if overcast > 0.0 {
-        let swell = fbm2(xz * (6.0 / SPAN) + vec2(13.0, 71.0), 3)
-        cover = max(cover, overcast * (0.5 + 0.4 * swell))
-        tall = max(tall, overcast * (DECK_BASE + 1500.0 + 1200.0 * swell))
-        lifted = overcast * DECK_BASE
+        let mass = fbm2(xz * (3.0 / SPAN) + vec2(13.0, 71.0), 4)
+        let along = normalize(wind + vec2(1.0e-4))
+        let w2 = vec2(
+            dot(xz, along) * (3.0 / SPAN),
+            dot(xz, vec2(-along.y, along.x)) * (22.0 / SPAN),
+        )
+        let roll = smoothstep(0.35, 0.75, fbm2(w2 + vec2(41.0, 7.0), 4))
+        let thick = smoothstep(0.3, 0.72, mass)
+        cover = max(cover, overcast * (0.6 + 0.35 * thick))
+        tall = max(tall, overcast * (DECK_BASE + 1500.0 + 1800.0 * thick))
+        lifted = overcast * (DECK_BASE + 450.0 * (1.0 - roll) - 250.0 * thick)
     }
     // Broken a little, so no cloud is a disc; and clear in the gap.
     let ab = gap.b - gap.a
@@ -580,7 +591,7 @@ fn march(
                 let ambient = mix(below, above, vec3(smoothstep(0.08, 0.92, hf)))
                 // Under a storm's deck: the column over the point darkens it, down to near black
                 // at the base of a deck kilometres thick.
-                let over = max(local_top - h, 0.0) * w.r
+                let over = max(local_top - h, 0.0) * max(w.r, 0.7 * c.gloom)
                 let shut = mix(1.0, exp(-over * 0.0016), c.gloom)
                 let dim = mix(1.0, 0.12 + 0.88 * hf * hf, c.gloom)
                 let source = sun_light * to_sun * shut + ambient * dim
@@ -925,6 +936,7 @@ impl Sky {
                 fair: w.fair,
                 gap: w.gap,
                 overcast: w.overcast,
+                wind: w.wind,
                 from: band * rows,
                 to: (band + 1) * rows,
                 out: mut self.weather,
