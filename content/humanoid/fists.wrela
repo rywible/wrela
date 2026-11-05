@@ -2,7 +2,7 @@
 // and read, not a take's frames retimed. The first: a cross thrown from where the body stands.
 //
 // A cross from an orthodox stance (left foot and fist ahead): the body sinks and coils back onto
-// its rear foot (the tell), holds that a beat (the eye reads it), then snaps through in five
+// its rear foot (the tell), holds that a beat (the eye reads it), then snaps through in four
 // frames, the rear heel pivoting up and the hips and trunk turning the fist out to full reach,
 // the lead fist pulled back to the chin; it drives a little past its contact (the impact), holds
 // there, then pulls the fist home faster than it threw it and settles back into its guard.
@@ -16,7 +16,7 @@ use engine::keys::{Key, SETTLE, SMOOTH, SNAP}
 use engine::playback
 use engine::playback::{ACTIVE, CANCEL, Gaits, Mark, Move, RECOVER, WINDUP}
 use body::{GAITS, HERO}
-use engine::anime::{Look, PLAIN, STRIKE}
+use engine::anime::{LIGHT, Look, PLAIN, STRIKE}
 
 /// The guard: an orthodox stance, up on the balls of both feet, the lead foot ahead and turned a
 /// little in, the rear foot back and turned out; the hips sunk and turned to the right (the lead
@@ -43,27 +43,27 @@ pub fn cross_keys() -> Vec<Key> {
     out.push(k)
     // The load: sunk and coiled onto the rear foot, the rear fist drawn back a hand's width,
     // the rear heel down to drive off.
-    k.at = 0.16
+    k.at = 0.2
     k.ease = SMOOTH
-    k.hips = vec3(-0.04, -0.10, -0.04)
-    k.hips_turn = vec3(0.0, -40.0, 0.0)
-    k.trunk = vec3(10.0, -16.0, 0.0)
-    k.look = vec3(0.0, 1.42, 3.0)
-    k.fists = [vec3(0.12, 1.40, 0.36), vec3(-0.16, 1.36, 0.03)]
+    k.hips = vec3(-0.05, -0.115, -0.05)
+    k.hips_turn = vec3(0.0, -47.0, 0.0)
+    k.trunk = vec3(12.0, -20.0, 0.0)
+    k.look = vec3(0.0, 1.40, 3.0)
+    k.fists = [vec3(0.13, 1.39, 0.38), vec3(-0.18, 1.34, -0.02)]
     k.elbows = [vec3(0.5, -1.0, -0.2), vec3(-0.6, -1.0, -0.4)]
     k.feet[1] = vec4(-0.17, -0.20, -40.0, 0.0)
     out.push(k)
     // The beat: held, settling a hair further in.
-    k.at = 0.28
+    k.at = 0.34
     k.ease = SETTLE
-    k.hips = vec3(-0.045, -0.105, -0.045)
-    k.hips_turn = vec3(0.0, -42.0, 0.0)
-    k.trunk = vec3(11.0, -17.0, 0.0)
+    k.hips = vec3(-0.055, -0.12, -0.055)
+    k.hips_turn = vec3(0.0, -49.0, 0.0)
+    k.trunk = vec3(13.0, -21.0, 0.0)
     out.push(k)
-    // Contact: snapped through in five frames, the hips and trunk turned square and past, the
+    // Contact: snapped through in four frames, the hips and trunk turned square and past, the
     // rear heel up and pivoted, the fist at full reach at chin height on the centre line, its
     // shoulder up over the chin; the lead fist pulled back to guard the face.
-    k.at = 0.36
+    k.at = 0.40
     k.ease = SNAP
     k.hips = vec3(0.0, -0.08, 0.06)
     k.hips_turn = vec3(0.0, 18.0, 0.0)
@@ -74,21 +74,21 @@ pub fn cross_keys() -> Vec<Key> {
     k.feet[1] = vec4(-0.17, -0.20, -5.0, 32.0)
     out.push(k)
     // The impact: driven on past contact, the weight over the lead foot.
-    k.at = 0.39
+    k.at = 0.43
     k.ease = SETTLE
     k.hips = vec3(0.005, -0.085, 0.08)
     k.hips_turn = vec3(0.0, 22.0, 0.0)
     k.trunk = vec3(15.0, 30.0, 0.0)
     out.push(k)
     // The hold on the hit: barely drifting.
-    k.at = 0.46
+    k.at = 0.50
     k.ease = SETTLE
     k.hips = vec3(0.0, -0.083, 0.075)
     k.hips_turn = vec3(0.0, 20.0, 0.0)
     k.trunk = vec3(14.0, 28.0, 0.0)
     out.push(k)
     // The pull home: faster than it went, the fist most of the way back, the hips turning back.
-    k.at = 0.56
+    k.at = 0.60
     k.ease = SETTLE
     k.hips = vec3(-0.01, -0.07, 0.02)
     k.hips_turn = vec3(0.0, -10.0, 0.0)
@@ -100,7 +100,7 @@ pub fn cross_keys() -> Vec<Key> {
     out.push(k)
     // Back in the guard.
     var g = guard()
-    g.at = 0.85
+    g.at = 0.90
     g.ease = SMOOTH
     out.push(g)
     out
@@ -122,8 +122,8 @@ fn in_place(c: Clip) -> Move {
 
 /// The cross's frames in the fight, at 60 a second: its tell (the load and the beat, to the
 /// snap's start), when it hits (from contact through the drive past it), and its recovery.
-pub const CROSS_HIT: f32 = 0.36
-pub const CROSS_HIT_TILL: f32 = 0.42
+pub const CROSS_HIT: f32 = 0.40
+pub const CROSS_HIT_TILL: f32 = 0.46
 
 /// The cross as a game plays it: its keys at 60 a second, fists clenched, in place, its windows
 /// marked.
@@ -234,38 +234,65 @@ pub const ACTS: [Move; 7] = [
     STEP_LEFT.clone(),
     STEP_RIGHT.clone(),
 ]
-pub const LOOKS: [Look; 7] = [STRIKE, PLAIN, STRIKE, PLAIN, PLAIN, PLAIN, PLAIN]
+pub const LOOKS: [Look; 7] = [STRIKE, PLAIN, LIGHT, PLAIN, PLAIN, PLAIN, PLAIN]
 
-/// The guard as a body stands ready to fight: bouncing on the balls of its feet, twice a
-/// second, light, ready to go any way. It drops onto its feet fast (the floor takes it) and
-/// floats off them, just off the floor at the top; its fists ride the bounce a beat behind the
-/// body, its head steady.
-pub const BOUNCE: f32 = 0.5
+/// Each bounce: how long (s), how high (of the most), and where the weight is (1 on the lead
+/// foot, -1 on the rear).
+const BOUNCES: [vec3; 7] = [
+    vec3(0.46, 1.0, 0.45),
+    vec3(0.53, 0.65, -0.3),
+    vec3(0.42, 0.9, 0.7),
+    vec3(0.6, 0.5, -0.6),
+    vec3(0.47, 0.85, 0.15),
+    vec3(0.51, 0.7, -0.45),
+    vec3(0.44, 0.95, 0.35),
+]
 
+/// A bounce's key, `up` of the way to its top, `height` its height, `weight` where the weight
+/// is.
+fn bounce_key(up: f32, height: f32, weight: f32) -> Key {
+    var k = guard()
+    let lift = up * height
+    // The weight over a foot: the hips toward it and turned a hair with it.
+    k.hips = vec3(-0.01 + 0.025 * weight, -0.098 + 0.05 * lift, 0.022 * weight)
+    k.trunk = vec3(6.0 - 1.0 * lift, -5.0, -1.5 * weight)
+    let (lead, rear) = (saturate(weight), saturate(-weight))
+    // The loaded foot's heel sinks, the free one's rises; at the top it taps off the floor.
+    k.feet[0].w = 6.0 + 14.0 * lift + 14.0 * rear
+    k.feet[1].w = 10.0 + 14.0 * lift + 14.0 * lead
+    k.lifts = [0.004 * lift + 0.018 * lift * rear, 0.004 * lift + 0.018 * lift * lead]
+    // The fists ride behind: low at the top, up as it lands.
+    let ride = 0.008 * (0.5 - up) * height
+    k.fists = [vec3(0.10, 1.40 + ride, 0.30), vec3(-0.11, 1.40 + ride, 0.12)]
+    k
+}
+
+/// The guard as a body stands ready to fight: light on the balls of its feet, never still and
+/// never even. Each bounce its own length and height, its weight rolling onto one foot and off
+/// the other: the loaded foot's heel sinks, the other's rises and taps off the floor at the top.
+/// It drops onto its feet fast (the floor takes it) and floats off them; its fists ride a beat
+/// behind, its head steady.
 pub fn guard_keys() -> Vec<Key> {
     var out: Vec<Key> = Vec::new()
-    var low = guard()
-    low.hips = vec3(-0.01, -0.095, 0.0)
-    low.feet[0].w = 8.0
-    low.feet[1].w = 12.0
-    low.fists = [vec3(0.10, 1.395, 0.30), vec3(-0.11, 1.395, 0.12)]
-    var high = guard()
-    high.hips = vec3(-0.01, -0.045, 0.0)
-    high.feet[0].w = 24.0
-    high.feet[1].w = 28.0
-    high.lifts = [0.012, 0.012]
-    high.fists = [vec3(0.10, 1.40, 0.30), vec3(-0.11, 1.40, 0.12)]
-    high.trunk = vec3(5.0, -5.0, 0.0)
-    // Off the floor and up, slowing; then dropped onto the feet, gathering speed.
-    var k = low
-    k.at = 0.0
-    out.push(k)
-    k = high
-    k.at = BOUNCE * 0.55
-    k.ease = SETTLE
-    out.push(k)
-    k = low
-    k.at = BOUNCE
+    var t = 0.0
+    let n = BOUNCES.len()
+    for i in 0..n {
+        let b = BOUNCES[i]
+        // Landed: weight already rolling to this bounce's foot.
+        var k = bounce_key(0.0, b.y, b.z)
+        k.at = t
+        k.ease = SNAP
+        out.push(k)
+        // Its top: off the floor and slowing, the weight on its way to the next.
+        let next = BOUNCES[(i + 1) % n]
+        k = bounce_key(1.0, b.y, mix(b.z, next.z, 0.4))
+        k.at = t + b.x * 0.55
+        k.ease = SETTLE
+        out.push(k)
+        t += b.x
+    }
+    var k = bounce_key(0.0, BOUNCES[0].y, BOUNCES[0].z)
+    k.at = t
     k.ease = SNAP
     out.push(k)
     out

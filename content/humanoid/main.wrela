@@ -296,7 +296,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         kinetic,
         left,
     )
-    shot.force_from = vec4(force.from, 0.0)
+    shot.force_from = vec4(force.from, if force.heavy { 1.0 } else { 0.0 })
     shot.force_to = vec4(force.to, force.by)
     let p = begin_pass3_with_depth(
         mut s.colour,
