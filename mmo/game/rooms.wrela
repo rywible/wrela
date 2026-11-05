@@ -1,6 +1,7 @@
-// The MMO's rooms on a server: each room's instance runs the reducer its name says, an island's
-// (`island-…`, mmo/island) or a fight's (`fight-…`, mmo/combat). A room of another name closes
-// each connection that opens to it.
+// The MMO's rooms on a server: each room's instance runs the reducer its name says, the island's
+// (`island-1`, mmo/island) or the fight's (`fight-1`, mmo/combat). Each room is a Durable Object
+// with a journal, so only these names are rooms for now: one of another name closes each
+// connection that opens to it, and costs nothing kept.
 
 use std::input::{Event, events}
 use std::net::{close, room}
@@ -12,9 +13,9 @@ pub enum Rooms {
     Other,
 }
 
-/// The prefixes of the rooms' names.
-pub const ISLAND_PREFIX: Text = "island-"
-pub const FIGHT_PREFIX: Text = "fight-"
+/// The rooms' names (the client's: mmo/game/client.wrela).
+pub const ISLAND_ROOM: Text = "island-1"
+pub const FIGHT_ROOM: Text = "fight-1"
 
 /// The room this instance runs, by its name.
 @server
@@ -25,9 +26,9 @@ pub fn init() -> Rooms {
 /// The room a name says: an island's, a fight's, or another.
 @server
 pub fn of_name(name: str) -> Rooms {
-    if name.starts_with(ISLAND_PREFIX) {
+    if name == ISLAND_ROOM {
         Rooms::Island(island::main::serve_init())
-    } else if name.starts_with(FIGHT_PREFIX) {
+    } else if name == FIGHT_ROOM {
         Rooms::Fight(combat::main::serve_init())
     } else {
         Rooms::Other

@@ -12,7 +12,7 @@
 use combat::codec::{Encoder, LOOK_AHEAD, Link, Pad}
 use combat::main::Fight
 use std::math::{cos, sin}
-use combat::sim::{ATTACK, Change, DODGE, MAX_FRAMES, PARRY, Seen, Winner, World, step}
+use combat::sim::{ATTACK, Change, DODGE, MAX_CHANGES, MAX_FRAMES, PARRY, Seen, Winner, World, step}
 use island::main::{Island, MAX_STEP}
 use std::gpu::begin_screen_pass
 use std::hash::Hasher
@@ -20,10 +20,7 @@ use std::input::{Event, Key, PadAxis, PadButton, events, payload}
 use std::net::{Log, close, open, relay, send}
 use ui::draw::{DrawList, Rect, Renderer}
 use ui::text::{Face, Fonts}
-
-/// The rooms this client plays in.
-pub const ISLAND_ROOM: Text = "island-1"
-pub const FIGHT_ROOM: Text = "fight-1"
+use rooms::{FIGHT_ROOM, ISLAND_ROOM}
 
 // Its connections.
 const ISLAND: u32 = 1
@@ -33,14 +30,18 @@ const RELAY: u32 = 3
 /// Seconds between a closed connection and the next try.
 const RETRY: f32 = 2.0
 /// Seconds between steps proposed on the island, and its walking speed in units a second.
-const STEP_EVERY: f32 = 0.2
-const WALK_SPEED: f32 = 36.0
+const STEP_EVERY: f32 = 0.5
+const WALK_SPEED: f32 = 40.0
 /// Frames of fight kept to roll back to (four seconds).
 const RING: u32 = 240
 /// Seconds a fight's outcome stays on screen.
 const OUTCOME_SECONDS: f32 = 5.0
-/// The most fight frames a screen frame runs (a tab that was hidden catches up in steps).
-const MOST_STEPS: u32 = 8
+/// The most fight frames a screen frame runs: a tab that fell behind catches up over a few.
+const MOST_STEPS: u32 = 30
+/// Seconds between a waiting player's joins (the lobby forgets one silent for a minute), and
+/// between proposals to settle a fight that's taking too long (the room says when it may).
+const REJOIN: f32 = 30.0
+const SETTLE_EVERY: f32 = 15.0
 const NONE: u32 = 4294967295
 
 // Held keys and buttons, as bits.
@@ -93,11 +94,13 @@ struct Play {
     prev: u32,
     /// The first frame whose inputs changed since it was stepped (`NONE`: none).
     back: u32,
-    /// Seconds not yet stepped.
-    acc: f32,
+    /// When this client began it (seconds): frame `n` is due `n / 60` seconds on.
+    start: Option<f32>,
     logged: bool,
     /// When the room settled it (seconds), once it has.
     settled_at: Option<f32>,
+    /// How the room settled it, once it has: what counts, whatever this client ran.
+    settled: Option<Winner>,
     rollbacks: u32,
 }
 
@@ -116,6 +119,8 @@ pub struct Client {
     step_at: f32,
     play: Option<Play>,
     last_began: u64,
+    joined_at: f32,
+    settle_at: f32,
     time: Option<f32>,
     note: String,
 }
@@ -138,6 +143,8 @@ pub fn init() -> Client {
         step_at: 0.0,
         play: None,
         last_began: 0,
+        joined_at: 0.0,
+        settle_at: 0.0,
         time: None,
         note: String::from("Connecting…"),
     }
@@ -268,9 +275,10 @@ fn new_play(began: u64, slot: u32, party: take Vec<u32>) -> Play {
         enc: Encoder::new(),
         prev: 0,
         back: NONE,
-        acc: 0.0,
+        start: None,
         logged: false,
         settled_at: None,
+        settled: None,
         rollbacks: 0,
     }
 }
@@ -288,14 +296,20 @@ fn inputs_at(p: Play, f: u32) -> Vec<u32> {
     ins
 }
 
-/// The fight again from the first frame whose inputs changed, if it's still kept.
+/// The fight again from the first frame whose inputs changed: from the world kept before it, or
+/// from the start if it's older than what's kept (every input is still known).
 fn roll_back(p: mut Play) {
-    let from = p.back
+    var from = p.back
     p.back = NONE
-    if from >= p.frame || p.frame - from >= RING {
+    if from >= p.frame {
         return
     }
-    var w = p.snaps[from % RING].clone()
+    var w = if p.frame - from >= RING {
+        from = 0
+        World::start(p.party.len())
+    } else {
+        p.snaps[from % RING].clone()
+    }
     for g in from..p.frame {
         p.snaps[g % RING] = w.clone()
         let ins = inputs_at(p, g)
@@ -309,12 +323,13 @@ fn roll_back(p: mut Play) {
 /// on the relay, if one goes.
 fn tick(p: mut Play, pad: Pad) -> Option<Vec<u8>> {
     let f = p.frame
-    if f + 1 >= MAX_FRAMES {
+    if f >= MAX_FRAMES {
         return None
     }
-    // Once it's over, the input stands: what's sent past the end isn't the fight's.
+    // Once it's over, the input stands: what's sent past the end isn't the fight's. So it does
+    // once a log is full.
     var input = p.prev
-    if !p.world.over {
+    if !p.world.over && p.log.len() < MAX_CHANGES {
         var now = inputs_at(p, f)
         now[p.slot] = p.prev
         let reads = p.world.reads(p.slot) | p.world.soon(p.slot, now, LOOK_AHEAD)
@@ -532,11 +547,22 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
         if view.waiting(me) {
             propose_fight(mut s, combat::main::Act::Leave)
         } else {
+            s.joined_at = time
             propose_fight(mut s, combat::main::Act::Join)
         }
     }
     if begin && me != 0 && view.waiting(me) && !view.on() {
-        propose_fight(mut s, combat::main::Act::Begin { party: view.lobby.clone() })
+        propose_fight(mut s, combat::main::Act::Begin)
+    }
+    // Waiting goes on while this page is open: the lobby forgets a player silent a minute.
+    if me != 0 && view.waiting(me) && !view.on() && time - s.joined_at > REJOIN {
+        s.joined_at = time
+        propose_fight(mut s, combat::main::Act::Join)
+    }
+    // A fight whose players left holds the room: past the longest fight, anyone may settle it.
+    if me != 0 && room.on() && slot_of(room.party, me).is_none() && time >= s.settle_at {
+        s.settle_at = time + 4.0 * SETTLE_EVERY
+        propose_fight(mut s, combat::main::Act::Settle)
     }
     if room.on() && room.began_at != s.last_began && me != 0 {
         if let Some(slot) = slot_of(room.party, me) {
@@ -564,32 +590,51 @@ fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
     }
     let relay_open = s.relay_conn.open
     var log: Option<combat::main::Act> = None
+    var settle = false
     var done = false
     match mut s.play {
         Some(p) => {
             if p.back != NONE {
                 roll_back(mut p)
             }
-            p.acc += dt
+            // Frames keep to the clock, so a client that fell behind (a hidden tab, a hitch)
+            // catches up rather than staying behind the others.
+            let start = match p.start {
+                Some(t) => t,
+                None => time,
+            }
+            p.start = Some(start)
+            let due = u32(max(time - start, 0.0) * 60.0)
             var steps: u32 = 0
-            while p.acc >= 1.0 / 60.0 && steps < MOST_STEPS {
-                p.acc -= 1.0 / 60.0
+            while p.frame < due && steps < MOST_STEPS {
                 if let Some(bytes) = tick(mut p, pad) {
                     send(RELAY, bytes)
                 }
                 steps += 1
-            }
-            if p.acc > 1.0 / 60.0 {
-                p.acc = 0.0
             }
             // Over once every input it was run from is heard (before, a late one may undo it), or
             // five seconds on, when a player who's quiet has likely left.
             let heard_all = p.link.known() + 1 >= p.world.frame
             if p.world.over && !p.logged && (heard_all || p.frame >= p.world.frame + 300) {
                 p.logged = true
-                log = Some(combat::main::Act::Log { changes: p.log.clone(), end: p.world.frame })
+                // A change at or past the end, made while a late input hadn't ended it yet here,
+                // isn't the fight's.
+                var changes: Vec<Change> = Vec::new()
+                for c in p.log.clone() {
+                    if c.frame < p.world.frame {
+                        changes.push(c.clone())
+                    }
+                }
+                log = Some(combat::main::Act::Log { changes, end: p.world.frame })
+            }
+            // A player who left sends no log: once this one's is in, settle when the room lets.
+            if p.logged && room.on() && room.began_at == p.began && time >= s.settle_at {
+                settle = true
             }
             // The room settled this fight (or a later one began): its outcome shows a while.
+            if room.began_at == p.began && room.settled && p.settled.is_none() {
+                p.settled = Some(room.outcome.winner.clone())
+            }
             if room.began_at != p.began || room.settled {
                 if p.settled_at.is_none() {
                     p.settled_at = Some(time)
@@ -608,8 +653,15 @@ fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
         None => {},
     }
     match log {
-        Some(act) => propose_fight(mut s, act.clone()),
+        Some(act) => {
+            s.settle_at = time + SETTLE_EVERY
+            propose_fight(mut s, act.clone())
+        },
         None => {},
+    }
+    if settle {
+        s.settle_at = time + SETTLE_EVERY
+        propose_fight(mut s, combat::main::Act::Settle)
     }
     if done {
         s.play = None
@@ -688,8 +740,8 @@ fn fighter_color(seen: Seen, base: vec4) -> vec4 {
 }
 
 fn draw_fight(s: mut Client, middle: vec2, size: f32) {
-    let (world, slot) = match s.play {
-        Some(p) => (p.world.clone(), p.slot),
+    let (world, slot, settled) = match s.play {
+        Some(p) => (p.world.clone(), p.slot, p.settled.clone()),
         None => return,
     }
     // A metre is this many pixels: the arena is 40 metres across.
@@ -714,8 +766,13 @@ fn draw_fight(s: mut Client, middle: vec2, size: f32) {
     }
     let boss_line = String::from(f"Boss  {boss.hp} hp")
     let _ = s.list.text(s.fonts, Face::Mono, boss_line.as_str(), 15.0, vec2(24.0, 150.0), BOSS)
-    if world.over {
-        let verdict = match world.winner {
+    // The room's word once it's settled; until then, this client's.
+    let shown = match settled {
+        Some(w) => Some(w.clone()),
+        None => if world.over { Some(world.winner.clone()) } else { None },
+    }
+    if let Some(winner) = shown {
+        let verdict = match winner {
             Winner::Party => "The party wins.",
             Winner::Boss => "The boss wins.",
             Winner::Draw => "A draw.",
@@ -745,8 +802,9 @@ fn hands(seed: mut u32) -> Pad {
 
 /// A fight of `n` players, each running it as a client does, over a relay that delays each
 /// packet `delay` frames and loses `loss` in 100: each one's fight at the end, and the fight the
-/// room runs from their logs.
-fn fight_of(n: u32, delay: u32, loss: u32) -> (Vec<Play>, combat::sim::Outcome) {
+/// room runs from their logs. The last player stalls `stall` frames from frame 300 (a hidden
+/// tab), then catches up two frames at a time.
+fn fight_of(n: u32, delay: u32, loss: u32, stall: u32 = 0) -> (Vec<Play>, combat::sim::Outcome) {
     var party: Vec<u32> = Vec::new()
     for i in 0..n {
         party.push(10 + i)
@@ -783,7 +841,10 @@ fn fight_of(n: u32, delay: u32, loss: u32) -> (Vec<Play>, combat::sim::Outcome) 
                 held[i] = hands(mut sd)
                 seeds[i] = sd
             }
-            if let Some(bytes) = tick(mut plays[i], held[i]) {
+            let stalled = i + 1 == n && f >= 300 && f < 300 + stall
+            let runs = if stalled { 0 } else if plays[i].frame < f { 2 } else { 1 }
+            for _ in 0..runs {
+                let Some(bytes) = tick(mut plays[i], held[i]) else { continue }
                 for j in 0..n {
                     seed = seed.wrapping_mul(1664525).wrapping_add(1013904223)
                     if j != i && (seed >> 8) % 100 >= loss {
@@ -802,7 +863,13 @@ fn fight_of(n: u32, delay: u32, loss: u32) -> (Vec<Play>, combat::sim::Outcome) 
         if plays[i].back != NONE {
             roll_back(mut plays[i])
         }
-        logs.push(combat::sim::Log { changes: plays[i].log.clone() })
+        var changes: Vec<Change> = Vec::new()
+        for c in plays[i].log.clone() {
+            if c.frame < plays[i].world.frame {
+                changes.push(c.clone())
+            }
+        }
+        logs.push(combat::sim::Log { changes })
     }
     let outcome = combat::sim::run(n, logs)
     (plays, outcome)
@@ -816,4 +883,13 @@ fn every_player_sees_the_fight_the_room_settles() {
         assert(p.world.outcome() == outcome, "each player's fight is the room's")
     }
     std::io::print(f"rollbacks: {plays[0].rollbacks}, frames {outcome.frames}")
+}
+
+@test
+fn a_player_who_fell_far_behind_catches_up_and_agrees() {
+    // Seven seconds stalled: past what the others keep to roll back to.
+    let (plays, outcome) = fight_of(n: 2, delay: 3, loss: 5, stall: 400)
+    for p in plays {
+        assert(p.world.over && p.world.outcome() == outcome)
+    }
 }
