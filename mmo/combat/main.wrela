@@ -11,7 +11,7 @@
 // The costs this shape is for (the server design doc's budget): a fight of four is five proposals
 // and one store write, however long it lasts; its inputs cost the room nothing.
 
-use sim::{Change, Log, MAX_CHANGES, MAX_FRAMES, MAX_PARTY, Outcome, Winner}
+use sim::{Change, LONGSWORD, Log, MAX_CHANGES, MAX_FRAMES, MAX_PARTY, Outcome, WEAPONS, Winner}
 use std::input::{Event, events, payload}
 use std::net::{COMPACT_AFTER, Entry, JOURNAL, POISONED, Record, Reduce, Room, Verdict}
 use std::net::{carry_out, compact, room}
@@ -36,6 +36,8 @@ pub const TOO_SOON: u32 = 4
 pub const NOT_WAITING: u32 = 5
 /// A log longer than a player's share of what the room's state holds (`PLAYER_CHANGES`).
 pub const TOO_LONG: u32 = 6
+/// A join with a weapon that isn't one (`sim::WEAPONS`).
+pub const BAD_WEAPON: u32 = 7
 
 /// How long a peer waits in the lobby, in room ms, unless it joins again: a peer that left
 /// without a word stops counting once it's past.
@@ -59,8 +61,11 @@ pub struct Fight: Clone + Pack {
     /// joined (at most `MAX_PARTY` of them within `LOBBY_MS`).
     pub lobby: Vec<u32>,
     pub joined: Vec<u64>,
-    /// The players, by peer, in their slots (empty: none yet).
+    /// The weapon each brings (`sim::WEAPONS`).
+    pub wielding: Vec<u32>,
+    /// The players, by peer, in their slots (empty: none yet), and their weapons.
     pub party: Vec<u32>,
+    pub armed: Vec<u32>,
     pub logs: Vec<Log>,
     pub sent: Vec<bool>,
     /// When the fight began (room ms).
@@ -76,8 +81,8 @@ pub struct Fight: Clone + Pack {
 
 /// A peer's decision.
 pub enum Act: Clone + Pack {
-    /// The proposer waits for the next fight.
-    Join,
+    /// The proposer waits for the next fight, bringing weapon `weapon` (`sim::WEAPONS`).
+    Join { weapon: u32 },
     /// The proposer stops waiting.
     Leave,
     /// A fight starts, for whoever waits (the proposer among them).
@@ -93,7 +98,9 @@ impl Fight {
         Fight {
             lobby: Vec::new(),
             joined: Vec::new(),
+            wielding: Vec::new(),
             party: Vec::new(),
+            armed: Vec::new(),
             logs: Vec::new(),
             sent: Vec::new(),
             began_at: 0,
@@ -139,17 +146,26 @@ impl Fight {
         false
     }
 
-    /// The lobby at room time `at`: who joined within `LOBBY_MS`, but `without`.
-    fn fresh(self, at: u64, without: u32) -> (Vec<u32>, Vec<u64>) {
+    /// The lobby at room time `at`: who joined within `LOBBY_MS`, but `without`, when, and with
+    /// what weapon.
+    fn fresh(self, at: u64, without: u32) -> (Vec<u32>, Vec<u64>, Vec<u32>) {
         var peers: Vec<u32> = Vec::new()
         var times: Vec<u64> = Vec::new()
+        var weapons: Vec<u32> = Vec::new()
         for i in 0..self.lobby.len() {
             if self.lobby[i] != without && at < self.joined[i] + LOBBY_MS {
                 peers.push(self.lobby[i])
                 times.push(self.joined[i])
+                weapons.push(self.wielding[i])
             }
         }
-        (peers, times)
+        (peers, times, weapons)
+    }
+
+    /// Who's in the lobby at room time `at`, but `without`.
+    fn fresh_peers(self, at: u64, without: u32) -> Vec<u32> {
+        let (peers, _, _) = self.fresh(at, without)
+        peers
     }
 
     fn any_sent(self) -> bool {
@@ -162,7 +178,7 @@ impl Fight {
     }
 
     fn finish(mut self, at: u64) {
-        self.outcome = sim::run(self.party.len(), self.logs.clone())
+        self.outcome = sim::run_armed(self.armed, self.logs.clone())
         // The outcome is what's kept: the logs would make the state too big to send a peer.
         self.logs = Vec::new()
         self.settled = true
@@ -175,9 +191,12 @@ impl Reduce<Act> for Fight {
     fn check(self, entry: Entry<Act>) -> Verdict {
         let peer = entry.id.peer
         match entry.value {
-            Act::Join => {
-                // Joining again keeps a peer waiting.
-                let (others, _) = self.fresh(entry.at, peer)
+            Act::Join { weapon } => {
+                if weapon >= WEAPONS.len() {
+                    return Verdict::Reject(BAD_WEAPON)
+                }
+                // Joining again keeps a peer waiting (with the weapon it brings now).
+                let others = self.fresh_peers(entry.at, peer)
                 if others.len() >= MAX_PARTY { Verdict::Reject(NOT_WAITING) } else {
                     Verdict::Accept
                 }
@@ -232,25 +251,30 @@ impl Reduce<Act> for Fight {
         let at = entry.at
         let peer = entry.id.peer
         match entry.value {
-            Act::Join => {
-                let (peers, times) = self.fresh(at, peer)
+            Act::Join { weapon } => {
+                let (peers, times, weapons) = self.fresh(at, peer)
                 self.lobby = take peers
                 self.joined = take times
+                self.wielding = take weapons
                 self.lobby.push(peer)
                 self.joined.push(at)
+                self.wielding.push(weapon)
             },
             Act::Leave => {
-                let (peers, times) = self.fresh(at, peer)
+                let (peers, times, weapons) = self.fresh(at, peer)
                 self.lobby = take peers
                 self.joined = take times
+                self.wielding = take weapons
             },
             Act::Begin => {
-                // Whoever waits fights now.
-                let (party, _) = self.fresh(at, NONE_PEER)
+                // Whoever waits fights now, with what each brought.
+                let (party, _, weapons) = self.fresh(at, NONE_PEER)
                 let n = party.len()
                 self.lobby = Vec::new()
                 self.joined = Vec::new()
+                self.wielding = Vec::new()
                 self.party = party.clone()
+                self.armed = take weapons
                 self.logs = Vec::new()
                 self.sent = Vec::new()
                 for _ in 0..n {
@@ -377,7 +401,7 @@ fn entry(peer: u32, at: u64, value: take Act) -> Entry<Act> {
 /// A fight begun at `at` by the first of `peers`, each having joined just before.
 fn begun(fight: mut Fight, peers: [u32], at: u64) {
     for p in peers {
-        fight.apply(entry(p, at, Act::Join))
+        fight.apply(entry(p, at, Act::Join { weapon: LONGSWORD }))
     }
     let begin = entry(peers[0], at, Act::Begin)
     assert(fight.check(begin.clone()) == Verdict::Accept)
@@ -493,12 +517,12 @@ fn a_fight_no_one_finishes_is_settled_after_the_longest_fight() {
     begun(mut fight, [u32(3)], 1000)
     // Its player leaves without a log: a stranger can't settle it yet, nor begin another.
     assert(fight.check(entry(9, 2000, Act::Settle)) == Verdict::Reject(BAD_LOG))
-    fight.apply(entry(9, 2000, Act::Join))
+    fight.apply(entry(9, 2000, Act::Join { weapon: LONGSWORD }))
     assert(fight.check(entry(9, 2000, Act::Begin)) == Verdict::Reject(NOT_NOW))
     let late = 1000 + FIGHT_MS + SETTLE_MS
     assert(fight.check(entry(9, late, Act::Settle)) == Verdict::Accept)
     fight.apply(entry(9, late, Act::Settle))
-    fight.apply(entry(9, late, Act::Join))
+    fight.apply(entry(9, late, Act::Join { weapon: LONGSWORD }))
     assert(fight.check(entry(9, late, Act::Begin)) == Verdict::Accept)
 }
 
@@ -506,11 +530,11 @@ fn a_fight_no_one_finishes_is_settled_after_the_longest_fight() {
 fn players_wait_in_the_lobby_until_a_fight_begins() {
     var fight = Fight::empty()
     assert(fight.check(entry(3, 0, Act::Begin)) == Verdict::Reject(NOT_WAITING), "only a waiter")
-    fight.apply(entry(3, 0, Act::Join))
-    fight.apply(entry(3, 1, Act::Join))
+    fight.apply(entry(3, 0, Act::Join { weapon: LONGSWORD }))
+    fight.apply(entry(3, 1, Act::Join { weapon: LONGSWORD }))
     assert(fight.lobby.len() == 1, "joining again keeps one place")
-    fight.apply(entry(5, 2, Act::Join))
-    fight.apply(entry(7, 3, Act::Join))
+    fight.apply(entry(5, 2, Act::Join { weapon: LONGSWORD }))
+    fight.apply(entry(7, 3, Act::Join { weapon: LONGSWORD }))
     fight.apply(entry(7, 4, Act::Leave))
     assert(fight.check(entry(7, 5, Act::Leave)) == Verdict::Reject(NOT_WAITING))
     assert(fight.lobby.len() == 2)
@@ -518,15 +542,21 @@ fn players_wait_in_the_lobby_until_a_fight_begins() {
     assert(fight.on() && fight.party.len() == 2 && fight.lobby.len() == 0, "whoever waited")
     // Four waiting fill the lobby; one who joined a minute ago, and said nothing since, doesn't.
     for p in 10..14 {
-        fight.apply(entry(p, 8, Act::Join))
+        fight.apply(entry(p, 8, Act::Join { weapon: LONGSWORD }))
     }
-    assert(fight.check(entry(20, 9, Act::Join)) == Verdict::Reject(NOT_WAITING), "a full lobby")
+    assert(
+        fight.check(entry(20, 9, Act::Join { weapon: LONGSWORD })) == Verdict::Reject(NOT_WAITING),
+        "a full lobby",
+    )
     for p in 11..14 {
-        fight.apply(entry(p, 30000, Act::Join))
+        fight.apply(entry(p, 30000, Act::Join { weapon: LONGSWORD }))
     }
     let later = 8 + LOBBY_MS
-    assert(fight.check(entry(20, later, Act::Join)) == Verdict::Accept, "a place the silent left")
-    fight.apply(entry(20, later, Act::Join))
+    assert(
+        fight.check(entry(20, later, Act::Join { weapon: LONGSWORD })) == Verdict::Accept,
+        "a place the silent left",
+    )
+    fight.apply(entry(20, later, Act::Join { weapon: LONGSWORD }))
     fight.apply(entry(3, later, Act::Settle))
     assert(fight.check(entry(10, later, Act::Begin)) == Verdict::Reject(NOT_WAITING))
 }
@@ -552,4 +582,29 @@ fn the_logs_of_a_fight_fit_the_state_a_peer_is_sent() {
         fight.apply(e)
     }
     assert(fight.settled)
+}
+
+@test
+fn each_player_fights_with_the_weapon_it_brought() {
+    var fight = Fight::empty()
+    assert(
+        fight.check(entry(3, 0, Act::Join { weapon: WEAPONS.len() })) ==
+            Verdict::Reject(BAD_WEAPON),
+        "a weapon that isn't one",
+    )
+    fight.apply(entry(3, 0, Act::Join { weapon: sim::FISTS }))
+    fight.apply(entry(5, 1, Act::Join { weapon: LONGSWORD }))
+    // Joining again changes what it brings.
+    fight.apply(entry(3, 2, Act::Join { weapon: LONGSWORD }))
+    fight.apply(entry(3, 3, Act::Join { weapon: sim::FISTS }))
+    fight.apply(entry(5, 4, Act::Begin))
+    assert(
+        fight.party == Vec::from([u32(5), 3]) && fight.armed == Vec::from([LONGSWORD, sim::FISTS]),
+    )
+    let logs = two_logs()
+    fight.apply(entry(5, 10, Act::Log { changes: logs[0].changes.clone(), end: 3000 }))
+    fight.apply(entry(3, 11, Act::Log { changes: logs[1].changes.clone(), end: 3000 }))
+    let armed: [u32; 2] = [LONGSWORD, sim::FISTS]
+    assert(fight.outcome == sim::run_armed(armed, logs.clone()), "the fight its weapons give")
+    assert(fight.outcome != sim::run(2, logs), "not the one all longswords give")
 }

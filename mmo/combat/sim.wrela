@@ -13,6 +13,11 @@
 //
 // The rules are the backbone of the combat plan: stamina, committed actions with windups the boss
 // telegraphs, a parry that staggers, a dodge with invulnerable frames.
+//
+// A player's attacks are its weapon's (`WEAPONS`), so the rules are the same for every weapon and
+// only its moves' numbers differ: a light attack (the first of a combo, each next one pressed in
+// the one before's recovery) and a heavy one. Which weapon each player brings is part of the
+// fight (`World::armed`), as its inputs are.
 
 use std::pack::Pack
 
@@ -29,6 +34,7 @@ pub const MAX_CHANGES: u32 = 6000
 pub const ATTACK: u32 = 1
 pub const PARRY: u32 = 2
 pub const DODGE: u32 = 4
+pub const HEAVY: u32 = 8
 
 /// Positions are in 1/64 of a metre.
 const UNIT: i32 = 64
@@ -37,13 +43,52 @@ const PLAYER_HP: i32 = 100
 const STAMINA: i32 = 100
 const BOSS_HP_EACH: i32 = 300
 
-// A player's attack: stamina, its frames (windup, active, recovery), reach and damage.
-const ATTACK_COST: i32 = 25
-const ATTACK_WINDUP: u32 = 10
-const ATTACK_ACTIVE: u32 = 4
-const ATTACK_RECOVERY: u32 = 14
-const ATTACK_REACH: i32 = 3 * 64
-const ATTACK_DAMAGE: i32 = 8
+/// An attack: its stamina, its frames (windup, active, recovery), its reach and damage, and the
+/// move a light press in its recovery goes on to (its combo's next; `NO_MOVE`: none).
+pub struct Move: Copy + Eq {
+    pub cost: i32,
+    pub windup: u32,
+    pub active: u32,
+    pub recovery: u32,
+    pub reach: i32,
+    pub damage: i32,
+    pub next: u32,
+}
+
+/// No move: a combo's end, or a recovery that isn't an attack's (a parry's).
+pub const NO_MOVE: u32 = 4294967295
+
+/// Every weapon's moves, by number (`Weapon` names its own).
+pub const MOVES: [Move; 6] = [
+    // Fists: a jab, and a heavier straight.
+    Move { cost: 25, windup: 10, active: 4, recovery: 14, reach: 3 * 64, damage: 8, next: NO_MOVE },
+    Move {
+        cost: 35,
+        windup: 20,
+        active: 4,
+        recovery: 24,
+        reach: 3 * 64,
+        damage: 16,
+        next: NO_MOVE,
+    },
+    // The longsword (two-handed): a three-cut combo, each cut longer and harder, and an overhead;
+    // it outreaches the boss (`BOSS_REACH`), so footing decides who's in range.
+    Move { cost: 18, windup: 12, active: 5, recovery: 18, reach: 176, damage: 9, next: 3 },
+    Move { cost: 18, windup: 10, active: 5, recovery: 18, reach: 176, damage: 10, next: 4 },
+    Move { cost: 22, windup: 14, active: 6, recovery: 26, reach: 192, damage: 14, next: NO_MOVE },
+    Move { cost: 35, windup: 26, active: 6, recovery: 30, reach: 208, damage: 26, next: NO_MOVE },
+]
+
+/// A weapon: its light attack (the first of its combo) and its heavy one, as moves.
+pub struct Weapon: Copy + Eq {
+    pub light: u32,
+    pub heavy: u32,
+}
+
+/// Every weapon, by number: what a fight's players bring (`World::armed`).
+pub const WEAPONS: [Weapon; 2] = [Weapon { light: 0, heavy: 1 }, Weapon { light: 2, heavy: 5 }]
+pub const FISTS: u32 = 0
+pub const LONGSWORD: u32 = 1
 // A parry: its window, then its recovery; a boss hit it meets staggers the boss.
 const PARRY_COST: i32 = 10
 const PARRY_WINDOW: u32 = 8
@@ -105,6 +150,9 @@ struct Fighter: Clone + Eq {
     stamina: i32,
     act: u32,
     timer: u32,
+    /// Its weapon (`WEAPONS`), and the move it's making (`MOVES`; `NO_MOVE`: none).
+    weapon: u32,
+    move_: u32,
     /// Whether this attack has hit already.
     landed: bool,
     dx: i32,
@@ -113,7 +161,7 @@ struct Fighter: Clone + Eq {
 }
 
 impl Fighter {
-    fn new(x: i32, z: i32, hp: i32) -> Fighter {
+    fn new(x: i32, z: i32, hp: i32, weapon: u32) -> Fighter {
         Fighter {
             x,
             z,
@@ -121,6 +169,8 @@ impl Fighter {
             stamina: STAMINA,
             act: IDLE,
             timer: 0,
+            weapon,
+            move_: NO_MOVE,
             landed: false,
             dx: 0,
             dz: 0,
@@ -153,7 +203,9 @@ fn reach(ax: i32, az: i32, bx: i32, bz: i32) -> i32 {
 
 /// Which bits of a player's input the rules read: its stick, and its buttons.
 pub const STICK_BITS: u32 = 63
-pub const BUTTON_BITS: u32 = 448
+pub const BUTTON_BITS: u32 = 960
+/// The light attack's bit: what the rules read in a recovery a combo goes on from.
+const CHAIN_BITS: u32 = ATTACK << 6
 
 /// The fight at a frame: what each player and the boss are doing, each player's buttons as the
 /// rules last took them, and whether it's over. Stepped one frame at a time (`step`), so a client
@@ -176,22 +228,36 @@ pub struct Seen: Copy {
     pub stamina: i32,
     /// 0 idle, 1 winding up, 2 striking, 3 recovering, 4 parrying, 5 dodging, 6 staggered.
     pub act: u32,
+    /// The move it's making (`MOVES`; `NO_MOVE`: none), so a client draws which cut it is.
+    pub move_: u32,
 }
 
 impl World {
-    /// The fight's first frame, for a party of `players` (at most `MAX_PARTY`).
+    /// The fight's first frame, for a party of `players` (at most `MAX_PARTY`), each with the
+    /// longsword.
     pub fn start(players: u32) -> World {
-        let n = if players > MAX_PARTY { MAX_PARTY } else { players }
+        var weapons: Vec<u32> = Vec::new()
+        for _ in 0..players {
+            weapons.push(LONGSWORD)
+        }
+        World::armed(weapons)
+    }
+
+    /// The fight's first frame, for a party whose players bring `weapons` (one each, in party
+    /// order; at most `MAX_PARTY`; one that isn't a weapon is fists).
+    pub fn armed(weapons: [u32]) -> World {
+        let n = if weapons.len() > MAX_PARTY { MAX_PARTY } else { weapons.len() }
         var party: Vec<Fighter> = Vec::new()
         var before: Vec<u32> = Vec::new()
         for i in 0..n {
-            party.push(Fighter::new(-4 * UNIT + i32(i) * 2 * UNIT, -6 * UNIT, PLAYER_HP))
+            let w = if weapons[i] < WEAPONS.len() { weapons[i] } else { FISTS }
+            party.push(Fighter::new(-4 * UNIT + i32(i) * 2 * UNIT, -6 * UNIT, PLAYER_HP, w))
             before.push(0)
         }
         World {
             frame: 0,
             party,
-            boss: Fighter::new(0, 6 * UNIT, BOSS_HP_EACH * i32(n)),
+            boss: Fighter::new(0, 6 * UNIT, BOSS_HP_EACH * i32(n), FISTS),
             before,
             over: false,
             winner: Winner::Draw,
@@ -220,7 +286,15 @@ impl World {
             return 0
         }
         let p = self.party[i].clone()
-        if p.hp > 0 && p.act == IDLE { STICK_BITS | BUTTON_BITS } else { 0 }
+        if p.hp <= 0 {
+            0
+        } else if p.act == IDLE {
+            STICK_BITS | BUTTON_BITS
+        } else if chains(p) {
+            CHAIN_BITS
+        } else {
+            0
+        }
     }
 
     /// What the rules will read of player `i`'s input `frames` steps from now, if every input
@@ -250,7 +324,12 @@ impl World {
 }
 
 fn seen(f: Fighter) -> Seen {
-    Seen { x: f.x, z: f.z, hp: f.hp, stamina: f.stamina, act: f.act }
+    Seen { x: f.x, z: f.z, hp: f.hp, stamina: f.stamina, act: f.act, move_: f.move_ }
+}
+
+/// Whether `p` is in an attack's recovery that a combo goes on from.
+fn chains(p: Fighter) -> bool {
+    p.act == RECOVER && p.move_ != NO_MOVE && MOVES[p.move_].next != NO_MOVE
 }
 
 /// One frame of the fight from each player's input (`inputs[i]`; a missing one is still). A
@@ -274,13 +353,13 @@ pub fn step(w: mut World, inputs: [u32]) {
             continue
         }
         step_player(mut p, stick, pressed)
-        if p.act == ACTIVE &&
-            !p.landed &&
-            w.boss.hp > 0 &&
-            reach(p.x, p.z, w.boss.x, w.boss.z) <= ATTACK_REACH {
-            p.landed = true
-            w.boss.hp -= ATTACK_DAMAGE
-            p.dealt += u32(ATTACK_DAMAGE)
+        if p.act == ACTIVE && !p.landed && w.boss.hp > 0 {
+            let m = MOVES[p.move_]
+            if reach(p.x, p.z, w.boss.x, w.boss.z) <= m.reach {
+                p.landed = true
+                w.boss.hp -= m.damage
+                p.dealt += u32(m.damage)
+            }
         }
         w.party[i] = take p
     }
@@ -305,11 +384,21 @@ pub fn step(w: mut World, inputs: [u32]) {
     }
 }
 
-/// The fight, from its party's size and each player's input log: every frame stepped from the
-/// last change at or before it.
+/// The fight, from its party's size and each player's input log, everyone with the longsword.
 @deterministic
 pub fn run(players: u32, logs: [Log]) -> Outcome {
-    var w = World::start(players)
+    var weapons: Vec<u32> = Vec::new()
+    for _ in 0..players {
+        weapons.push(LONGSWORD)
+    }
+    run_armed(weapons, logs)
+}
+
+/// The fight, from the weapons its players bring and each player's input log: every frame
+/// stepped from the last change at or before it.
+@deterministic
+pub fn run_armed(weapons: [u32], logs: [Log]) -> Outcome {
+    var w = World::armed(weapons)
     let n = w.players()
     var at: Vec<u32> = Vec::new()
     var inputs: Vec<u32> = Vec::new()
@@ -331,34 +420,54 @@ pub fn run(players: u32, logs: [Log]) -> Outcome {
     w.outcome()
 }
 
+/// Starts move `m` if `p` has the stamina for it: whether it did.
+fn begin(p: mut Fighter, m: u32) -> bool {
+    let mv = MOVES[m]
+    if p.stamina < mv.cost {
+        return false
+    }
+    p.stamina -= mv.cost
+    p.act = WINDUP
+    p.timer = mv.windup
+    p.move_ = m
+    p.landed = false
+    true
+}
+
 @deterministic
 fn step_player(p: mut Fighter, stick: u32, pressed: u32) {
-    // An action runs its frames out; a new one starts only from idle.
+    // An action runs its frames out; a new one starts from idle, or a combo's next cut from the
+    // recovery of the one before.
     if p.act != IDLE {
+        if chains(p) && pressed & ATTACK != 0 {
+            let next = MOVES[p.move_].next
+            if begin(mut p, next) {
+                return
+            }
+        }
         if p.timer > 0 {
             p.timer -= 1
         }
         if p.timer == 0 {
             if p.act == WINDUP {
                 p.act = ACTIVE
-                p.timer = ATTACK_ACTIVE
+                p.timer = MOVES[p.move_].active
             } else if p.act == ACTIVE {
                 p.act = RECOVER
-                p.timer = ATTACK_RECOVERY
+                p.timer = MOVES[p.move_].recovery
             } else if p.act == PARRYING {
                 p.act = RECOVER
                 p.timer = PARRY_RECOVERY
+                p.move_ = NO_MOVE
             } else {
                 p.act = IDLE
+                p.move_ = NO_MOVE
             }
         }
     } else {
-        if pressed & ATTACK != 0 && p.stamina >= ATTACK_COST {
-            p.stamina -= ATTACK_COST
-            p.act = WINDUP
-            p.timer = ATTACK_WINDUP
-            p.landed = false
-        } else if pressed & PARRY != 0 && p.stamina >= PARRY_COST {
+        let weapon = WEAPONS[p.weapon]
+        if pressed & ATTACK != 0 && begin(mut p, weapon.light) {} else if pressed & HEAVY != 0 &&
+            begin(mut p, weapon.heavy) {} else if pressed & PARRY != 0 && p.stamina >= PARRY_COST {
             p.stamina -= PARRY_COST
             p.act = PARRYING
             p.timer = PARRY_WINDOW
@@ -548,4 +657,67 @@ fn a_bit_the_rules_dont_read_changes_nothing_then_or_later() {
         checked += 1
     }
     assert(checked > 1000, "the fight lasts")
+}
+
+/// A world with one player of weapon `weapon` stood in reach of the boss, which stands still.
+fn at_the_boss(weapon: u32) -> World {
+    var w = World::armed([weapon])
+    w.party[0].x = 0
+    w.party[0].z = 6 * UNIT - 2 * UNIT
+    w
+}
+
+/// Steps `w` `frames` times with `input` held, the boss kept still and unhurt but for its hp.
+fn hold(w: mut World, input: u32, frames: u32) {
+    for _ in 0..frames {
+        w.boss.act = STAGGERED
+        w.boss.timer = 2
+        step(mut w, [input])
+    }
+}
+
+@test
+fn a_light_press_in_a_cuts_recovery_goes_on_to_the_combos_next() {
+    var w = at_the_boss(LONGSWORD)
+    let hp = w.boss.hp
+    // The first cut: pressed, then held through its windup and strike.
+    hold(mut w, input: ATTACK << 6, frames: 1)
+    let first = MOVES[2]
+    hold(mut w, input: ATTACK << 6, frames: first.windup + first.active)
+    assert(w.party[0].act == RECOVER && w.party[0].move_ == 2, "the first cut recovers")
+    assert(w.reads(0) == CHAIN_BITS, "its recovery reads only the attacks")
+    assert(w.boss.hp == hp - first.damage, "it landed")
+    // Pressed again (the bit flips back): the second cut.
+    hold(mut w, input: 0, frames: 1)
+    assert(w.party[0].act == WINDUP && w.party[0].move_ == 3, "the second cut")
+    let second = MOVES[3]
+    hold(mut w, input: 0, frames: second.windup + second.active)
+    hold(mut w, input: ATTACK << 6, frames: 1)
+    assert(w.party[0].move_ == 4, "the third")
+    let third = MOVES[4]
+    hold(mut w, input: ATTACK << 6, frames: third.windup + third.active)
+    assert(w.boss.hp == hp - first.damage - second.damage - third.damage, "all three land")
+    assert(w.reads(0) == 0, "the combo's last cut goes on to nothing")
+    hold(mut w, input: ATTACK << 6, frames: third.recovery + 1)
+    assert(w.party[0].act == IDLE, "and it's done")
+}
+
+@test
+fn each_weapon_fights_with_its_own_moves() {
+    for weapon in [FISTS, LONGSWORD] {
+        var w = at_the_boss(weapon)
+        let hp = w.boss.hp
+        let heavy = MOVES[WEAPONS[weapon].heavy]
+        hold(mut w, input: HEAVY << 6, frames: 1 + heavy.windup + heavy.active)
+        assert(w.boss.hp == hp - heavy.damage, "a heavy attack lands its weapon's damage")
+        assert(w.party[0].stamina == STAMINA - heavy.cost, "and costs its stamina")
+        assert(w.reads(0) == 0, "a heavy is no combo's start")
+    }
+    // A light press in a fists' jab's recovery starts nothing: its combo is one jab.
+    var f = at_the_boss(FISTS)
+    hold(mut f, input: ATTACK << 6, frames: 1 + MOVES[0].windup + MOVES[0].active)
+    hold(mut f, input: 0, frames: 1)
+    assert(f.party[0].act == RECOVER, "no next jab")
+    // A weapon that isn't one is fists, so any party is a fight.
+    assert(World::armed([77]).party[0].weapon == FISTS)
 }
