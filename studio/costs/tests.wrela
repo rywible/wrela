@@ -28,7 +28,7 @@ const NOV5: i64 = 1793898000
 
 /// An answer as the API gives one: two Workers, two Durable Object groups, R2 reads, writes and
 /// a delete, and two buckets.
-const ANSWER: Text = "{\"data\": {\"viewer\": {\"accounts\": [{\"workers\": [{\"sum\": {\"requests\": 1200, \"cpuTimeUs\": 3500000}, \"dimensions\": {\"scriptName\": \"wrela-console\"}}, {\"sum\": {\"requests\": 4800, \"cpuTimeUs\": 500000}, \"dimensions\": {\"scriptName\": \"wrela-console-api\"}}], \"calls\": [{\"sum\": {\"requests\": 900}}], \"periodic\": [{\"sum\": {\"activeTime\": 3600000000, \"rowsRead\": 7000, \"rowsWritten\": 300}}, {\"sum\": {\"activeTime\": 1800000000, \"rowsRead\": 3000, \"rowsWritten\": 100}}], \"stored\": [{\"max\": {\"storedBytes\": 2000000}}, {\"max\": {\"storedBytes\": 5000000}}], \"r2ops\": [{\"sum\": {\"requests\": 40}, \"dimensions\": {\"actionType\": \"PutObject\"}}, {\"sum\": {\"requests\": 10}, \"dimensions\": {\"actionType\": \"ListObjects\"}}, {\"sum\": {\"requests\": 700}, \"dimensions\": {\"actionType\": \"GetObject\"}}, {\"sum\": {\"requests\": 5}, \"dimensions\": {\"actionType\": \"DeleteObject\"}}], \"r2stored\": [{\"max\": {\"payloadSize\": 1500000000, \"metadataSize\": 0}, \"dimensions\": {\"bucketName\": \"a\"}}, {\"max\": {\"payloadSize\": 500000000, \"metadataSize\": 0}, \"dimensions\": {\"bucketName\": \"b\"}}]}]}}, \"errors\": null}"
+const ANSWER: Text = "{\"data\": {\"viewer\": {\"accounts\": [{\"workers\": [{\"sum\": {\"requests\": 1200, \"cpuTimeUs\": 3500000}, \"dimensions\": {\"scriptName\": \"wrela-console\"}}, {\"sum\": {\"requests\": 4800, \"cpuTimeUs\": 500000}, \"dimensions\": {\"scriptName\": \"wrela-console-api\"}}], \"calls\": [{\"sum\": {\"requests\": 900}}], \"periodic\": [{\"sum\": {\"activeTime\": 3600000000, \"rowsRead\": 7000, \"rowsWritten\": 300}}, {\"sum\": {\"activeTime\": 1800000000, \"rowsRead\": 3000, \"rowsWritten\": 100}}], \"stored\": [{\"max\": {\"storedBytes\": 2000000}}, {\"max\": {\"storedBytes\": 5000000}}], \"r2ops\": [{\"sum\": {\"requests\": 40}, \"dimensions\": {\"actionType\": \"PutObject\"}}, {\"sum\": {\"requests\": 10}, \"dimensions\": {\"actionType\": \"ListObjects\"}}, {\"sum\": {\"requests\": 700}, \"dimensions\": {\"actionType\": \"GetObject\"}}, {\"sum\": {\"requests\": 5}, \"dimensions\": {\"actionType\": \"DeleteObject\"}}], \"r2stored\": [{\"max\": {\"payloadSize\": 1500000000, \"metadataSize\": 0}, \"dimensions\": {\"date\": \"2026-11-04\", \"bucketName\": \"a\"}}, {\"max\": {\"payloadSize\": 500000000, \"metadataSize\": 0}, \"dimensions\": {\"date\": \"2026-11-04\", \"bucketName\": \"b\"}}, {\"max\": {\"payloadSize\": 900000000, \"metadataSize\": 0}, \"dimensions\": {\"date\": \"2026-11-03\", \"bucketName\": \"a\"}}]}]}}, \"errors\": null}"
 
 fn zero() -> Usage {
     var amounts: Vec<f64> = Vec::new()
@@ -74,7 +74,7 @@ fn an_answer_reads_as_each_meters_use() {
     assert(near(u.amounts[6], 0.005), "object storage")
     assert(near(u.amounts[7], 50.0), "class A: puts and lists")
     assert(near(u.amounts[8], 700.0), "class B: reads; deletes are free")
-    // Buckets add up.
+    // A day's buckets add up; the most of any day counts.
     assert(near(u.amounts[9], 2.0), "R2 storage")
     // The Workers, the busiest first.
     assert(u.workers.len() == 2 && u.workers[0].0.as_str() == "wrela-console-api")
@@ -140,14 +140,14 @@ fn the_pace_stretches_use_to_the_month_but_not_storage() {
     // 4.7 days in, use is stretched over the 30.
     assert(near(pace(METERS[0], 470.0, m), 470.0 * 30.0 / (4.0 + 17.0 / 24.0)))
     assert(pace(METERS[6], 2.0, m) == 2.0, "storage is billed as held")
-    // An hour into a month is taken as a day, so it isn't stretched 720 times.
+    // An hour into a month is taken as 12 hours, so it isn't stretched 720 times.
     let early = Month {
         since: String::from("2026-11-01"),
         name: String::from("November 2026"),
         seconds: 30.0 * 86400.0,
         elapsed: 3600.0,
     }
-    assert(near(pace(METERS[0], 10.0, early), 300.0))
+    assert(near(pace(METERS[0], 10.0, early), 600.0))
 }
 
 @test

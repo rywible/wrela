@@ -22,7 +22,8 @@
 // What it can't see, it says: the month is the calendar month in UTC, while Cloudflare bills from
 // the day the plan started; analytics are sampled and minutes late; a WebSocket message a
 // hibernating Durable Object takes counts as a request here, though Cloudflare bills 20 of them as
-// one, so the Durable Objects' requests read high; and Realtime (the SFU relay) has no meter here:
+// one, so the Durable Objects' requests read high (every room's socket hibernates, so none is
+// missed); a Durable Object's storage is its largest reading; and Realtime (the SFU relay) has no meter here:
 // its first 1,000 GB a month are free, about 31,000 party-hours of combat (docs: "Bandwidth").
 // Cloudflare's own budget alerts (Billing > Billable Usage) watch the dollars, a day late; this
 // watches the allowances before they cost anything.
@@ -54,9 +55,9 @@ pub const PLAN: f64 = 5.0
 /// How much of a free allowance a meter may be on pace for before the tool raises an alarm.
 pub const WARN: f64 = 0.8
 
-/// The fewest seconds of the month the pace is taken over, so an hour into a month isn't stretched
-/// thirty days.
-pub const LEAST_ELAPSED: f64 = 86400.0
+/// The fewest seconds of the month the pace is taken over (12 hours), so an hour into a month isn't
+/// stretched thirty days.
+pub const LEAST_ELAPSED: f64 = 43200.0
 
 /// A meter Cloudflare bills: its name, its unit, the plan's free allowance a month, and its price
 /// past that: `price` dollars a `per` units. A stored meter bills what's held (GB-months), so its
@@ -178,7 +179,7 @@ pub fn query(account: str, since: str) -> String {
         f"r2ops: r2OperationsAdaptiveGroups(limit: 100, {f}) {{ sum {{ requests }} dimensions {{ actionType }} }} ",
     )
     q.push_str(
-        f"r2stored: r2StorageAdaptiveGroups(limit: 100, {f}) {{ max {{ payloadSize metadataSize }} dimensions {{ bucketName }} }} ",
+        f"r2stored: r2StorageAdaptiveGroups(limit: 100, {f}) {{ max {{ payloadSize metadataSize }} dimensions {{ date bucketName }} }} ",
     )
     q.push_str("} } }")
     q
@@ -306,10 +307,32 @@ pub fn read_usage(text: str) -> Result<Usage, String> {
             amounts[7 + class] += number(d, g, ["sum", "requests"])
         }
     }
+    // R2 bills what it holds: each day's buckets added up, the most of any day.
+    var days: Vec<(String, f64)> = Vec::new()
     for g in groups(d, a, "r2stored") {
-        amounts[9] += (number(d, g, ["max", "payloadSize"]) +
-            number(d, g, ["max", "metadataSize"])) /
-            GB
+        let day = match d.get(g, "dimensions") {
+            Some(dims) => match d.get(dims, "date") {
+                Some(s) => d.text(s).unwrap_or(String::new()),
+                None => String::new(),
+            },
+            None => String::new(),
+        }
+        let b = number(d, g, ["max", "payloadSize"]) + number(d, g, ["max", "metadataSize"])
+        var found = false
+        for i in 0..days.len() {
+            if days[i].0.as_str() == day.as_str() {
+                days[i].1 += b
+                found = true
+            }
+        }
+        if !found {
+            days.push((take day, b))
+        }
+    }
+    for (_, b) in days {
+        if b / GB > amounts[9] {
+            amounts[9] = b / GB
+        }
     }
     Ok(Usage { amounts, workers })
 }

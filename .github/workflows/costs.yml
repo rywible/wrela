@@ -74,5 +74,6 @@ jobs:
           if [ -n "$open" ]; then
             gh issue comment "$open" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/issue.md"
           else
-            gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE" --assignee "$GITHUB_REPOSITORY_OWNER" --body-file "$RUNNER_TEMP/issue.md"
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE" --assignee "$GITHUB_REPOSITORY_OWNER" --body-file "$RUNNER_TEMP/issue.md" ||
+              gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE" --body-file "$RUNNER_TEMP/issue.md"
           fi
