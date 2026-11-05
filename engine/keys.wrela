@@ -112,7 +112,7 @@ pub const GRIP_DOWN: f32 = 0.032
 pub const GRIP_ROLL: f32 = 0.3
 
 /// The twist of `q` about `axis` (unit): the part of the turn about it.
-fn twist_of(q: Quat, axis: vec3) -> Quat {
+pub fn twist_of(q: Quat, axis: vec3) -> Quat {
     let p = axis * dot(q.v.xyz, axis)
     let v = vec4(p, q.v.w)
     if length(v) < 1.0e-6 {
@@ -567,6 +567,84 @@ pub fn hilt_held(
     let axis = normalize(t - e)
     turn_below(rig, mut w, l0, twist_of(want.mul(w[h0].q.inverse()), axis))
     turn_below(rig, mut w, h0, want.mul(w[h0].q.inverse()))
+    var out = p
+    for b in 0..nb {
+        let up = rig.bones[b].parent
+        let pq = if up == NONE { rig.base.q } else { w[up].q }
+        out.turns[b] = pq.inverse().mul(w[b].q)
+    }
+    (out, grip, f)
+}
+
+/// One arm (`side` +1 the left, -1 the right) reaching its hand's hold to `hold`, the hand turned
+/// to hold a sword framed `f` there (the hold at rest's frame carried to `f`), its elbow bent
+/// toward where it was. In place in `w` (the body's space).
+fn arm_onto(rig: Rig, w: mut Vec<Rigid>, side: f32, hold: vec3, f: Quat) {
+    let rw = rig.rest_world()
+    let name = if side > 0.0 { "left" } else { "right" }
+    let u0 = rig.find(f"{name}UpperArm".as_str())
+    let l0 = rig.find(f"{name}LowerArm".as_str())
+    let h0 = rig.find(f"{name}Hand".as_str())
+    if u0 == NONE || l0 == NONE || h0 == NONE {
+        return
+    }
+    let (g0, f0) = hold_at_rest(rig, side)
+    let r = f.mul(f0.inverse())
+    let wrist = hold + r.rotate(rw[h0].t - g0)
+    let want = r.mul(rw[h0].q)
+    let l1 = length(rw[l0].t - rw[u0].t)
+    let l2 = length(rw[h0].t - rw[l0].t)
+    let s = w[u0].t
+    let pole = w[l0].t - (s + wrist) * 0.5
+    let (e, t) = elbow_at(s, wrist, l1, l2, pole)
+    turn_below(rig, mut w, u0, arc(w[l0].t - w[u0].t, e - w[u0].t))
+    turn_below(rig, mut w, l0, arc(w[h0].t - w[l0].t, t - w[l0].t))
+    let axis = normalize(t - e)
+    turn_below(rig, mut w, l0, twist_of(want.mul(w[h0].q.inverse()), axis))
+    turn_below(rig, mut w, h0, want.mul(w[h0].q.inverse()))
+}
+
+/// The right fingers (VRM's names), closed round a hilt.
+pub const RIGHT_FINGERS: [Text; 15] = [
+    "rightThumbMetacarpal", "rightThumbProximal", "rightThumbDistal",
+    "rightIndexProximal", "rightIndexIntermediate", "rightIndexDistal",
+    "rightMiddleProximal", "rightMiddleIntermediate", "rightMiddleDistal",
+    "rightRingProximal", "rightRingIntermediate", "rightRingDistal",
+    "rightLittleProximal", "rightLittleIntermediate", "rightLittleDistal",
+]
+
+/// A pose's arms put on a keyed sword: its right hand's hold at `grip` (the body's space), the
+/// blade along `blade`, its edge leading toward `edge`, the left hand `span` below the right on
+/// the hilt, both hands closed as `fist`'s. The body's own, below the arms, as `pose` has it.
+/// Returns the pose and the sword's grip and frame (`sword_matrix`'s).
+pub fn sword_keyed(
+    rig: Rig,
+    pose: Pose,
+    grip: vec3,
+    blade: vec3,
+    edge: vec3,
+    span: f32,
+    fist: Pose,
+) -> (Pose, vec3, Quat) {
+    let nb = rig.bones.len()
+    var p = pose
+    for n in LEFT_FINGERS {
+        let b = rig.find(n)
+        if b != NONE {
+            p.turns[b] = fist.turns[b]
+        }
+    }
+    for n in RIGHT_FINGERS {
+        let b = rig.find(n)
+        if b != NONE {
+            p.turns[b] = fist.turns[b]
+        }
+    }
+    var w = humanoid::frame_world(rig, p.turns, 0, rig.base.t + rig.base.q.rotate(p.hips))
+    let f = frame_of(blade, edge)
+    let u = f.rotate(vec3(0.0, 0.0, 1.0))
+    arm_onto(rig, mut w, -1.0, grip, f)
+    arm_onto(rig, mut w, 1.0, grip - u * span, f)
     var out = p
     for b in 0..nb {
         let up = rig.bones[b].parent

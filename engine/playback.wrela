@@ -591,6 +591,53 @@ pub fn struck(
     Move { clip: c, root, heading, marks, speed: 0.0, stride: 0.0 }
 }
 
+/// `m` retimed as an animator keys it over mocap: `keys` pairs a time in the new move (x, rising)
+/// with a time in `m` (y), straight between (two keys at one time of `m` hold it: an anticipation's
+/// peak, a hit-stop); its blow at `blow` (s, the new move's), held still to `free`, the next move
+/// free to cut in from `cancel`. Before the first key and after the last, `m` as it was.
+pub fn keyed_over(m: Move, keys: [vec2], blow: f32, free: f32, cancel: f32) -> Move {
+    borrow src = m.clip
+    let len = src.length()
+    let fps = src.fps
+    let k = keys.len()
+    let last = keys[k - 1]
+    let total = last.x + max(len - last.y, 0.0)
+    let n = max(u32(total * fps + 0.5), 2) + 1
+    var c = src.clone()
+    c.frames = n
+    c.looped = false
+    c.turns = Vec::with_capacity(n * src.bones)
+    c.hips = Vec::with_capacity(n)
+    var root: Vec<vec3> = Vec::with_capacity(n)
+    var heading: Vec<f32> = Vec::with_capacity(n)
+    for f in 0..n {
+        let t = f32(f) / fps
+        var s = if t <= keys[0].x { keys[0].y - (keys[0].x - t) } else { last.y + (t - last.x) }
+        for i in 1..k {
+            let (a, b) = (keys[i - 1], keys[i])
+            if t >= a.x && t <= b.x {
+                let x = if b.x > a.x { (t - a.x) / (b.x - a.x) } else { 1.0 }
+                s = mix(a.y, b.y, x)
+            }
+        }
+        let at = clamp(s, 0.0, len)
+        let p = src.pose(at)
+        for b in 0..src.bones {
+            c.turns.push(p.turns[b])
+        }
+        c.hips.push(p.hips)
+        let (rp, rh) = m.root_at(at)
+        root.push(rp)
+        heading.push(rh)
+    }
+    var marks: Vec<Mark> = Vec::new()
+    marks.push(Mark { kind: WINDUP, from: 0.0, till: blow })
+    marks.push(Mark { kind: ACTIVE, from: blow, till: free + 0.05 })
+    marks.push(Mark { kind: RECOVER, from: free + 0.05, till: total })
+    marks.push(Mark { kind: CANCEL, from: min(cancel, total), till: total })
+    Move { clip: c, root, heading, marks, speed: 0.0, stride: 0.0 }
+}
+
 // ---- inertial changes ----------------------------------------------------------------------
 
 /// What's left of a change from one move to another: each bone's offset from the new move (as

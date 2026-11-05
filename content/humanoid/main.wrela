@@ -77,6 +77,7 @@ pub const SIDE: f32 = 0.75
 pub const SWORD_SIDE: f32 = -0.5
 /// `SHOW=15`: how far the left hand is put on the hilt (0 as the mocap has it).
 pub const HELD: f32 = 1.0
+pub const ONE: u32 = 0
 pub const PROBE: u32 = 0
 
 /// When the sequence moves on (s), and how long a change of clip blends.
@@ -111,10 +112,10 @@ pub struct State {
 pub fn init() -> State {
     if PROBE == 1 {
         let files = [
-            (embed("private/great_sword_slash.bvh"), 7, 36),
-            (embed("private/great_sword_slash_3.bvh"), 14, 42),
-            (embed("private/great_sword_high_spin_attack.bvh"), 16, 50),
+            (embed("private/great_sword_slash_4.bvh"), 30, 56),
         ]
+        let v = mixamo::MOCAP_ACTS[mixamo::M_VERTICAL].clone()
+        print(f"vertical len {v.length():.3} fps {v.clip.fps} frames {v.clip.frames}")
         for (file, from, to) in files {
             print(f"clip from {from}")
             for r in mixamo::tip_track(file, from, to) {
@@ -234,6 +235,15 @@ pub fn mocap_script(last: f32, time: f32) -> (vec3, u32, bool) {
         vec3(0.0)
     }
     let at = |t: f32| -> bool { last < t && time >= t }
+    if ONE == 1 {
+        // The one cut, over and over from guard.
+        for t in [1.0, 3.0, 5.0, 7.0] {
+            if at(t) {
+                return (vec3(0.0), mixamo::M_VERTICAL, false)
+            }
+        }
+        return (vec3(0.0), humanoid::NONE, false)
+    }
     let m = |i: u32| -> f32 {
         mixamo::MOCAP_ACTS[i].mark(playback::CANCEL).unwrap().from
     }
@@ -514,6 +524,36 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             lean,
             lean_on,
         )
+        // The classic cut: its sword keyed (not the mocap's hands), both arms put on it, blended
+        // in from the guard as it starts and back out as it ends.
+        let (held, grip, f) = if s.mover.acting == mixamo::M_VERTICAL {
+            let len = mixamo::MOCAP_ACTS[mixamo::M_VERTICAL].length()
+            let t = floor(s.mover.act_time * 30.0) / 30.0
+            let on = smoothstep(0.0, 0.07, t) * (1.0 - smoothstep(len - 0.25, len, t))
+            let w = humanoid::frame_world(rig, shown.turns, 0, rig.base.t + rig.base.q.rotate(shown.hips))
+            let uc = rig.find("upperChest")
+            let chest = w[uc].t
+            // Keyed in the hips' own frame (the way they face, about the upright; the trunk's
+            // squared to them): the cut goes down the middle of the body as it's turned.
+            let hp = rig.find("hips")
+            let ahead = w[hp].q.mul(rig.rest_world()[hp].q.inverse()).rotate(vec3(0.0, 0.0, 1.0))
+            let yaw = Quat::axis_angle(vec3(0.0, 1.0, 0.0), atan2(ahead.x, ahead.z))
+            let (k_hold, k_blade, k_edge) = mixamo::vertical_sword(t)
+            let (hold, blade, edge) = (yaw.rotate(k_hold), yaw.rotate(k_blade), yaw.rotate(k_edge))
+            let u = f.rotate(vec3(0.0, 0.0, 1.0))
+            let e = f.rotate(vec3(1.0, 0.0, 0.0))
+            keys::sword_keyed(
+                rig,
+                shown,
+                mix(grip, chest + hold, on),
+                normalize(mix(u, blade, on)),
+                normalize(mix(e, edge, on)),
+                mixamo::SPAN,
+                mixamo::FIST,
+            )
+        } else {
+            (held, grip, f)
+        }
         bones = palette(rig, held, shown_at)
         bones[sword::SLOT] = shown_at * keys::sword_matrix(rig, grip, f)
     } else if SHOW == 13 {
