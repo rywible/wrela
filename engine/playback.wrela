@@ -9,8 +9,9 @@
 // - A move carries marks (`Mark`): each foot's footfalls, found from its feet (`with_steps`),
 //   and a combat move's windup, active and recovery windows, fitted to the fight's frames by
 //   retiming the clip about its strike (`timed`). The fight owns the timing; the clip bends to it.
-// - A loop's phase runs from its left footfall (0) through its right (one half), so two loops
-//   (a walk and a run) mixed at the same phase put down the same foot together (`Move::at_phase`).
+// - A loop's phase runs evenly from its left footfall (0) round to it again, its right about one
+//   half, so two loops (a walk and a run) mixed at the same phase put down the same foot together
+//   (`Move::at_phase`).
 // - A change from one move to another is inertial (Holden, "Spring-It-On: The Game Developer's
 //   Spring-Roll-Call", 2021, and "Dead Blending", 2023, theorangeduck.com; Bollo,
 //   "Inertialization: High-Performance Animation Transitions in Gears of War", GDC 2018): the new
@@ -115,6 +116,12 @@ pub struct Move: Clone {
     pub stride: f32,
 }
 
+/// How long a pushed one-off takes to reach its full speed from its first frame (its feet push
+/// off from the first: a keyed roll's feet sweep back at once), and from how long before its end
+/// it eases off (s).
+const PUSH_IN: f32 = 0.12
+const PUSH_OUT: f32 = 0.45
+
 /// How long (s) a one-off's root path is smoothed over: the hips' sway and bob stay in the
 /// body, the path they wander along goes to the root.
 const ROOT_OVER: f32 = 0.3
@@ -207,7 +214,7 @@ impl Move {
 
     /// Its pose at `time` (s), in place.
     pub fn pose(self, time: f32) -> Pose {
-        self.clip.pose(time)
+        self.clip.smooth_pose(time)
     }
 
     /// Its root's place on the floor and heading at `time` (s): a loop's carried on a stride a
@@ -241,6 +248,16 @@ impl Move {
         let (b, hb) = self.root_at(till)
         let local = Quat::axis_angle(vec3(0.0, 1.0, 0.0), -ha).rotate(b - a)
         (local, hb - ha)
+    }
+
+    /// How fast (m/s) gameplay carries a `pushed` one-off at `time` (s): nothing for its first
+    /// tenth of a second, building to its speed by `PUSH_IN` s, and easing off over its last
+    /// `PUSH_OUT` s (all but the last tenth), so it springs off and lands on its feet.
+    pub fn push_at(self, time: f32) -> f32 {
+        let len = self.length()
+        self.speed *
+            smoothstep(0.0, PUSH_IN, time) *
+            (1.0 - smoothstep(len - PUSH_OUT, len - 0.1, time))
     }
 
     /// The first mark of `kind`, if it has one.
@@ -286,37 +303,31 @@ impl Move {
         count
     }
 
-    /// The time (s, within one play) its loop is at `phase` (0 its left footfall, one half its
-    /// right, 1 its left again), going evenly between them; evenly over the loop without both.
+    /// The time (s, within one play) its loop is at `phase`: 0 its left footfall, 1 its left
+    /// again, evenly in time between (so its feet go at its own pace through the loop, and a
+    /// standing foot keeps pace with the ground). Its right footfall is about one half (each
+    /// gait's steps are about even), so two gaits at one phase put down the same foot together.
     pub fn time_at_phase(self, phase: f32) -> f32 {
         let len = self.length()
         let p = phase - floor(phase)
         let l = self.mark(STEP_LEFT)
-        let r = self.mark(STEP_RIGHT)
-        if l.is_none() || r.is_none() || len <= 0.0 {
+        if l.is_none() || len <= 0.0 {
             return p * len
         }
-        let tl = l.unwrap().from
-        var tr = r.unwrap().from
-        if tr < tl {
-            tr += len
-        }
-        let t = if p < 0.5 {
-            tl + (tr - tl) * (p * 2.0)
-        } else {
-            tr + (tl + len - tr) * ((p - 0.5) * 2.0)
-        }
+        let t = l.unwrap().from + p * len
         t - len * floor(t / len)
     }
 
     /// Its pose at `phase` (`time_at_phase`).
     pub fn at_phase(self, phase: f32) -> Pose {
-        self.clip.pose(self.time_at_phase(phase))
+        self.clip.smooth_pose(self.time_at_phase(phase))
     }
 }
 
-/// `m`, a one-off, carried ahead at `speed` (m/s) by gameplay while it plays, on top of its
-/// root's own travel: a dodge roll keyed in place, given the fight's dodge speed.
+/// `m`, a one-off, carried ahead at up to `speed` (m/s) by gameplay while it plays, on top of
+/// its root's own travel: a dodge roll keyed in place, given the fight's dodge speed. It's
+/// carried only once it's off its feet (`Move::push_at`), so it doesn't skate as it crouches to
+/// spring, nor as it gets up.
 pub fn pushed(m: Move, speed: f32) -> Move {
     var out = m.clone()
     out.speed = speed
@@ -589,6 +600,7 @@ pub struct Handling: Copy {
     pub stop_phases: [f32; 2] = [0.3, 0.8],
     pub stop_pace: f32 = 1.0,
     pub change_half: f32 = 0.09,
+    pub act_half: f32 = 0.15,
     pub plant: bool = true,
 }
 
@@ -622,6 +634,7 @@ pub struct Mover: Copy {
     pub carried: f32,
     pub drift: vec3,
     pub drift_speed: vec3,
+    pub half: f32,
 }
 
 impl Mover {
@@ -649,6 +662,7 @@ impl Mover {
             carried: 0.0,
             drift: vec3(0.0),
             drift_speed: vec3(0.0),
+            half: 0.09,
         }
     }
 }
@@ -717,6 +731,7 @@ pub fn step(
         m.upper = upper
         new_act = true
         change = true
+        m.half = if upper { how.change_half } else { how.act_half }
     }
     let whole = m.acting != NONE && !m.upper
     // Heading and speed spring after the stick (a whole-body one-off steers itself).
@@ -744,6 +759,7 @@ pub fn step(
             next_phase = how.start_phase
             m.stopping = false
             change = true
+            m.half = how.change_half
         }
     } else if !whole {
         // Its feet keep pace with the ground: its phase goes a stride a cycle at its speed,
@@ -761,6 +777,7 @@ pub fn step(
                 if before - floor(before) != s && next_phase >= s + k && before < s + k {
                     next_doing = STANDING
                     change = true
+                    m.half = how.change_half
                     m.speed = 0.0
                     m.accel = 0.0
                 }
@@ -776,9 +793,9 @@ pub fn step(
         if !m.upper {
             let (d, turn) = mv.root_between(t0, t1)
             let q = Quat::axis_angle(vec3(0.0, 1.0, 0.0), m.heading)
-            m.place += q.rotate(
-                d + vec3(0.0, 0.0, mv.speed * (min(t1, mv.length()) - min(t0, mv.length()))),
-            )
+            let push = mv.push_at(0.5 * (t0 + t1))
+            m.place += q.rotate(d + vec3(0.0, 0.0, push * dt))
+            m.carried = push
             m.heading = wrapped(m.heading + turn)
             m.speed = 0.0
             m.accel = 0.0
@@ -787,13 +804,16 @@ pub fn step(
         if t1 >= mv.length() && !new_act {
             m.acting = NONE
             change = true
+            m.half = if m.upper { how.change_half } else { how.act_half }
             if !m.upper {
                 next_doing = if want > 0.2 { GOING } else { STANDING }
                 next_phase = how.start_phase
             }
         }
     }
-    m.carried = 0.0
+    if !whole {
+        m.carried = 0.0
+    }
     if !whole && m.doing == GOING {
         let q = Quat::axis_angle(vec3(0.0, 1.0, 0.0), m.heading)
         m.carried = carried(g, m.speed, how, m.stopping)
@@ -840,16 +860,15 @@ pub fn step(
     }
     // A change begun is stepped on at once, as every frame of it is (Holden): else the body
     // would show its last frame again, a held frame at each change.
-    decay(mut m.inertia, how.change_half, dt, bones)
-    let (d, dv) = decayed(m.drift, m.drift_speed, how.change_half, dt)
+    decay(mut m.inertia, m.half, dt, bones)
+    let (d, dv) = decayed(m.drift, m.drift_speed, m.half, dt)
     m.drift = d
     m.drift_speed = dv
     let out = applied(m.inertia, raw, bones)
     m.shown_before = m.shown
     m.shown = out
     m.dt_before = dt
-    if whole || !how.plant {
-        // A roll or a fall is the animator's: its feet go where they're keyed.
+    if !how.plant {
         m.feet = [Planted::loose(), Planted::loose()]
         return out
     }
@@ -866,22 +885,49 @@ pub struct Planted: Copy {
     pub down: bool,
     pub last: vec3,
     pub fresh: bool,
+    /// How far (m, along the floor) the move has pulled the foot from where it's held.
+    pub gap: f32,
+    /// A standing foot's step to where the move has it (0 none, else how far through, to 1), and
+    /// where it stepped from.
+    pub step: f32,
+    pub from: vec3,
 }
 
 impl Planted {
     pub fn loose() -> Planted {
-        Planted { at: vec3(0.0), hold: 0.0, down: false, last: vec3(0.0), fresh: true }
+        Planted {
+            at: vec3(0.0),
+            hold: 0.0,
+            down: false,
+            last: vec3(0.0),
+            fresh: true,
+            gap: 0.0,
+            step: 0.0,
+            from: vec3(0.0),
+        }
     }
 }
 
 /// When a foot is down: its ankle within `PLANT_LOW` (m) of its height at rest and going slower
-/// than `PLANT_SLOW` (m/s) along the floor; how quickly (s) a hold takes and lets go (as the foot
-/// lifts); and the furthest (m) the animation may pull from where the foot's held, past which
-/// it's dragged.
-const PLANT_LOW: f32 = 0.04
+/// than `PLANT_SLOW` (m/s) along the floor; how quickly (s) a hold takes, and lets go as the foot
+/// lifts (`HOLD_OUT_PACE` over the body's speed, between `HOLD_OUT_LEAST` and `HOLD_OUT`); and
+/// the furthest (m) the animation may pull from where the foot's held, past which it's dragged.
+const PLANT_LOW: f32 = 0.025
 const PLANT_SLOW: f32 = 0.6
 const HOLD_IN: f32 = 0.05
-const HOLD_OUT: f32 = 0.12
+const HOLD_OUT: f32 = 0.25
+const HOLD_OUT_PACE: f32 = 0.4
+const HOLD_OUT_LEAST: f32 = 0.08
+
+/// How quickly (s) a held foot lets go once a whole-body one-off (a roll) starts carrying the body:
+/// its feet are the move's own while it's carried, so a foot held back isn't dragged after it.
+const ACT_LET_GO: f32 = 0.1
+
+/// Standing, how far (m) the move may pull a held foot before it steps, how long (s) the step
+/// takes, and how high (m) it lifts.
+const SETTLE: f32 = 0.06
+const STEP_FOR: f32 = 0.3
+const STEP_LIFT: f32 = 0.06
 const HOLD_MOST: f32 = 0.25
 
 /// `pose`, of body `m` drawn where it's placed, with each foot that's down held where it came
@@ -897,7 +943,7 @@ pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pos
     // Whether a foot's down is judged in the body's own frame, against the ground going under it:
     // a body turning on the spot or carried on by gameplay doesn't lift its feet.
     let hips_moving = rig.base.then(Rigid { q: moving.turns[0], t: moving.hips })
-    let ground = if m.doing == GOING { -carried_by(m) } else { 0.0 }
+    let ground = -carried_by(m)
     let sides = [
         (rig.find("leftUpperLeg"), rig.find("leftLowerLeg"), rig.find("leftFoot")),
         (rig.find("rightUpperLeg"), rig.find("rightLowerLeg"), rig.find("rightFoot")),
@@ -932,7 +978,8 @@ pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pos
         }
         let v = (said - p.last) / max(dt, 1.0e-4)
         let speed = length(vec2(v.x, v.z - ground))
-        let down = said.y - rest_y < PLANT_LOW && speed < PLANT_SLOW
+        let carried_on = m.acting != NONE && !m.upper && m.carried > 0.0
+        let down = said.y - rest_y < PLANT_LOW && speed < PLANT_SLOW && !carried_on
         if down && !p.down {
             // Put down where it's drawn now: where it was, if it's still partly held.
             let k = p.hold * p.hold * (3.0 - 2.0 * p.hold)
@@ -947,13 +994,42 @@ pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pos
             p.at = vec3(a.x + (p.at.x - a.x) * k, p.at.y, a.z + (p.at.z - a.z) * k)
         }
         p.down = down
+        p.gap = min(far, HOLD_MOST)
+        // A foot lets go as it lifts, quicker the faster the body goes: in a walk the last of the
+        // gap is taken up over the swing, in a run (whose foot swings past twice as fast) sooner.
+        let out_over = if carried_on { ACT_LET_GO } else {
+            clamp(HOLD_OUT_PACE / max(m.carried, 0.1), HOLD_OUT_LEAST, HOLD_OUT)
+        }
         p.hold = if p.down { min(p.hold + dt / HOLD_IN, 1.0) } else {
-            max(p.hold - dt / HOLD_OUT, 0.0)
+            max(p.hold - dt / out_over, 0.0)
         }
         p.last = said
+        // Standing, a foot the move has pulled away from where it's held steps there: lifted and
+        // set down again, one foot at a time, as a person shifts their stance.
+        let other = m.feet[1 - i]
+        let settles = m.doing == STANDING && m.acting == NONE && p.hold >= 1.0 && far > SETTLE
+        if p.step == 0.0 && settles && other.step == 0.0 {
+            p.step = 1.0e-4
+            p.from = p.at
+        }
+        var lift = 0.0
+        if p.step > 0.0 && carried_on {
+            // A step under way when a roll sets off ends where it's got to: the roll's feet are
+            // its own now.
+            p.step = 0.0
+        }
+        if p.step > 0.0 {
+            p.step = min(p.step + dt / STEP_FOR, 1.0)
+            let k = p.step * p.step * (3.0 - 2.0 * p.step)
+            p.at = vec3(mix(p.from.x, a.x, k), a.y, mix(p.from.z, a.z, k))
+            lift = STEP_LIFT * sin(3.14159265 * p.step)
+            if p.step >= 1.0 {
+                p.step = 0.0
+            }
+        }
         if p.hold > 0.0 {
             let k = p.hold * p.hold * (3.0 - 2.0 * p.hold)
-            let goal = vec3(mix(a.x, p.at.x, k), a.y, mix(a.z, p.at.z, k))
+            let goal = vec3(mix(a.x, p.at.x, k), a.y + lift, mix(a.z, p.at.z, k))
             // The knee bends about the shin's left at rest.
             let hinge = rest_knee.q.inverse().rotate(vec3(1.0, 0.0, 0.0))
             let (qu, ql) = reach(wu, wl, a, goal, hinge)

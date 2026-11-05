@@ -145,7 +145,9 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
         stick,
         act,
         upper,
-        if CUT == 1 { Handling { change_half: 1.0e-4, plant: false } } else { Handling {} },
+        if CUT == 1 { Handling { change_half: 1.0e-4, act_half: 1.0e-4, plant: false } } else {
+            Handling {}
+        },
         dt,
     )
     s.last = time
@@ -720,7 +722,7 @@ fn played_by(how: Handling) -> Played {
 @test
 fn a_played_body_moves_without_a_pop() {
     let p = played_by(Handling {})
-    let c = played_by(Handling { change_half: 1.0e-4, plant: false })
+    let c = played_by(Handling { change_half: 1.0e-4, act_half: 1.0e-4, plant: false })
     print(
         f"inertial and planted: a joint moves {p.worst * 100.0:.1} cm a frame at most about a change; a foot on the floor goes {p.slide:.2} m/s steadily, {p.slide_change:.2} m/s about a change",
     )
