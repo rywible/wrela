@@ -246,16 +246,36 @@ fn cover(vertex: VertexIndex) -> ClipPosition {
 @fragment
 fn laid(pixel: FragCoord, v: Veil, image: Texture<Rgba8>, smp: Sampler) -> vec4 {
     let uv = pixel.position.xy / v.size
-    // Filtered up, then sharpened against its four neighbours a texel off, so the cathedral's
-    // edges stay crisp drawn smaller than the screen.
+    // Filtered up by Catmull-Rom's cubic (five bilinear reads, the corners' share dropped), which
+    // keeps the cathedral's edges crisp drawn smaller than the screen where a straight bilinear
+    // smears them; then sharpened a little against its neighbours a texel off, the more the
+    // further it's stretched.
     let t = v.texel
-    let middle = image.sample(smp, uv).xyz
+    let at = uv / t - vec2(0.5)
+    let base = floor(at)
+    let f = at - base
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f))
+    let w1 = 1.0 + f * f * (-2.5 + 1.5 * f)
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f))
+    let w3 = f * f * (-0.5 + 0.5 * f)
+    let w12 = w1 + w2
+    let o12 = w2 / w12
+    let p0 = (base - vec2(0.5)) * t
+    let p3 = (base + vec2(2.5)) * t
+    let p12 = (base + vec2(0.5) + o12) * t
+    let cubic = image.sample(smp, vec2(p12.x, p0.y)).xyz * (w12.x * w0.y) +
+        image.sample(smp, vec2(p0.x, p12.y)).xyz * (w0.x * w12.y) +
+        image.sample(smp, p12).xyz * (w12.x * w12.y) +
+        image.sample(smp, vec2(p3.x, p12.y)).xyz * (w3.x * w12.y) +
+        image.sample(smp, vec2(p12.x, p3.y)).xyz * (w12.x * w3.y)
+    let middle = cubic / (w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y)
     let round_it = (image.sample(smp, uv + vec2(t.x, 0.0)).xyz +
         image.sample(smp, uv - vec2(t.x, 0.0)).xyz +
         image.sample(smp, uv + vec2(0.0, t.y)).xyz +
         image.sample(smp, uv - vec2(0.0, t.y)).xyz) *
         0.25
-    let c = max(middle + (middle - round_it) * SHARPEN, vec3(0.0)) * v.shown
+    let stretch = clamp(t.y * v.size.y - 1.0, 0.0, 1.0)
+    let c = max(middle + (middle - round_it) * (SHARPEN * (0.5 + stretch)), vec3(0.0)) * v.shown
     // Measured from the bottom left, in screen heights, so a wide screen keeps its words' corner
     // as dark as a narrow one.
     let aspect = v.size.x / v.size.y

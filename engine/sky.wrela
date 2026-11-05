@@ -366,7 +366,17 @@ pub fn cook_weather(
     // Keep one broad condensation level. Small coherent variations break the ruler edge;
     // they do not turn a fair-weather cloud's base into an upside-down mountain range.
     let bottom = lifted + min(tall * 0.035, 65.0) * fbm2(xz * (40.0 / SPAN) + vec2(83.0, 19.0), 3)
-    out.store(id, vec4(saturate(broken), saturate(tall / (TOP - BASE)), bottom / (TOP - BASE), 1.0))
+    // (Alpha: how much the shape noise carves the clouds into billows. An overcast's deck is
+    // a layer, not a heap of cumuli: its billows soften to shades in it.)
+    out.store(
+        id,
+        vec4(
+            saturate(broken),
+            saturate(tall / (TOP - BASE)),
+            bottom / (TOP - BASE),
+            1.0 - 0.8 * overcast,
+        ),
+    )
 }
 
 // ---- the field --------------------------------------------------------------------------------
@@ -427,7 +437,8 @@ fn field_in(
     }
     let profile = cloud_profile(hf)
     let cover = w.r * profile
-    var s = saturate(above(base.r, from: 1.0 - cover)) * cover
+    let carved = saturate(above(base.r, from: 1.0 - cover)) * cover
+    var s = mix(cover * (0.4 + 0.8 * base.r), carved, w.a)
     if detailed && s > 0.0 {
         let d = detail.sample_level(rep, q / DETAIL_SPAN)
         let fine = d.r * 0.625 + d.g * 0.25 + d.b * 0.125
