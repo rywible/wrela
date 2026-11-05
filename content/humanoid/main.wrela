@@ -69,6 +69,9 @@ pub const FOCUS: f32 = 0.95
 /// its profile.
 pub const SIDE: f32 = 0.75
 
+/// Which side the guard and its crosses (`SHOW=12` to `14`) are seen from.
+pub const CROSS_SIDE: f32 = -1.6
+
 /// When the sequence moves on (s), and how long a change of clip blends.
 const IDLE_AT: f32 = 2.0
 const WALK_AT: f32 = 8.0
@@ -107,6 +110,10 @@ pub fn init() -> State {
         height: 360,
         mover: if SHOW == 12 {
             Mover::standing(vec3(0.0), 0.0, FIGHT_GAITS)
+        } else if SHOW == 13 {
+            Mover::standing(vec3(0.0), 0.0, accad_fists::GUARD_GAITS)
+        } else if SHOW == 14 {
+            Mover::standing(vec3(0.0), 0.0, accad_fists::KEYED_GAITS)
         } else {
             Mover::standing(vec3(0.0), 0.0, GAITS)
         },
@@ -171,10 +178,25 @@ pub fn stand_script(last: f32, time: f32) -> (vec3, u32, bool) {
     (vec3(0.0), humanoid::NONE, false)
 }
 
+/// `SHOW=13` and `14`'s script: the body stands in its guard and throws its cross (13 the
+/// captured one, `accad_fists`; 14 the hand-posed one, `fists`, from a still guard), twice.
+pub fn cross_script(last: f32, time: f32) -> (vec3, u32, bool) {
+    let at = |t: f32| -> bool { last < t && time >= t }
+    let act = if SHOW == 13 { accad_fists::ACT_TAKEN } else { accad_fists::ACT_KEYED }
+    for t in [1.2, 3.2] {
+        if at(t) {
+            return (vec3(0.0), act, false)
+        }
+    }
+    (vec3(0.0), humanoid::NONE, false)
+}
+
 /// `SHOW=11`'s body stepped on to `time`: its pose and where it's drawn.
 fn played(s: mut State, time: f32) -> (Pose, mat4) {
     let dt = clamp(time - s.last, 1.0e-4, 0.1)
-    let (stick, act, upper) = if SHOW == 12 { stand_script(s.last, time) } else {
+    let (stick, act, upper) = if SHOW == 12 { stand_script(s.last, time) } else if SHOW >= 13 {
+        cross_script(s.last, time)
+    } else {
         script(s.last, time)
     }
     let how = if CUT == 1 {
@@ -185,6 +207,10 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
     // (Each gaits const passed whole: an `if` choosing between consts would move one out.)
     let pose = if SHOW == 12 {
         playback::step(mut s.mover, FIGHT_GAITS, ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
+    } else if SHOW == 13 {
+        playback::step(mut s.mover, accad_fists::GUARD_GAITS, accad_fists::ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
+    } else if SHOW == 14 {
+        playback::step(mut s.mover, accad_fists::KEYED_GAITS, accad_fists::ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
     } else {
         playback::step(mut s.mover, GAITS, ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
     }
@@ -250,7 +276,8 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.width = width
         s.height = height
     }
-    let game = SHOW == 11 || SHOW == 12
+    let game = SHOW == 11 || SHOW == 12 || SHOW == 13 || SHOW == 14
+    let crosses = SHOW == 13 || SHOW == 14
 
     let dt = clamp(time - s.last, 1.0e-4, 0.1)
     let (pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
@@ -259,18 +286,33 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     var kinetic = KINETIC
     var force = anime::Force::none()
     if game && ANIME == 1 {
-        let d = anime::drawn(
-            mut s.drawer,
-            s.mover,
-            ACTS,
-            LOOKS,
-            HERO.rig,
-            s.mask,
-            pose,
-            place,
-            Anime {},
-            dt,
-        )
+        let d = if crosses {
+            anime::drawn(
+                mut s.drawer,
+                s.mover,
+                accad_fists::ACTS,
+                accad_fists::LOOKS,
+                HERO.rig,
+                s.mask,
+                pose,
+                place,
+                Anime {},
+                dt,
+            )
+        } else {
+            anime::drawn(
+                mut s.drawer,
+                s.mover,
+                ACTS,
+                LOOKS,
+                HERO.rig,
+                s.mask,
+                pose,
+                place,
+                Anime {},
+                dt,
+            )
+        }
         bones = anime::smeared(palette(HERO.rig, d.pose, d.place), HERO.rig, d.smears)
         kinetic = max(kinetic, d.impact)
         force = d.force
@@ -279,11 +321,11 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // The camera follows the hips along the ground, steadily: where they are on average over a
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
     // followed where gameplay puts it, which is steady already.
-    let hips = if SHOW == 12 { vec3(0.0, 0.0, 0.25) } else if game { s.mover.place } else {
+    let hips = if SHOW == 12 || crosses { vec3(0.0, 0.0, 0.25) } else if game { s.mover.place } else {
         steady_hips(time)
     }
-    let walking = SHOW != 12 && (SHOW >= 3 || (SHOW == 0 && time >= WALK_AT))
-    let side = if SHOW == 12 { -1.6 } else if walking { SIDE } else { -0.55 }
+    let walking = SHOW != 12 && !crosses && (SHOW >= 3 || (SHOW == 0 && time >= WALK_AT))
+    let side = if SHOW == 12 || crosses { CROSS_SIDE } else if walking { SIDE } else { -0.55 }
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
     var shot = shot_at(
         time,

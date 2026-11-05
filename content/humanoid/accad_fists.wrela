@@ -1,0 +1,288 @@
+// The body's fists from a real fighter: ACCAD Male 2's right cross (the actor whose walk the body
+// walks), every pose as he threw it, only its timing changed to the fight's frame data. A
+// comparison with the hand-posed cross (`fists`): the capture decides the body, the keys decide
+// only when.
+//
+// The take (30 frames a second): his guard to frame 10, the load (sunk, the right fist drawn back
+// and the elbow tucked) to 17, the snap to full reach at 21 (the elbow at 150 degrees, 97% of his
+// reach), then the pull home to his guard by 44.
+
+use std::collections::Vec
+use engine::bvh
+use engine::cleanup
+use engine::humanoid
+use engine::humanoid::{ACCAD, Clip, NO_NAMES, Pose, Retarget}
+use engine::keys
+use engine::playback
+use engine::playback::{ACTIVE, CANCEL, Gaits, Mark, Move, RECOVER, WINDUP}
+use engine::stride
+use engine::arms
+use std::io::print
+use engine::anime::{LIGHT, Look, PLAIN}
+use body::{ACCAD_M2_STAND, GAITS, HERO}
+
+/// The cross as captured, on the body (his feet held and set on the floor, nothing else changed).
+@fuel(2 ** 40)
+pub const CROSS_TAKE: Clip = cleanup::cleaned(
+    humanoid::retarget(
+        humanoid::take_of_bvh(
+            bvh::read(embed("assets/accad_male2_cross_right.bvh")),
+            ACCAD,
+            NO_NAMES,
+            from: 0,
+            to: 72,
+        )
+            .rested_as(ACCAD_M2_STAND.clone(), 0),
+        HERO.rig.clone(),
+        Retarget { face_ahead: false, looped: false, carried: true, stood: true },
+    ),
+    HERO.rig.clone(),
+    cleanup::KEYED,
+)
+
+/// The take's beats (its frames): guard, loaded, contact, home.
+pub const GUARD_F: f32 = 10.0
+pub const LOADED_F: f32 = 17.0
+pub const CONTACT_F: f32 = 21.0
+pub const HOME_F: f32 = 44.0
+
+/// The cross's frame data (s from its start): the load, the tell held, the snap, the hold on the
+/// hit, the pull home. Matched to the hand-posed cross (`fists::cross_keys`): contact at 0.42,
+/// back in guard by 0.92.
+pub const LOAD: f32 = 0.20
+pub const TELL: f32 = 0.12
+pub const SNAP: f32 = 0.10
+pub const HOLD: f32 = 0.07
+pub const PULL: f32 = 0.43
+
+/// The take's frame `time` into the cross: each beat's span of the take played over its span of
+/// the frame data. Through the tell and the hold the body barely drifts on (a third of a frame,
+/// half a frame), never frozen dead.
+pub fn take_frame(time: f32) -> f32 {
+    let at = [0.0, LOAD, LOAD + TELL, LOAD + TELL + SNAP, LOAD + TELL + SNAP + HOLD, LOAD + TELL + SNAP + HOLD + PULL]
+    let src = [GUARD_F, LOADED_F, LOADED_F + 0.3, CONTACT_F, CONTACT_F + 0.5, HOME_F]
+    if time <= 0.0 {
+        return src[0]
+    }
+    for i in 1..6 {
+        if time <= at[i] {
+            let x = (time - at[i - 1]) / (at[i] - at[i - 1])
+            return mix(src[i - 1], src[i], x)
+        }
+    }
+    src[5]
+}
+
+pub const CROSS_HIT: f32 = LOAD + TELL + SNAP
+pub const CROSS_HIT_TILL: f32 = CROSS_HIT + HOLD
+
+/// The take's yaw and place put right: turned so the punch goes straight ahead (+z, the way the
+/// body faces) and moved so its guard's hips stand over the origin. Returns the turned clip.
+fn squared(c: Clip) -> Clip {
+    borrow rig = HERO.rig
+    let nb = c.bones
+    let base = rig.base
+    let w0 = stride::worlds(rig, c, u32(GUARD_F))
+    let w1 = stride::worlds(rig, c, u32(CONTACT_F))
+    let (s, h) = (rig.find("rightUpperArm"), rig.find("rightHand"))
+    // The punch's way along the floor, from the shoulder at rest in the guard to the fist at
+    // contact.
+    let d = w1[h].t - w0[s].t
+    let yaw = Quat::axis_angle(vec3(0.0, 1.0, 0.0), -atan2(d.x, d.z))
+    let hips0 = base.t + base.q.rotate(c.hips[u32(GUARD_F)])
+    let centre = yaw.rotate(vec3(hips0.x, 0.0, hips0.z))
+    var out = c.clone()
+    let root = 0
+    for f in 0..c.frames {
+        let world = base.t + base.q.rotate(c.hips[f])
+        let moved = yaw.rotate(world) - centre
+        out.hips[f] = base.q.inverse().rotate(moved - base.t)
+        let q = base.q.mul(c.turns[f * nb + root])
+        out.turns[f * nb + root] = base.q.inverse().mul(yaw.mul(q))
+    }
+    out
+}
+
+/// The take as the fight plays it, at 60 frames a second: its frames looked up by `take_frame`,
+/// fists clenched.
+fn retimed(c: Clip, length: f32) -> Clip {
+    let nb = c.bones
+    let n = u32(length * 60.0) + 1
+    var turns: Vec<Quat> = Vec::with_capacity(n * nb)
+    var hips: Vec<vec3> = Vec::with_capacity(n)
+    for f in 0..n {
+        let p = c.pose(take_frame(f32(f) / 60.0) / c.fps)
+        for b in 0..nb {
+            turns.push(p.turns[b])
+        }
+        hips.push(p.hips)
+    }
+    let out = Clip {
+        fps: 60.0,
+        frames: n,
+        bones: nb,
+        turns: turns,
+        hips: hips,
+        looped: false,
+        travel: vec3(0.0),
+        travel_local: vec3(0.0),
+    }
+    stride::curled_hands(out, HERO.rig, 2.0)
+}
+
+/// A clip as a move that stays where it stands.
+fn in_place(c: Clip) -> Move {
+    let n = c.frames
+    Move {
+        clip: c.clone(),
+        root: Vec::filled(n, vec3(0.0)),
+        heading: Vec::filled(n, 0.0),
+        marks: Vec::new(),
+        speed: 0.0,
+        stride: 0.0,
+    }
+}
+
+@fuel(2 ** 40)
+pub const SQUARED: Clip = squared(CROSS_TAKE.clone())
+
+/// The captured cross as a game plays it.
+@fuel(2 ** 40)
+pub const CROSS: Move = cross_move()
+
+fn cross_move() -> Move {
+    let end = LOAD + TELL + SNAP + HOLD + PULL
+    var m = in_place(retimed(SQUARED.clone(), end))
+    m.marks = Vec::new()
+    m.marks.push(Mark { kind: WINDUP, from: 0.0, till: CROSS_HIT })
+    m.marks.push(Mark { kind: ACTIVE, from: CROSS_HIT, till: CROSS_HIT_TILL })
+    m.marks.push(Mark { kind: RECOVER, from: CROSS_HIT_TILL, till: end })
+    m.marks.push(Mark { kind: CANCEL, from: end - 0.15, till: end })
+    m
+}
+
+/// His guard between punches: the take's own guard after the cross (frames 46 to 72) played
+/// forward and back, so it loops without a seam and is never quite still.
+@fuel(2 ** 40)
+pub const GUARD: Move = guard_move()
+
+fn guard_move() -> Move {
+    let c = SQUARED.clone()
+    let nb = c.bones
+    let (a, b) = (46, 72)
+    var turns: Vec<Quat> = Vec::new()
+    var hips: Vec<vec3> = Vec::new()
+    let span = b - a
+    for k in 0..(2 * span + 1) {
+        let f = if k <= span { a + k } else { b - (k - span) }
+        for j in 0..nb {
+            turns.push(c.turns[f * nb + j])
+        }
+        hips.push(c.hips[f])
+    }
+    var g = Clip {
+        fps: c.fps,
+        frames: 2 * span + 1,
+        bones: nb,
+        turns: turns,
+        hips: hips,
+        looped: true,
+        travel: vec3(0.0),
+        travel_local: vec3(0.0),
+    }
+    g = stride::curled_hands(g, HERO.rig, 2.0)
+    in_place(g)
+}
+
+/// The gaits of a body ready to fight in his guard.
+@fuel(2 ** 40)
+pub const GUARD_GAITS: Gaits = Gaits {
+    idle: GUARD.clone(),
+    walk: GAITS.walk.clone(),
+    run: GAITS.run.clone(),
+    start: GAITS.start.clone(),
+    stop: GAITS.stop.clone(),
+    start_exit: GAITS.start_exit,
+    stop_entry: GAITS.stop_entry,
+}
+
+/// The hand-posed cross's gaits for the comparison: its guard key held still (no bounce), so the
+/// two crosses are seen from the same standing start.
+@fuel(2 ** 40)
+pub const KEYED_GAITS: Gaits = keyed_gaits()
+
+fn keyed_gaits() -> Gaits {
+    let g = fists::guard()
+    var h = g
+    h.at = 1.0
+    var c = keys::keyed(HERO.rig, [g, h], fps: 60.0, fist: 2.0)
+    c.looped = true
+    Gaits {
+        idle: in_place(c),
+        walk: GAITS.walk.clone(),
+        run: GAITS.run.clone(),
+        start: GAITS.start.clone(),
+        stop: GAITS.stop.clone(),
+        start_exit: GAITS.start_exit,
+        stop_entry: GAITS.stop_entry,
+    }
+}
+
+/// The acts of the comparison: 0 the captured cross, 1 the hand-posed one, both drawn as the
+/// everyday strike.
+pub const ACT_TAKEN: u32 = 0
+pub const ACT_KEYED: u32 = 1
+@fuel(2 ** 40)
+pub const ACTS: [Move; 2] = [CROSS.clone(), fists::CROSS.clone()]
+pub const LOOKS: [Look; 2] = [LIGHT, LIGHT]
+
+/// Male 2 boxing (ACCAD's "extended 1", 20 s of punches, footwork and guard) on the body: what
+/// real arms do, for `engine::arms`' checks.
+@fuel(2 ** 40)
+pub const BOXING: Clip = humanoid::retarget(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/accad_male2_boxing.bvh")),
+        ACCAD,
+        NO_NAMES,
+        from: 0,
+        to: 602,
+    )
+        .rested_as(ACCAD_M2_STAND.clone(), 0),
+    HERO.rig.clone(),
+    Retarget { face_ahead: false, looped: false, carried: true, stood: true },
+)
+
+/// Real arms: elbows as Male 2's bend boxing, walking and running, on the body; and the shapes
+/// his arms made in all 149 of his takes (assets/accad_male2_arm_shapes.bin).
+@fuel(2 ** 40)
+pub const REAL: arms::Real = arms::real(
+    HERO.rig.clone(),
+    [BOXING.clone(), body::ACCAD_M2_WALK_RAW.clone(), body::ACCAD_M2_RUN_RAW.clone()],
+    embed("assets/accad_male2_arm_shapes.bin"),
+)
+
+/// The captured cross's arms, and its guard's, are arms a person makes: elbows bending the way
+/// elbows bend, hands clear of the head, shapes near a real arm's. (The hand-posed cross is
+/// checked alongside, for comparison, not held to it.)
+@test
+fn the_captured_crosss_arms_are_human() {
+    borrow rig = HERO.rig
+    var bad = 0
+    for (name, c) in [
+        ("the captured cross", CROSS.clip.clone()),
+        ("its guard", GUARD.clip.clone()),
+        ("the hand-posed cross", fists::CROSS.clip.clone()),
+    ] {
+        let k = arms::checked(rig, c, REAL)
+        print(
+            f"{name}: elbow bend {k.hinge_off:.0} deg off a real one's (at {k.hinge_at:.2} s), hand {k.head_in * 100.0:.1} cm into the head (at {k.head_at:.2} s), arm {k.unreal:.0} deg from a real arm (at {k.unreal_at:.2} s)",
+        )
+        for flag in k.flags.clone() {
+            print(f"  {flag}")
+        }
+        if name != "the hand-posed cross" {
+            bad += k.flags.len()
+        }
+    }
+    assert(bad == 0, f"{bad} arm faults")
+}
