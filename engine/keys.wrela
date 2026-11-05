@@ -269,3 +269,27 @@ pub fn keyed(rig: Rig, keys: [Key], fps: f32, fist: f32) -> Clip {
     }
     curled_hands(c, rig, fist)
 }
+
+/// One arm (`side` 0 the left, 1 the right) of a pose's bones `w` (the body's space) reaching its
+/// wrist to `wrist`, its elbow kept toward the side it bends to now (the pose's own bend, as a
+/// capture has it) and its hand keeping its turn. In place in `w`.
+pub fn arm_to(rig: Rig, w: mut Vec<Rigid>, side: u32, wrist: vec3) {
+    let n = if side == 0 { "left" } else { "right" }
+    let (u, l, h) = (
+        rig.find(f"{n}UpperArm".as_str()),
+        rig.find(f"{n}LowerArm".as_str()),
+        rig.find(f"{n}Hand".as_str()),
+    )
+    if u == NONE || l == NONE || h == NONE {
+        return
+    }
+    let rw = rig.rest_world()
+    let l1 = length(rw[l].t - rw[u].t)
+    let l2 = length(rw[h].t - rw[l].t)
+    let pole = w[l].t - (w[u].t + w[h].t) * 0.5
+    let hand = w[h].q
+    let (e, t) = elbow_at(w[u].t, wrist, l1, l2, pole)
+    turn_below(rig, mut w, u, arc(w[l].t - w[u].t, e - w[u].t))
+    turn_below(rig, mut w, l, arc(w[h].t - w[l].t, t - w[l].t))
+    turn_below(rig, mut w, h, hand.mul(w[h].q.inverse()))
+}
