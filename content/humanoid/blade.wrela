@@ -343,6 +343,10 @@ pub fn cut_keys(c: Cut, start: Key) -> Vec<Key> {
     deep.hips.y -= 0.01
     deep.trunk.y += 4.0 * sign(c.coil.trunk.y)
     deep.hands = c.coil.hands * 1.06
+    deep.hips.y -= 0.02
+    deep.turn = mix(c.coil.turn, c.hit.turn, 0.25)
+    deep.feet = [mix(c.coil.feet[0], c.hit.feet[0], vec4(0.3)), mix(c.coil.feet[1], c.hit.feet[1], vec4(0.3))]
+    deep.travel = mix(c.coil.travel, c.hit.travel, 0.3)
     out.push(beat(c.windup + c.cock, SETTLE, deep, c.path, -0.05))
     // The strike, from the ground up: the hips turn first and arrive early, the trunk after
     // them, the arms and the blade last of all, gathering speed and whipped through its last
@@ -352,9 +356,13 @@ pub fn cut_keys(c: Cut, start: Key) -> Vec<Key> {
         let u = f32(i) / f32(n)
         let hips = 1.0 - (1.0 - u) * (1.0 - u) * (1.0 - u)
         let trunk = 1.0 - (1.0 - u) * (1.0 - u)
-        let blade = u * u * (0.5 + 0.5 * u)
+        let blade = pow(u, 1.6)
+        // The stepping foot lands first, two frames ahead of the blade.
+        let step = smoothstep(0.0, 0.6, u)
         let at = c.windup + c.cock + c.snap * u
         var b = body_mix(deep, c.hit, hips)
+        b.feet = [mix(deep.feet[0], c.hit.feet[0], vec4(step)), mix(deep.feet[1], c.hit.feet[1], vec4(step))]
+        b.travel = mix(deep.travel, c.hit.travel, step)
         b.trunk = mix(deep.trunk, c.hit.trunk, vec3(trunk))
         b.hands = mix(deep.hands, c.hit.hands, vec3(blade))
         out.push(beat(at, LINEAR, b, c.path, mix(-0.05, 1.0, blade)))
@@ -374,9 +382,9 @@ pub fn cut_keys(c: Cut, start: Key) -> Vec<Key> {
         out.push(beat(at, LINEAR, body_mix(stopped, c.past, p), c.path, mix(1.02, 2.0, p)))
     }
     // Back into the guard: quickly most of the way, then eased home.
-    var back = keys::mixed(held_key(c), stance_at(0.0, SMOOTH, c.rest_by), 0.75)
-    back.at = c.driven() + c.settle * 0.4
-    back.ease = SETTLE
+    var back = keys::mixed(held_key(c), stance_at(0.0, SMOOTH, c.rest_by), 0.55)
+    back.at = c.driven() + c.settle * 0.45
+    back.ease = SMOOTH
     out.push(back)
     out.push(stance_at(c.driven() + c.settle, SMOOTH, c.rest_by))
     out
@@ -413,8 +421,8 @@ pub fn first_cut() -> Cut {
         path: Path {
             from: vec3(-0.35, 0.75, -0.55),
             through: vec3(-0.1, 0.25, 1.0),
-            hit: vec3(0.45, -0.35, 0.8),
-            to: vec3(0.7, -0.65, -0.1),
+            hit: vec3(0.55, -0.55, 0.62),
+            to: vec3(0.45, -0.72, -0.55),
         },
         coil: Body {
             hips: vec3(0.0, -0.09, -0.05),
@@ -422,31 +430,31 @@ pub fn first_cut() -> Cut {
             trunk: vec3(-2.0, -26.0, -4.0),
             feet: feet_on(vec2(0.0), vec2(0.0), 16.0),
             travel: 0.0,
-            hands: vec3(-0.16, 0.02, -0.04),
+            hands: vec3(-0.12, -0.03, 0.08),
         },
         hit: Body {
-            hips: vec3(0.02, -0.15, 0.26),
+            hips: vec3(0.02, -0.19, 0.30),
             turn: 34.0,
             trunk: vec3(16.0, 16.0, 4.0),
-            feet: feet_on(vec2(0.0, 0.08), vec2(0.0, 0.30), 26.0),
+            feet: feet_on(vec2(0.0, 0.12), vec2(0.0, 0.40), 26.0),
             travel: 0.2,
             hands: vec3(0.04, -0.04, 0.04),
         },
         past: Body {
-            hips: vec3(0.03, -0.14, 0.28),
+            hips: vec3(0.03, -0.18, 0.32),
             turn: 42.0,
             trunk: vec3(20.0, 30.0, 6.0),
-            feet: feet_on(vec2(0.0, 0.10), vec2(0.0, 0.30), 26.0),
+            feet: feet_on(vec2(0.0, 0.14), vec2(0.0, 0.40), 26.0),
             travel: 0.22,
-            hands: vec3(0.08, 0.0, 0.06),
+            hands: vec3(0.2, -0.14, 0.02),
         },
         rest_by: 0.26,
         windup: 0.15,
-        cock: 0.03,
-        snap: 0.06,
+        cock: 0.04,
+        snap: 0.1,
         impact: 0.06,
-        follow: 0.17,
-        settle: 0.27,
+        follow: 0.16,
+        settle: 0.26,
     }
 }
 
@@ -456,10 +464,10 @@ pub fn first_cut() -> Cut {
 pub fn second_cut() -> Cut {
     Cut {
         path: Path {
-            from: vec3(0.65, -0.6, 0.25),
+            from: vec3(0.75, -0.45, -0.15),
             through: vec3(0.1, -0.1, 1.0),
             hit: vec3(-0.45, 0.42, 0.78),
-            to: vec3(-0.6, 0.7, -0.25),
+            to: vec3(-0.55, 0.5, -0.35),
         },
         coil: Body {
             hips: vec3(0.03, -0.14, 0.04),
@@ -475,7 +483,7 @@ pub fn second_cut() -> Cut {
             trunk: vec3(6.0, -16.0, -4.0),
             feet: feet_on(vec2(0.0, 0.08), vec2(0.0, 0.22), 18.0),
             travel: 0.14,
-            hands: vec3(-0.06, -0.08, 0.04),
+            hands: vec3(0.0, -0.08, 0.12),
         },
         past: Body {
             hips: vec3(-0.02, -0.10, 0.17),
@@ -488,10 +496,10 @@ pub fn second_cut() -> Cut {
         rest_by: 0.16,
         windup: 0.12,
         cock: 0.03,
-        snap: 0.06,
-        impact: 0.05,
-        follow: 0.17,
-        settle: 0.27,
+        snap: 0.09,
+        impact: 0.06,
+        follow: 0.15,
+        settle: 0.26,
         turn_over: true,
     }
 }
@@ -503,10 +511,10 @@ pub fn second_cut() -> Cut {
 pub fn third_cut() -> Cut {
     Cut {
         path: Path {
-            from: vec3(-0.9, 0.1, -0.4),
-            through: vec3(-0.3, 0.02, 1.0),
-            hit: vec3(0.6, 0.0, 0.8),
-            to: vec3(0.9, -0.12, -0.35),
+            from: vec3(-0.85, -0.05, -0.5),
+            through: vec3(-0.1, 0.0, 1.0),
+            hit: vec3(0.85, -0.05, 0.5),
+            to: vec3(0.5, -0.25, -0.83),
         },
         coil: Body {
             hips: vec3(-0.03, -0.12, -0.06),
@@ -517,28 +525,28 @@ pub fn third_cut() -> Cut {
             hands: vec3(-0.04, -0.06, 0.0),
         },
         hit: Body {
-            hips: vec3(0.01, -0.17, 0.34),
+            hips: vec3(0.01, -0.21, 0.38),
             turn: 38.0,
             trunk: vec3(14.0, 20.0, 2.0),
-            feet: feet_on(vec2(0.0, 0.12), vec2(0.0, 0.38), 28.0),
+            feet: feet_on(vec2(0.0, 0.16), vec2(0.0, 0.46), 28.0),
             travel: 0.26,
             hands: vec3(0.06, -0.04, 0.06),
         },
         past: Body {
-            hips: vec3(0.04, -0.16, 0.36),
-            turn: 58.0,
-            trunk: vec3(16.0, 46.0, 8.0),
-            feet: feet_on(vec2(0.0, 0.14), vec2(0.0, 0.38), 28.0),
+            hips: vec3(0.04, -0.20, 0.40),
+            turn: 66.0,
+            trunk: vec3(16.0, 58.0, 8.0),
+            feet: feet_on(vec2(0.0, 0.18), vec2(0.0, 0.46), 28.0),
             travel: 0.28,
-            hands: vec3(0.16, -0.02, 0.10),
+            hands: vec3(0.3, -0.06, 0.0),
         },
         rest_by: 0.34,
         windup: 0.18,
         cock: 0.04,
-        snap: 0.07,
-        impact: 0.07,
-        follow: 0.2,
-        settle: 0.38,
+        snap: 0.1,
+        impact: 0.08,
+        follow: 0.17,
+        settle: 0.36,
         turn_over: true,
     }
 }
@@ -552,9 +560,9 @@ pub fn heavy_cut() -> Cut {
     Cut {
         path: Path {
             from: vec3(0.0, 0.55, -0.83),
-            through: vec3(0.0, 0.9, 0.45),
-            hit: vec3(0.0, -0.12, 1.0),
-            to: vec3(0.3, -0.8, 0.5),
+            through: vec3(0.0, 0.95, 0.3),
+            hit: vec3(0.05, -0.6, 0.8),
+            to: vec3(0.3, -0.75, 0.6),
         },
         coil: Body {
             hips: vec3(0.0, -0.11, -0.08),
@@ -562,31 +570,31 @@ pub fn heavy_cut() -> Cut {
             trunk: vec3(-6.0, -4.0, 0.0),
             feet: feet_on(vec2(0.0), vec2(0.0), 24.0),
             travel: 0.0,
-            hands: vec3(0.0, 0.26, -0.12),
+            hands: vec3(0.0, 0.3, 0.04),
         },
         hit: Body {
-            hips: vec3(0.0, -0.19, 0.38),
+            hips: vec3(0.0, -0.26, 0.40),
             turn: 22.0,
             trunk: vec3(24.0, 4.0, 0.0),
             feet: feet_on(vec2(0.0, 0.14), vec2(0.0, 0.42), 30.0),
             travel: 0.3,
-            hands: vec3(0.0, 0.02, 0.06),
+            hands: vec3(0.0, 0.02, 0.14),
         },
         past: Body {
-            hips: vec3(0.0, -0.22, 0.40),
+            hips: vec3(0.0, -0.27, 0.42),
             turn: 28.0,
             trunk: vec3(34.0, 10.0, 2.0),
             feet: feet_on(vec2(0.0, 0.14), vec2(0.0, 0.42), 30.0),
             travel: 0.32,
-            hands: vec3(0.06, 0.0, 0.08),
+            hands: vec3(0.06, -0.02, 0.16),
         },
         rest_by: 0.4,
-        windup: 0.28,
-        cock: 0.17,
-        snap: 0.09,
+        windup: 0.3,
+        cock: 0.1,
+        snap: 0.13,
         impact: 0.15,
-        follow: 0.27,
-        settle: 0.55,
+        follow: 0.2,
+        settle: 0.5,
     }
 }
 
@@ -755,6 +763,19 @@ pub const FINISH: Look = Look { twos: true, limb: 1, heavy: true }
 pub const HEAVY_CUT: Look = Look { twos: true, flash: true, limb: 1, heavy: true }
 
 /// Whether one-off `act` sweeps the blade (a cut).
+/// How long each cut's strike lasts (s), by act: its smear's drawn only through it.
+pub fn snap_of(act: u32) -> f32 {
+    if act == ACT_FIRST {
+        first_cut().snap
+    } else if act == ACT_SECOND {
+        second_cut().snap
+    } else if act == ACT_THIRD {
+        third_cut().snap
+    } else {
+        heavy_cut().snap
+    }
+}
+
 pub fn sweeps(act: u32) -> bool {
     act <= ACT_HEAVY
 }
