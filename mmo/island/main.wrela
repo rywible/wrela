@@ -33,10 +33,10 @@ pub const TOO_FAR: u32 = 1
 pub const FULL: u32 = 2
 /// A step past `MAX_REACH` from the island's middle.
 pub const OFF_ISLAND: u32 = 3
-/// A new peer past `MAX_BODIES`.
-pub const CROWDED: u32 = 5
 /// The most bodies an island holds in a visit: with its marks, its state stays well inside one
-/// message (64 KiB), which a peer far behind is sent.
+/// message (64 KiB), which a peer far behind is sent. A newcomer past it takes the place of the
+/// body that acted longest ago (one whose peer has most likely left), so no crowd of peers that
+/// came and went, nor one that keeps coming, shuts anyone out.
 pub const MAX_BODIES: u32 = 512
 /// A card whose name the lists don't make, or whose look isn't one of the choices.
 pub const NO_SUCH_CARD: u32 = 4
@@ -98,6 +98,8 @@ pub struct Body: Clone + Pack {
     pub z: i32,
     pub worn: bool = false,
     pub card: Card = NOBODY,
+    /// When it last acted, by the room's clock (`Entry::at`).
+    pub seen: u64 = 0,
 }
 
 /// The card of a body that hasn't said who it is.
@@ -152,9 +154,6 @@ impl Island {
 
 impl Reduce<Act> for Island {
     fn check(self, entry: Entry<Act>) -> Verdict {
-        if self.body_at(entry.id.peer).is_none() && self.bodies.len() >= MAX_BODIES {
-            return Verdict::Reject(CROWDED)
-        }
         match entry.value {
             Act::Step { dx, dz } => {
                 if dx < -MAX_STEP || dx > MAX_STEP || dz < -MAX_STEP || dz > MAX_STEP {
@@ -187,9 +186,20 @@ impl Reduce<Act> for Island {
         var i = self.bodies.len()
         if let Some(k) = self.body_at(peer) {
             i = k
-        } else {
+        } else if self.bodies.len() < MAX_BODIES {
             self.bodies.push(Body { peer, x: 0, z: 0 })
+        } else {
+            // Full: the body that acted longest ago (the first such) gives its place.
+            var oldest = 0
+            for k in 1..self.bodies.len() {
+                if self.bodies[k].seen < self.bodies[oldest].seen {
+                    oldest = k
+                }
+            }
+            self.bodies[oldest] = Body { peer, x: 0, z: 0 }
+            i = oldest
         }
+        self.bodies[i].seen = entry.at
         match entry.value {
             Act::Step { dx, dz } => {
                 self.bodies[i].x += dx
@@ -530,7 +540,14 @@ fn a_full_island_fits_one_message() {
     )
     for i in 0..MAX_BODIES {
         island.bodies.push(
-            Body { peer: 4000000000 + i, x: -MAX_REACH, z: MAX_REACH, worn: true, card },
+            Body {
+                peer: 4000000000 + i,
+                x: -MAX_REACH,
+                z: MAX_REACH,
+                worn: true,
+                card,
+                seen: 1 << 50,
+            },
         )
     }
     for i in 0..MAX_MARKS {
@@ -538,13 +555,22 @@ fn a_full_island_fits_one_message() {
     }
     let size = pack(island.clone()).len()
     assert(size < 60000, f"{size} bytes")
+    // A newcomer takes the place of the body that acted longest ago.
+    for i in 0..MAX_BODIES {
+        island.bodies[i].seen = 1000 + u64(i)
+    }
+    island.bodies[7].seen = 5
     let newcomer = Entry {
         seq: 2,
         id: ProposalId { peer: 9, session: 1, counter: 1 },
-        at: 0,
-        value: Act::Place,
+        at: 9000,
+        value: Act::Step { dx: 1, dz: 0 },
     }
-    assert(island.check(newcomer) == Verdict::Reject(CROWDED))
+    assert(island.check(newcomer) == Verdict::Accept)
+    island.apply(newcomer)
+    assert(island.bodies.len() == MAX_BODIES, "still full")
+    let b = island.bodies[7].clone()
+    assert(b.peer == 9 && b.x == 1 && !b.worn && b.seen == 9000, "in the stalest's place")
 }
 
 @test

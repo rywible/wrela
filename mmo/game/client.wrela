@@ -52,6 +52,8 @@ const REJOIN: f32 = 30.0
 const SETTLE_EVERY: f32 = 15.0
 /// Seconds between tellings of who this player is, until the island shows it.
 const WEAR_EVERY: f32 = 3.0
+/// Tellings of who this player is before giving up (the island refused it), until it changes.
+const WEAR_TRIES: u32 = 5
 const NONE: u32 = 4294967295
 
 // Held keys and buttons, as bits.
@@ -136,6 +138,9 @@ pub struct Client {
     note: String,
     character: Option<Character>,
     wear_at: f32,
+    /// The card last told the island, and how many times.
+    told: Option<Card>,
+    tellings: u32,
 }
 
 pub fn init() -> Client {
@@ -162,6 +167,8 @@ pub fn init() -> Client {
         note: String::from("Connecting…"),
         character: None,
         wear_at: 0.0,
+        told: None,
+        tellings: 0,
     }
 }
 
@@ -514,7 +521,12 @@ pub fn frame(s: mut Client, time: f32, width: u32, height: u32) {
             None => {},
         }
     }
-    if pressed_change && s.play.is_none() {
+    // Not while waiting for a fight: the maker would hide one that begins.
+    let waiting = match s.fight {
+        Some(l) => l.view().waiting(l.peer()),
+        None => false,
+    }
+    if pressed_change && s.play.is_none() && !waiting {
         match mut s.character {
             Some(c) => character::change(mut c),
             None => {},
@@ -554,6 +566,14 @@ fn wear(s: mut Client, time: f32) {
     if me == 0 || !s.island_conn.open || worn == Some(card) || time < s.wear_at {
         return
     }
+    if s.told != Some(card) {
+        s.told = Some(card)
+        s.tellings = 0
+    }
+    if s.tellings >= WEAR_TRIES {
+        return
+    }
+    s.tellings += 1
     s.wear_at = time + WEAR_EVERY
     propose_island(mut s, island::main::Act::Wear { card })
 }
@@ -899,7 +919,7 @@ fn draw_maker(s: mut Client, middle: vec2, size: f32) {
     let hint = if saving {
         String::from("Saving…")
     } else if !message.is_empty() {
-        take message
+        String::from(f"{message}  Escape leaves.")
     } else if made {
         String::from("Up and down choose, left and right change. Enter saves, Escape leaves.")
     } else {

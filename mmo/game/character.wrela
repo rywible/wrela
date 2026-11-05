@@ -36,6 +36,8 @@ pub enum Why: Copy + Eq {
     SignedOut,
     NameNotKept,
     Unreachable,
+    /// Signed in, but no character made yet (the maker was left).
+    NotMade,
 }
 
 /// The parts of a look the maker changes, in its order.
@@ -175,22 +177,27 @@ pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
 
 /// Opens the maker on the character made, to change its look.
 pub fn change(c: mut Character) {
-    if c.stage == Stage::Ready {
+    if c.stage == Stage::Ready || (c.stage == Stage::Guest && c.why == Why::NotMade) {
         c.making = c.look
         c.part = 0
         c.stage = Stage::Making
     }
 }
 
-/// The maker's keys, sending what they ask.
+/// The maker's keys, sending what they ask. A save left (Escape) is no longer waited on.
 pub fn keys(c: mut Character, dx: i32, dy: i32, enter: bool, escape: bool) {
-    if let Some(r) = maker_input(mut c, dx, dy, enter, escape) {
+    let r = maker_input(mut c, dx, dy, enter, escape)
+    if c.stage != Stage::Saving {
+        c.asked = None
+    }
+    if let Some(r) = r {
         ask(mut c, r)
     }
 }
 
 /// The maker's keys: up and down choose a part (`dy`), left and right its choice (`dx`), Enter
-/// saves, Escape leaves (for a look made before). The request to make, if one is.
+/// saves, Escape leaves, while saving too: to the look made before, or as a guest who may come
+/// back (C). The request to make, if one is.
 pub fn maker_input(
     c: mut Character,
     dx: i32,
@@ -198,6 +205,17 @@ pub fn maker_input(
     enter: bool,
     escape: bool,
 ) -> Option<Request> {
+    if escape && (c.stage == Stage::Making || c.stage == Stage::Saving) {
+        c.making = c.look
+        c.message = String::new()
+        if c.made {
+            c.stage = Stage::Ready
+        } else {
+            c.stage = Stage::Guest
+            c.why = Why::NotMade
+        }
+        return None
+    }
     if c.stage != Stage::Making {
         return None
     }
@@ -208,11 +226,6 @@ pub fn maker_input(
         let now = part_of(c.making, c.part)
         let next = u32((i32(now) + dx + i32(LOOK_CHOICES)) % i32(LOOK_CHOICES))
         c.making = with_part(c.making, c.part, next)
-    }
-    if escape && c.made {
-        c.making = c.look
-        c.stage = Stage::Ready
-        return None
     }
     if enter {
         c.stage = Stage::Saving
@@ -262,6 +275,7 @@ pub fn line(c: Character) -> String {
             Why::Unreachable => String::from(
                 "Playing as a guest: your account couldn't be reached.",
             ),
+            Why::NotMade => String::from("Playing as a guest. C makes your character."),
         },
         Stage::Making | Stage::Saving => String::from("Making your character"),
         Stage::Ready => String::from(f"{names::text(c.name)}. C changes your look."),
@@ -405,8 +419,10 @@ fn no_character_opens_the_maker_and_a_save_plays_as_it() {
     let none = Look { build: 0, skin: 0, hair: 0, cloth: 0 }
     let _ = heard(mut c, Some(Reply::Character { made: false, name, look: none }))
     assert(c.stage == Stage::Making && !c.made)
-    // Escape doesn't leave a maker with nothing made.
+    // Escape leaves a maker with nothing made: a guest, who may come back.
     let _ = maker_input(mut c, dx: 0, dy: 0, enter: false, escape: true)
+    assert(c.stage == Stage::Guest && c.why == Why::NotMade && card(c).is_none())
+    change(mut c)
     assert(c.stage == Stage::Making)
     // Down to skin, two choices left (wrapping), then clothes, one right.
     let _ = maker_input(mut c, dx: 0, dy: 1, enter: false, escape: false)
@@ -418,6 +434,11 @@ fn no_character_opens_the_maker_and_a_save_plays_as_it() {
     assert(c.making == Look { build: 0, skin: LOOK_CHOICES - 2, hair: 0, cloth: 1 })
     let _ = heard(mut c, Some(Reply::Refused { why: String::from("No.") }))
     assert(c.stage == Stage::Making && c.message.as_str() == "No.", "refused: the maker stays")
+    // A save waited on can be left too.
+    let _ = maker_input(mut c, dx: 0, dy: 0, enter: true, escape: false)
+    let _ = maker_input(mut c, dx: 0, dy: 0, enter: false, escape: true)
+    assert(c.stage == Stage::Guest, "left while saving")
+    change(mut c)
     c.stage = Stage::Saving
     let saved = c.making
     let _ = heard(mut c, Some(Reply::Character { made: true, name, look: saved }))
