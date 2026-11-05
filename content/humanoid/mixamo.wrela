@@ -12,6 +12,7 @@ use engine::playback::{Gaits, Move}
 use engine::anime::Look
 use engine::keys
 use body::HERO
+use main
 
 fn clip_of(file: Bytes, frames: u32) -> Clip {
     let b = bvh::read(file)
@@ -354,10 +355,10 @@ pub struct FrameData: Copy {
 
 pub const V_FRAMES: FrameData = FrameData {
     raise: 15,
-    hold: 18,
+    hold: main::HOLD,
     snap: 6,
     active: 3,
-    stop: 12,
+    stop: main::HITSTOP,
     sink: 8,
     zanshin: 8,
     back: 18,

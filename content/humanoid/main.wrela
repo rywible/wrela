@@ -31,6 +31,10 @@ use engine::cleanup
 use engine::cleanup::Cleanup
 use sword::ARMED
 use dummy
+use engine::sound
+use engine::sound::{Cue, mixer}
+use cutsound::main as cutsound
+use std::audio::{QUANTUM, RingWriter, play}
 use engine::humanoid
 use engine::keys
 use engine::humanoid::{BodyVertex, Clip, Pose, blend, palette}
@@ -85,6 +89,10 @@ pub const PROBE: u32 = 0
 pub const DUMMY_AT: f32 = 1.62
 pub const KNOCK: f32 = 1.0
 pub const SHAKE: f32 = 1.0
+/// The cut's jodan hold (its tell) and its hit-stop, in frames at 60 a second (the frame data's,
+/// `mixamo::V_FRAMES`): even, so each falls on the drawings' twos.
+pub const HOLD: u32 = 18
+pub const HITSTOP: u32 = 12
 
 /// When the sequence moves on (s), and how long a change of clip blends.
 const IDLE_AT: f32 = 2.0
@@ -113,6 +121,10 @@ pub struct State {
     hand_now: mat4,
     hand_was: mat4,
     smearing: bool,
+    /// The cut's sounds (`cutsound`'s palette on engine::sound's mixer), and how far into the
+    /// cut the last frame was, to cue each as its moment passes.
+    cues: RingWriter<Cue>,
+    heard: f32,
 }
 
 pub fn init() -> State {
@@ -155,6 +167,10 @@ pub fn init() -> State {
     print(
         f"humanoid: {HERO.rig.bones.len()} bones, {HERO.verts.len()} vertices, {HERO.indices.len() / 3} triangles; idle {IDLE.frames} frames, walk {WALK.frames} frames ({WALK.travel.z:.2} m a loop)",
     )
+    // The voice: the cut's sounds mixed as the camera would hear them.
+    let (writer, m) = mixer(cutsound::PALETTE, seed: 5)
+    var cues = take writer
+    play(take m, sound::mix)
     State {
         verts: if SHOW >= 13 { buffer_of(ARMED.verts) } else { buffer_of(HERO.verts) },
         indices: if SHOW >= 13 { buffer_of(ARMED.indices) } else { buffer_of(HERO.indices) },
@@ -177,6 +193,8 @@ pub fn init() -> State {
         hand_now: identity(),
         hand_was: identity(),
         smearing: false,
+        cues: take cues,
+        heard: -1.0,
     }
 }
 
@@ -641,6 +659,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         bones[dummy::SPARK_SLOT] = sp
     }
     write(mut s.palette, 0, bones)
+    if SHOW == 15 && ONE == 1 {
+        cue_cut(mut s, shown_at)
+    }
     if PROBE == 4 && SHOW == 15 {
         probe_frame(s, time, bones)
     }
@@ -1199,10 +1220,11 @@ fn a_keyed_move_may_snap() {
     assert(keyed.score == 10.0, "the keyed review flagged the snap")
 }
 
-/// One frame's numbers for the automated checks (`--set PROBE=4`, read by the checker script):
-/// when it is, how far into the cut and which drawing; the sword's grip, guard, pommel and point;
-/// each hand's hold; each foot's toes and heel; each knee's and elbow's bend; the body's joints the
-/// blade must stay out of; the dummy's head. All in the world, metres.
+/// One frame's numbers for the automated checks (`--set PROBE=4`, read by the cut checker,
+/// kept with the sword loop's project files, as the workspace holds no Python): when it is,
+/// how far into the cut and which drawing; the sword's grip, guard, pommel and point; each
+/// hand's hold; each foot's toes and heel; the knees', elbows' and body's joints (the blade
+/// must stay out of the body); the dummy's head. All in the world, metres.
 fn probe_frame(s: State, time: f32, bones: [mat4; 64]) {
     let rig = HERO.rig.clone()
     let rw = rig.rest_world()
@@ -1229,4 +1251,29 @@ fn probe_frame(s: State, time: f32, bones: [mat4; 64]) {
     print(
         f"P,{time:.4},{acting},{s.mover.act_time:.4},{drawn:.4},{v(grip)},{v(guard)},{v(pommel)},{v(tip)},{v(right)},{v(left)},{v(at("leftToes"))},{v(at("leftFoot"))},{v(at("rightToes"))},{v(at("rightFoot"))},{v(at("leftUpperLeg"))},{v(at("leftLowerLeg"))},{v(at("rightUpperLeg"))},{v(at("rightLowerLeg"))},{v(at("leftUpperArm"))},{v(at("leftLowerArm"))},{v(at("leftHand"))},{v(at("rightUpperArm"))},{v(at("rightLowerArm"))},{v(at("rightHand"))},{v(at("head"))},{v(at("neck"))},{v(at("upperChest"))},{v(at("chest"))},{v(at("spine"))},{v(at("hips"))},{v(head)}",
     )
+}
+
+/// The cut's sounds, each cued the frame its moment passes: the blade's whoosh as the snap
+/// begins, the blow on the dummy's head and the front foot's stamp together at the blow. Heard
+/// from where the camera stands (behind and beside the body), facing the dummy.
+fn cue_cut(s: mut State, at: mat4) {
+    let now = if s.mover.acting == mixamo::M_VERTICAL { s.mover.act_time } else { -1.0 }
+    let was = s.heard
+    s.heard = now
+    let place = (at * vec4(0.0, 0.0, 0.0, 1.0)).xyz
+    let _ = s.cues.push(Cue::Listen { at: place + vec3(-2.5, 1.6, -1.5), forward: vec2(0.6, 0.8) })
+    let passed = |t: f32| -> bool { now >= t && was < t }
+    if passed(mixamo::V_GO) {
+        let _ = s.cues.push(Cue::Whoosh { at: place + vec3(0.0, 1.6, 0.6), kind: cutsound::SWING, amount: 1.0, seed: 2 })
+    }
+    if passed(mixamo::V_BLOW) {
+        let head = place + vec3(0.0, dummy::HEAD_AT.y, DUMMY_AT)
+        let _ = s.cues.push(Cue::Impact { at: head, kind: cutsound::BLOW, strength: KNOCK.min(1.0), seed: 1 })
+        let _ = s.cues.push(Cue::Step { at: place + vec3(-0.12, 0.0, 0.6), surface: cutsound::FLOOR, weight: 1.0, seed: 3 })
+    }
+}
+
+/// How many samples one call to the voice renders.
+pub fn quantum() -> u32 {
+    QUANTUM
 }

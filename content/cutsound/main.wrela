@@ -1,0 +1,73 @@
+// The classic cut's sounds: its palette (the humanoid shows the cut with it), and, alone, one of
+// them cued at the first sample so the audio tool renders it to a WAV
+// (`wrela tool audio -- content/cutsound wav out.wav --seconds 1`): `CUE` 0 the blow, 1 the
+// whoosh, 2 the stamp.
+
+use engine::sound::{Babble, Breath, Cue, Palette, Surface, Swish, mix, mixer}
+use std::audio::{QUANTUM, RingWriter, play}
+
+pub const CUE: u32 = 0
+
+/// Kinds in the palette: the blow on straw (impact 0), the blade's swing (whoosh 0), the stamp
+/// on a wooden floor (surface 0).
+pub const BLOW: u32 = 0
+pub const SWING: u32 = 0
+pub const FLOOR: u32 = 0
+
+pub const PALETTE: Palette = Palette {
+    surfaces: [
+        // A bare foot slapped flat on boards: a deep, short thud, a little dry grit.
+        Surface { knock_hz: 72.0, knock_t60: 0.14, knock: 0.7, grit_hz: 1400.0, grit_q: 0.8, grit_t60: 0.05, grit: 0.18 },
+        Surface {},
+        Surface {},
+        Surface {},
+        Surface {},
+        Surface {},
+        Surface {},
+        Surface {},
+    ],
+    waters: [Babble {}; 4],
+    brushes: [Babble {}; 3],
+    impacts: [
+        // Steel into a bound straw head: a hard knock under a dry crunch of straw.
+        Surface { knock_hz: 150.0, knock_t60: 0.22, knock: 0.65, grit_hz: 2600.0, grit_q: 0.9, grit_t60: 0.16, grit: 0.45 },
+        Surface {},
+        Surface {},
+        Surface {},
+    ],
+    whooshes: [
+        // A long blade cutting air: a band of noise swelling quick and falling fast.
+        Swish { hz: 750.0, q: 0.8, attack: 0.06, t60: 0.25, level: 1.0 },
+        Swish {},
+    ],
+    wind: Breath {},
+    near: 2.0,
+    gain: 1.0,
+}
+
+pub struct Game {
+    cues: RingWriter<Cue>,
+}
+
+pub fn init() -> Game {
+    let (writer, m) = mixer(PALETTE, seed: 5)
+    var cues = take writer
+    let _ = cues.push(Cue::Listen { at: vec3(0.0, 1.6, -2.0), forward: vec2(0.0, 1.0) })
+    let at = vec3(0.0, 1.2, 0.0)
+    if CUE == 0 {
+        let _ = cues.push(Cue::Impact { at, kind: BLOW, strength: 1.0, seed: 1 })
+    } else if CUE == 1 {
+        let _ = cues.push(Cue::Whoosh { at, kind: SWING, amount: 1.0, seed: 2 })
+    } else {
+        let _ = cues.push(Cue::Step { at: vec3(0.0), surface: FLOOR, weight: 1.0, seed: 3 })
+    }
+    play(take m, mix)
+    Game { cues }
+}
+
+pub fn frame(state: mut Game, time: f32, width: u32, height: u32) {}
+
+/// How many samples one call to the voice renders.
+pub fn quantum() -> u32 {
+    QUANTUM
+}

@@ -1,0 +1,8 @@
+# The classic cut's sounds (engine::sound): the blade's whoosh down, the blow on the dummy's straw
+# head, the front foot's stamp. Its palette is the humanoid's; alone, it renders one of them
+# (`--set CUE=n`) offline through the audio tool, for a cut's clip to be scored with.
+[package]
+name = "cutsound"
+
+[dependencies]
+engine = { workspace = true }
