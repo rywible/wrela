@@ -14,7 +14,7 @@ pub const OVERCAST: f32 = 1.0
 /// Under the overcast: how much brighter it's exposed than the storm's first grade (1 as it was);
 /// how wide a break in the deck far off toward the sun (m; 0 none); how far the deck thins
 /// between its banks, the sun's light glowing through (0 to 1).
-pub const LIFT: f32 = 1.0
+pub const LIFT: f32 = 1.45
 pub const BREAK: f32 = 0.0
 pub const THIN: f32 = 0.0
 
