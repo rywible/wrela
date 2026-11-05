@@ -22,13 +22,13 @@ use std::math::PI
 
 /// What the sky's light reads beside its textures: the light, and where the clouds are.
 pub struct Heaven: Copy {
-    light: Light,
-    clouds: Clouds,
+    pub light: Light,
+    pub clouds: Clouds,
 }
 
 /// The sky along `d`, with its clouds (their cover in alpha); the clouds lost in the air low on
 /// the horizon, where they'd be sixty kilometres off and more (the cloud field's far repeats).
-fn heaven(
+pub fn heaven(
     view: Texture<Rgba16Float>,
     light: Light,
     d: vec3,
@@ -64,7 +64,7 @@ fn mirrored_sky(
 /// pixel's footprint holds it, the waves a boat rides broken by the hull (`tiles`). Far off,
 /// where the waves a pixel holds are long and low, on the sea's level plane: a ray skimming the
 /// swell found it a few metres either way from pixel to pixel, and its shading speckled.
-fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
+pub fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
     if d.y >= -0.0005 {
         return far
     }
@@ -118,7 +118,7 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
     min(mix(t, plane, level_k), far)
 }
 
-fn march_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
+pub fn march_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
     var t = lo
     var hit = hi
     var i = 0
@@ -261,9 +261,23 @@ fn march_coarse(o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
     hit
 }
 
+/// Whether the sea at `p`, met `t` m along `d`, mirrors the isle: far out on the water (past 60 m),
+/// where the mirrored ray meets the rock, met coarsely.
+fn isle_mirrored(p: vec3, d: vec3, t: f32) -> bool {
+    if t <= 60.0 {
+        return false
+    }
+    let r0 = vec3(d.x, -d.y, d.z)
+    let ib = sphere(p, r0, bounds(), 1.0e5)
+    if ib.x >= ib.y {
+        return false
+    }
+    march_coarse(p, r0 + vec3(0.0, 0.006, 0.0), ib.x, ib.y) < ib.y
+}
+
 /// Where a ray from `o` along `d` meets a sphere `b` (centre, radius): its near and far
 /// distances, or (far, far).
-fn sphere(o: vec3, d: vec3, b: vec4, far: f32) -> vec2 {
+pub fn sphere(o: vec3, d: vec3, b: vec4, far: f32) -> vec2 {
     let oc = o - b.xyz
     let k = dot(oc, d)
     let c = dot(oc, oc) - b.w * b.w
@@ -303,7 +317,7 @@ fn isle_ao(p: vec3, n: vec3) -> f32 {
     clamp(1.0 - hidden * 0.55, 0.0, 1.0)
 }
 
-fn skiff_shadow(s: Shot, p: vec3, l: vec3) -> f32 {
+pub fn skiff_shadow(s: Shot, p: vec3, l: vec3) -> f32 {
     var t = 0.02
     var lit = 1.0
     for _ in 0..24 {
@@ -314,7 +328,7 @@ fn skiff_shadow(s: Shot, p: vec3, l: vec3) -> f32 {
     clamp(lit, 0.0, 1.0)
 }
 
-fn skiff_ao(s: Shot, p: vec3, n: vec3) -> f32 {
+pub fn skiff_ao(s: Shot, p: vec3, n: vec3) -> f32 {
     var hidden = 0.0
     var w = 1.0
     for i in 1..5 {
@@ -328,7 +342,7 @@ fn skiff_ao(s: Shot, p: vec3, n: vec3) -> f32 {
 /// A solid surface's light, as the engine's world takes it (`engine::light::world`): the sun
 /// through `sun` of shadow, the sky's light over it (`ao` of it reaching), its reflection, and
 /// what it gives itself; seen from the eye through the air.
-fn lit_solid(
+pub fn lit_solid(
     s: Shot,
     h: Heaven,
     view: Texture<Rgba16Float>,
@@ -599,7 +613,7 @@ fn stirred(s: Shot, xz: vec2, n: vec3) -> (vec3, f32) {
 
 /// The sea at `p`, seen along `d` from `t` away: its light, line field, weight, normal and energy.
 
-fn sea_shade(
+pub fn sea_shade(
     s: Shot,
     h: Heaven,
     view: Texture<Rgba16Float>,
@@ -611,6 +625,7 @@ fn sea_shade(
     p: vec3,
     d: vec3,
     t: f32,
+    mirrors: bool,
 ) -> (vec3, f32, f32, vec3, f32) {
     let detail = clamp(1.0 - t / 60.0, 0.0, 1.0)
     let xz = vec2(p.x, p.z)
@@ -675,16 +690,10 @@ fn sea_shade(
     // darker, bluer sky.
     // The isle's reflection, far out on the water: the rock's warm dark under it, smeared down
     // the swell in broken vertical strokes, as the waves under it each mirror a piece.
-    if t > 60.0 {
-        let r0 = vec3(d.x, -d.y, d.z)
-        let ib = sphere(p, r0, bounds(), 1.0e5)
-        if ib.x < ib.y {
-            let ti = march_coarse(p, r0 + vec3(0.0, 0.006, 0.0), ib.x, ib.y)
-            if ti < ib.y {
-                let broken = smoothstep(0.3, 0.7, noise(vec2(p.x * 0.02, p.z * 0.25)))
-                mirrored = mix(mirrored, mirrored * vec3(0.72, 0.6, 0.52), 0.35 + 0.45 * broken)
-            }
-        }
+    // (Whether the mirrored ray meets it is the caller's, `mirrors`: each scene has its own.)
+    if mirrors {
+        let broken = smoothstep(0.3, 0.7, noise(vec2(p.x * 0.02, p.z * 0.25)))
+        mirrored = mix(mirrored, mirrored * vec3(0.72, 0.6, 0.52), 0.35 + 0.45 * broken)
     }
     // The skiff's own reflection beside it: the hull's own colours in the shade it hangs in,
     // its edge soft (how near the mirrored ray came to it) and broken by the ripples, and gone a
@@ -996,7 +1005,7 @@ fn puff(o: vec3, d: vec3, hit: f32, c: vec3, r: f32, dense: f32, seed: f32) -> f
 /// spray and drops thrown up and out, falling back within half a second; as it swings forward
 /// through the air, the water running off it in drops. Lit as water drops are, by the low sun
 /// through them most when the eye looks toward it. Its light (premultiplied) and cover.
-fn spray(s: Shot, h: Heaven, o: vec3, d: vec3, hit: f32) -> vec4 {
+pub fn spray(s: Shot, h: Heaven, o: vec3, d: vec3, hit: f32) -> vec4 {
     let a = smoothstep(0.05, 0.45, abs(s.pull))
     if a <= 0.0 {
         return vec4(0.0)
@@ -1198,6 +1207,82 @@ fn birds(s: Shot, px: vec2) -> vec2 {
 
 /// What one ray through `px` meets and how it's lit: the colour, and what the ink reads (log₂
 /// distance, what it is, the line field, the line's weight; the normal and the energy).
+/// The skiff's light at `p`, met along `d`: lit as a character is, never lost in the shade. Its
+/// colour, its line field and weight, its normal and its energy (`sample`'s).
+pub fn skiff_lit(
+    s: Shot,
+    h: Heaven,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    waves: Waves,
+    p: vec3,
+    d: vec3,
+) -> (vec3, f32, f32, vec3, f32) {
+    let light = h.light
+    let clouds = h.clouds
+    let n = skiff_normal(s, p)
+    let (albedo, rough, seam) = skiff_material(s, p, n)
+    let sun = skiff_shadow(s, p + n * 0.01, light.sun) * cloud_shadow(clouds, cloud, smp, p)
+    let ao = skiff_ao(s, p, n)
+    var c = lit_solid(
+        s,
+        h,
+        view,
+        aerial,
+        dome,
+        smp,
+        p,
+        n,
+        d,
+        albedo,
+        rough,
+        0.0,
+        vec3(0.0),
+        sun,
+        ao,
+        0.0,
+        1.0,
+    )
+    // The player's skiff is lit as a character is, never lost in the shade: the bright sea's
+    // light thrown up onto it, warm off the sun's path on the water, and a rim of the sun.
+    let sea_light = clouded_sky(
+        view,
+        light,
+        normalize(vec3(light.sun.x, 0.25, light.sun.z)),
+        dome,
+        smp,
+    )
+    // (The CG looks light it as a hero is against the sun: less fill, so its shade side
+    // holds its value against the bright sea, and a stronger rim; the cel look's both hard.)
+    let cg = s.look > 0.5
+    let cel = s.look > 1.5 && s.look < 2.5
+    let toward = max(dot(n, normalize(vec3(light.sun.x, -0.4, light.sun.z))), 0.0)
+    let bounce = sea_light * PI * (if cg { 0.13 } else {
+        0.22
+    }) * (0.4 + 0.6 * ao) * (0.5 + 0.5 * (if cel { band(toward, 0.3, 0.04) } else { toward }))
+    let edge_k = pow(1.0 - max(dot(n, -d), 0.0), 3.0) *
+        max(dot(n, normalize(vec3(light.sun.x, 0.3, light.sun.z))), 0.0)
+    let rim = light.sun_colour * vec3(1.0, 0.85, 0.6) * (if cel {
+        band(edge_k, 0.12, 0.02) * 0.3
+    } else if cg { 0.6 * edge_k } else {
+        0.35 * edge_k
+    })
+    c += albedo * bounce + rim * sun
+    // The waterline: the hull dark where the sea has wet it.
+    let at_hull = level_at(
+        waves,
+        vec2(p.x, p.z),
+        0.02,
+        tiles(lee(p - s.boat, s.boat_x, s.boat_z)).y,
+    )
+    let wet = smoothstep(0.14, 0.0, p.y - at_hull)
+    c *= 1.0 - 0.5 * wet
+    (c, seam, 0.8, n, s.slap * 0.35)
+}
+
 fn sample(
     s: Shot,
     light: Light,
@@ -1255,73 +1340,33 @@ fn sample(
         weight = 0.0
         n = -d
     } else if id == SEA {
-        let (sc, sl, sw, sn, se) = sea_shade(s, h, view, aerial, dome, cloud, smp, waves, p, d, t)
+        let mirrors = isle_mirrored(p, d, t)
+        let (sc, sl, sw, sn, se) = sea_shade(
+            s,
+            h,
+            view,
+            aerial,
+            dome,
+            cloud,
+            smp,
+            waves,
+            p,
+            d,
+            t,
+            mirrors,
+        )
         c = sc
         line = sl
         weight = sw
         n = sn
         energy = se
     } else if id == SKIFF {
-        n = skiff_normal(s, p)
-        let (albedo, rough, seam) = skiff_material(s, p, n)
-        let sun = skiff_shadow(s, p + n * 0.01, light.sun) * cloud_shadow(clouds, cloud, smp, p)
-        let ao = skiff_ao(s, p, n)
-        c = lit_solid(
-            s,
-            h,
-            view,
-            aerial,
-            dome,
-            smp,
-            p,
-            n,
-            d,
-            albedo,
-            rough,
-            0.0,
-            vec3(0.0),
-            sun,
-            ao,
-            0.0,
-            1.0,
-        )
-        // The player's skiff is lit as a character is, never lost in the shade: the bright sea's
-        // light thrown up onto it, warm off the sun's path on the water, and a rim of the sun.
-        let sea_light = clouded_sky(
-            view,
-            light,
-            normalize(vec3(light.sun.x, 0.25, light.sun.z)),
-            dome,
-            smp,
-        )
-        // (The CG looks light it as a hero is against the sun: less fill, so its shade side
-        // holds its value against the bright sea, and a stronger rim; the cel look's both hard.)
-        let cg = s.look > 0.5
-        let cel = s.look > 1.5 && s.look < 2.5
-        let toward = max(dot(n, normalize(vec3(light.sun.x, -0.4, light.sun.z))), 0.0)
-        let bounce = sea_light * PI * (if cg { 0.13 } else {
-            0.22
-        }) * (0.4 + 0.6 * ao) * (0.5 + 0.5 * (if cel { band(toward, 0.3, 0.04) } else { toward }))
-        let edge_k = pow(1.0 - max(dot(n, -d), 0.0), 3.0) *
-            max(dot(n, normalize(vec3(light.sun.x, 0.3, light.sun.z))), 0.0)
-        let rim = light.sun_colour * vec3(1.0, 0.85, 0.6) * (if cel {
-            band(edge_k, 0.12, 0.02) * 0.3
-        } else if cg { 0.6 * edge_k } else {
-            0.35 * edge_k
-        })
-        c += albedo * bounce + rim * sun
-        // The waterline: the hull dark where the sea has wet it.
-        let at_hull = level_at(
-            waves,
-            vec2(p.x, p.z),
-            0.02,
-            tiles(lee(p - s.boat, s.boat_x, s.boat_z)).y,
-        )
-        let wet = smoothstep(0.14, 0.0, p.y - at_hull)
-        c *= 1.0 - 0.5 * wet
-        line = seam
-        weight = 0.8
-        energy = s.slap * 0.35
+        let (sc, sl, sw, sn, se) = skiff_lit(s, h, view, aerial, dome, cloud, smp, waves, p, d)
+        c = sc
+        line = sl
+        weight = sw
+        n = sn
+        energy = se
     } else {
         // The rock's normal taken broad, so it models in planes, as hewn stone is drawn; the
         // cathedral's finer.

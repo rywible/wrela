@@ -1,0 +1,243 @@
+// The Tally Stair.
+//
+// Premise: from a small harbour islet a stone stair winds up into the sky, round and round on
+// nothing: no tower, no column, no rope, each turn standing on the air under it. It climbs past
+// where the eye can follow and nobody has reached its top.
+//
+// Rule it bends: time thins as you climb. An hour up its turns is a day at its foot, and higher a
+// season; those who go up come down to a harbour that has aged without them.
+//
+// People: the harbour keeps a watch house and an inn for climbers, and the wives and children of
+// climbers who went too high. They count the days; the climbers count the steps.
+//
+// Clue (for the theory that you've been here before): the stair's parapet is cut with tally marks,
+// climbers' counts of the steps they reached, thousands of them in a hundred hands. One run of
+// tallies, a few turns up, is cut in the hand that scratched the count on the traveller's own
+// skiff, and it is old. Other theories have it that every traveller's hand looks the same in the
+// end, or that the stair is a way home that bends time; none of them is confirmed, and none can be.
+//
+// Silhouette: a coil standing on the horizon over a low islet, a spring of stone kilometres off,
+// unlike anything else in the sea: from any bearing, the one thing that rises.
+
+use opening::look::{hash2, noise, noise3}
+use isle::{ASHLAR, BASALT, CLOTH, Finish, Isle, SHINGLE, THATCH, TIMBER, matte}
+use kit::{ashlar, basalt, crag, hut, near, sd_box, sector, smin, thatch, timber}
+
+/// The Tally Stair, placed: its islet's centre at sea level (the world's), and its shape: the
+/// coil's radius to the stair's middle (m), its width (m), how many turns it climbs, and how much
+/// its axis leans (m of drift a turn, as if the coil were caught in a slow wind).
+pub struct Stair: Copy + GpuData {
+    pub at: vec3,
+    pub radius: f32,
+    pub width: f32,
+    pub turns: f32,
+    pub lean: f32,
+}
+
+/// The shapes Ryan picks among (`--set VARIANT=k`).
+pub fn stair_variant(k: u32, at: vec3) -> Stair {
+    if k == 1 {
+        // Tight and tall: a needle of turns.
+        Stair { at, radius: 38.0, width: 6.0, turns: 9.0, lean: 0.0 }
+    } else if k == 2 {
+        // Broad and few, leaning as it goes.
+        Stair { at, radius: 95.0, width: 12.0, turns: 3.2, lean: 22.0 }
+    } else {
+        Stair { at, radius: 70.0, width: 11.0, turns: 4.5, lean: 6.0 }
+    }
+}
+
+/// A man's stair: a step's rise and run (m), and how much it climbs a turn (m).
+const RISE: f32 = 0.18
+const RUN: f32 = 0.32
+
+fn pitch(s: Stair) -> f32 {
+    6.2831853 * s.radius * RISE / RUN
+}
+
+/// Where the stair starts: on the islet's quay, its first step this high (m).
+const FOOT: f32 = 14.0
+
+/// The stair's coil: `q` from the islet's centre; its field, and whether a pixel `px` m wide
+/// holds its steps.
+fn coil(s: Stair, q: vec3, px: f32) -> f32 {
+    let p = pitch(s)
+    // The axis drifts as it rises.
+    let drift = q.y / p * s.lean
+    let c = vec2(q.x - drift, q.z - drift * 0.4)
+    let rho = length(c)
+    let th = atan2(c.y, c.x) / 6.2831853 + 0.5
+    // The turn nearest `q`, and how far over that turn's walking line it is.
+    let k = clamp(floor((q.y - FOOT) / p - th + 0.5), 0.0, s.turns - 1.0)
+    let along = k + th
+    let line = FOOT + along * p
+    let v = q.y - line
+    // (Its radius breathes a little turn by turn, so the coil never projects as a clean sine.)
+    let u = rho - s.radius * (1.0 + 0.06 * sin(along * 2.3) + 0.03 * sin(along * 5.1 + 1.0))
+    // (Past its last turn, nothing: the stair's top just stops, its last step open to the sky.)
+    let beyond = max(along - s.turns, -along)
+    // The flight: a slab 1.6 m deep under its treads, its underside arched a little toward its
+    // inner edge, as a stone stair spans.
+    let half = s.width * 0.5
+    var under = 1.6 + 0.8 * (1.0 - min((u / half) * (u / half), 1.0))
+    // Under it, a rib across its span every 6 m, a metre deep: a vault's courses, not a tube.
+    let arc = along * 6.2831853 * s.radius
+    let rib = abs(fract(arc / 6.0) - 0.5) * 6.0
+    under += if px < 0.8 { 1.1 * smoothstep(0.9, 0.5, rib) } else { 0.25 }
+    var d = max(abs(u) - half, max(v - RISE, -v - under))
+    // Its treads, where a pixel holds them: the walking line stepped every rise.
+    if px < RISE * 2.0 {
+        let stepped = RISE * floor(line / RISE + 1.0) - line
+        d = max(d, v - stepped)
+    }
+    // The parapet on its outer edge: a metre high, 0.35 thick; at its inner edge none.
+    let parapet = max(abs(u - half + 0.175) - 0.175, max(v - 1.05, -v - 1.6))
+    d = min(d, parapet)
+    // Every half turn a landing jutting out from the outer edge, on a corbel, where a climber's
+    // shelter stands.
+    max(d * 0.8, beyond * p * 0.3)
+}
+
+/// The landings' shelters, every half turn up the coil, each on its corbel off the outer edge;
+/// and which part (0 its walls, 1 its roof, 2 its corbel's stone).
+fn shelters(s: Stair, q: vec3, px: f32) -> vec2 {
+    let p = pitch(s)
+    let drift = q.y / p * s.lean
+    let c = vec2(q.x - drift, q.z - drift * 0.4)
+    // Which half turn: the nearest landing in height, at its own heading.
+    let n = clamp(floor((q.y - FOOT) / (p * 0.5) + 0.5), 1.0, s.turns * 2.0 - 1.0)
+    let a = (n * 0.5 - floor(n * 0.5)) * 6.2831853 + 3.1415927
+    let ca = cos(-a)
+    let sa = sin(-a)
+    // (In the landing's frame: x out from the coil, z along it.)
+    let lx = c.x * ca - c.y * sa
+    let lz = c.x * sa + c.y * ca
+    let floor_y = FOOT + n * 0.5 * p
+    let rr = s.radius * (1.0 + 0.06 * sin(n * 0.5 * 2.3) + 0.03 * sin(n * 0.5 * 5.1 + 1.0))
+    let l = vec3(lx - rr - s.width * 0.5 - 3.5, q.y - floor_y, lz)
+    if length(l) > 30.0 {
+        return vec2(length(l) - 25.0, 2.0)
+    }
+    // A stone shelter 7 m square, its walls 4 m to the eaves, its slate roof a pyramid, standing
+    // half over the stair and half on a corbel stepped out under it.
+    let walls = sd_box(l - vec3(0.0, 2.0, 0.0), vec3(3.5, 2.0, 3.5))
+    let door = if px < 0.5 { sd_box(l - vec3(-3.5, 1.1, 0.0), vec3(0.4, 1.1, 0.6)) } else { 1.0e3 }
+    let roof_q = vec3(abs(l.x), l.y - 4.0, abs(l.z))
+    let roof = max(max(roof_q.x, roof_q.z) * 0.8 + roof_q.y * 0.6 - 3.6, -roof_q.y)
+    let corbel = max(
+        sd_box(l - vec3(0.5, -3.0, 0.0), vec3(4.2, 3.0, 4.2)),
+        -l.y - 6.0 + max(abs(l.x - 0.5), abs(l.z)) * 1.2,
+    )
+    near(vec2(min(max(walls, -door), corbel), 2.0), vec2(roof, 1.0))
+}
+
+/// The harbour on the islet: a mole of dressed stone round its cove, the quay the stair starts
+/// from, and the houses of those who wait. Its field and which part (0 walls, 1 roofs, 2 stone).
+fn harbour(s: Stair, q: vec3, px: f32) -> vec2 {
+    // The mole: a curving wall of ashlar, 6 m wide, 4 m over the sea, round the cove on the
+    // islet's south.
+    let m = q - vec3(0.0, 0.0, -150.0)
+    let arc = abs(length(vec2(m.x, m.z)) - 95.0) - 3.0
+    let mole = max(max(arc, m.z - 10.0), max(m.y - 4.0, -m.y - 10.0))
+    // The town round the cove in terraces, each held by a wall of dressed stone, stepping up the
+    // islet like seats round a stage: a terrace every 6 m up and 14 m back.
+    let mr = length(vec2(m.x, m.z))
+    let ring = clamp(floor((mr - 100.0) / 14.0), 0.0, 4.0)
+    let level = 4.0 + ring * 6.0
+    let behind = mr > 100.0 && mr < 170.0 && m.z > -20.0
+    var f = vec2(1.0e3, 2.0)
+    if behind {
+        f = vec2(max(q.y - level, -q.y - 10.0) * 0.9, 2.0)
+    }
+    f = near(f, vec2(mole, 2.0))
+    // The gatehouse at the stair's foot: a square tower of ashlar 14 m across, its top the
+    // stair's first landing, its slate roof over a lantern room; the stair winds out of it.
+    let g = q - vec3(-s.radius, 0.0, 0.0)
+    let tower = sd_box(g - vec3(0.0, FOOT * 0.5, 0.0), vec3(7.0, FOOT * 0.5 + 0.5, 7.0))
+    let lantern = sd_box(g - vec3(0.0, FOOT + 4.0, 0.0), vec3(4.0, 4.0, 4.0))
+    let cap_q = vec3(abs(g.x), g.y - FOOT - 8.0, abs(g.z))
+    let cap = max(max(cap_q.x, cap_q.z) * 0.85 + cap_q.y * 0.5 - 4.6, -cap_q.y)
+    f = near(f, vec2(min(tower, lantern), 2.0))
+    f = near(f, vec2(cap, 1.0))
+    // The houses on the terraces, each in its own lot along the terrace, turned to the sea.
+    if behind && q.y < level + 14.0 {
+        let n = floor(6.2831853 * (100.0 + ring * 14.0 + 7.0) / 11.0)
+        let (c, k) = sector(vec2(m.x, m.z), n)
+        let h = hash2(vec2(k, ring))
+        if h > 0.2 {
+            let w = 5.0 + 2.5 * hash2(vec2(k, ring + 3.0))
+            let l = 6.0 + 2.0 * hash2(vec2(k, ring + 7.0))
+            let hp = vec3(100.0 + ring * 14.0 + 7.0 - c.x, q.y - level, c.y)
+            let hh = hut(hp, w, l, px)
+            f = near(f, hh)
+        }
+    }
+    f
+}
+
+impl Isle for Stair {
+    fn bounds(self) -> vec4 {
+        let top = FOOT + self.turns * pitch(self)
+        vec4(
+            self.at + vec3(self.lean * self.turns * 0.5, top * 0.5, 0.0),
+            max(top * 0.55, 260.0) + self.radius,
+        )
+    }
+
+    fn aim(self) -> vec3 {
+        self.at + vec3(0.0, FOOT + self.turns * pitch(self) * 0.4, 0.0)
+    }
+
+    fn field(self, p: vec3, px: f32) -> vec2 {
+        let q = p - self.at
+        // The islet: a crag of dark rock 200 m round, its harbour cove to the south.
+        let rock = crag(q - vec3(0.0, 0.0, 40.0), 170.0, 48.0, 3.0)
+        let cove = length(vec2(q.x, q.z + 150.0)) - 90.0
+        var f = vec2(max(rock, -cove), BASALT)
+        let hb = harbour(self, q, px)
+        f = near(f, vec2(hb.x, if hb.y < 0.5 { ASHLAR } else if hb.y < 1.5 { SHINGLE } else {
+            ASHLAR
+        }))
+        if q.y > FOOT - 4.0 {
+            f = near(f, vec2(coil(self, q, px), ASHLAR))
+            let sh = shelters(self, q, px)
+            f = near(f, vec2(sh.x, if sh.y < 0.5 { TIMBER } else if sh.y < 1.5 { THATCH } else {
+                ASHLAR
+            }))
+        }
+        f
+    }
+
+    fn finish(self, p: vec3, n: vec3, d: vec3, id: f32, foot: f32) -> Finish {
+        let q = p - self.at
+        if id == ASHLAR {
+            // The stair's stone: pale ashlar, darker toward its underside, where no sun reaches
+            // and the damp of the clouds it passes through lies.
+            var a = ashlar(q, n, foot)
+            a *= mix(1.0, 0.7, smoothstep(0.0, -0.8, n.y))
+            return matte(a, 0.85)
+        }
+        if id == SHINGLE {
+            // Slate roofs, grey-blue.
+            let lot = floor(vec2(q.x, q.z) / 16.0)
+            return matte(vec3(0.1, 0.11, 0.13) * (0.8 + 0.4 * hash2(lot)), 0.6)
+        }
+        if id == TIMBER {
+            return matte(timber(q, q.x + q.z, foot), 0.85)
+        }
+        if id == THATCH {
+            return matte(thatch(q, foot), 0.95)
+        }
+        let grass = smoothstep(0.7, 0.9, n.y) * smoothstep(0.35, 0.55, noise3(q * 0.05))
+        let a = mix(
+            basalt(q, n, 1.4, foot) * vec3(1.6, 1.5, 1.4),
+            vec3(0.1, 0.12, 0.05),
+            grass * 0.8,
+        )
+        matte(a, 0.9)
+    }
+
+    fn dry(self, p: vec3) -> bool {
+        false
+    }
+}

@@ -1,0 +1,276 @@
+// The kit every island is built from: shapes and parts at their real size, in metres, never scaled
+// up. A big island is big by having more of them (more columns, more steps, more huts), so the eye
+// reads its size from parts it knows: a door is 2 m, a step 0.18 m, a basalt column a metre and a
+// half across. Each part is modelled only as finely as a pixel holds it (`px`): finer, it's its
+// mass, and its material draws the rest (`engine::far::shown`).
+
+use opening::look::{hash2, hash3, noise, noise3}
+use isle::{ASHLAR, BASALT, THATCH, TIMBER, TURF}
+
+// ---- shapes ----------------------------------------------------------------------------------
+
+pub fn sd_box(p: vec3, b: vec3) -> f32 {
+    let q = abs(p) - b
+    length(max(q, vec3(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0)
+}
+
+pub fn sd_segment(p: vec3, a: vec3, b: vec3, r: f32) -> f32 {
+    let pa = p - a
+    let ba = b - a
+    let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0)
+    length(pa - ba * h) - r
+}
+
+/// An upright cylinder from `y0` to `y1`, `r` round, its axis through `c` (x, z).
+pub fn sd_post(p: vec3, c: vec2, r: f32, y0: f32, y1: f32) -> f32 {
+    let q = vec2(length(vec2(p.x, p.z) - c) - r, max(y0 - p.y, p.y - y1))
+    min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0)))
+}
+
+/// `a` and `b` joined with a fillet `k` m wide.
+pub fn smin(a: f32, b: f32, k: f32) -> f32 {
+    let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0)
+    mix(b, a, h) - k * h * (1.0 - h)
+}
+
+/// `v` (x, z) turned `a` (rad) about the vertical.
+pub fn turn(v: vec2, a: f32) -> vec2 {
+    let c = cos(a)
+    let s = sin(a)
+    vec2(c * v.x - s * v.y, s * v.x + c * v.y)
+}
+
+/// The nearer of two fields (distance, id).
+pub fn near(a: vec2, b: vec2) -> vec2 {
+    if b.x < a.x { b } else { a }
+}
+
+// ---- rings and sectors -----------------------------------------------------------------------
+
+/// Polar repetition: `p` (x, z) in the frame of the nearest of `n` cells round the centre, x out
+/// from it, z along; and the cell's index.
+pub fn sector(p: vec2, n: f32) -> (vec2, f32) {
+    let step_ = 6.2831853 / n
+    let a = atan2(p.y, p.x)
+    let k = floor(a / step_ + 0.5)
+    let q = turn(p, -k * step_)
+    (q, k - n * floor(k / n))
+}
+
+// ---- basalt columns --------------------------------------------------------------------------
+
+/// The nearest cell of a hexagonal grid `s` m across its flats at `p` (x, z): its centre, and `p`
+/// from it.
+pub fn hex_cell(p: vec2, s: f32) -> (vec2, vec2) {
+    let r = vec2(1.0, 1.7320508) * s
+    let h = r * 0.5
+    let a = p - r * floor(p / r) - h
+    let pb = p - h
+    let b = pb - r * floor(pb / r) - h
+    let local = if dot(a, a) < dot(b, b) { a } else { b }
+    (p - local, local)
+}
+
+/// How far `v` is outside a hexagon `s` m across its flats (negative inside).
+pub fn sd_hex(v: vec2, s: f32) -> f32 {
+    let a = abs(v)
+    max(a.x, dot(a, vec2(0.5, 0.8660254))) - s * 0.5
+}
+
+/// A field of basalt columns, each `s` m across (about 1.4: the size cooling lava cracks to), cut
+/// by a mass `mass(p)` (its own field, m) whose top each column's rises to by its own step: the
+/// columns stand in the mass's shape, their tops stepped, their joints open a hand's width.
+/// `top` is the mass's top over the column's cell, read at its centre. Finer than a pixel holds,
+/// the mass alone.
+pub fn columns(p: vec3, mass: f32, top: f32, s: f32, px: f32) -> f32 {
+    if px > s * 0.45 || mass > s * 2.0 {
+        return mass
+    }
+    let (c, v) = hex_cell(vec2(p.x, p.z), s)
+    let h = hash2(c * 0.731)
+    // Each column's top a step of its own under the mass's: most a few tens of centimetres, a few
+    // broken off a metre and more.
+    let drop = floor(h * 4.0) * 0.32 + step(0.9, h) * 1.4
+    let column = max(sd_hex(v, s) + 0.04, p.y - (top - drop))
+    // (Kept inside the mass, and never stepping past a cell's edge, where a taller neighbour may
+    // stand.)
+    let edge = s * 0.5 - max(abs(v.x), dot(abs(v), vec2(0.5, 0.8660254)))
+    min(max(column, mass - 0.02), max(mass, 0.0) + max(edge, 0.05))
+}
+
+// ---- dwellings -------------------------------------------------------------------------------
+
+/// A hut of timber and thatch, its floor at `p`'s origin, `w` by `l` m (x, z), its walls 2.3 m to
+/// the eaves, its roof pitched at 50° along z and overhanging, its door (0.9 by 1.9 m) on +x. Its
+/// field and which part.
+pub fn hut(p: vec3, w: f32, l: f32, px: f32) -> vec2 {
+    let walls = sd_box(p - vec3(0.0, 1.15, 0.0), vec3(w * 0.5, 1.15, l * 0.5))
+    // The door, cut into the +x wall: only where a pixel holds it.
+    let door = if px < 0.4 {
+        sd_box(p - vec3(w * 0.5, 0.95, 0.0), vec3(0.25, 0.95, 0.45))
+    } else { 1.0e3 }
+    let body = max(walls, -door)
+    // The roof: a prism over the walls, its ridge along z, overhanging 0.5 m, thick 0.35.
+    let half = w * 0.5 + 0.5
+    let rise = half * 1.19
+    let q = vec3(abs(p.x), p.y - 2.3, p.z)
+    let slope = normalize(vec2(rise, half))
+    let outer = dot(vec2(q.x, q.y) - vec2(0.0, rise), slope)
+    let roof = max(max(outer, -outer - 0.35), max(-q.y + 0.1, abs(q.z) - l * 0.5 - 0.5))
+    near(vec2(body, 0.0), vec2(roof, 1.0))
+}
+
+/// Stilts: four posts at a hut's corners, 0.15 m round, from `y0` up to its floor at 0, and the
+/// floor's deck.
+pub fn stilts(p: vec3, w: f32, l: f32, y0: f32, px: f32) -> f32 {
+    let deck = sd_box(p - vec3(0.0, -0.1, 0.0), vec3(w * 0.5 + 0.3, 0.1, l * 0.5 + 0.3))
+    if px > 0.3 {
+        return min(
+            deck,
+            sd_box(p - vec3(0.0, y0 * 0.5, 0.0), vec3(w * 0.5, -y0 * 0.5, l * 0.5)) + 0.3,
+        )
+    }
+    let a = vec2(abs(p.x) - w * 0.5, abs(p.z) - l * 0.5)
+    let post = sd_post(vec3(a.x, p.y, a.y), vec2(0.0), 0.15, y0, 0.0)
+    min(deck, post)
+}
+
+// ---- stairs ----------------------------------------------------------------------------------
+
+/// A flight of steps rising along +x from `p`'s origin: each `rise` m up and `run` m on (a man's
+/// stair: 0.18 and 0.3), `half` m either side of z = 0, `n` of them, on a solid stone body.
+/// Finer than a pixel holds, its slope.
+pub fn steps(p: vec3, rise: f32, run: f32, half: f32, n: f32, px: f32) -> f32 {
+    let len = run * n
+    let g = rise / run
+    let nose = (p.y - p.x * g - rise) / sqrt(1.0 + g * g)
+    let body = max(max(nose, -p.y - 0.3), max(abs(p.z) - half, max(-p.x, p.x - len)))
+    if px > rise * 0.5 {
+        return body
+    }
+    let k = clamp(floor(p.x / run), 0.0, n - 1.0)
+    let a = sd_box(
+        vec3(p.x - (k + 0.5) * run, p.y - (k + 1.0) * rise * 0.5 + 0.15, p.z),
+        vec3(run * 0.5, (k + 1.0) * rise * 0.5 + 0.15, half),
+    )
+    let k1 = min(k + 1.0, n - 1.0)
+    let b = sd_box(
+        vec3(p.x - (k1 + 0.5) * run, p.y - (k1 + 1.0) * rise * 0.5 + 0.15, p.z),
+        vec3(run * 0.5, (k1 + 1.0) * rise * 0.5 + 0.15, half),
+    )
+    max(body, min(a, b))
+}
+
+// ---- rock ------------------------------------------------------------------------------------
+
+/// A boulder `r` m round at `p`'s origin, broken into planes by `seed`.
+pub fn boulder(p: vec3, r: f32, seed: f32) -> f32 {
+    var d = length(p) - r
+    for i in 0..5 {
+        let fi = f32(i) + seed * 7.1
+        let n = normalize(
+            vec3(
+                hash2(vec2(fi, 1.3)) - 0.5,
+                hash2(vec2(fi, 4.7)) - 0.3,
+                hash2(vec2(fi, 9.1)) - 0.5,
+            ),
+        )
+        d = max(d, dot(p, n) - r * (0.6 + 0.25 * hash2(vec2(fi, 2.2))))
+    }
+    d
+}
+
+// ---- materials -------------------------------------------------------------------------------
+
+/// Basalt: dark blue-grey, its column joints darker (where a pixel holds them), paler and greener
+/// where the weather lies on its tops, white where the seabirds nest, and dark and wet below the
+/// spray's reach.
+pub fn basalt(p: vec3, n: vec3, s: f32, foot: f32) -> vec3 {
+    let (c, v) = hex_cell(vec2(p.x, p.z), s)
+    let k = 1.0 - smoothstep(0.25 * s, 0.5 * s, foot)
+    let joint = (1.0 -
+        smoothstep(0.0, 0.08, s * 0.5 - max(abs(v.x), dot(abs(v), vec2(0.5, 0.8660254))))) *
+        k
+    let own = mix(0.5, hash2(c * 1.37), k)
+    var a = vec3(0.038, 0.042, 0.05) * (0.75 + 0.5 * own)
+    a *= 1.0 - 0.55 * joint * smoothstep(0.6, 0.2, abs(n.y))
+    // Tops weathered paler, lichened.
+    a = mix(a, vec3(0.16, 0.16, 0.13), smoothstep(0.6, 0.9, n.y) * 0.6)
+    let lichen = smoothstep(0.7, 0.82, noise3(p * 0.35)) * smoothstep(3.0, 9.0, p.y)
+    a = mix(a, vec3(0.2, 0.16, 0.09), lichen * 0.25)
+    // Seabirds' white down the cliffs, in streaks under the ledges.
+    let guano = smoothstep(0.72, 0.9, noise(vec2((p.x + p.z) * 0.08, p.y * 0.015))) *
+        smoothstep(8.0, 18.0, p.y) *
+        smoothstep(0.5, -0.1, n.y)
+    a = mix(a, vec3(0.55, 0.54, 0.5), guano * 0.5)
+    // The splash zone: wet and darker, a few metres up.
+    a *= mix(0.55, 1.0, smoothstep(0.5, 4.0, p.y))
+    a
+}
+
+/// Turf: sea grass, salt-burnt, thin over rock.
+pub fn turf(p: vec3) -> vec3 {
+    mix(
+        vec3(0.07, 0.1, 0.04),
+        vec3(0.16, 0.17, 0.07),
+        noise3(p * 0.4) * 0.7 + noise3(p * 0.05) * 0.3,
+    )
+}
+
+/// Timber weathered silver-brown, planked (`along` the planks' direction, 0.2 m boards).
+pub fn timber(p: vec3, along: f32, foot: f32) -> vec3 {
+    let k = 1.0 - smoothstep(0.05, 0.1, foot)
+    let board = mix(0.5, hash2(vec2(floor(along / 0.2), floor(p.y / 2.0)) + vec2(3.1)), k)
+    vec3(0.2, 0.17, 0.13) * (0.75 + 0.5 * board)
+}
+
+/// Thatch: straw greyed by salt and rain, darker in its courses.
+pub fn thatch(p: vec3, foot: f32) -> vec3 {
+    let k = 1.0 - smoothstep(0.15, 0.3, foot)
+    let course = mix(0.5, smoothstep(0.2, 0.8, fract(p.y / 0.3)), k)
+    vec3(0.3, 0.25, 0.16) * (0.75 + 0.35 * course) * (0.8 + 0.4 * noise3(p * 2.0))
+}
+
+/// The id a field's hit is made of, from the kit's: a sanity name for a test.
+pub fn is_kit(id: f32) -> bool {
+    id == BASALT || id == TURF || id == TIMBER || id == THATCH
+}
+
+/// Ashlar: dressed stone in courses 0.5 m high and blocks 0.9 m long, each its own tint, its
+/// joints where a pixel holds them, rain-streaked under its ledges.
+pub fn ashlar(p: vec3, n: vec3, foot: f32) -> vec3 {
+    let along = if abs(n.x) > abs(n.z) { p.z } else { p.x }
+    let row = floor(p.y / 0.5)
+    let k = 1.0 - smoothstep(0.12, 0.25, foot)
+    let block = mix(0.5, hash3(vec3(row, floor(along / 0.9 + row * 0.5), 2.0)), k)
+    let joint = k *
+        max(
+            smoothstep(0.06, 0.0, abs(fract(p.y / 0.5) - 0.5) - 0.42),
+            smoothstep(0.04, 0.0, abs(fract(along / 0.9 + row * 0.5) - 0.5) - 0.45),
+        ) *
+        smoothstep(0.7, 0.3, abs(n.y))
+    var a = vec3(0.5, 0.47, 0.42) * (0.82 + 0.3 * block)
+    a *= 0.8 + 0.4 * noise3(p * vec3(0.08, 0.02, 0.08))
+    a *= 1.0 - 0.3 * joint
+    a
+}
+
+/// A crag of bedded rock: an islet's mass `r` m round and `h` m high at its crown, at `p`'s
+/// origin: a sea cliff `h` * 0.3 high round its shore, over it slopes rising to a crown off its
+/// centre, all broken by `seed` and stepped by level beds every few metres. Its field.
+pub fn crag(p: vec3, r: f32, h: f32, seed: f32) -> f32 {
+    let a = atan2(p.z, p.x)
+    let rr = r * (0.75 + 0.4 * noise(vec2(a * 2.0 + seed, 1.0)) + 0.12 * noise(vec2(a * 7.0, seed)))
+    let xz = vec2(p.x, p.z) + vec2(r * 0.25, -r * 0.1)
+    let k = clamp(length(xz) / rr, 0.0, 1.5)
+    // The crown's slope: a hill, not a table.
+    let hill = h *
+        pow(max(1.0 - k * k, 0.0), 0.8) *
+        (0.75 + 0.5 * noise(xz / (r * 0.4) + vec2(seed)))
+    let cliff = h * 0.3 * (0.6 + 0.8 * noise(vec2(a * 5.0, seed + 3.0)))
+    let top = max(hill, cliff * smoothstep(1.02, 0.9, length(vec2(p.x, p.z)) / rr))
+    let beds = (fract(p.y / 6.0 + noise(vec2(a * 3.0, seed)) * 0.5) - 0.5) * 1.5
+    let side = length(vec2(p.x, p.z)) - rr + beds - max(0.0, -p.y) * 0.4
+    let d = max(side, (p.y - top) * 0.6) * 0.7
+    d + (noise3(p * 0.06 + vec3(seed)) - 0.5) * 3.0
+}

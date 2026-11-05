@@ -1,0 +1,211 @@
+// The island workbench. One premise island of the archipelago (`ISLAND`) in the opening's own
+// sea, sky and air, seen from the skiff that rows toward it (`VIEW`), in the shape picked among its
+// options (`VARIANT`). The stills it draws are what the island's critics and Ryan judge it by:
+//
+//   wrela build scenes/isles -o build/isles --set ISLAND=0 --set VIEW=0
+//   wrela-host build/isles --frames 40 --size 1280x720 --png isle.png
+//
+// It paints as the opening does (the engine's sky cooked over the first frames, so a still wants
+// 40), then inks with the opening's own ink, so an island is judged in the look it ships in.
+
+use opening::heavens::{Heavens, heavens}
+use opening::ink::ink
+use opening::look::{SUN, Shot, shot_at}
+use opening::row::{Rig, rest}
+use opening::sea::{MID_CALM, RIDDEN, SEA, held}
+use engine::ocean::{Ocean, Waves}
+use std::gpu::{
+    ClipPosition, Rgba16Float, Rgba8, Texture, VertexIndex, begin_pass3, begin_screen_pass, draw,
+    texture,
+}
+use isle::Isle
+use paint::paint
+use ring::{Ring, ring_variant}
+use stair::{Stair, stair_variant}
+
+/// Which island: 0 the Still Ring, 1 the Tally Stair.
+pub const ISLAND: u32 = 0
+
+/// Which of its shapes (its options, `ring_variant`'s).
+pub const VARIANT: u32 = 0
+
+/// Which view: 0 from the skiff, `DIST` m off; 1 near, from the water a few hundred metres off;
+/// 2 from over the sea, high, to see its layout; 3 off its mouth (or its landing), looking in; 4 on its heights, looking across it.
+pub const VIEW: u32 = 0
+
+/// How far the skiff is from the island's nearest shore (m), and its bearing from the skiff (rad
+/// from +z toward +x: 0, toward the low sun, the island against the light; 3.14, the sun behind
+/// the skiff).
+pub const DIST: f32 = 1600.0
+pub const BEARING: f32 = 0.0
+
+/// The time the stills are drawn at.
+pub const START: f32 = 0.0
+
+pub struct State {
+    heavens: Heavens,
+    ocean: Ocean,
+    colour: Texture<Rgba16Float>,
+    marks: Texture<Rgba16Float>,
+    normal: Texture<Rgba8>,
+    width: u32,
+    height: u32,
+}
+
+pub fn init() -> State {
+    State {
+        heavens: heavens(SUN, 3.0),
+        ocean: Ocean::new(SEA, RIDDEN, MID_CALM),
+        colour: texture(width: 640, height: 360),
+        marks: texture(width: 640, height: 360),
+        normal: texture(width: 640, height: 360),
+        width: 640,
+        height: 360,
+    }
+}
+
+/// One triangle that covers the screen.
+@vertex
+fn cover(vertex: VertexIndex) -> ClipPosition {
+    let x = f32(vertex.index % 2) * 4.0 - 1.0
+    let y = f32(vertex.index / 2) * 4.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.0, 1.0) }
+}
+
+/// Which way the island lies from the skiff (x, z).
+fn heading() -> vec2 {
+    vec2(sin(BEARING), cos(BEARING))
+}
+
+/// The Still Ring, its mouth turned toward the skiff (a little off, so the moon it mirrors lies in
+/// the mouth from there).
+fn the_ring() -> Ring {
+    let h = heading()
+    let probe = ring_variant(VARIANT, vec3(0.0), 0.0)
+    let at = vec3(h.x, 0.0, h.y) * (DIST + probe.radius + 60.0)
+    ring_variant(VARIANT, at, atan2(-h.y, -h.x))
+}
+
+/// The Tally Stair, its harbour turned toward the skiff.
+fn the_stair() -> Stair {
+    let h = heading()
+    stair_variant(VARIANT, vec3(h.x, 0.0, h.y) * (DIST + 200.0))
+}
+
+/// The shot at `time` of an island `bounds` (centre, radius): the skiff and the sea as the opening
+/// has them, the camera where `VIEW` puts it.
+fn shot_of(
+    time: f32,
+    width: u32,
+    height: u32,
+    swell: engine::ocean::Swell,
+    b: vec4,
+    aim: vec3,
+) -> Shot {
+    var rig = rest()
+    rig.shown_look = BEARING
+    rig.shown_steer = BEARING + 0.22
+    let base = shot_at(time, width, height, 0.0, 0, rig, swell)
+    let h = heading()
+    let ahead = vec3(h.x, 0.0, h.y)
+    let side = vec3(h.y, 0.0, -h.x)
+    let mid = vec3(b.x, 0.0, b.z)
+    let (eye, at, focal) = if VIEW == 1 {
+        let e = mid - ahead * (b.w + 250.0) + side * 180.0 + vec3(y: 6.0)
+        (e, mid + vec3(y: 18.0), 1.4)
+    } else if VIEW == 3 {
+        // Off the mouth, on the water, looking in through it.
+        let e = mid - ahead * (b.w + 20.0) + side * 25.0 + vec3(y: 3.0)
+        (e, mid + vec3(y: 8.0), 1.5)
+    } else if VIEW == 4 {
+        // On its heights by the mouth, looking in across it.
+        let e = mid - ahead * (b.w - 200.0) + side * 90.0 + vec3(y: 75.0)
+        (e, mid + ahead * (b.w * 0.6), 1.3)
+    } else if VIEW == 2 {
+        let e = mid - ahead * (b.w * 1.9) + side * (b.w * 0.6) + vec3(y: b.w * 0.9)
+        (e, mid, 1.6)
+    } else {
+        (base.eye, aim, 2.6)
+    }
+    let forward = normalize(at - eye)
+    let right = normalize(cross(vec3(y: 1.0), forward))
+    let up = cross(forward, right)
+    Shot { eye, forward, right, up, focal, look: 3.0, ..base }
+}
+
+fn sized(s: mut State, width: u32, height: u32) {
+    if width != s.width || height != s.height {
+        s.colour = texture(width: width, height: height)
+        s.marks = texture(width: width, height: height)
+        s.normal = texture(width: width, height: height)
+        s.width = width
+        s.height = height
+    }
+}
+
+/// The scene painted (the first pass) with island `isle`, from `shot`.
+fn paint_with<I: Isle>(s: mut State, shot: Shot, isle: I) {
+    borrow hv = s.heavens
+    let waves = Waves {
+        sea: s.ocean.view(),
+        big_shape: s.ocean.big.shape,
+        big_tilt: s.ocean.big.tilt,
+        mid_shape: s.ocean.mid.shape,
+        mid_tilt: s.ocean.mid.tilt,
+        fine_shape: s.ocean.fine.shape,
+        fine_tilt: s.ocean.fine.tilt,
+        ripple_shape: s.ocean.ripple.shape,
+        ripple_tilt: s.ocean.ripple.tilt,
+        s: s.ocean.s,
+    }
+    let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, keep: false)
+    draw(
+        p,
+        cover,
+        paint.bind(
+            shot: shot,
+            isle: isle,
+            light: hv.light,
+            clouds: hv.clouds,
+            view: hv.tables.view,
+            aerial: hv.tables.aerial,
+            dome: hv.sky.dome,
+            cloud: hv.sky.shadow,
+            smp: hv.linear,
+            waves: waves,
+        ),
+        vertices: 3,
+    )
+    p.end()
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    sized(mut s, width, height)
+    let shot = if ISLAND == 1 {
+        let isle = the_stair()
+        shot_of(START + time, width, height, s.ocean.swell, isle.bounds(), isle.aim())
+    } else {
+        let isle = the_ring()
+        shot_of(START + time, width, height, s.ocean.swell, isle.bounds(), isle.aim())
+    }
+    s.heavens.step(shot.eye, shot.forward, START + time)
+    s.ocean.step(held(START + time))
+    if ISLAND == 1 {
+        paint_with(mut s, shot, the_stair())
+    } else {
+        paint_with(mut s, shot, the_ring())
+    }
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    borrow hv = s.heavens
+    draw(
+        screen,
+        cover,
+        ink.bind(shot: shot, light: hv.light, colour: s.colour, marks: s.marks, normal: s.normal),
+        vertices: 3,
+    )
+    screen.present()
+}
+
+/// Each frame records draws the host accepts.
+@test(frames: 2)
+fn frames_record_valid_draws() {}

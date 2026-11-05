@@ -1,0 +1,156 @@
+// What every island is to the scene that draws it (`Isle`): its bounds, its field (how far a point
+// is from it, and what it's made of there), its finish (each material's colour and wear), and where
+// the open sea isn't (a still lagoon's, or a harbour's). Each island is a type of its own, so each
+// is drawn by a shader of its own: the scene's budget is an island's, never the archipelago's.
+//
+// The island is met as finely as a pixel can hold (`px`, a pixel's width in m where the ray is): a
+// part smaller than a few pixels isn't modelled there but left to its material, so a far island is
+// its masses and its air, and a near one its every stone.
+
+use opening::look::{SEA, SKY}
+
+/// What a surface is, lit: its colour (linear albedo), its roughness and metal, the light it gives
+/// itself, its line field for the ink (1 none), and how much of the sky it mirrors (0 to 1).
+pub struct Finish: Copy {
+    pub albedo: vec3,
+    pub rough: f32,
+    pub metal: f32,
+    pub glow: vec3,
+    pub line: f32,
+    pub gloss: f32,
+}
+
+/// A matte surface of `albedo`, `rough` rough.
+pub fn matte(albedo: vec3, rough: f32) -> Finish {
+    Finish { albedo, rough, metal: 0.0, glow: vec3(0.0), line: 1.0, gloss: 0.0 }
+}
+
+/// An island, placed in the world.
+pub trait Isle: Copy + GpuData {
+    /// A sphere round all of it (the world's: centre, radius).
+    fn bounds(self) -> vec4
+    /// How far `p` is from it (m) and what it's made of there, met as finely as a pixel `px` m wide
+    /// holds.
+    fn field(self, p: vec3, px: f32) -> vec2
+    /// Material `id`'s finish at `p`, facing `n`, seen along `d`, a pixel `foot` m wide on it.
+    fn finish(self, p: vec3, n: vec3, d: vec3, id: f32, foot: f32) -> Finish
+    /// Whether the open sea isn't at `p` (its waves don't reach there).
+    fn dry(self, p: vec3) -> bool
+    /// How much material `id` mirrors the island itself, as still water does (0 to 1: its
+    /// reflectance's share, beside the Fresnel's).
+    fn mirror(self, id: f32) -> f32 {
+        0.0
+    }
+    /// Where the views look (the world's): its heart, by default its bounds' centre 60 m up.
+    fn aim(self) -> vec3 {
+        let b = self.bounds()
+        vec3(b.x, 60.0, b.z)
+    }
+    /// The field without its mirroring water (what the water mirrors): by default all of it.
+    fn mirrored(self, p: vec3, px: f32) -> f32 {
+        self.field(p, px).x
+    }
+}
+
+/// Where a ray from `o` along `d` meets what the island's water mirrors (`Isle::mirrored`).
+pub fn march_mirrored<I: Isle>(isle: I, o: vec3, d: vec3, lo: f32, hi: f32, k: f32) -> f32 {
+    var t = lo
+    var hit = hi
+    var i = 0
+    while i < 200 && t < hi {
+        let px = t * k
+        let h = isle.mirrored(o + d * t, px)
+        if h < px * 0.5 {
+            hit = t
+            t = hi
+        } else {
+            t += h * 0.9
+        }
+        i += 1
+    }
+    hit
+}
+
+/// The materials the kit and the islands are made of: what the ink tells apart (`look`'s ids run
+/// to 10).
+pub const BASALT: f32 = 11.0
+pub const TURF: f32 = 12.0
+pub const TIMBER: f32 = 13.0
+pub const THATCH: f32 = 14.0
+pub const STILL: f32 = 15.0
+pub const ASHLAR: f32 = 16.0
+pub const SHINGLE: f32 = 17.0
+pub const CLOTH: f32 = 18.0
+
+/// Whether `id` is the island's (neither the sky nor the sea).
+pub fn solid(id: f32) -> bool {
+    id != SKY && id != SEA
+}
+
+/// Where a ray from `o` along `d` meets island `isle`, from `lo` to `hi`, or `hi`: each step a
+/// pixel's width finer as it nears (`k`: a pixel's width per metre out).
+pub fn march<I: Isle>(isle: I, o: vec3, d: vec3, lo: f32, hi: f32, k: f32) -> f32 {
+    var t = lo
+    var hit = hi
+    var i = 0
+    while i < 360 && t < hi {
+        let px = t * k
+        let h = isle.field(o + d * t, px).x
+        if h < px * 0.35 {
+            hit = t
+            t = hi
+        } else {
+            t += h * 0.85
+        }
+        i += 1
+    }
+    if hit < hi {
+        for _ in 0..3 {
+            hit += isle.field(o + d * hit, hit * k).x
+        }
+    }
+    hit
+}
+
+/// The island's normal at `p`, its field read `e` m apart (a tetrahedron's four taps).
+pub fn normal<I: Isle>(isle: I, p: vec3, e: f32, px: f32) -> vec3 {
+    let a = vec3(1.0, -1.0, -1.0)
+    let b = vec3(-1.0, -1.0, 1.0)
+    let c = vec3(-1.0, 1.0, -1.0)
+    let f = vec3(1.0, 1.0, 1.0)
+    normalize(
+        a * isle.field(p + a * e, px).x +
+            b * isle.field(p + b * e, px).x +
+            c * isle.field(p + c * e, px).x +
+            f * isle.field(p + f * e, px).x,
+    )
+}
+
+/// How much of the sun reaches `p` past the island: a soft shadow marched toward it, its first
+/// step jittered by `jit` (0 to 1), the field met as finely as at `p` (`px`).
+pub fn shadow<I: Isle>(isle: I, p: vec3, l: vec3, start: f32, jit: f32, px: f32) -> f32 {
+    var t = start * (1.0 + 2.0 * jit)
+    var lit = 1.0
+    var i = 0
+    while i < 80 && t < 3000.0 && lit > 0.02 {
+        let h = isle.field(p + l * t, max(px, t * 0.002)).x
+        lit = min(lit, 10.0 * h / t)
+        t += clamp(h, max(0.2, px), 120.0)
+        i += 1
+    }
+    clamp(lit, 0.0, 1.0)
+}
+
+/// How much of the sky reaches `p` on the island, facing `n`: five taps out along its normal, the
+/// first a little over a pixel out.
+pub fn occlusion<I: Isle>(isle: I, p: vec3, n: vec3, px: f32) -> f32 {
+    var hidden = 0.0
+    var w = 1.0
+    let base = max(0.3, px * 1.5)
+    for i in 1..6 {
+        let h = base * f32(i * i)
+        hidden += w * max(h - isle.field(p + n * h, px).x, 0.0) / h
+        w *= 0.6
+    }
+    clamp(1.0 - hidden * 0.5, 0.0, 1.0)
+}

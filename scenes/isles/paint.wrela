@@ -1,0 +1,254 @@
+// The first pass: the scene painted in 3D as the opening paints it, in its own sea, sky and air,
+// with one island (`Isle`) in place of the opening's rock. Everything is lit by the one light and
+// seen through the one air (`opening::paint::lit_solid`, `engine::light::hazed`), never by a light
+// of its own: an island sits in the world it's in. A shader of its own for each island, so each
+// has the whole budget.
+
+use opening::look::{SEA, SKIFF, SKY, Shot, hash2, luma, ray}
+use opening::paint::{
+    Heaven, heaven, lit_solid, march_skiff, sea_shade, skiff_lit, sphere, spray, trace_sea,
+}
+use opening::skiff::dry as in_skiff
+use engine::far::foot
+use engine::light::Light
+use engine::ocean::Waves
+use engine::sky::{Clouds, cloud_shadow}
+use std::gpu::{FragCoord, Rgba16Float, Sampler, Targets3, Texture, Texture3d}
+use isle::{Isle, march, march_mirrored, normal, occlusion, shadow}
+
+/// What a pixel `px` meets along its ray, and its colour, its marks and its normal and energy (as
+/// `opening::paint` writes them for the ink).
+fn sample<I: Isle>(
+    s: Shot,
+    isle: I,
+    light: Light,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    waves: Waves,
+    px: vec2,
+) -> (vec3, vec4, vec4) {
+    let h = Heaven { light, clouds }
+    let d = ray(s, px)
+    let o = s.eye
+    let far = 1.0e5
+    // A pixel's width per metre out.
+    let k = 2.0 / (s.resolution.y * s.focal)
+    var t = far
+    var id = SKY
+    let ts = trace_sea(s, waves, o, d, far)
+    if ts < far {
+        t = ts
+        id = SEA
+    }
+    // The sea isn't inside the skiff, nor where the island keeps it out.
+    if id == SEA && (in_skiff(s, o + d * t) || isle.dry(o + d * t)) {
+        t = far
+        id = SKY
+    }
+    let bs = sphere(o, d, vec4(s.boat + s.boat_y * 0.3, 3.2), far)
+    if bs.x < t {
+        let tb = march_skiff(s, o, d, bs.x, min(bs.y, t))
+        if tb < min(bs.y, t) {
+            t = tb
+            id = SKIFF
+        }
+    }
+    let is = sphere(o, d, isle.bounds(), far)
+    if is.x < t {
+        let ti = march(isle, o, d, is.x, min(is.y, t), k)
+        if ti < min(is.y, t) {
+            t = ti
+            id = isle.field(o + d * ti, ti * k).y
+        }
+    }
+    var c = vec3(0.0)
+    var line = 1.0
+    var weight = 0.0
+    var n = vec3(y: 1.0)
+    var energy = 0.0
+    let p = o + d * t
+    if id == SKY {
+        let sky = heaven(view, light, d, dome, smp)
+        c = sky.rgb
+        line = 0.45 - sky.a
+        n = -d
+    } else if id == SEA {
+        // Whether the water here mirrors the island: the mirrored ray met coarsely.
+        var mirrors = false
+        if t > 60.0 {
+            let r0 = vec3(d.x, -d.y, d.z)
+            let ib = sphere(p, r0, isle.bounds(), far)
+            if ib.x < ib.y {
+                mirrors = march(isle, p, r0 + vec3(0.0, 0.006, 0.0), ib.x, ib.y, k * 1.5) < ib.y
+            }
+        }
+        let (sc, sl, sw, sn, se) = sea_shade(
+            s,
+            h,
+            view,
+            aerial,
+            dome,
+            cloud,
+            smp,
+            waves,
+            p,
+            d,
+            t,
+            mirrors,
+        )
+        c = sc
+        line = sl
+        weight = sw
+        n = sn
+        energy = se
+    } else if id == SKIFF {
+        let (sc, sl, sw, sn, se) = skiff_lit(s, h, view, aerial, dome, cloud, smp, waves, p, d)
+        c = sc
+        line = sl
+        weight = sw
+        n = sn
+        energy = se
+    } else {
+        let pxm = t * k
+        n = normal(isle, p, max(0.03, pxm * 0.5), pxm)
+        let f = isle.finish(p, n, d, id, foot(t, s.resolution.y, s.focal, dot(n, d)))
+        let lift = max(0.05, pxm)
+        let sun = shadow(isle, p + n * lift, light.sun, lift, hash2(px * 1.37), pxm) *
+            cloud_shadow(clouds, cloud, smp, p)
+        let ao = occlusion(isle, p, n, pxm)
+        // Still water mirrors the island over it: its cliffs upside down in it, lit as they are.
+        var glow = f.glow
+        let mk = isle.mirror(id)
+        if mk > 0.0 {
+            let r = d - 2.0 * dot(d, n) * n
+            let o2 = p + n * max(0.2, pxm)
+            let b2 = sphere(o2, r, isle.bounds(), far)
+            let tm = march_mirrored(isle, o2, r, b2.x, b2.y, k * 2.0)
+            if tm < b2.y {
+                let q = o2 + r * tm
+                let qid = isle.field(q, (t + tm) * k).y
+                let qn = normal(isle, q, max(0.05, (t + tm) * k * 0.5), (t + tm) * k)
+                let g = isle.finish(q, qn, r, qid, (t + tm) * k)
+                let seen = lit_solid(
+                    s,
+                    h,
+                    view,
+                    aerial,
+                    dome,
+                    smp,
+                    q,
+                    qn,
+                    r,
+                    g.albedo,
+                    g.rough,
+                    g.metal,
+                    vec3(0.0),
+                    max(dot(qn, light.sun), 0.0),
+                    0.8,
+                    0.0,
+                    0.0,
+                )
+                let fres = 0.02 + 0.98 * pow(1.0 - max(dot(-d, n), 0.0), 5.0)
+                glow = seen * fres * mk
+            }
+        }
+        // (The one air, all of it: `haze` 1.)
+        c = lit_solid(
+            s,
+            h,
+            view,
+            aerial,
+            dome,
+            smp,
+            p,
+            n,
+            d,
+            f.albedo,
+            f.rough,
+            f.metal,
+            glow,
+            sun,
+            ao,
+            1.0,
+            f.gloss,
+        )
+        line = f.line
+        weight = 0.5
+    }
+    let thrown = spray(s, h, o, d, t)
+    c = c * (1.0 - thrown.a) + thrown.rgb
+    (c, vec4(log2(max(t, 0.01)), id, line, weight), vec4(n * 0.5 + 0.5, clamp(energy, 0.0, 1.0)))
+}
+
+/// Four places in a pixel, on a turned grid: each its own row and column.
+const WITHIN = [vec2(0.125, -0.375), vec2(-0.375, -0.125), vec2(0.375, 0.125), vec2(-0.125, 0.375)]
+
+@fragment
+pub fn paint<I: Isle>(
+    pixel: FragCoord,
+    shot: Shot,
+    isle: I,
+    light: Light,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    waves: Waves,
+) -> Targets3<vec4, vec4, vec4> {
+    let s = shot
+    let px = pixel.position.xy
+    // Where the ray passes the island or the skiff, met four times over a pixel and averaged
+    // (`s.fine`), so what's finer than a pixel neither stairs nor crawls.
+    let d = ray(s, px)
+    let near_isle = sphere(s.eye, d, isle.bounds(), 1.0e5)
+    let to_boat = s.boat + s.boat_y * 0.3 - s.eye
+    let pass = length(to_boat - d * dot(to_boat, d))
+    let boat_k = if dot(to_boat, d) > 0.0 { smoothstep(3.4, 2.5, pass) } else { 0.0 }
+    let isle_k = if near_isle.x < near_isle.y { 1.0 } else { 0.0 }
+    let k0 = max(isle_k, boat_k)
+    var c = vec3(0.0)
+    var marks = vec4(0.0)
+    var third = vec4(0.0)
+    var sum = vec3(0.0)
+    var weight = 0.0
+    var count = 1
+    var i = 0
+    while i < count {
+        let off = if i == 0 { WITHIN[0] * k0 * s.fine } else { WITHIN[i] }
+        let (ck, mk, tk) = sample(
+            s,
+            isle,
+            light,
+            clouds,
+            view,
+            aerial,
+            dome,
+            cloud,
+            smp,
+            waves,
+            px + off,
+        )
+        if i == 0 {
+            c = ck
+            marks = mk
+            third = tk
+            if k0 > 0.0 && s.fine > 0.5 && mk.y != SKY {
+                count = 4
+            }
+        }
+        let wk = 1.0 / (1.0 + luma(ck) * light.exposure)
+        sum += ck * wk
+        weight += wk
+        i += 1
+    }
+    if count > 1 {
+        c = sum / weight
+    }
+    Targets3 { first: vec4(c, 1.0), second: marks, third }
+}
