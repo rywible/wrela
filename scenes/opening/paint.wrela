@@ -1139,7 +1139,7 @@ fn falls(
             // (At its lip a smooth glassy sheet, dark as the cliff it leaves: it only whitens and
             // glows as it breaks up falling, so its top is no bright mark of its own.)
             let broken = smoothstep(20.0, 300.0, drop)
-            let water = cool * (0.3 + 0.5 * broken) + warm * (0.06 + 0.12 * sheet) * broken
+            let water = cool * (0.15 + 0.55 * broken) + warm * (0.035 + 0.08 * sheet) * broken
             let haze_ = cool * 1.1 + warm * 0.12
             let lit = mix(water, haze_, clamp(mist / max(a + mist, 1.0e-3), 0.0, 1.0))
             let col = hazed(aerial, smp, h.light, lit, p, s.eye)
@@ -1149,16 +1149,17 @@ fn falls(
     acc
 }
 
-/// A flock: gulls round the rock and nearer, each a dark V beating its wings. `BIRDS` (where,
-/// the world's; and how far each drifts).
+/// A flock: gulls nearer and farther, each a dark V beating its wings. `BIRDS` (where, the
+/// world's; and how far each drifts). (None so far that it's a pixel: a gull a pixel wide reads
+/// as a dead one on the screen, not a bird.)
 const BIRDS = [
     vec4(18.0, 19.0, 110.0, 1.0),
     vec4(23.0, 21.0, 116.0, 2.0),
     vec4(14.0, 17.5, 121.0, 3.0),
-    vec4(-128.0, 52.0, 560.0, 4.0),
-    vec4(-122.0, 54.0, 566.0, 5.0),
-    vec4(-134.0, 50.5, 572.0, 6.0),
-    vec4(-118.0, 51.0, 552.0, 7.0),
+    vec4(-59.0, 24.0, 258.0, 4.0),
+    vec4(-56.0, 25.0, 261.0, 5.0),
+    vec4(-62.0, 23.2, 264.0, 6.0),
+    vec4(-54.0, 23.5, 254.0, 7.0),
     vec4(26.0, 11.0, 70.0, 8.0),
 ]
 
