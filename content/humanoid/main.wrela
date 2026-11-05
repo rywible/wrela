@@ -77,7 +77,6 @@ pub const SIDE: f32 = 0.75
 pub const SWORD_SIDE: f32 = -0.5
 /// `SHOW=15`: how far the left hand is put on the hilt (0 as the mocap has it).
 pub const HELD: f32 = 1.0
-pub const PROBE: u32 = 0
 
 /// When the sequence moves on (s), and how long a change of clip blends.
 const IDLE_AT: f32 = 2.0
@@ -211,11 +210,11 @@ pub fn sword_script(last: f32, time: f32) -> (vec3, u32, bool) {
 pub fn mocap_script(last: f32, time: f32) -> (vec3, u32, bool) {
     let dir = |deg: f32| -> vec3 { vec3(sin(deg * 0.017453292), 0.0, cos(deg * 0.017453292)) }
     let (walk, run) = (mixamo::WALK_M.speed, mixamo::RUN_M.speed)
-    let stick = if time < 11.5 {
+    let stick = if time < 9.6 {
         vec3(0.0)
-    } else if time < 14.0 {
+    } else if time < 12.1 {
         dir(-90.0) * walk
-    } else if time < 16.5 {
+    } else if time < 14.6 {
         dir(90.0) * run
     } else {
         vec3(0.0)
@@ -231,11 +230,11 @@ pub fn mocap_script(last: f32, time: f32) -> (vec3, u32, bool) {
         (c1, mixamo::M_FIRST),
         (c2, mixamo::M_SECOND),
         (c3, mixamo::M_THIRD),
-        (5.6, mixamo::M_HEAVY),
-        (8.6, mixamo::M_HIT),
-        (10.0, mixamo::M_HIT_HARD),
-        (17.8, mixamo::M_FIRST),
-        (17.8 + m(mixamo::M_FIRST) + 0.02, mixamo::M_SECOND),
+        (4.6, mixamo::M_HEAVY),
+        (6.9, mixamo::M_HIT),
+        (8.1, mixamo::M_HIT_HARD),
+        (15.9, mixamo::M_FIRST),
+        (15.9 + m(mixamo::M_FIRST) + 0.02, mixamo::M_SECOND),
     ]
     for (t, act) in beats {
         if at(t) {
@@ -490,9 +489,6 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         // and the left hand on its hilt.
         // (Its point kept off the floor and out of the head, the hands on it wherever it goes.)
         let (lean, lean_on) = mixamo::lean_of(s.mover.acting, s.mover.act_time)
-        if PROBE == 1 && time > 6.2 && time < 6.7 {
-            print(f"t {time:.3} act {s.mover.acting} at {s.mover.act_time:.3} lean_on {lean_on:.2}")
-        }
         let (held, grip, f) = keys::hilt_held(
             rig,
             shown,
