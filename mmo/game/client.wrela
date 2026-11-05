@@ -17,7 +17,9 @@
 use combat::codec::{Encoder, LOOK_AHEAD, Link, Pad}
 use combat::main::{Fight, PLAYER_CHANGES}
 use std::math::{cos, sin}
-use combat::sim::{ATTACK, Change, DODGE, MAX_FRAMES, PARRY, Seen, Winner, World, step}
+use combat::sim::{
+    ATTACK, Change, DODGE, HEAVY, LONGSWORD, MAX_FRAMES, PARRY, Seen, Winner, World, step,
+}
 use character::{Character, Stage, Why}
 use island::main::{Card, Island, MAX_STEP}
 use platform::names
@@ -91,6 +93,7 @@ const DOWN: u32 = 8
 const HIT: u32 = 16
 const GUARD: u32 = 32
 const EVADE: u32 = 64
+const STRONG: u32 = 128
 
 const BG = vec4(0.06, 0.07, 0.09, 1.0)
 const SEA = vec4(0.07, 0.16, 0.24, 1.0)
@@ -388,6 +391,8 @@ fn key_bit(key: Key) -> u32 {
         DOWN
     } else if key == Key::J || key == Key::Space {
         HIT
+    } else if key == Key::I {
+        STRONG
     } else if key == Key::K {
         GUARD
     } else if key == Key::L || key == Key::ShiftLeft || key == Key::ShiftRight {
@@ -400,6 +405,8 @@ fn key_bit(key: Key) -> u32 {
 fn pad_bit(button: PadButton) -> u32 {
     if button == PadButton::West {
         HIT
+    } else if button == PadButton::East {
+        STRONG
     } else if button == PadButton::North {
         GUARD
     } else if button == PadButton::South {
@@ -449,6 +456,9 @@ fn pad_of(held: u32, stick: vec2) -> Pad {
     if held & EVADE != 0 {
         buttons = buttons | DODGE
     }
+    if held & STRONG != 0 {
+        buttons = buttons | HEAVY
+    }
     Pad { x, z, held: buttons }
 }
 
@@ -470,9 +480,11 @@ fn slot_of(party: [u32], peer: u32) -> Option<u32> {
 
 // ---- a fight ------------------------------------------------------------------------------------
 
-fn new_play(began: u64, slot: u32, party: take Vec<u32>) -> Play {
+/// A fight that began at `began`, this player in `slot` of `party`, its players bringing `armed`
+/// (the room's, so every peer's fight is the room's).
+fn new_play(began: u64, slot: u32, party: take Vec<u32>, armed: [u32]) -> Play {
     let n = party.len()
-    let world = World::start(n)
+    let world = World::armed(armed)
     var snaps: Vec<World> = Vec::new()
     for _ in 0..RING {
         snaps.push(world.clone())
@@ -1151,7 +1163,7 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
             propose_fight(mut s, combat::main::Act::Leave)
         } else {
             s.joined_at = time
-            propose_fight(mut s, combat::main::Act::Join)
+            propose_fight(mut s, combat::main::Act::Join { weapon: LONGSWORD })
         }
     }
     if begin && me != 0 && view.waiting(me) && !view.on() {
@@ -1160,7 +1172,7 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
     // Waiting goes on while this page is open: the lobby forgets a player silent a minute.
     if me != 0 && view.waiting(me) && !view.on() && time - s.joined_at > REJOIN {
         s.joined_at = time
-        propose_fight(mut s, combat::main::Act::Join)
+        propose_fight(mut s, combat::main::Act::Join { weapon: LONGSWORD })
     }
     // A fight whose players left holds the room: past the longest fight, anyone may settle it.
     if me != 0 && room.on() && slot_of(room.party, me).is_none() && time >= s.settle_at {
@@ -1170,7 +1182,7 @@ fn island_frame(s: mut Client, pad: Pad, dt: f32, time: f32, join: bool, begin: 
     if room.on() && room.began_at != s.last_began && me != 0 {
         if let Some(slot) = slot_of(room.party, me) {
             s.last_began = room.began_at
-            s.play = Some(new_play(room.began_at, slot, room.party.clone()))
+            s.play = Some(new_play(room.began_at, slot, room.party.clone(), room.armed.clone()))
             // The party's fight began: its invite was used.
             s.invite = String::new()
         }
@@ -1285,7 +1297,7 @@ fn fight_frame(s: mut Client, pad: Pad, dt: f32, time: f32) {
                 )
             } else {
                 String::from(
-                    f"Frame {p.frame}, {p.rollbacks} rollbacks{relayed}. J attacks, K parries, L dodges.",
+                    f"Frame {p.frame}, {p.rollbacks} rollbacks{relayed}. J cuts (again for the next), I swings heavy, K parries, L dodges.",
                 )
             }
         },
@@ -1694,7 +1706,7 @@ fn hands(seed: mut u32) -> Pad {
     seed = seed.wrapping_mul(1664525).wrapping_add(1013904223)
     let r = seed >> 8
     let a = f32(r % 628) / 100.0
-    let held = if (r >> 10) % 9 == 0 { 1 << ((r >> 14) % 3) } else { 0 }
+    let held = if (r >> 10) % 9 == 0 { 1 << ((r >> 14) % 4) } else { 0 }
     Pad { x: 0.9 * cos(a), z: 0.9 * sin(a) + 0.4, held }
 }
 
@@ -1704,13 +1716,16 @@ fn hands(seed: mut u32) -> Pad {
 /// tab), then catches up two frames at a time.
 fn fight_of(n: u32, delay: u32, loss: u32, stall: u32 = 0) -> (Vec<Play>, combat::sim::Outcome) {
     var party: Vec<u32> = Vec::new()
+    var armed: Vec<u32> = Vec::new()
     for i in 0..n {
         party.push(10 + i)
+        // Weapons of each kind, so a fight of them agrees as one of a kind does.
+        armed.push(if i % 2 == 0 { LONGSWORD } else { combat::sim::FISTS })
     }
     var plays: Vec<Play> = Vec::new()
     var seeds: Vec<u32> = Vec::new()
     for i in 0..n {
-        plays.push(new_play(1, i, party.clone()))
+        plays.push(new_play(1, i, party.clone(), armed))
         seeds.push(3 + 17 * i)
     }
     var flights: Vec<Flight> = Vec::new()
@@ -1769,7 +1784,7 @@ fn fight_of(n: u32, delay: u32, loss: u32, stall: u32 = 0) -> (Vec<Play>, combat
         }
         logs.push(combat::sim::Log { changes })
     }
-    let outcome = combat::sim::run(n, logs)
+    let outcome = combat::sim::run_armed(armed, logs)
     (plays, outcome)
 }
 

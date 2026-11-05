@@ -42,7 +42,7 @@ const NONE: u32 = 4294967295
 // ---- the pad ------------------------------------------------------------------------------------
 
 /// A pad this frame: the stick (each axis -1 to 1; `z` is away from the player, along the
-/// fight's `z`) and the buttons held (`sim::ATTACK`, `PARRY`, `DODGE`).
+/// fight's `z`) and the buttons held (`sim::ATTACK`, `PARRY`, `DODGE`, `HEAVY`).
 pub struct Pad: Copy {
     pub x: f32,
     pub z: f32,
@@ -102,7 +102,7 @@ impl Encoder {
         let stick = if reads & STICK_BITS == 0 { prev & STICK_BITS } else {
             stick_of(x: pad.x, z: pad.z, prev: prev & STICK_BITS)
         }
-        let pressed = (pad.held & !self.held) & 7
+        let pressed = (pad.held & !self.held) & (BUTTON_BITS >> 6)
         self.held = pad.held
         let buttons = (prev & BUTTON_BITS) ^ ((pressed << 6) & reads & BUTTON_BITS)
         stick | buttons
