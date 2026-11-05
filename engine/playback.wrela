@@ -189,6 +189,30 @@ pub fn moved(clip: Clip, rig: Rig) -> Move {
             smooth_place[f] = sp / k
             smooth_yaw[f] = sy / k
         }
+        // At its ends the average would be one-sided, and lag: a start that ends at a walk's pace
+        // would slow over its last frames (the hips running ahead to make it up). There the path
+        // goes on as it was going.
+        if n > 2 * w + 2 {
+            let e = n - 1 - w
+            let (pv, yv) = (
+                smooth_place[e] - smooth_place[e - 1],
+                smooth_yaw[e] - smooth_yaw[e - 1],
+            )
+            for f in e + 1..n {
+                let k = f32(f - e)
+                smooth_place[f] = smooth_place[e] + pv * k
+                smooth_yaw[f] = smooth_yaw[e] + yv * k
+            }
+            let (sv, sy) = (
+                smooth_place[w + 1] - smooth_place[w],
+                smooth_yaw[w + 1] - smooth_yaw[w],
+            )
+            for f in 0..w {
+                let k = f32(w - f)
+                smooth_place[f] = smooth_place[w] - sv * k
+                smooth_yaw[f] = smooth_yaw[w] - sy * k
+            }
+        }
         for f in 0..n {
             root[f] = smooth_place[f] - smooth_place[0]
             heading[f] = smooth_yaw[f] - smooth_yaw[0]
