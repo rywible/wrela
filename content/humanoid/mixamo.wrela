@@ -346,11 +346,78 @@ fn pitch_of(q: Quat) -> f32 {
     atan2(-fwd.y, length(vec2(fwd.x, fwd.z)))
 }
 
+/// Keyed vector at `time`: `values` at `times`, eased in and out between.
+fn keyed_v4(times: [f32], values: [vec4], time: f32) -> vec4 {
+    let n = times.len()
+    var v = if time <= times[0] { values[0] } else { values[n - 1] }
+    for i in 1..n {
+        if time >= times[i - 1] && time <= times[i] {
+            let x = (time - times[i - 1]) / max(times[i] - times[i - 1], 1.0e-4)
+            v = mix(values[i - 1], values[i], vec4(smoothstep(0.0, 1.0, x)))
+        }
+    }
+    v
+}
+
+/// The classic cut's footwork (the body's space, m and degrees): its beats, the hips' place,
+/// each foot's ball (x, z, its turn, its heel up) and lift. A kendo stance (right foot ahead, the
+/// left heel up); the right foot lifted through the snap and stamped down with the blow
+/// (fumikomi), the left toe pinned behind, its heel high; the left foot drawn up under the body
+/// as it sinks (hikitsuke); then back to guard a step at a time, the left foot first.
+const V_LIFT: f32 = 0.6
+const V_BACK1: f32 = 1.128
+const V_MID: f32 = 1.235
+const V_BACK2: f32 = 1.343
+const FOOT_TIMES: [f32; 12] = [0.0, V_UP, V_GO, V_LIFT, V_BLOW, V_FREE, V_SETTLE, V_STILL, V_BACK1, V_MID, V_BACK2, V_DONE]
+const HIPS_AT: [vec4; 12] = [
+    vec4(0.0, 0.86, 0.0, 0.0),
+    vec4(0.0, 0.875, -0.03, 0.0),
+    vec4(0.0, 0.875, -0.03, 0.0),
+    vec4(0.0, 0.86, 0.12, 0.0),
+    vec4(0.0, 0.8, 0.36, 0.0),
+    vec4(0.0, 0.8, 0.36, 0.0),
+    vec4(0.0, 0.77, 0.4, 0.0),
+    vec4(0.0, 0.77, 0.4, 0.0),
+    vec4(0.0, 0.8, 0.33, 0.0),
+    vec4(0.0, 0.82, 0.22, 0.0),
+    vec4(0.0, 0.845, 0.11, 0.0),
+    vec4(0.0, 0.86, 0.0, 0.0),
+]
+const LEFT_AT: [vec4; 12] = [
+    vec4(0.13, -0.16, 0.0, 20.0),
+    vec4(0.13, -0.16, 0.0, 20.0),
+    vec4(0.13, -0.16, 0.0, 22.0),
+    vec4(0.13, -0.16, 0.0, 32.0),
+    vec4(0.13, -0.15, 0.0, 45.0),
+    vec4(0.13, -0.15, 0.0, 45.0),
+    vec4(0.13, 0.2, 0.0, 25.0),
+    vec4(0.13, 0.2, 0.0, 25.0),
+    vec4(0.13, 0.02, 0.0, 15.0),
+    vec4(0.13, -0.16, 0.0, 20.0),
+    vec4(0.13, -0.16, 0.0, 20.0),
+    vec4(0.13, -0.16, 0.0, 20.0),
+]
+const LEFT_LIFT: [f32; 12] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
+const RIGHT_AT: [vec4; 12] = [
+    vec4(-0.12, 0.22, 0.0, 0.0),
+    vec4(-0.12, 0.22, 0.0, 0.0),
+    vec4(-0.12, 0.22, 0.0, 0.0),
+    vec4(-0.12, 0.42, 0.0, -10.0),
+    vec4(-0.12, 0.62, 0.0, 0.0),
+    vec4(-0.12, 0.62, 0.0, 0.0),
+    vec4(-0.12, 0.62, 0.0, 0.0),
+    vec4(-0.12, 0.62, 0.0, 0.0),
+    vec4(-0.12, 0.62, 0.0, 0.0),
+    vec4(-0.12, 0.62, 0.0, 0.0),
+    vec4(-0.12, 0.42, 0.0, 0.0),
+    vec4(-0.12, 0.22, 0.0, 0.0),
+]
+const RIGHT_LIFT: [f32; 12] = [0.0, 0.0, 0.0, 0.08, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.04, 0.0]
+
 fn vertical() -> Move {
-    // The legs and the hips' travel of Mixamo's first slash, retimed to the keyed sword: its
-    // gather while the sword rises, dead still through jodan's hold, its lunge (the step in) on
-    // the snap so the stamp lands with the blow, a dead hit-stop, a slow sink into the front
-    // knee, a beat held, and its own step back to guard at its own pace.
+    // Mixamo's first slash, for its arms' and shoulders' life only, retimed to the keyed sword
+    // (dead still through jodan's hold, a dead hit-stop). The rest is keyed: the trunk square
+    // and upright, pitched as keyed; the hips and feet as the footwork above says.
     let m = once_of(embed("private/great_sword_slash.bvh"), 7, 36)
     let keys = [
         vec2(0.0, 0.0),
@@ -363,57 +430,67 @@ fn vertical() -> Move {
         vec2(V_DONE, 0.95),
     ]
     var v = playback::keyed_over(m, keys, blow: V_BLOW, free: V_FREE, cancel: 1.1)
-    // Square and upright through it: the slash's wind (its hips swing sixty degrees and roll, a
-    // diagonal cut's) taken out. The hips keep the guard's turn and only pitch as the mocap's
-    // do; the trunk is the guard's own, pitched as keyed, so the cut comes down the middle and
-    // the stance never wheels or lists.
     let rig = HERO.rig.clone()
     let n = v.clip.bones
+    let up = vec3(0.0, 1.0, 0.0)
     let guard = IDLE_M.clip.pose(0.0)
     let hips = rig.find("hips")
     let spine = rig.find("spine")
-    // The trunk's pitch (degrees, + forward) keyed over the cut: arched up tall into jodan,
-    // only a little over the front knee at the blow (the depth from the hips sinking, not the
-    // spine folding); the hips' drop (m): the weight sinking through the snap and the settle.
+    // The trunk's pitch (degrees, + forward): arched up tall into jodan, a little over the
+    // front knee at the blow (the depth from the hips and the step, not the spine folding).
     let times = [0.0, V_UP, V_GO, V_BLOW, V_FREE, V_SETTLE, V_STILL, V_DONE]
-    let pitches = [0.0, -8.0, -10.0, 11.0, 11.0, 13.0, 13.0, 0.0]
+    let pitches = [-8.0, -14.0, -16.0, -3.0, -3.0, -1.0, -1.0, -8.0]
     // Into the blow (degrees): the right shoulder driven forward and the trunk turned a little
     // after it (the right side leads, as the right hand's further up the hilt), the left
     // shoulder drawn back, so both arms reach long down the hilt.
     let reaches = [0.0, 0.0, 0.0, 16.0, 16.0, 14.0, 14.0, 0.0]
     let turns = [0.0, 0.0, 0.0, 14.0, 14.0, 12.0, 12.0, 0.0]
-    let drops = [0.0, 0.015, 0.015, -0.05, -0.05, -0.08, -0.08, 0.0]
-    let gp = pitch_of(guard.turns[hips])
+    let square = |q: Quat| -> Quat { q.mul(keys::twist_of(q, up).inverse()) }
     for f in 0..v.clip.frames {
         let t = f32(f) / v.clip.fps
-        let hq = v.clip.turns[f * n + hips]
-        v.clip.turns[f * n + hips] = Quat::axis_angle(vec3(1.0, 0.0, 0.0), pitch_of(hq) - gp).mul(guard.turns[hips])
+        // (The guard's hips tip forward, its seat pushed back: drawn upright under the trunk.)
+        v.clip.turns[f * n + hips] = Quat::axis_angle(vec3(1.0, 0.0, 0.0), -12.0 * 0.017453292).mul(square(guard.turns[hips]))
         for name in ["spine", "chest", "upperChest", "neck", "head"] {
             let b = rig.find(name)
             if b != humanoid::NONE {
                 v.clip.turns[f * n + b] = if b == spine {
-                    // Less the hips' own pitch, so the trunk's lean is the keyed one.
-                    Quat::axis_angle(vec3(1.0, 0.0, 0.0), keyed_at(times, pitches, t) * 0.017453292 - (pitch_of(hq) - gp))
-                        .mul(guard.turns[b])
+                    Quat::axis_angle(vec3(1.0, 0.0, 0.0), keyed_at(times, pitches, t) * 0.017453292).mul(square(guard.turns[b]))
                 } else {
-                    guard.turns[b]
+                    square(guard.turns[b])
                 }
             }
         }
-        v.clip.hips[f] = v.clip.hips[f] + vec3(0.0, keyed_at(times, drops, t), 0.0)
         let r = keyed_at(times, reaches, t) * 0.017453292
         for (name, by) in [("leftShoulder", 0.6), ("rightShoulder", 1.0)] {
             let b = rig.find(name)
             if b != humanoid::NONE {
                 let i = f * n + b
-                v.clip.turns[i] = Quat::axis_angle(vec3(0.0, 1.0, 0.0), by * r).mul(v.clip.turns[i])
+                v.clip.turns[i] = Quat::axis_angle(up, by * r).mul(v.clip.turns[i])
             }
         }
         let ch = rig.find("upperChest")
         if ch != humanoid::NONE {
             let i = f * n + ch
-            v.clip.turns[i] = Quat::axis_angle(vec3(0.0, 1.0, 0.0), keyed_at(times, turns, t) * 0.017453292).mul(v.clip.turns[i])
+            v.clip.turns[i] = Quat::axis_angle(up, keyed_at(times, turns, t) * 0.017453292).mul(v.clip.turns[i])
         }
+        // The hips where the footwork has them, the legs put on its feet.
+        let at = keyed_v4(FOOT_TIMES, HIPS_AT, t)
+        v.clip.hips[f] = rig.base.q.inverse().rotate(vec3(at.x, at.y, at.z) - rig.base.t)
+        var p = v.clip.pose(t)
+        p = keys::legs_on(
+            rig,
+            p,
+            [keyed_v4(FOOT_TIMES, LEFT_AT, t), keyed_v4(FOOT_TIMES, RIGHT_AT, t)],
+            [keyed_at(FOOT_TIMES, LEFT_LIFT, t), keyed_at(FOOT_TIMES, RIGHT_LIFT, t)],
+        )
+        for b in 0..n {
+            v.clip.turns[f * n + b] = p.turns[b]
+        }
+    }
+    // It stays where it stands: no travel (the footwork steps in and back on the spot).
+    for f in 0..v.root.len() {
+        v.root[f] = vec3(0.0)
+        v.heading[f] = 0.0
     }
     v
 }
@@ -429,15 +506,15 @@ pub fn vertical_sword(time: f32) -> (vec3, vec3, vec3) {
     let times = [0.0, V_UP, V_GO, V_BLOW, V_FREE, V_SETTLE, V_STILL, V_DONE]
     let holds = [
         vec3(0.0, -0.32, 0.40),
-        vec3(0.0, 0.72, 0.24),
-        vec3(0.0, 0.74, 0.20),
+        vec3(0.0, 0.74, 0.22),
+        vec3(0.0, 0.75, 0.20),
         vec3(0.0, 0.06, 1.0),
         vec3(0.0, 0.06, 1.0),
         vec3(0.0, -0.04, 0.96),
         vec3(0.0, -0.04, 0.96),
         vec3(0.0, -0.32, 0.40),
     ]
-    let angles = [25.0, 114.0, 120.0, 10.0, 10.0, -4.0, -4.0, 25.0]
+    let angles = [25.0, 135.0, 138.0, 10.0, 10.0, -4.0, -4.0, 25.0]
     var hold = holds[7]
     var angle = angles[7]
     if time <= 0.0 {

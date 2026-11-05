@@ -110,6 +110,20 @@ pub struct State {
 }
 
 pub fn init() -> State {
+    if PROBE == 3 {
+        let rig = HERO.rig.clone()
+        let rw = rig.rest_world()
+        for n in ["hips", "leftUpperLeg", "leftFoot", "leftToes", "rightFoot", "rightToes", "upperChest", "head"] {
+            let t = rw[rig.find(n)].t
+            print(f"rest {n} {t.x:.3} {t.y:.3} {t.z:.3}")
+        }
+        let g = mixamo::IDLE_M.clip.pose(0.0)
+        let w = humanoid::frame_world(rig, g.turns, 0, rig.base.t + rig.base.q.rotate(g.hips))
+        for n in ["hips", "leftFoot", "leftToes", "rightFoot", "rightToes"] {
+            let t = w[rig.find(n)].t
+            print(f"guard {n} {t.x:.3} {t.y:.3} {t.z:.3}")
+        }
+    }
     if PROBE == 1 {
         let files = [
             (embed("private/great_sword_slash_4.bvh"), 30, 56),
@@ -470,7 +484,15 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let game = SHOW == 11 || SHOW == 13 || SHOW == 15
     let dt = clamp(time - s.last, 1.0e-4, 0.1)
     let (played_pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
-    let pose = played_pose
+    // The one cut alone: its own keyed body, start to end, and its first pose (the guard) held
+    // between cuts, so nothing blends in from the idle's wider stance.
+    let pose = if SHOW == 15 && ONE == 1 {
+        if s.mover.acting == mixamo::M_VERTICAL {
+            mixamo::MOCAP_ACTS[mixamo::M_VERTICAL].clip.pose(s.mover.act_time)
+        } else {
+            mixamo::MOCAP_ACTS[mixamo::M_VERTICAL].clip.pose(0.0)
+        }
+    } else { played_pose }
     var bones = palette(HERO.rig, pose, place)
     var shown = pose
     var shown_at = place

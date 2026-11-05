@@ -346,6 +346,39 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
     p
 }
 
+/// `pose` with its legs put on keyed feet: each foot's ball set at (`feet[i]`.x, .y) on the
+/// floor (the body's space, raised `lifts[i]`), turned `feet[i]`.z degrees and its heel up
+/// `feet[i]`.w degrees, the leg reaching its ankle there, as `posed` sets them (left first).
+pub fn legs_on(rig: Rig, pose: Pose, feet: [vec4; 2], lifts: [f32; 2]) -> Pose {
+    let rw = rig.rest_world()
+    let nb = rig.bones.len()
+    var w = humanoid::frame_world(rig, pose.turns, 0, rig.base.t + rig.base.q.rotate(pose.hips))
+    for i in 0..2 {
+        let l = leg_of(rig, if i == 0 { 1.0 } else { -1.0 })
+        let f = feet[i]
+        let yaw = about(vec3(0.0, 1.0, 0.0), f.z * DEG)
+        let heel = about(yaw.rotate(vec3(1.0, 0.0, 0.0)), f.w * DEG)
+        let q = heel.mul(yaw)
+        let ball = vec3(f.x, rw[l.toes].t.y + lifts[i], f.y)
+        let ankle = ball + q.rotate(rw[l.ankle].t - rw[l.toes].t)
+        let hinge = rw[l.knee].q.inverse().rotate(vec3(1.0, 0.0, 0.0))
+        let (qu, ql) = reach(w[l.hip], w[l.knee], w[l.ankle].t, ankle, hinge)
+        turn_below(rig, mut w, l.hip, qu.mul(w[l.hip].q.inverse()))
+        turn_below(rig, mut w, l.knee, ql.mul(w[l.knee].q.inverse()))
+        turn_below(rig, mut w, l.ankle, q.mul(rw[l.ankle].q).mul(w[l.ankle].q.inverse()))
+        if l.toes != NONE {
+            turn_below(rig, mut w, l.toes, yaw.mul(rw[l.toes].q).mul(w[l.toes].q.inverse()))
+        }
+    }
+    var out = pose
+    for b in 0..nb {
+        let up = rig.bones[b].parent
+        let pq = if up == NONE { rig.base.q } else { w[up].q }
+        out.turns[b] = pq.inverse().mul(w[b].q)
+    }
+    out
+}
+
 /// The key `keys` set at `time` (s): the two either side mixed as the later one's ease says,
 /// the first before them and the last after.
 pub fn key_at(keys: [Key], time: f32) -> Key {
@@ -664,7 +697,10 @@ pub fn sword_keyed(
                 let reach = (length(rw[l0].t - rw[u0].t) + length(rw[h0].t - rw[l0].t)) * 0.985
                 let to = wrist - w[u0].t
                 if length(to) > reach {
-                    at -= normalize(to) * (length(to) - reach)
+                    // Drawn straight back along the body's middle (its left-right kept), so a
+                    // cut down the centre stays on it.
+                    let back = normalize(vec3(0.0, to.y, to.z))
+                    at -= back * (length(to) - reach) / max(dot(back, normalize(to)), 0.5)
                 }
             }
         }
