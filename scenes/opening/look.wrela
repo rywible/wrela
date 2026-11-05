@@ -65,6 +65,9 @@ pub struct Shot: Copy + GpuData {
     /// The cathedral lit from within (0 or 1): its stained glass throwing coloured beams round
     /// over the sea as a lighthouse's do.
     pub lantern: f32,
+    /// How finely it's met, 1 for a still or a clip (the rock's and the skiff's edges met four
+    /// times over a pixel) or 0 for a live page that must keep its frame rate (once).
+    pub fine: f32,
 }
 
 /// `v` (x, z) turned `a` (rad) about the vertical, as a heading turns.
@@ -138,6 +141,7 @@ pub fn shot_at(
         stroke: r.shown_stroke,
         look: 0.0,
         lantern: 0.0,
+        fine: 1.0,
     }
 }
 

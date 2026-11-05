@@ -156,13 +156,13 @@ fn mirror_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> vec2 {
     vec2(hit, closest)
 }
 
-fn march_isle(o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
+fn march_isle(o: vec3, d: vec3, lo: f32, hi: f32, near: f32) -> f32 {
     var t = lo
     var hit = hi
     var i = 0
     while i < 320 && t < hi {
         let h = isle(o + d * t).x
-        if h < t * 0.0001 {
+        if h < t * near {
             hit = t
             t = hi
         } else {
@@ -1236,7 +1236,10 @@ fn sample(
     }
     let is = sphere(o, d, bounds(), far)
     if is.x < t {
-        let ti = march_isle(o, d, is.x, min(is.y, t))
+        // (Met within a tenth of a millimetre a metre off for a still; live, within half the
+        // pixel's own width, which is as near as the eye can tell and takes far fewer steps.)
+        let near = if s.fine > 0.5 { 0.0001 } else { 1.0 / (s.resolution.y * s.focal) }
+        let ti = march_isle(o, d, is.x, min(is.y, t), near)
         if ti < min(is.y, t) {
             t = ti
             id = isle(o + d * ti).y
@@ -1508,7 +1511,7 @@ pub fn paint(
             // sea is.)
             let sea_first = mk.y == SEA && exp2(mk.x) < near_isle.x
             k = max(if sea_first { 0.0 } else { isle_k }, boat_k)
-            if k > 0.0 {
+            if k > 0.0 && s.fine > 0.5 {
                 count = 4
             }
         }

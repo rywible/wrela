@@ -11,7 +11,7 @@
 // words stand) easing away as the player takes the paddle.
 
 use client::Account
-use opening::played::{State as Scene, input, play, release, scene, way}
+use opening::played::{State as Scene, input, play, ready, release, scene, way}
 use std::gpu::{
     ClipPosition, FragCoord, Rgba8, Sampler, Texture, VertexIndex, begin_screen_pass, draw, sampler,
 }
@@ -38,8 +38,8 @@ const ONLINE: u32 = 1
 const ACTIONS: [Text; 2] = ["Play", "Play online"]
 const NONE: u32 = 4294967295
 
-/// The drawings the sky takes to cook before the scene shows (heavens: its dome over ~32).
-const COOKING: u32 = 36
+/// The bands of rows a drawing of the scene is painted in, one a frame (`play`).
+const BANDS: u32 = 2
 /// Seconds the scene takes to come up from black, and the page's words after it.
 const RISE: f32 = 1.6
 const WORDS_AFTER: f32 = 0.35
@@ -80,6 +80,8 @@ pub struct Front {
     time: f32,
     dt: f32,
     drawings: u32,
+    /// The scene has inked a drawing under a sky cooked whole: it may show.
+    cooked: bool,
     /// How far the scene has come up (0 to 1), the words are in (0 to 1), and the veil.
     shown: f32,
     words: f32,
@@ -118,6 +120,7 @@ pub fn init() -> Front {
         time: 0.0,
         dt: 0.0,
         drawings: 0,
+        cooked: false,
         shown: 0.0,
         words: 0.0,
         since: 0.0,
@@ -288,7 +291,7 @@ pub fn frame<A: Account>(
     }
     // The scene, once the sky has cooked, comes up from black; the words after it.
     f.drawings += 1
-    if f.drawings > COOKING {
+    if f.cooked {
         f.since += dt
     }
     let rise = if reduced { 0.4 } else { RISE }
@@ -314,7 +317,9 @@ pub fn frame<A: Account>(
     }
     let tall = f.tall
     let wide = max(round(tall * w / h), 1.0)
-    play(mut f.scene, f.time, u32(wide), u32(tall), 0.0)
+    if play(mut f.scene, f.time, u32(wide), u32(tall), orbit: 0.0, bands: BANDS) && ready(f.scene) {
+        f.cooked = true
+    }
     // The page's words, the actions, and the account's chip and pages over them.
     f.list.clear(vec2(w, h))
     var hand = false

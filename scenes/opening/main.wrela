@@ -47,6 +47,10 @@ pub const LOOK: f32 = 3.0
 /// (`--set LANTERN=1`).
 pub const LANTERN: f32 = 0.0
 
+/// How finely the rock and the skiff are met: 1, each pixel near them four times over; 0, once,
+/// as wrela.dev's live page draws them (`--set FINE=0`, to see what it gives up).
+pub const FINE: f32 = 1.0
+
 pub fn init() -> State {
     targets(heavens(SUN, 3.0), 640, 360)
 }
@@ -57,7 +61,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     for e in events() {
         key(mut s.rig, e)
     }
-    let shot = painted(mut s, time, VIEW, 0.0)
+    let shot = painted(mut s, time, VIEW, 0.0, fine: FINE)
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     borrow hv = s.heavens
     draw(
