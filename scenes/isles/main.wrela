@@ -30,7 +30,7 @@ pub const ISLAND: u32 = 0
 pub const VARIANT: u32 = 0
 
 /// Which view: 0 from the skiff, `DIST` m off; 1 near, from the water a few hundred metres off;
-/// 2 from over the sea, high, to see its layout; 3 off its mouth (or its landing), looking in; 4 on its heights, looking across it.
+/// 2 from over the sea, high, to see its layout; 3 off its mouth (or its landing), looking in; 4 on its heights, looking across it; 5 inside it, on its water, along its people's shelf.
 pub const VIEW: u32 = 0
 
 /// How far the skiff is from the island's nearest shore (m), and its bearing from the skiff (rad
@@ -121,6 +121,10 @@ fn shot_of(
         // On its heights by the mouth, looking in across it.
         let e = mid - ahead * (b.w - 200.0) + side * 90.0 + vec3(y: 75.0)
         (e, mid + ahead * (b.w * 0.6), 1.3)
+    } else if VIEW == 5 {
+        // On the lagoon, by the fishers' shelf, looking along it.
+        let e = mid + side * (b.w * 0.25) + ahead * (b.w * 0.05) + vec3(y: 4.0)
+        (e, mid + side * (b.w * 0.75) + ahead * (b.w * 0.45) + vec3(y: 6.0), 1.3)
     } else if VIEW == 2 {
         let e = mid - ahead * (b.w * 1.9) + side * (b.w * 0.6) + vec3(y: b.w * 0.9)
         (e, mid, 1.6)

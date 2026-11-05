@@ -23,7 +23,10 @@
 use engine::far::shown
 use opening::look::{hash2, noise, noise3}
 use isle::{BASALT, Finish, Isle, STILL, THATCH, TIMBER, TURF, matte}
-use kit::{basalt, boulder, columns, hut, near, sd_hex, sector, stilts, thatch, timber, turf, turn}
+use kit::{
+    basalt, boulder, columns, hex_cell, hut, near, sd_hex, sector, stilts, thatch, timber, turf,
+    turn,
+}
 
 /// The Still Ring, placed: its centre at sea level (the world's), the heading its mouth opens to
 /// (rad, from +x toward +z), and its shape: the lagoon's radius (m), the cliffs' height over the
@@ -39,13 +42,14 @@ pub struct Ring: Copy + GpuData {
 /// The shape Ryan picks among (`--set VARIANT=k` in the workbench).
 pub fn ring_variant(k: u32, at: vec3, mouth: f32) -> Ring {
     if k == 1 {
-        // Taller and tighter: a crater's rim.
-        Ring { at, mouth, radius: 380.0, height: 62.0, gap: 0.16 }
+        // The first middle size, wider and lower.
+        Ring { at, mouth, radius: 520.0, height: 40.0, gap: 0.2 }
     } else if k == 2 {
         // Wide and low, the mouth a broad bay.
         Ring { at, mouth, radius: 680.0, height: 28.0, gap: 0.32 }
     } else {
-        Ring { at, mouth, radius: 520.0, height: 40.0, gap: 0.2 }
+        // Taller and tighter: a crater's rim (Ryan's pick, Nov 5 2026).
+        Ring { at, mouth, radius: 380.0, height: 62.0, gap: 0.16 }
     }
 }
 
@@ -65,18 +69,23 @@ fn rim(r: Ring, a: f32) -> vec3 {
     // metres or so, tilted a little, rolling over the ring's length: a skyline in steps, never a
     // ruler's edge.
     let round = a * r.radius
-    let block = floor(round / 110.0 + noise(along * 4.0) * 0.8)
-    let fault = (hash2(vec2(block, 4.4)) - 0.5) * 0.45 * r.height +
-        (fract(round / 110.0 + noise(along * 4.0) * 0.8) - 0.5) *
-            (hash2(vec2(block, 9.1)) - 0.5) *
-            6.0
+    let bf = round / 110.0 + noise(along * 4.0) * 0.8
+    let block = floor(bf)
+    // (Each block's step blended into the next over its last fifth, so the rim breaks in a few
+    // falls, not a battlement's teeth.)
+    let into = smoothstep(0.8, 1.0, fract(bf))
+    let fault = mix(hash2(vec2(block, 4.4)), hash2(vec2(block + 1.0, 4.4)), into) *
+        0.45 *
+        r.height -
+        0.22 * r.height
     var top = r.height * (0.55 + 0.95 * noise(along * 1.3 + vec2(1.9))) + fault
     // And saddles where the rim sags between its heights.
     top -= r.height * 0.35 * smoothstep(0.6, 0.85, noise(along * 2.7 + vec2(8.3)))
     // At the mouth the cliffs stop: their ends fall to the sea in a few broken steps, and between
     // them the wall is gone below the water.
     let m = from_mouth(a, r.mouth)
-    let open = smoothstep(r.gap * 0.5, r.gap * 0.5 + 0.1, m)
+    // (In three falls of a column's height each, never a smooth hump.)
+    let open = floor(smoothstep(r.gap * 0.5, r.gap * 0.5 + 0.1, m) * 3.0 + 0.35) / 3.0
     top = mix(-12.0, top, open)
     vec3(rr, half, top)
 }
@@ -99,6 +108,17 @@ fn cliffs(r: Ring, q: vec3) -> vec2 {
     // Undercut at the waterline, where the sea works at it; and over it the scree the cliff has
     // shed, a slope of fallen columns banked against its foot.
     let notch = 2.0 * exp(-q.y * q.y / 6.0)
+    // Sea caves: every so often the sea has worked a column bay loose at the waterline and
+    // hollowed it back into the cliff, a black mouth 8 to 14 m high.
+    let cave_k = floor(round / 45.0)
+    let cave_at = (cave_k + 0.3 + 0.4 * hash2(vec2(cave_k, 2.2))) * 45.0
+    let cave_w = 4.0 + 4.0 * hash2(vec2(cave_k, 6.6))
+    let cave = if hash2(vec2(cave_k, 3.3)) > 0.55 && u > 0.0 {
+        14.0 *
+            exp(-(round - cave_at) * (round - cave_at) / (cave_w * cave_w)) *
+            smoothstep(cave_w * 1.6, 0.0, q.y) *
+            smoothstep(-3.0, 0.0, q.y)
+    } else { 0.0 }
     let scree = max(9.0 - q.y, 0.0) *
         (0.9 + 0.8 * noise(vec2(round / 30.0, 6.0))) *
         smoothstep(0.3, 0.6, noise(vec2(round / 90.0, 2.0)))
@@ -124,40 +144,66 @@ fn gates(r: Ring, q: vec3, px: f32) -> f32 {
     var d = 1.0e3
     for i in 0..2 {
         let side = f32(i) * 2.0 - 1.0
-        let a = r.mouth + side * (r.gap * 0.5 + 0.04)
-        let base = vec2(cos(a), sin(a)) * (r.radius + 80.0)
+        let a = r.mouth + side * (r.gap * 0.5 + 0.045)
         let out = vec2(cos(a), sin(a))
         let along = vec2(-out.y, out.x)
-        let tall = r.height * (1.9 - 0.3 * f32(i))
-        // Each stack a cluster of great columns, 5 to 9 m across, each standing to its own
-        // height, the tallest at the heart; their tops cut on one tilted plane, as a flow's top
-        // was tilted when it cooled, then broken.
-        for j in 0..5 {
-            let fj = f32(j)
-            let h1 = hash2(vec2(f32(i), fj))
-            let h2 = hash2(vec2(f32(i) + 3.0, fj))
-            let off = if j == 0 { vec2(0.0) } else {
-                let ang = fj * 1.2566371 + h1
-                vec2(cos(ang), sin(ang)) * (6.0 + 3.0 * h2)
+        let c = out * (r.radius + 85.0)
+        let tall = r.height * (1.8 - 0.3 * f32(i))
+        // Its footprint: about 20 m round, lobed, a lesser stack leaning off it seaward.
+        let v = vec2(q.x, q.z) - c
+        let ang = atan2(v.y, v.x)
+        let reach = 18.0 +
+            6.0 * noise(vec2(ang * 1.2 + f32(i) * 7.0, 0.5)) +
+            14.0 * smoothstep(0.7, 1.0, dot(normalize(v + vec2(1.0e-4)), out))
+        let rv = length(v)
+        // Its height over each point: the heart tallest, falling away in steps to its skirts, its
+        // top tilted as its flow's was.
+        let fall = smoothstep(0.25, 1.0, rv / reach)
+        let tilt = dot(v, out) * 0.18 + dot(v, along) * 0.08 * side
+        let crown = tall * (1.0 - 0.75 * fall) - tilt
+        let shell = max(rv - reach, max(q.y - crown, -q.y - 30.0)) * 0.7
+        if px > 1.0 || shell > 6.0 {
+            d = min(d, shell)
+        } else {
+            // A bundle of columns 3.2 m across, each to its own height under the crown, some
+            // snapped off metres short.
+            let (cc, lv) = hex_cell(vec2(q.x, q.z), 3.2)
+            let cv = cc - c
+            let h = hash2(cc * 0.37)
+            let cr = length(cv)
+            let c_fall = smoothstep(0.25, 1.0, cr / reach)
+            let c_top = tall * (1.0 - 0.75 * c_fall) -
+                (dot(cv, out) * 0.18 + dot(cv, along) * 0.08 * side) -
+                floor(h * 3.0) * 1.8 -
+                step(0.85, h) * 9.0
+            let inside = cr < reach
+            let col = if inside { max(sd_hex(lv, 3.2) + 0.1, max(q.y - c_top, -q.y - 30.0)) } else {
+                1.0e3
             }
-            let c = base + out * off.x + along * off.y
-            let wide = if j == 0 { 9.0 } else { 5.0 + 3.0 * h1 }
-            let v = vec2(q.x, q.z) - c
-            let col = sd_hex(turn(v, h2 * 1.0), wide) * 0.9
-            let tilt = dot(v, out) * 0.12 + dot(v, along) * 0.05 * side
-            let top = tall * (if j == 0 { 1.0 } else { 0.35 + 0.55 * h2 }) - tilt
-            let mass = max(col, max(q.y - top, -q.y - 30.0))
-            d = min(d, columns(q, mass, top, 1.4, px))
-        }
-        // The boulders fallen round its foot.
-        let cell = floor(vec2(q.x, q.z) / 7.0)
-        let bc = (cell + vec2(0.5)) * 7.0
-        if length(bc - base) < 30.0 && hash2(cell) > 0.4 {
-            let rb = 1.2 + 2.2 * hash2(cell + vec2(5.0))
-            d = min(d, boulder(q - vec3(bc.x, rb * 0.3, bc.y), rb, hash2(cell + vec2(9.0))))
+            let edge = 1.6 - max(abs(lv.x), dot(abs(lv), vec2(0.5, 0.8660254)))
+            d = min(d, min(col, max(shell, 0.0) + max(edge, 0.1)))
         }
     }
     d
+}
+
+/// The talus round the ring's outer foot: blocks the cliffs have shed, house-sized, half sunk in
+/// the sea.
+fn talus(r: Ring, q: vec3, px: f32) -> f32 {
+    let n = floor(6.2831853 * r.radius / 9.0)
+    let (c, k) = sector(vec2(q.x, q.z), n)
+    let a = k * 6.2831853 / n
+    let line = rim(r, a)
+    if line.z < 2.0 || hash2(vec2(k, 5.5)) < 0.35 {
+        return 1.0e3
+    }
+    let rb = 2.0 + 2.8 * hash2(vec2(k, 1.9))
+    let out = line.x + line.y + 3.0 + 7.0 * hash2(vec2(k, 8.4))
+    let p = vec3(c.x - out, q.y + rb * 0.35, c.y + (hash2(vec2(k, 2.6)) - 0.5) * 4.0)
+    if length(p) > rb + 6.0 {
+        return length(p) - rb - 4.0
+    }
+    boulder(p, rb, hash2(vec2(k, 7.3)))
 }
 
 /// The fishers' huts, on stilts in the lagoon along the inner shelf, in the stretch of the ring
@@ -168,7 +214,7 @@ fn village(r: Ring, q: vec3, px: f32) -> vec2 {
     let a = k * 6.2831853 / n
     let m = a - r.mouth
     let side = m - 6.2831853 * floor(m / 6.2831853)
-    if side < 0.22 || side > 0.95 || hash2(vec2(k, 3.3)) < 0.3 {
+    if side < 0.3 || side > 2.6 || hash2(vec2(k, 3.3)) < 0.25 {
         return vec2(1.0e3, TIMBER)
     }
     let line = rim(r, a)
@@ -192,24 +238,38 @@ fn other_sky(r: Ring, d: vec3) -> vec3 {
     var c = vec3(0.004, 0.006, 0.014) * (1.0 - 0.6 * clamp(d.y * 3.0, 0.0, 1.0))
     let az = atan2(d.z, d.x)
     let el = asin(clamp(d.y, -1.0, 1.0))
-    let g = vec2(az, el) * 160.0
-    let cell = floor(g)
-    let h = hash2(cell)
-    if h > 0.985 {
-        let at = cell + vec2(hash2(cell + vec2(1.7)), hash2(cell + vec2(9.2))) * 0.6 + vec2(0.2)
-        let k = exp(-dot(g - at, g - at) * 18.0)
-        c += vec3(0.9, 0.92, 1.0) * k * 1.4 * (h - 0.985) / 0.015
+    // Two fields of stars: many faint and small, and a few large and bright, each its own colour,
+    // white, blue-white or a dull amber.
+    for layer in 0..2 {
+        let scale = if layer == 0 { 160.0 } else { 55.0 }
+        let rare = if layer == 0 { 0.985 } else { 0.992 }
+        let g = vec2(az, el) * scale
+        let cell = floor(g)
+        let h = hash2(cell + vec2(f32(layer) * 31.0))
+        if h > rare {
+            let at = cell + vec2(hash2(cell + vec2(1.7)), hash2(cell + vec2(9.2))) * 0.6 + vec2(0.2)
+            let sharp = if layer == 0 { 22.0 } else { 30.0 }
+            let k = exp(-dot(g - at, g - at) * sharp)
+            let tone = hash2(cell + vec2(4.4))
+            let hue = if tone < 0.6 { vec3(0.9, 0.92, 1.0) } else if tone < 0.85 {
+                vec3(0.7, 0.8, 1.0)
+            } else { vec3(1.0, 0.75, 0.45) }
+            c += hue * k * (if layer == 0 { 1.2 } else { 4.0 }) * (h - rare) / (1.0 - rare)
+        }
     }
     // The moon: risen over the far rim from the mouth, seven degrees across, so the lagoon holds
-    // it clear of the rim's own reflection.
-    let m = normalize(vec3(-cos(r.mouth), 0.155, -sin(r.mouth)))
+    // it clear of the rim's own reflection. A sphere, full, darker toward its limb, its seas
+    // grey on it, in a ring of its own light.
+    let m = normalize(vec3(-cos(r.mouth), 0.26, -sin(r.mouth)))
     let off = acos(clamp(dot(d, m), -1.0, 1.0))
-    let disc = 1.0 - smoothstep(0.059, 0.062, off)
-    let face = 0.7 +
-        0.3 * noise3(d * 90.0) -
-        0.25 * smoothstep(0.55, 0.75, noise3(d * 30.0 + vec3(4.0)))
-    c = mix(c, vec3(0.62, 0.62, 0.58) * face, disc)
-    c += vec3(0.25, 0.27, 0.32) * 0.05 * exp(-off * 9.0)
+    let rr = clamp(off / 0.06, 0.0, 1.0)
+    let disc = 1.0 - smoothstep(0.058, 0.061, off)
+    let limb = pow(max(1.0 - rr * rr, 0.0), 0.3)
+    let seas = 0.25 * smoothstep(0.5, 0.7, noise3(d * 28.0 + vec3(4.0))) + 0.1 * noise3(d * 120.0)
+    let face = limb * (0.85 - seas)
+    c = mix(c, vec3(0.7, 0.69, 0.64) * face, disc)
+    c += vec3(0.5, 0.55, 0.65) *
+        (0.06 * exp(-max(off - 0.06, 0.0) * 30.0) + 0.012 * exp(-off * 5.0))
     c
 }
 
@@ -229,9 +289,13 @@ impl Isle for Ring {
         let mt = cliffs(self, q)
         let mass = mt.x
         let top = mt.y
-        let rock = columns(q, mass, top, 1.4, px)
+        // (The columns stand in the faces; on the tops the turf has long since buried them.)
+        let rock = if q.y > top - 1.2 { mass } else { columns(q, mass, top, 1.4, px) }
         var f = vec2(rock, BASALT)
         f = near(f, vec2(gates(self, q, px), BASALT))
+        if q.y < 8.0 {
+            f = near(f, vec2(talus(self, q, px), BASALT))
+        }
         // The still water: a level sheet over the lagoon, to the line its mouth stops the sea at.
         let rad = length(vec2(q.x, q.z))
         let still = max(max(q.y, -q.y - 3.0), rad - self.radius)
@@ -246,14 +310,13 @@ impl Isle for Ring {
         let q = p - self.at
         if id == STILL {
             // A black mirror of the other sky: all the reflection water gives, none of this sky's.
+            // (It reflects all of it, as no water does: a mirror, not a lake.)
             let rd = vec3(d.x, abs(d.y), d.z)
-            let c = max(-d.y, 0.0)
-            let fres = 0.02 + 0.98 * pow(1.0 - c, 5.0)
             return Finish {
                 albedo: vec3(0.0),
                 rough: 0.05,
                 metal: 0.0,
-                glow: other_sky(self, rd) * fres,
+                glow: other_sky(self, rd),
                 line: 1.0,
                 gloss: 0.0,
             }
@@ -293,12 +356,17 @@ impl Isle for Ring {
                 smoothstep(-0.6, 0.2, q.y) *
                 smoothstep(0.3, 0.6, noise3(q * vec3(0.4, 1.5, 0.4)))
         } else { 0.0 }
-        a = mix(a, vec3(0.75, 0.78, 0.8), foam * 0.85)
+        a = mix(a * 0.6, vec3(0.42, 0.44, 0.46), foam * 0.5)
         matte(a, 0.9)
     }
 
     fn mirror(self, id: f32) -> f32 {
-        if id == STILL { 1.0 } else { 0.0 }
+        if id == STILL { 2.0 } else { 0.0 }
+    }
+
+    fn mirrored_tint(self) -> vec4 {
+        // (Black basalt: the sky it hides is nearly all hidden.)
+        vec4(0.3, 0.3, 0.32, 0.25)
     }
 
     fn dry(self, p: vec3) -> bool {

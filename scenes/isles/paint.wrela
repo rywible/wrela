@@ -4,7 +4,7 @@
 // of its own: an island sits in the world it's in. A shader of its own for each island, so each
 // has the whole budget.
 
-use opening::look::{SEA, SKIFF, SKY, Shot, hash2, luma, ray}
+use opening::look::{SEA, SKIFF, SKY, Shot, hash2, luma, noise, ray}
 use opening::paint::{
     Heaven, heaven, lit_solid, march_skiff, sea_shade, skiff_lit, sphere, spray, trace_sea,
 }
@@ -80,7 +80,11 @@ fn sample<I: Isle>(
         // Whether the water here mirrors the island: the mirrored ray met coarsely.
         var mirrors = false
         if t > 60.0 {
-            let r0 = vec3(d.x, -d.y, d.z)
+            // (Off the waves' long slopes, not a flat mirror's: broken into the vertical strokes a
+            // swell breaks a reflection into, and gone where the water tilts it past the rock.)
+            let wob = (noise(vec2(p.x * 0.03, p.z * 0.3)) - 0.5) * 0.05 +
+                (noise(vec2(p.x * 0.11, p.z * 0.9)) - 0.5) * 0.02
+            let r0 = normalize(vec3(d.x, -d.y + wob, d.z))
             let ib = sphere(p, r0, isle.bounds(), far)
             if ib.x < ib.y {
                 mirrors = march(isle, p, r0 + vec3(0.0, 0.006, 0.0), ib.x, ib.y, k * 1.5) < ib.y
@@ -99,6 +103,7 @@ fn sample<I: Isle>(
             d,
             t,
             mirrors,
+            isle.mirrored_tint(),
         )
         c = sc
         line = sl
@@ -153,7 +158,7 @@ fn sample<I: Isle>(
                     0.0,
                 )
                 let fres = 0.02 + 0.98 * pow(1.0 - max(dot(-d, n), 0.0), 5.0)
-                glow = seen * fres * mk
+                glow = seen * mix(fres, 1.0, clamp(mk - 1.0, 0.0, 1.0))
             }
         }
         // (The one air, all of it: `haze` 1.)

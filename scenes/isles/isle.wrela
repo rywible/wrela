@@ -36,8 +36,8 @@ pub trait Isle: Copy + GpuData {
     fn finish(self, p: vec3, n: vec3, d: vec3, id: f32, foot: f32) -> Finish
     /// Whether the open sea isn't at `p` (its waves don't reach there).
     fn dry(self, p: vec3) -> bool
-    /// How much material `id` mirrors the island itself, as still water does (0 to 1: its
-    /// reflectance's share, beside the Fresnel's).
+    /// How much material `id` mirrors the island itself: 0 not at all, 1 as still water does (by
+    /// its Fresnel), 2 wholly, as a mirror does (between, between).
     fn mirror(self, id: f32) -> f32 {
         0.0
     }
@@ -45,6 +45,11 @@ pub trait Isle: Copy + GpuData {
     fn aim(self) -> vec3 {
         let b = self.bounds()
         vec3(b.x, 60.0, b.z)
+    }
+    /// How the island's rock darkens the sea's mirror where it hides the sky: the colour it
+    /// multiplies the sky by, and the least share of it the broken waves show.
+    fn mirrored_tint(self) -> vec4 {
+        vec4(0.72, 0.6, 0.52, 0.35)
     }
     /// The field without its mirroring water (what the water mirrors): by default all of it.
     fn mirrored(self, p: vec3, px: f32) -> f32 {
