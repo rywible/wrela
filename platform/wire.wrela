@@ -304,8 +304,9 @@ pub enum Reply: Clone + Serialize {
     Unplaced,
     Names { found: Vec<Found> },
     /// The account's character in wrela's MMO, if it has made one (`made`): its name (the
-    /// account's, by its numbers into the lists, names.wrela) and how it looks.
-    Character { made: bool, name: names::Name, look: Look },
+    /// account's, by its numbers into the lists, names.wrela) and how it looks; and, made, its
+    /// pass (pass.wrela's `Pass`, packed), which a room checks: empty if the server has no key.
+    Character { made: bool, name: names::Name, look: Look, pass: Vec<u8> },
     /// The request isn't one the server takes now: why, said for a person.
     Refused { why: String },
 }

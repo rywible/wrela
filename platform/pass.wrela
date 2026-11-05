@@ -1,0 +1,215 @@
+// A character's pass: what an account signs so that an MMO room knows who a peer is. A room's
+// peers say who they are themselves (mmo/island's `Act::Wear`), and a room can't ask an account
+// (a room makes no calls), so the account hands its signed-in browser a pass along with its
+// character (wire.wrela's `Reply::Character`): the character's name and look, when the pass
+// expires, and an HMAC-SHA256 tag of those under a key made from the Worker's ceremony key. A
+// room reads the same Worker secrets (`std::server::secret`, toolchain 0.22.0), so it checks a
+// pass without asking anyone, and nobody without the key can make one.
+//
+// The pass's key is the ceremony key's HMAC of `CONTEXT`, never the ceremony key itself, so a tag
+// of one kind is never one of the other (edge.wrela's challenges are tagged with the ceremony key
+// directly). A room takes the key in use and the one before it, so a pass made just before a
+// rotation still opens a room.
+
+use names::Name
+use std::hash::sha256::{Sha256, sha256}
+use std::pack::Pack
+use wire::Look
+
+/// What the pass key is the ceremony key's HMAC of: this kind of tag, and its version.
+pub const CONTEXT: Text = "wrela/mmo-pass/1"
+/// How long a pass opens rooms, in milliseconds: a session's play, and a reload of the page
+/// fetches another.
+pub const LIFE_MS: u64 = 12 * 60 * 60 * 1000
+/// The Worker secrets the pass keys are made from: the ceremony key in use, then the one before
+/// it: studio/release's `KEY_SECRETS`, the secrets its Worker lets the program read
+/// (`WRELA_SECRETS`).
+pub const SECRETS: [Text; 2] = ["WRELA_CEREMONY_KEY", "WRELA_CEREMONY_KEY_OLD"]
+/// The shortest ceremony key a pass is made with (edge.wrela's `KEY_BYTES`): with a shorter one,
+/// no pass is made, and none checks.
+pub const MIN_SECRET: u32 = 32
+
+/// An HMAC-SHA256 tag, as four words (little-endian), so it packs.
+pub struct Tag: Copy + Eq + Pack {
+    pub a: u64,
+    pub b: u64,
+    pub c: u64,
+    pub d: u64,
+}
+
+/// No tag: what a room leaves in a pass it has checked, so its log shows no one a tag.
+pub const NO_TAG: Tag = Tag { a: 0, b: 0, c: 0, d: 0 }
+
+/// A character's pass: its name (by its numbers into the lists), its look, when it stops opening
+/// rooms (Unix milliseconds), and the tag of those.
+pub struct Pass: Copy + Eq + Pack {
+    pub title: u32,
+    pub front: u32,
+    pub back: u32,
+    pub epithet: u32,
+    pub build: u32,
+    pub skin: u32,
+    pub hair: u32,
+    pub cloth: u32,
+    pub expires: u64,
+    pub tag: Tag,
+}
+
+impl Pass {
+    pub fn name(self) -> Name {
+        Name { title: self.title, front: self.front, back: self.back, epithet: self.epithet }
+    }
+
+    pub fn look(self) -> Look {
+        Look { build: self.build, skin: self.skin, hair: self.hair, cloth: self.cloth }
+    }
+}
+
+/// HMAC-SHA256 of `message` under `key` (RFC 2104).
+pub fn hmac(key: [u8], message: [u8]) -> [u8; 32] {
+    var k: Vec<u8> = if key.len() > 64 { Vec::from(sha256(key)) } else { Vec::from(key) }
+    while k.len() < 64 {
+        k.push(0)
+    }
+    var inner = Sha256::new()
+    var outer = Sha256::new()
+    var ipad: Vec<u8> = Vec::with_capacity(64)
+    var opad: Vec<u8> = Vec::with_capacity(64)
+    for b in k {
+        ipad.push(b ^ 0x36)
+        opad.push(b ^ 0x5c)
+    }
+    inner.update(ipad)
+    inner.update(message)
+    let inside = inner.finish()
+    outer.update(opad)
+    outer.update(inside)
+    outer.finish()
+}
+
+/// The pass key made from a ceremony key (`secret`, the Worker secret's bytes), if it's one a
+/// pass may be made with.
+pub fn key_of(secret: [u8]) -> Option<[u8; 32]> {
+    if secret.len() < MIN_SECRET {
+        return None
+    }
+    Some(hmac(secret, String::from(CONTEXT).as_bytes()))
+}
+
+fn word(out: mut Vec<u8>, x: u64, bytes: u32) {
+    for k in 0..bytes {
+        out.push(u8((x >> (8 * k)) & 255))
+    }
+}
+
+/// What a pass's tag covers: its name's numbers, its look's, then when it expires.
+fn covered(name: Name, look: Look, expires: u64) -> Vec<u8> {
+    var out: Vec<u8> = Vec::with_capacity(40)
+    for x in [name.title, name.front, name.back, name.epithet] {
+        word(mut out, u64(x), 4)
+    }
+    for x in [look.build, look.skin, look.hair, look.cloth] {
+        word(mut out, u64(x), 4)
+    }
+    word(mut out, expires, 8)
+    out
+}
+
+fn tag_of(bytes: [u8; 32]) -> Tag {
+    var w: [u64; 4] = [0, 0, 0, 0]
+    for i in 0..32 {
+        w[i / 8] = w[i / 8] | (u64(bytes[i]) << (8 * (i % 8)))
+    }
+    Tag { a: w[0], b: w[1], c: w[2], d: w[3] }
+}
+
+/// The pass for a character named `name` that looks `look`, under pass key `key`, opening rooms
+/// until `expires`.
+pub fn sign(key: [u8; 32], name: Name, look: Look, expires: u64) -> Pass {
+    let tag = tag_of(hmac(key, covered(name, look, expires)))
+    Pass {
+        title: name.title,
+        front: name.front,
+        back: name.back,
+        epithet: name.epithet,
+        build: look.build,
+        skin: look.skin,
+        hair: look.hair,
+        cloth: look.cloth,
+        expires,
+        tag,
+    }
+}
+
+/// Whether `pass` opens a room at `now` (Unix milliseconds): it hasn't expired, it wasn't made
+/// to last longer than a pass does, and one of `keys` tagged it.
+pub fn opens(keys: [[u8; 32]], pass: Pass, now: u64) -> bool {
+    if pass.expires <= now || pass.expires > now + LIFE_MS || pass.tag == NO_TAG {
+        return false
+    }
+    let want = covered(pass.name(), pass.look(), pass.expires)
+    var ok = false
+    for k in keys {
+        let t = tag_of(hmac(k, want))
+        // Every key is tried, and each word compared, whatever matches: no timing says how much.
+        let same = (t.a ^ pass.tag.a) | (t.b ^ pass.tag.b) | (t.c ^ pass.tag.c) | (t.d ^ pass.tag.d)
+        ok = ok || same == 0
+    }
+    ok
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+@test
+fn hmac_is_rfc_4231s() {
+    // RFC 4231 §4.3, test case 2.
+    let t = hmac(
+        String::from("Jefe").as_bytes(),
+        String::from("what do ya want for nothing?").as_bytes(),
+    )
+    let want: [u8; 4] = [0x5b, 0xdc, 0xc1, 0x46]
+    assert(t[0] == want[0] && t[1] == want[1] && t[2] == want[2] && t[3] == want[3])
+    assert(t[31] == 0x43)
+    // Test case 6: a key longer than a block is hashed first.
+    var long: Vec<u8> = Vec::new()
+    for _ in 0..131 {
+        long.push(0xaa)
+    }
+    let m6 = String::from("Test Using Larger Than Block-Size Key - Hash Key First")
+    let t6 = hmac(long, m6.as_bytes())
+    assert(t6[0] == 0x60 && t6[1] == 0xe4 && t6[31] == 0x54)
+}
+
+fn secret(fill: u8) -> Vec<u8> {
+    var s: Vec<u8> = Vec::new()
+    for _ in 0..MIN_SECRET {
+        s.push(fill)
+    }
+    s
+}
+
+@test
+fn a_pass_opens_rooms_only_as_it_was_signed() {
+    let Some(key) = key_of(secret(7)) else { panic("a long enough secret makes a key") }
+    let Some(other) = key_of(secret(8)) else { panic("so does another") }
+    let name = Name { title: 1, front: 2, back: 3, epithet: 4 }
+    let look = Look { build: 1, skin: 2, hair: 3, cloth: 4 }
+    let now: u64 = 1_800_000_000_000
+    let p = sign(key, name, look, now + LIFE_MS)
+    assert(opens([key], p, now), "its own key's pass opens")
+    assert(opens([other, key], p, now), "the key before it, after a rotation, too")
+    assert(!opens([other], p, now), "another key's doesn't")
+    assert(!opens([key], p, now + LIFE_MS), "nor once it has expired")
+    var worn = p
+    worn.cloth = 5
+    assert(!opens([key], worn, now), "a look it wasn't signed for doesn't")
+    var renamed = p
+    renamed.front = 9
+    assert(!opens([key], renamed, now), "nor a name")
+    var bare = p
+    bare.tag = NO_TAG
+    assert(!opens([key], bare, now), "nor a pass with its tag taken off")
+    let lasting = sign(key, name, look, now + 2 * LIFE_MS)
+    assert(!opens([key], lasting, now), "nor one made to last longer than a pass does")
+    assert(key_of(Vec::from([1, 2, 3])).is_none(), "a short secret makes no key")
+}

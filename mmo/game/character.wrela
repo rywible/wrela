@@ -8,12 +8,14 @@
 // guest (a wanderer, unnamed) and is told why. Signed in with no character, the client opens the
 // maker first; once it's made, the look can be changed again (C on the island).
 
-use island::main::Card
+use island::main::{Card, Seal, worn}
 use platform::names
+use platform::pass::Pass
 use platform::names::Name
 use platform::wire::{ACCOUNTS, LOOK_CHOICES, Look, Reply, Request}
 use std::http::{Header, fetch, response}
 use std::io::Pending
+use std::pack::unpack
 use std::serialize::{LoadError, load, save}
 use ui::draw::{DrawList, Rect}
 
@@ -58,6 +60,11 @@ pub struct Character {
     pub part: u32,
     pub made: bool,
     pub message: String,
+    /// The character's pass, from its account (platform/pass.wrela): the island believes the card
+    /// only with it. None until a character is made, or if the server has no key.
+    pass: Option<Pass>,
+    /// Whether the request under way is a refresh (`refresh`): one that fails changes nothing.
+    refreshing: bool,
     asked: Option<Pending<u8>>,
 }
 
@@ -73,6 +80,8 @@ pub fn start() -> Character {
         part: 0,
         made: false,
         message: String::new(),
+        pass: None,
+        refreshing: false,
         asked: None,
     }
     ask(mut c, Request::Me)
@@ -84,12 +93,25 @@ fn ask(c: mut Character, request: Request) {
         name: String::from("content-type"),
         value: String::from("application/octet-stream"),
     }
+    c.refreshing = false
     c.asked = Some(fetch("POST", ACCOUNTS, [take kind], save(request)))
 }
 
-/// The card the island is told: the character's, once it's ready.
-pub fn card(c: Character) -> Option<Card> {
-    if c.stage == Stage::Ready { Some(Card::of(c.name, c.look)) } else { None }
+/// The card the island is told, with its pass: the character's, once it's ready and its account
+/// signed it.
+pub fn card(c: Character) -> Option<(Card, Seal)> {
+    if c.stage != Stage::Ready {
+        return None
+    }
+    let Some(p) = c.pass else { return None }
+    Some(worn(p))
+}
+
+/// The pass in a `Reply::Character`'s bytes, if it's one for the character named `name` that
+/// looks `look`.
+fn pass_for(bytes: [u8], name: Name, look: Look) -> Option<Pass> {
+    let Ok(p) = unpack::<Pass>(Vec::from(bytes)) else { return None }
+    if p.name() == name && p.look() == look { Some(p) } else { None }
 }
 
 /// Polls the request under way.
@@ -122,6 +144,17 @@ fn reply_of(bytes: [u8]) -> Option<Reply> {
 /// What a reply (or none: out of reach) does to where the character is: the request to make
 /// next, if one is.
 pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
+    if c.refreshing {
+        // A refresh keeps what it had unless the character came back made.
+        c.refreshing = false
+        let fresh = match reply {
+            Some(Reply::Character { made: true, .. }) => true,
+            _ => false,
+        }
+        if !fresh {
+            return None
+        }
+    }
     let Some(reply) = reply else {
         if c.stage == Stage::Saving {
             c.stage = Stage::Making
@@ -146,10 +179,11 @@ pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
                 next = Some(Request::Character)
             }
         },
-        Reply::Character { made, name, look } => {
+        Reply::Character { made, name, look, pass } => {
             c.name = name
             c.made = made
             c.message = String::new()
+            c.pass = if made { pass_for(pass, name, look) } else { None }
             if made {
                 c.look = look
                 c.making = look
@@ -173,6 +207,15 @@ pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
         },
     }
     next
+}
+
+/// Asks for the character again, for a fresh pass, when it's ready and nothing is asked: a pass
+/// expires (platform/pass.wrela's `LIFE_MS`), and a tab may stay open longer.
+pub fn refresh(c: mut Character) {
+    if c.stage == Stage::Ready && c.asked.is_none() {
+        ask(mut c, Request::Character)
+        c.refreshing = true
+    }
 }
 
 /// Opens the maker on the character made, to change its look.
@@ -392,6 +435,8 @@ fn blank() -> Character {
         part: 0,
         made: false,
         message: String::new(),
+        pass: None,
+        refreshing: false,
         asked: None,
     }
 }
@@ -417,7 +462,7 @@ fn no_character_opens_the_maker_and_a_save_plays_as_it() {
     let Some(Request::Character) = next else { panic("asked") }
     let name = Name { title: 1, front: 2, back: 3, epithet: 4 }
     let none = Look { build: 0, skin: 0, hair: 0, cloth: 0 }
-    let _ = heard(mut c, Some(Reply::Character { made: false, name, look: none }))
+    let _ = heard(mut c, Some(Reply::Character { made: false, name, look: none, pass: Vec::new() }))
     assert(c.stage == Stage::Making && !c.made)
     // Escape leaves a maker with nothing made: a guest, who may come back.
     let _ = maker_input(mut c, dx: 0, dy: 0, enter: false, escape: true)
@@ -441,10 +486,39 @@ fn no_character_opens_the_maker_and_a_save_plays_as_it() {
     change(mut c)
     c.stage = Stage::Saving
     let saved = c.making
-    let _ = heard(mut c, Some(Reply::Character { made: true, name, look: saved }))
+    let _ = heard(mut c, Some(Reply::Character { made: true, name, look: saved, pass: Vec::new() }))
     assert(c.stage == Stage::Ready && c.look == saved)
-    let Some(k) = card(c) else { panic("a card") }
-    assert(k.valid() && k.name() == name && k.look() == saved)
+    assert(card(c).is_none(), "no pass: the island isn't told a card it won't believe")
+    var secret: Vec<u8> = Vec::new()
+    for i in 0..32 {
+        secret.push(u8(i))
+    }
+    let Some(key) = platform::pass::key_of(secret) else { panic("a key") }
+    let signed = std::pack::pack(platform::pass::sign(key, name, saved, 5000))
+    let _ = heard(
+        mut c,
+        Some(Reply::Character { made: true, name, look: saved, pass: signed.clone() }),
+    )
+    let Some((k, seal)) = card(c) else { panic("a card") }
+    assert(k.valid() && k.name() == name && k.look() == saved && seal.expires == 5000)
+    let other = Look { build: 1, skin: 1, hair: 1, cloth: 1 }
+    let _ = heard(mut c, Some(Reply::Character { made: true, name, look: other, pass: signed }))
+    assert(card(c).is_none(), "a pass for another look isn't worn")
+    let _ = heard(
+        mut c,
+        Some(
+            Reply::Character {
+                made: true,
+                name,
+                look: saved,
+                pass: std::pack::pack(platform::pass::sign(key, name, saved, 5000)),
+            },
+        ),
+    )
+    // A refresh that fails keeps the character and its pass.
+    c.refreshing = true
+    let _ = heard(mut c, None)
+    assert(c.stage == Stage::Ready && card(c).is_some(), "a failed refresh changes nothing")
     // Changing the look: Escape leaves it as it was.
     change(mut c)
     let _ = maker_input(mut c, dx: 1, dy: 0, enter: false, escape: false)
