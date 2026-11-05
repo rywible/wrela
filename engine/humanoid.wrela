@@ -237,6 +237,37 @@ pub const HUNDRED_STYLE_ARM: [(Text, Text); 2] = [
     ("RightWrist", "rightHand"),
 ]
 
+/// The names of ACCAD's Open Motion Project skeleton (its BVH): every joint but the end sites.
+/// Its rest isn't a pose (each joint's offset lies along its parent's own axes), so a take of it
+/// is `Take::rested_as` a frame of the actor standing.
+pub const ACCAD: [(Text, Text); 22] = [
+    ("Hips", "hips"),
+    ("ToSpine", "spine"),
+    ("Spine", "chest"),
+    ("Spine1", "upperChest"),
+    ("Neck", "neck"),
+    ("Head", "head"),
+    ("LeftUpLeg", "leftUpperLeg"),
+    ("LeftLeg", "leftLowerLeg"),
+    ("LeftFoot", "leftFoot"),
+    ("LeftToeBase", "leftToes"),
+    ("RightUpLeg", "rightUpperLeg"),
+    ("RightLeg", "rightLowerLeg"),
+    ("RightFoot", "rightFoot"),
+    ("RightToeBase", "rightToes"),
+    ("LeftShoulder", "leftShoulder"),
+    ("LeftArm", "leftUpperArm"),
+    ("LeftForeArm", "leftLowerArm"),
+    ("LeftHand", "leftHand"),
+    ("RightShoulder", "rightShoulder"),
+    ("RightArm", "rightUpperArm"),
+    ("RightForeArm", "rightLowerArm"),
+    ("RightHand", "rightHand"),
+]
+
+/// No more names.
+pub const NO_NAMES: [(Text, Text); 0] = []
+
 // ---- rigid transforms ------------------------------------------------------------------
 
 /// A rotation then a translation: how a bone sits in its parent, or in the world.
@@ -782,6 +813,28 @@ impl Take {
         }
     }
 
+    /// It with its rest set to `stand`'s frame `f` (a take of the same skeleton, the actor
+    /// standing), turned to face +z (the hips' left, from the right upper leg to the left, along
+    /// +x): for a take whose skeleton's rest isn't a pose. Each frame's as it was.
+    pub fn rested_as(self, stand: Take, f: u32) -> Take {
+        let n = self.joints.len()
+        assert(stand.joints.len() == n && f < stand.frames, "a take rested as another skeleton")
+        let w = stand.world(f)
+        let (lu, ru) = (self.of[bone("leftUpperLeg")], self.of[bone("rightUpperLeg")])
+        assert(lu != NONE && ru != NONE, "a take rested as a pose without its legs")
+        let across = w[lu].t - w[ru].t
+        let face = Quat::axis_angle(vec3(0.0, 1.0, 0.0), 1.57079633 - atan2(across.x, across.z))
+        var out = self.clone()
+        for j in 0..n {
+            var q = stand.turns[f * n + j]
+            if self.joints[j].parent == NONE {
+                q = face.mul(q)
+            }
+            out.joints[j].rest.q = q
+        }
+        out
+    }
+
     /// How unlike frames `a` and `b` are, as a loop's seam would join them: each mapped joint's
     /// turn but the hips' (their heading is the path's), the hips' tilt, height and speed (each
     /// over the leg's length).
@@ -863,6 +916,11 @@ pub struct Retarget: Copy {
     /// set as a turn, which on a rig whose rest is already set forward juts the head and drops
     /// the face to the floor.
     pub carried: bool = false,
+    /// Whether its rest is a frame it stands in (`Take::rested_as`), its feet flat on the floor:
+    /// each foot and its toes then take the take's heading at rest but keep the rig's own pitch,
+    /// so a foot its markers solve steeper than the other (or an actor's higher ankle) stands
+    /// as flat as the rig's.
+    pub stood: bool = false,
 }
 
 /// A clip on a rig: its frames a second, its frames, every frame's local turn of each of the
@@ -897,6 +955,14 @@ fn aim(v: u32, has: [bool; 55], pos: [vec3; 55], end: vec3) -> Option<vec3> {
         return Some(end)
     }
     None
+}
+
+/// Whether VRM bone `v` is a foot or its toes.
+fn flat_footed(v: u32) -> bool {
+    v == bone("leftFoot") ||
+        v == bone("rightFoot") ||
+        v == bone("leftToes") ||
+        v == bone("rightToes")
 }
 
 /// A leg's length at rest: its upper bone's and its lower bone's, from VRM bones' places.
@@ -939,7 +1005,15 @@ pub fn retarget(src: Take, rig: Rig, how: Retarget) -> Clip {
         if t_has[v] && s_has[v] && v != lc && v != rc {
             if let Some(dt) = aim(v, t_has, t_pos, vec3(0.0)) {
                 if let Some(ds) = aim(v, s_has, s_pos, s_end[v]) {
-                    align[v] = arc(dt, ds)
+                    let (ft, fs) = (vec3(dt.x, 0.0, dt.z), vec3(ds.x, 0.0, ds.z))
+                    align[v] = if how.stood &&
+                        flat_footed(v) &&
+                        length(ft) > 1.0e-5 &&
+                        length(fs) > 1.0e-5 {
+                        arc(ft, fs)
+                    } else {
+                        arc(dt, ds)
+                    }
                 }
             }
         }

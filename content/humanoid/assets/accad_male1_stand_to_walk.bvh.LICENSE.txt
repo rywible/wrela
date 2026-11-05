@@ -1,0 +1,16 @@
+accad_male1_stand_to_walk.bvh: from ACCAD's Open Motion Project, The Ohio State University
+(https://accad.osu.edu/research/motion-lab/mocap-system-and-data). "Open Motion Project by
+ACCAD/The Ohio State University is licensed under a Creative Commons Attribution 3.0 Unported
+License" (https://creativecommons.org/licenses/by/3.0/), as the page states it, read 2026-11-05.
+The page asks no other credit and states no other terms.
+
+What this file is: Male1_B1_StandToWalk.bvh of the actor's BVH archive,
+https://accad.osu.edu/sites/accad.osu.edu/files/Male1_bvh.zip (sha256
+1cd26aeac2ee7f20e3c0fe5082e633201bb136a714ae8f684a4f34c4421f4627): Male 1 standing, then walking
+(30 frames a second); only its first frame is read, as the pose the actor's takes are rested as.
+Optical marker capture (ACCAD publishes each set's markers as C3D too), in centimetres.
+
+sha256 6841f6e6182068dda2df766998fbeecd6fdc441fa997531455ac8f9f3ec5e9a4
+
+Changes made here: none to the file. Only its first frame is read: engine::humanoid rests the
+actor's walk and run on it, the actor standing (its skeleton's own rest isn't a pose).

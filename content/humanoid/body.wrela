@@ -1,8 +1,12 @@
 // The body and its clips, each converted when the program is built (`engine::humanoid`): the
-// Quaternius body on VRM's bones, its T-pose, an idle, a walk, a run, walking turns and a jog.
+// Quaternius body on VRM's bones, its T-pose, an idle, a walk, a run, walking turns, a jog, and
+// ACCAD's mocap walks and runs.
 
 use engine::humanoid
-use engine::humanoid::{Clip, HUNDRED_STYLE, HUNDRED_STYLE_ARM, Humanoid, Paint, Retarget, UNREAL}
+use engine::humanoid::{
+    ACCAD, Clip, HUNDRED_STYLE, HUNDRED_STYLE_ARM, Humanoid, NO_NAMES, Paint, Retarget, Take,
+    UNREAL,
+}
 use engine::bvh
 use engine::cleanup
 use engine::cleanup::Cleanup
@@ -110,3 +114,104 @@ pub const RUN: Clip = cleanup::cleaned(RUN_RAW.clone(), HERO.rig.clone(), Cleanu
 pub const TURNS: Clip = cleanup::cleaned(TURNS_RAW.clone(), HERO.rig.clone(), Cleanup {})
 @fuel(2 ** 40)
 pub const JOG: Clip = cleanup::cleaned(JOG_RAW.clone(), HERO.rig.clone(), Cleanup {})
+
+/// ACCAD's Open Motion Project takes (assets/accad_*.bvh.LICENSE.txt): each actor's first frame
+/// standing (of their stand-to-walk), which their takes are rested as, and a walk and a run,
+/// each the stride that loops best, turned to go ahead, retargeted (their feet as flat as the
+/// body's own, `Retarget::stood`) and cleaned up as every clip is.
+@fuel(2 ** 40)
+pub const ACCAD_M1_STAND: Take = humanoid::take_of_bvh(
+    bvh::read(embed("assets/accad_male1_stand_to_walk.bvh")),
+    ACCAD,
+    NO_NAMES,
+    from: 0,
+    to: 0,
+)
+@fuel(2 ** 40)
+pub const ACCAD_M2_STAND: Take = humanoid::take_of_bvh(
+    bvh::read(embed("assets/accad_male2_stand_to_walk.bvh")),
+    ACCAD,
+    NO_NAMES,
+    from: 0,
+    to: 0,
+)
+@fuel(2 ** 40)
+pub const ACCAD_M1_WALK_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/accad_male1_walk.bvh")),
+        ACCAD,
+        NO_NAMES,
+        from: 0,
+        to: 182,
+    )
+        .rested_as(ACCAD_M1_STAND.clone(), 0)
+        .looped(shortest: 28, longest: 56),
+    HERO.rig.clone(),
+    Retarget { face_ahead: true, looped: true, stood: true },
+)
+@fuel(2 ** 40)
+pub const ACCAD_M1_RUN_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/accad_male1_run.bvh")),
+        ACCAD,
+        NO_NAMES,
+        from: 0,
+        to: 45,
+    )
+        .rested_as(ACCAD_M1_STAND.clone(), 0)
+        .looped(shortest: 16, longest: 30),
+    HERO.rig.clone(),
+    Retarget { face_ahead: true, looped: true, stood: true },
+)
+@fuel(2 ** 40)
+pub const ACCAD_M2_WALK_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/accad_male2_walk.bvh")),
+        ACCAD,
+        NO_NAMES,
+        from: 0,
+        to: 530,
+    )
+        .rested_as(ACCAD_M2_STAND.clone(), 0)
+        .looped(shortest: 110, longest: 220),
+    HERO.rig.clone(),
+    Retarget { face_ahead: true, looped: true, stood: true },
+)
+@fuel(2 ** 40)
+pub const ACCAD_M2_RUN_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/accad_male2_run.bvh")),
+        ACCAD,
+        NO_NAMES,
+        from: 0,
+        to: 57,
+    )
+        .rested_as(ACCAD_M2_STAND.clone(), 0)
+        .looped(shortest: 16, longest: 30),
+    HERO.rig.clone(),
+    Retarget { face_ahead: true, looped: true, stood: true },
+)
+@fuel(2 ** 40)
+pub const ACCAD_M1_WALK: Clip = cleanup::cleaned(
+    ACCAD_M1_WALK_RAW.clone(),
+    HERO.rig.clone(),
+    Cleanup {},
+)
+@fuel(2 ** 40)
+pub const ACCAD_M1_RUN: Clip = cleanup::cleaned(
+    ACCAD_M1_RUN_RAW.clone(),
+    HERO.rig.clone(),
+    Cleanup {},
+)
+@fuel(2 ** 40)
+pub const ACCAD_M2_WALK: Clip = cleanup::cleaned(
+    ACCAD_M2_WALK_RAW.clone(),
+    HERO.rig.clone(),
+    Cleanup {},
+)
+@fuel(2 ** 40)
+pub const ACCAD_M2_RUN: Clip = cleanup::cleaned(
+    ACCAD_M2_RUN_RAW.clone(),
+    HERO.rig.clone(),
+    Cleanup {},
+)
