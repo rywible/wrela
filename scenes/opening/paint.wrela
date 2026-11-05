@@ -88,8 +88,7 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
     while i < 32 && !under {
         let p = o + d * t
         let foot = t * 2.0 / (s.resolution.y * s.focal * slant)
-        let mid = tiles(lee(p - s.boat, s.boat_x, s.boat_z)).y
-        let f = p.y - level_at(waves, vec2(p.x, p.z), foot, mid)
+        let f = p.y - sea_level(s, waves, p, foot)
         if f < 0.0 {
             under = true
         } else {
@@ -105,8 +104,7 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
             let m = (lo + hi) * 0.5
             let p = o + d * m
             let foot = m * 2.0 / (s.resolution.y * s.focal * slant)
-            let mid = tiles(lee(p - s.boat, s.boat_x, s.boat_z)).y
-            let f = p.y - level_at(waves, vec2(p.x, p.z), foot, mid)
+            let f = p.y - sea_level(s, waves, p, foot)
             if f < 0.0 {
                 hi = m
             } else {
@@ -116,6 +114,19 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
         t = (lo + hi) * 0.5
     }
     min(mix(t, plane, level_k), far)
+}
+
+/// The sea's height under `p` (read as a pixel `foot` m across holds it), the waves a boat rides
+/// broken by the hull (`tiles`). Close along the hull it lies no higher than a hand under the
+/// gunwale: the skiff rides the swell (`sea::bob`), and the shorter waves it only rocks on would
+/// otherwise rise through its planks and drown its side.
+fn sea_level(s: Shot, waves: Waves, p: vec3, foot: f32) -> f32 {
+    let rel = p - s.boat
+    let mid = tiles(lee(rel, s.boat_x, s.boat_z)).y
+    let level = level_at(waves, vec2(p.x, p.z), foot, mid)
+    let e = length(vec2(dot(rel, s.boat_x) / 0.62, dot(rel, s.boat_z) / 2.2))
+    let near = 1.0 - smoothstep(1.0, 1.7, e)
+    mix(level, min(level, s.boat.y - 0.14), near)
 }
 
 fn march_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
@@ -834,7 +845,7 @@ fn sea_shade(
     // Under way, the wake runs longer and whiter, and the bow throws a wave off each side. The
     // wake lies along the way the skiff came: turning, an arc (its centre `bend` m to the side the
     // bow swings), read as how far back along it (`back`) and how far off it (`off`).
-    let way = clamp(abs(s.speed) / 1.6, 0.0, 1.0)
+    let way = clamp(abs(s.speed) / 3.0, 0.0, 1.0)
     let bend = s.speed / (if abs(s.turn) < 1.0e-4 { 1.0e-4 } else { s.turn })
     var back = -along
     var off = across
@@ -868,7 +879,9 @@ fn sea_shade(
     let trail = exp(-off * off / (0.4 + behind_ * 0.05)) *
         smoothstep(0.0, 0.8, behind_) *
         smoothstep(14.0 + 22.0 * way, 2.0, behind_) *
-        smoothstep(0.45 - 0.15 * way, 0.7, noise(xz * 1.3 + vec2(s.held * 0.6, back * 0.4)))
+        smoothstep(0.45 - 0.15 * way, 0.7, noise(xz * 1.3 + vec2(s.held * 0.6, back * 0.4))) *
+        // (Stirred water, not a white road: broken fine, as churned water's specks of foam are.)
+        smoothstep(0.5, 0.8, noise(xz * 7.0 + vec2(s.held * 1.1, -s.held * 0.7)))
     let from_bow = max(1.9 - along, 0.0)
     let bow_wave = exp(-pow(abs(across) - 0.12 - from_bow * 0.4, 2.0) / 0.012) *
         smoothstep(0.0, 0.3, from_bow) *
@@ -882,7 +895,7 @@ fn sea_shade(
         smoothstep(0.3, 0.6, noise(xz * 7.0 + vec2(s.held * 2.0))) *
         sunk
     let wake = max(
-        max(arms, trail * 0.6) * step(0.0, back) * (0.85 * way),
+        max(arms, trail * 0.45) * step(0.0, back) * (0.85 * way),
         max(bow_wave * 0.7, swirl * 0.8),
     )
     // Where the sea meets the hull: a lip of churned water along its waterline, out past the
@@ -1311,12 +1324,7 @@ fn sample(
         })
         c += albedo * bounce + rim * sun
         // The waterline: the hull dark where the sea has wet it.
-        let at_hull = level_at(
-            waves,
-            vec2(p.x, p.z),
-            0.02,
-            tiles(lee(p - s.boat, s.boat_x, s.boat_z)).y,
-        )
+        let at_hull = sea_level(s, waves, p, 0.02)
         let wet = smoothstep(0.14, 0.0, p.y - at_hull)
         c *= 1.0 - 0.5 * wet
         line = seam
@@ -1498,7 +1506,11 @@ pub fn paint(
     var count = 1
     var i = 0
     while i < count {
-        let off = if i == 0 { WITHIN[0] * k0 * s.fine } else { WITHIN[i] }
+        let off = if i == 0 {
+            WITHIN[0] * (if s.fine > 0.5 { k0 } else if s.fine > 0.2 {
+                isle_k
+            } else { 0.0 })
+        } else { WITHIN[i] }
         let (ck, mk, tk) = sample(s, light, clouds, view, aerial, dome, cloud, smp, waves, px + off)
         if i == 0 {
             c = ck
@@ -1507,9 +1519,13 @@ pub fn paint(
             // (The sea in front of the rock's bounds is the sea's alone: met once, as all the
             // sea is.)
             let sea_first = mk.y == SEA && exp2(mk.x) < near_isle.x
-            k = max(if sea_first { 0.0 } else { isle_k }, boat_k)
-            if k > 0.0 && s.fine > 0.5 {
+            let isle_part = if sea_first { 0.0 } else { isle_k }
+            k = max(isle_part, boat_k)
+            // (Met partly, `fine` between, the rock and the cathedral alone are met four times:
+            // the finest work in the frame, and what crawls first as the eye moves.)
+            if (k > 0.0 && s.fine > 0.5) || (isle_part > 0.0 && s.fine > 0.2) {
                 count = 4
+                k = if s.fine > 0.5 { k } else { isle_part }
             }
         }
         let wk = 1.0 / (1.0 + luma(ck) * light.exposure)

@@ -18,6 +18,10 @@ pub struct Rig: Copy {
     pub stroke: f32,
     /// How far the camera has swung (rad), following the steer.
     pub look: f32,
+    /// Where the camera stands, 0 for the opening's shot (low behind the skiff, the rock filling
+    /// the sky) to 1 for the player's (up behind it, the skiff and the sea ahead); between, on
+    /// its way from one to the other (`look::shot_at`).
+    pub framing: f32,
     /// The keys held.
     forward: bool,
     back: bool,
@@ -46,6 +50,7 @@ pub fn rest() -> Rig {
         pull: 0.0,
         stroke: 0.0,
         look: 0.0,
+        framing: 0.0,
         forward: false,
         back: false,
         left: false,
@@ -115,9 +120,9 @@ fn hold(r: mut Rig, key: Key, down: bool) {
 
 /// How fast the skiff gathers way under a full stroke (m/s²), the water's drag on it (1/s), and
 /// how fast it turns at speed (rad/s).
-const THRUST: f32 = 0.75
-const DRAG: f32 = 0.32
-const TURN_RATE: f32 = 0.32
+const THRUST: f32 = 1.5
+const DRAG: f32 = 0.3
+const TURN_RATE: f32 = 0.5
 
 /// The rig stepped on to `time` (s).
 pub fn step(r: mut Rig, time: f32) {

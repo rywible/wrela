@@ -65,10 +65,17 @@ pub struct Shot: Copy + GpuData {
     /// The cathedral lit from within (0 or 1): its stained glass throwing coloured beams round
     /// over the sea as a lighthouse's do.
     pub lantern: f32,
-    /// How finely it's met, 1 for a still or a clip (the rock's and the skiff's edges met four
-    /// times over a pixel) or 0 for a live page that must keep its frame rate (once).
+    /// How finely it's met: 1 for a still or a clip (the rock's and the skiff's edges met four
+    /// times over a pixel); 0.3 for a live page, the rock and the cathedral alone four times, so
+    /// their fine work doesn't crawl as the eye moves; 0 everything once (`paint`).
     pub fine: f32,
 }
+
+/// The player's camera (`Rig::framing` 1): how far behind the skiff (m), how high over the sea
+/// (m), and its focal length (screen half-heights; the opening's shot is a long 3.7).
+const PLAY_BACK: f32 = 9.0
+const PLAY_UP: f32 = 3.4
+const PLAY_FOCAL: f32 = 1.9
 
 /// `v` (x, z) turned `a` (rad) about the vertical, as a heading turns.
 fn turned(v: vec2, a: f32) -> vec2 {
@@ -96,8 +103,21 @@ pub fn shot_at(
     let lift = (boat.y - 2.0 * b1.y + b2.y) / (dt * dt)
     let behind = turned(vec2(0.5, -21.0), r.shown_look)
     let ahead = turned(vec2(-530.5, 5421.0), r.shown_look)
-    let eye = vec3(r.shown_at.x + behind.x, 1.9 + boat.y * 0.6, r.shown_at.y + behind.y)
-    let at = vec3(eye.x + ahead.x, 622.0, eye.z + ahead.y)
+    let low = vec3(r.shown_at.x + behind.x, 1.9 + boat.y * 0.6, r.shown_at.y + behind.y)
+    let rock = normalize(vec3(ahead.x, 622.0 - low.y, ahead.y))
+    // The player's camera: up behind the skiff along the way it's looking, the skiff low in the
+    // frame and the sea ahead of it, wider, so the water is seen going by.
+    let heading = vec2(sin(-0.22 + r.shown_look), cos(-0.22 + r.shown_look))
+    let high = vec3(
+        r.shown_at.x - heading.x * PLAY_BACK,
+        PLAY_UP + boat.y * 0.4,
+        r.shown_at.y - heading.y * PLAY_BACK,
+    )
+    let ahead_of = vec3(r.shown_at.x + heading.x * 32.0, 0.0, r.shown_at.y + heading.y * 32.0)
+    let k = smoothstep(0.0, 1.0, clamp(r.framing, 0.0, 1.0))
+    let eye = mix(low, high, k)
+    let at = eye + normalize(mix(rock, normalize(ahead_of - high), k)) * 1000.0
+    let near = mix(3.7, PLAY_FOCAL, k)
     // The other views, for looking closer: the rock from 1.1 km, the skiff from beside it, the
     // cathedral from 900 m, the low sun raking across it from the left, the sea from 30 m over
     // it, looking down its sun path, and the sun from the skiff's own eye.
@@ -112,7 +132,7 @@ pub fn shot_at(
     } else if view == 2 {
         (vec3(4.5, 2.2, -3.0), vec3(0.0, 0.0, 0.5), 1.5)
     } else {
-        (eye, at, 3.7)
+        (eye, at, near)
     }
     let forward = normalize(at - eye)
     let right = normalize(cross(vec3(y: 1.0), forward))
