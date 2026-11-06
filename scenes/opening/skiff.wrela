@@ -47,8 +47,8 @@ fn form(q: vec3) -> vec2 {
     let z = clamp(q.z / LONG, -1.0, 1.0)
     let y = q.y - sheer_at(z)
     if PLANING > 0.5 {
-        let taper = if z > 0.0 { 1.0 - pow(z, 2.4) } else { 1.0 - 0.3 * pow(-z, 3.0) }
-        let w = max(BEAM * 0.92 * taper, 0.03)
+        let taper = if z > 0.0 { 1.0 - pow(z, 1.35) } else { 1.0 - 0.3 * pow(-z, 3.0) }
+        let w = max(BEAM * 0.8 * taper, 0.02)
         let dk = max(
             DEEP *
                 0.72 *
@@ -91,7 +91,10 @@ fn hull(q: vec3) -> f32 {
     let f = form(q)
     var d = max(abs(f.x + 0.02) - 0.025, f.y)
     if PLANING > 0.5 {
-        d = min(d, max(max(f.x, abs(f.y + 0.015) - 0.015), FOOT.z + 0.1 - q.z))
+        // (Decked flush from end to end, its deck crowned a little: a board you stand on, not
+        // a tray you stand in.)
+        let w = max(BEAM * 0.8, 0.02)
+        d = max(f.x, f.y - 0.025 * (1.0 - min(q.x * q.x / (w * w), 1.0)))
     }
     d
 }
@@ -166,7 +169,9 @@ fn rider(s: Shot) -> (Joints, vec3) {
 fn parts(s: Shot, q: vec3) -> vec4 {
     var wood = hull(q)
     // The mast thwart, the mast stepped through it, and the stern's seat.
-    wood = min(wood, sd_box(q - vec3(0.0, -0.08, FOOT.z), vec3(0.5, 0.025, 0.12)))
+    if PLANING < 0.5 {
+        wood = min(wood, sd_box(q - vec3(0.0, -0.08, FOOT.z), vec3(0.5, 0.025, 0.12)))
+    }
     if PLANING < 0.5 {
         wood = min(wood, sd_box(q - vec3(0.0, -0.05, -1.75), vec3(0.32, 0.025, 0.25)))
     }
@@ -217,11 +222,16 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
     a = mix(a, vec3(0.2, 0.06, 0.04), bottom * 0.8)
     // Inside, the wood paler and worn, the floorboards darker between the thwarts.
     let inside = smoothstep(0.3, 0.6, dot(n, s.boat_y))
-    a = mix(
-        a,
-        mix(vec3(0.46, 0.33, 0.2), vec3(0.3, 0.2, 0.12), smoothstep(-0.3, -0.36, q.y)),
-        inside * 0.7,
-    )
+    // (The planing hull's deck pale scrubbed ash, a dark tarred pad where the feet stand.)
+    let floor_ = if PLANING > 0.5 {
+        let pad = smoothstep(0.32, 0.28, abs(q.x)) *
+            smoothstep(-0.75, -0.7, q.z) *
+            smoothstep(0.85, 0.8, q.z)
+        mix(vec3(0.66, 0.6, 0.5) * (0.9 + 0.2 * grain), vec3(0.1, 0.09, 0.08), pad * 0.85)
+    } else {
+        mix(vec3(0.46, 0.33, 0.2), vec3(0.3, 0.2, 0.12), smoothstep(-0.3, -0.36, q.y))
+    }
+    a = mix(a, floor_, inside * (if PLANING > 0.5 { 0.95 } else { 0.7 }))
     let seam = sin(q.y * 46.0 + q.z * 1.5) + 0.92
     // The varnish holds the light: smoother on the outside, its paint smoother still.
     let rough = mix(0.75, mix(0.42, 0.3, strake), outside)

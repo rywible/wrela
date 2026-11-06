@@ -49,6 +49,10 @@ pub fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
         smoothstep(0.0, 1.0, behind) *
         exp(-behind / (5.0 + 8.0 * way + 6.0 * run)) *
         smoothstep(0.0, 0.4, way) *
+        // (In patches, and less at a run: a slick ruled straight astern mirrors the sky as a
+        // glowing bar.)
+        (0.35 + 0.65 * noise(rest * 0.6)) *
+        (1.0 - 0.6 * run) *
         0.6
     let along = q.y - clamp(q.y, -1.7, 1.7)
     let out = vec2(q.x, along)

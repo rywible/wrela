@@ -1,0 +1,36 @@
+// The wind over the sea, one field for all that it moves: the sail (`sail`), the water's
+// roughness and foam (`paint`'s sea, `engine::ocean`'s spectrum from the mean) and the clouds
+// (`heavens`). Its mean is the sea state's (`sea::SEA`); over it, gusts and lulls in cells a few
+// tens of metres across, carried down the wind at its own speed (as turbulence is: frozen in
+// the air that carries it), each gust veering the wind a little as it passes.
+
+use sea::SEA
+use look::noise
+
+/// The wind at a place: the way it blows (x, z: a unit vector), its speed (m/s) and its gust (its
+/// speed over the mean: 1 the mean, more in a gust, less in a lull).
+pub struct Air: Copy {
+    pub way: vec2,
+    pub speed: f32,
+    pub gust: f32,
+    /// How far it's veered off the mean (rad, positive turning the way as `sail::wind_in` does).
+    pub veer: f32,
+}
+
+/// The gust cells' sizes (m): broad gusts, and the puffs inside them.
+const BROAD: f32 = 85.0
+const PUFF: f32 = 25.0
+
+/// The wind at `xz` (the world's, m) at time `t` (s).
+pub fn air_at(xz: vec2, t: f32) -> Air {
+    // (Where this air was when the field began: the gusts ride down the wind with it.)
+    let at = xz - SEA.wind * (SEA.speed * t)
+    let g = noise(at / BROAD) * 0.65 + noise(at / PUFF) * 0.35
+    let gust = 0.78 + 0.5 * g
+    // (A gust veers as it strikes, and backs as it passes: the broad cells' own slope.)
+    let veer = (noise(at / (BROAD * 1.7) + vec2(31.0, 7.0)) - 0.5) * 0.3
+    let c = cos(veer)
+    let s = sin(veer)
+    let w = SEA.wind
+    Air { way: vec2(w.x * c - w.y * s, w.x * s + w.y * c), speed: SEA.speed * gust, gust, veer }
+}
