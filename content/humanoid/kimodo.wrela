@@ -763,3 +763,129 @@ pub const PREVIEW: Clip = stride::curled_hands(
     HERO.rig,
     2.0,
 )
+
+/// The real boxer's bounce (ACCAD Male 2, E8) as a loop: its frames `BOX_FROM` to `BOX_TO`
+/// (30 a second; the pair that best match in pose and speed), the drift across the floor taken
+/// out evenly, and its last `BOX_FADE` seconds eased into the frames before its first, so it
+/// runs on without a seam.
+pub const BOX_FROM: f32 = 61.0
+pub const BOX_TO: f32 = 157.0
+pub const BOX_FADE: f32 = 0.25
+
+@fuel(2 ** 40)
+pub const BOUNCE: Clip = boxer_loop(PREVIEW.clone())
+
+fn boxer_loop(c: Clip) -> Clip {
+    let nb = c.bones
+    let (a, b) = (BOX_FROM / 30.0, BOX_TO / 30.0)
+    let span = b - a
+    let n = u32(span * 60.0)
+    var drift = c.pose(b).hips - c.pose(a).hips
+    drift.y = 0.0
+    var out = Clip {
+        fps: 60.0,
+        frames: n + 1,
+        bones: nb,
+        turns: Vec::filled((n + 1) * nb, Quat::identity()),
+        hips: Vec::filled(n + 1, vec3(0.0)),
+        looped: true,
+        travel: vec3(0.0),
+        travel_local: vec3(0.0),
+    }
+    for f in 0..n + 1 {
+        let t = f32(f) / 60.0
+        var p = c.pose(a + t)
+        p.hips = p.hips - drift * (t / span)
+        if t > span - BOX_FADE {
+            let w = smoothstep(span - BOX_FADE, span, t)
+            var q = c.pose(a + t - span)
+            q.hips = q.hips
+            p = humanoid::blend(p, q, w, nb)
+        }
+        for j in 0..nb {
+            out.turns[f * nb + j] = p.turns[j]
+        }
+        out.hips[f] = p.hips
+    }
+    out
+}
+
+/// A swagger laid on the boxer's bounce, riding his own rhythm (every offset moves with him):
+/// the lead (left) fist dropped `lead` (m) (`out` unused for now), the rear fist dropped `rear`, the chin up
+/// `chin` (radians), the trunk leaning back `lean` and turned further side-on `blade`.
+pub struct Swagger: Copy {
+    pub lead: f32,
+    pub out: f32,
+    pub rear: f32,
+    pub chin: f32,
+    pub lean: f32,
+    pub blade: f32,
+    pub sink: f32,
+}
+
+pub const SWAGGERS: [Swagger; 4] = [
+    // Cool: side-on, hands low, chin down.
+    Swagger { lead: 0.3, out: 0.0, rear: 0.24, chin: -0.06, lean: -0.08, blade: 0.2, sink: 0.09 },
+    // Dangerous: hands lower still, chin tucked, leaning in.
+    Swagger { lead: 0.4, out: 0.0, rear: 0.3, chin: -0.12, lean: -0.12, blade: 0.25, sink: 0.1 },
+    // Cocky: chin up, sat back, hands hanging.
+    Swagger { lead: 0.45, out: 0.0, rear: 0.36, chin: 0.1, lean: 0.04, blade: 0.15, sink: 0.07 },
+    // Explosive: low in the legs, hands half up, coiled side-on.
+    Swagger { lead: 0.2, out: 0.0, rear: 0.18, chin: -0.08, lean: -0.15, blade: 0.3, sink: 0.13 },
+]
+
+/// How many frames (60 a second) the loose hands trail the chest, how much of its ride they
+/// keep back, and how far the fingers curl (1 loose, 2 a claw-like curl).
+pub const SW_LAG: u32 = 5
+pub const SW_TRAIL: f32 = 0.7
+pub const SW_CURL: f32 = 2.6
+
+/// Which swagger `SHOW=22` plays.
+pub const SWAG: u32 = 0
+
+@fuel(2 ** 40)
+pub const SWAGGERED: Clip = swaggered(BOUNCE.clone(), SWAGGERS[SWAG])
+
+fn swaggered(c: Clip, s: Swagger) -> Clip {
+    borrow rig = HERO.rig
+    let nb = c.bones
+    var out = c.clone()
+    let (lh, rh) = (rig.find("leftHand"), rig.find("rightHand"))
+    let chest = rig.find("upperChest")
+    let down = vec3(0.0, -1.0, 0.0)
+    let up = vec3(0.0, 1.0, 0.0)
+    let x = vec3(1.0, 0.0, 0.0)
+    // The trunk first (its turns are the hands' parents).
+    for f in 0..c.frames {
+        for (name, part) in [("spine", 0.4), ("chest", 0.35), ("upperChest", 0.25)] {
+            let b = rig.find(name)
+            out.turns[f * nb + b] = Quat::axis_angle(up, s.blade * part).mul(Quat::axis_angle(x, -s.lean * part)).mul(out.turns[f * nb + b])
+        }
+    }
+    // Where the chest rides each frame, so the loose hands can trail it.
+    var rides: Vec<vec3> = Vec::filled(c.frames, vec3(0.0))
+    for f in 0..c.frames {
+        rides[f] = stride::worlds(rig, out, f)[chest].t
+    }
+    let n = max(c.frames, 2) - 1
+    for f in 0..c.frames {
+        var w = stride::worlds(rig, out, f)
+        // Sat lower into the knees, the feet where they were.
+        let (fl, fr) = (rig.find("leftFoot"), rig.find("rightFoot"))
+        let feet = [w[fl].t, w[fr].t]
+        let foot_q = [w[fl].q, w[fr].q]
+        stride::shift(mut w, vec3(0.0, -s.sink, 0.0))
+        legs_to(rig, mut w, feet, foot_q)
+        // Loose arms: the hands hang back on the chest's ride by `SW_LAG` frames.
+        let lag = rides[(f % n + n - SW_LAG) % n] - rides[f % n]
+        let trail = lag * SW_TRAIL
+        let (l, r) = (w[lh].t, w[rh].t)
+        engine::keys::arm_to(rig, mut w, 0, l + down * s.lead + trail)
+        engine::keys::arm_to(rig, mut w, 1, r + down * s.rear + trail * 0.8)
+        stride::store(rig, w, mut out, f)
+        let (head, neck) = (rig.find("head"), rig.find("neck"))
+        out.turns[f * nb + head] = out.turns[f * nb + head].mul(Quat::axis_angle(x, -s.chin * 0.6))
+        out.turns[f * nb + neck] = out.turns[f * nb + neck].mul(Quat::axis_angle(x, -s.chin * 0.4))
+    }
+    stride::curled_hands(straight_wrists(out), HERO.rig, SW_CURL)
+}

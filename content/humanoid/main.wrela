@@ -264,6 +264,8 @@ fn pose_at(time: f32) -> Pose {
         18 => kimodo::STANCE.pose(time % kimodo::STANCE.length()),
         19 => kimodo::in_stance(time),
         20 => kimodo::PREVIEW.pose(time % kimodo::PREVIEW.length()),
+        21 => kimodo::BOUNCE.pose(time % kimodo::BOUNCE.length()),
+        22 => kimodo::SWAGGERED.pose(time % kimodo::SWAGGERED.length()),
         _ => if time < IDLE_AT {
             T_POSE.pose(0.0)
         } else if time < WALK_AT {
@@ -308,7 +310,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.height = height
     }
     let game = SHOW == 11 || SHOW == 12 || SHOW == 13 || SHOW == 14
-    let crosses = SHOW == 13 || SHOW == 14 || SHOW == 16 || SHOW == 18 || SHOW == 19 || SHOW == 20
+    let crosses = SHOW == 13 || SHOW == 14 || SHOW == 16 || SHOW == 18 || SHOW == 19 || SHOW == 20 || SHOW == 21 || SHOW == 22
 
     let dt = clamp(time - s.last, 1.0e-4, 0.1)
     let (pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
