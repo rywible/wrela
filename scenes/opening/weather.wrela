@@ -9,12 +9,12 @@
 // plane over the curved sea, and the dome's light is given the detail it can't hold: what's
 // finer than a pixel faded to its mean (`fbm2_seen`), so nothing crawls.
 
-use look::{ISLE, OVERCAST, ROCK, SKY, SUN, Shot, hash2, luma, ray, wind}
+use look::{ISLE, OVERCAST, ROCK, SKY, STORM_LOW, SUN, Shot, hash2, luma, ray, wind}
 use engine::air::{ALTITUDE, BOTTOM}
 use engine::light::Light
 use engine::light::sky as clear_sky
 use engine::noise::{fbm2, fbm2_seen}
-use engine::sky::{BASE, Clouds, DECK_BASE, sky_uv, stormy_air}
+use engine::sky::{BASE, Clouds, DECK_BASE, SKY_H, SKY_W, sky_uv, stormy_air}
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, Texture3d}
 
 /// The deck's base over the sea (m): the layer's base and the overcast's lift over it.
@@ -269,7 +269,7 @@ fn rain(s: Shot, d: vec3, id: f32, t0: f32, t1: f32, jitter: f32) -> f32 {
     // Their streaks, seen at the view's own scale (they're kilometres off, finer than the
     // march's steps): falling.
     let az = atan2(d.x, d.z)
-    let streak = fbm2(vec2(az * 300.0, d.y * 8.0 + s.time * 0.6), 4)
+    let streak = fbm2(vec2(az * 190.0, d.y * 6.0 + s.time * 0.6), 3)
     let clear = clear_of_rock(id, 0.25)
     var through = 1.0
     let n = 18
@@ -284,7 +284,7 @@ fn rain(s: Shot, d: vec3, id: f32, t0: f32, t1: f32, jitter: f32) -> f32 {
         // Leaning as it falls: the shaft's foot is blown on from its top.
         let xz = p.xz - moved + lean * (DECK - p.y) * 0.25
         let cell = rain_cell(s, xz + moved)
-        let heavy = smoothstep(0.55, 0.8, cell) * clear
+        let heavy = smoothstep(0.6, 0.8, cell) * clear
         if heavy <= 0.0 {
             continue
         }
@@ -292,7 +292,7 @@ fn rain(s: Shot, d: vec3, id: f32, t0: f32, t1: f32, jitter: f32) -> f32 {
         // drying out on the way (virga).
         let dries = max(fbm2(xz / 2400.0 + vec2(3.0, 7.0), 2) - 0.6, 0.0) * DECK * 2.2
         let column = smoothstep(DECK * 1.02, DECK * 0.5, p.y) * smoothstep(dries, dries + 600.0, p.y)
-        let sigma = heavy * (0.6 + 0.4 * streak) * column / RAIN_THICK
+        let sigma = heavy * (0.75 + 0.25 * streak) * column / RAIN_THICK
         through *= exp(-sigma * (b - a))
     }
     through
@@ -342,14 +342,19 @@ fn scud(
     let w = vec2(dot(xz, across), dot(xz, along))
     let foot = t * px_angle / max(d.y, 0.02)
     let big = fbm2(w / 5000.0 + vec2(29.0, s.time * 0.002), 3)
-    let torn = fbm2_seen(vec2(w.x / 420.0, w.y / 700.0) + vec2(4.0, 1.0), 5, foot / 420.0)
-    let cover = smoothstep(0.6, 0.72, torn) * smoothstep(0.5, 0.62, big) * (1.0 - smoothstep(60.0, 200.0, foot)) * smoothstep(32000.0, 14000.0, t) *
+    let torn = fbm2_seen(w / 520.0 + vec2(4.0, 1.0), 5, foot / 520.0)
+    let cover = smoothstep(0.58, 0.74, torn + (big - 0.5) * 0.5) * smoothstep(0.45, 0.6, big) * (1.0 - smoothstep(60.0, 200.0, foot)) * smoothstep(32000.0, 14000.0, t) *
         clear_of_rock(id, 0.15)
     if cover <= 0.0 {
         return vec4(0.0)
     }
-    // Darker than the deck it's seen against, its thinner edges a little lighter.
-    let col = deck_light * mix(0.5, 0.28, smoothstep(0.6, 0.85, torn))
+    // Darker than the deck it's seen against, deepest in its thick middle; its top, where it
+    // thins away from the eye, catching the deck's light (the torn field a little farther off
+    // along the ray: where that's clearer, this is an upper edge).
+    let ahead = vec2(dot(d.xz, across), dot(d.xz, along)) / max(length(d.xz), 1.0e-4)
+    let beyond = fbm2_seen(vec2(w.x / 420.0, w.y / 700.0) + ahead * (160.0 / 520.0) + vec2(4.0, 1.0), 5, foot / 520.0)
+    let rim = smoothstep(0.0, 0.08, torn - beyond)
+    let col = deck_light * (mix(0.5, 0.26, smoothstep(0.6, 0.85, torn)) + 0.35 * rim)
     let ap = stormy_air(aerial, smp, light.sun, d, t * 0.001, OVERCAST)
     vec4(col * ap.a + ap.rgb, cover * 0.8)
 }
@@ -440,7 +445,7 @@ pub fn weather(
     let mean = deck_mean(view, light, dome, smp)
     let b = strike(s)
     // The sky: the deck met here at the pixel's size, down to the horizon.
-    if m.y == SKY && d.y > 0.0 {
+    if DRAWN_DECK && m.y == SKY && d.y > 0.0 {
         let base = deck(s, view, light, dome, smp, clouds.drift, air, mean, d, px_angle)
         // Just over the horizon the far air itself, lighter where the eye looks out under the
         // deck's edge; a silver of the sun's light far off toward it.
@@ -454,6 +459,31 @@ pub fn weather(
         let hit = s.eye + d * reach(s.eye.y, d.y, DECK)
         let r = length(hit.xz - b.at.xz)
         c = vec4(c.rgb + mean * FLASH * 1.6 * b.now * exp(-(r / 5000.0) * (r / 5000.0)), c.a)
+    }
+    // The dome's march's dither smoothed out of the sky: its texel and its four neighbours'
+    // mean in place of its texel alone.
+    if m.y == SKY && d.y > STORM_LOW * 0.5 {
+        let uv = sky_uv(d)
+        let texel = vec2(1.0 / f32(SKY_W), 1.0 / f32(SKY_H))
+        let one = dome.sample_level(smp, uv)
+        var around = vec4(0.0)
+        for k in 0..4 {
+            let o = vec2(f32(k & 1) * 2.0 - 1.0, f32(k >> 1) * 2.0 - 1.0) * texel * 1.2
+            around += dome.sample_level(smp, uv + o) * 0.25
+        }
+        let k = smoothstep(STORM_LOW * 0.5, STORM_LOW, d.y)
+        c = vec4(max(c.rgb + (around.rgb - one.rgb) * 0.8 * k, vec3(0.0)), c.a)
+    }
+    // Low over the horizon, the far deck's sunlit edges held under the air's own light: no
+    // white slivers cut out of the far clouds.
+    if m.y == SKY && d.y < 0.07 {
+        let cap = air * mix(1.12, 1.6, smoothstep(0.02, 0.07, d.y))
+        c = vec4(min(c.rgb, cap), c.a)
+    }
+    // Where the sea meets the sky, the far sea lost in the same air: no ruled line.
+    if m.y != SKY && d.y < 0.0 {
+        let k = exp(d.y / 0.008) * 0.5
+        c = vec4(mix(c.rgb, air, k), c.a)
     }
     // The scud, in front of what's behind it.
     let sc = scud(s, aerial, smp, light, deck_light, d, m.y, dist, px_angle)
@@ -470,6 +500,9 @@ pub fn weather(
     c = vec4(c.rgb + vec3(0.85, 0.88, 1.0) * mean * FLASH * 6.0 * bolt_k + mean * FLASH * 0.12 * b.now, c.a)
     c
 }
+
+/// Whether the deck's base is drawn here per pixel (`deck`), or left as the dome holds it.
+const DRAWN_DECK: bool = false
 
 /// How bright lightning is, against the deck's mean light.
 const FLASH: f32 = 1.0

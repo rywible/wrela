@@ -122,6 +122,10 @@ pub struct Weather: Clone {
     /// How far an overcast thins between its banks (0: covered all over; 1: its thinner reaches
     /// let the light through).
     pub thin: f32 = 0.0,
+    /// A reach of an overcast's deck thinned (within `radius` of the segment, softly): less of
+    /// it covered and its clouds lower, so it's lighter there with the light let through it,
+    /// its billows still in it (none: radius 0).
+    pub veil: Gap = Gap { a: vec2(0.0, 0.0), b: vec2(0.0, 0.0), radius: 0.0 },
 }
 
 /// What the dome's march and the clouds' shadows read: where the eye is, which of the dome's
@@ -316,6 +320,7 @@ pub fn cook_weather(
     gap: Gap,
     overcast: f32,
     thin: f32,
+    veil: Gap,
     wind: vec2,
     from: u32,
     to: u32,
@@ -361,6 +366,15 @@ pub fn cook_weather(
         cover = max(cover, overcast * (0.6 - 0.35 * thin + (0.35 + 0.35 * thin) * thick))
         tall = max(tall, overcast * (DECK_BASE + 1500.0 + 1800.0 * thick))
         lifted = overcast * (DECK_BASE + 450.0 * (1.0 - roll) - 250.0 * thick)
+        // Thinned in the veil's reach: its edge torn by the deck's own masses.
+        if veil.radius > 0.0 {
+            let vb = veil.b - veil.a
+            let va = saturate(dot(xz - veil.a, vb) / max(dot(vb, vb), 1.0))
+            let r = length(xz - veil.a - vb * va) / veil.radius
+            let k = smoothstep(1.0, 0.25, r + (mass - 0.5) * 0.8) * overcast
+            cover *= 1.0 - 0.3 * k
+            tall = mix(tall, DECK_BASE + 900.0, 0.55 * k)
+        }
     }
     // Broken a little, so no cloud is a disc; and clear in the gap.
     let ab = gap.b - gap.a
@@ -378,7 +392,7 @@ pub fn cook_weather(
             saturate(broken),
             saturate(tall / (TOP - BASE)),
             bottom / (TOP - BASE),
-            1.0 - 0.8 * overcast,
+            1.0 - 0.65 * overcast,
         ),
     )
 }
@@ -954,6 +968,7 @@ impl Sky {
                 gap: w.gap,
                 overcast: w.overcast,
                 thin: w.thin,
+                veil: w.veil,
                 wind: w.wind,
                 from: band * rows,
                 to: (band + 1) * rows,

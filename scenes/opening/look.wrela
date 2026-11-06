@@ -17,10 +17,12 @@ pub const OVERCAST: f32 = 1.0
 pub const LIFT: f32 = 1.45
 pub const BREAK: f32 = 0.0
 pub const THIN: f32 = 0.0
+/// How wide the deck's thinner reach behind the cathedral is (m; 0 none).
+pub const VEIL: f32 = 3800.0
 /// Under the overcast, low on the horizon: the elevation (a direction's y) under which the deck
 /// goes into the storm's own air; how much lighter that air is at the horizon itself; and how
 /// bright the open sky behind the deck's thinner places is, against the open sky's own.
-pub const STORM_LOW: f32 = 0.14
+pub const STORM_LOW: f32 = 0.075
 pub const STORM_HORIZON: f32 = 1.6
 pub const STORM_BEHIND: f32 = 0.2
 

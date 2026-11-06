@@ -9,7 +9,7 @@ use engine::sky::{Clouds, Gap, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky}
 use engine::switches::Switches
 use std::gpu::{Address, Sampler, sampler}
 use std::math::PI
-use look::{BREAK, LIFT, OVERCAST, SUN, THIN, wind}
+use look::{BREAK, LIFT, OVERCAST, SUN, THIN, VEIL, wind}
 
 /// The engine's approved switches: the sky's march at full size.
 pub struct Approved {}
@@ -46,6 +46,9 @@ fn weather() -> Weather {
         wind: wind() * 12.0,
         overcast: OVERCAST,
         thin: THIN,
+        // (Thinner behind the cathedral, as the eye sees the deck over its spires: a soft,
+        // lighter reach for them to stand against.)
+        veil: Gap { a: vec2(-1700.0, 7000.0), b: vec2(-2500.0, 11500.0), radius: VEIL },
     }
 }
 
