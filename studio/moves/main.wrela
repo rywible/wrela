@@ -1,0 +1,154 @@
+// The moves tool (`wrela tool moves`): motion written as Wrela code. Each of its moves is a clip
+// made from a reference capture (content/humanoid reads the capture), fitted as a cycle
+// (`engine::cycle`) and written as a Wrela file in content/moves, which the game plays. The
+// capture stays a reference: the game builds without it.
+//
+// ```text
+// wrela tool moves -- [move ...]
+// ```
+//
+// With no move named, it writes them all. For each it prints how closely the written motion
+// follows the clip: the farthest any joint strays (cm) and the most harmonics a bone needs.
+
+use engine::cycle
+use engine::cycle::{Cycle, Fit}
+use engine::humanoid::{Clip, NONE, Rig, Rigid}
+use humanoid::body::{ACCAD_M2_WALK, HERO}
+use std::io::print
+use std::tool::args
+use std::tool::files
+use std::tool::files::rooted
+
+pub const USAGE: Text = "usage: wrela tool moves -- [move ...]"
+
+/// A move: its name on the command line, its file in content/moves and its constant there, the
+/// clip it's fitted to, and what the file says it is.
+pub struct Move: Clone {
+    pub name: Text,
+    pub file: Text,
+    pub constant: Text,
+    pub clip: Clip,
+    pub about: [Text; 3],
+}
+
+/// The moves.
+pub fn moves() -> Vec<Move> {
+    Vec::from(
+        [
+            Move {
+                name: "walk",
+                file: "walk.wrela",
+                constant: "WALK",
+                clip: ACCAD_M2_WALK.clone(),
+                about: [
+                    "The walk: ACCAD's Male 2 walking (Open Motion Project by ACCAD/The Ohio State",
+                    "University, CC BY 3.0), retargeted, looped and cleaned up (content/humanoid's",
+                    "`ACCAD_M2_WALK`), then fitted as a cycle by the moves tool.",
+                ],
+            },
+        ],
+    )
+}
+
+/// Each bone of `rig` in the body's space in frame `f` of `c`.
+pub fn world(rig: Rig, c: Clip, f: u32) -> Vec<Rigid> {
+    let nb = rig.bones.len()
+    var out: Vec<Rigid> = Vec::filled(nb, Rigid::identity())
+    for b in 0..nb {
+        let p = rig.bones[b].parent
+        let q = c.turns[f * nb + b]
+        if p == NONE {
+            out[b] = rig.base.then(Rigid { q, t: c.hips[f] })
+        } else {
+            out[b] = out[p].then(Rigid { q, t: rig.bones[b].rest.t })
+        }
+    }
+    out
+}
+
+/// How far (m) any joint of `b` strays from where it is in `a`, at any frame of a loop but the
+/// last (which a cycle makes its first again): both on `rig`, with as many frames.
+pub fn strays(rig: Rig, a: Clip, b: Clip) -> f32 {
+    var worst = 0.0
+    for f in 0..min(a.frames, b.frames) - 1 {
+        let (wa, wb) = (world(rig.clone(), a.clone(), f), world(rig.clone(), b.clone(), f))
+        for j in 0..wa.len() {
+            worst = max(worst, length(wa[j].t - wb[j].t))
+        }
+    }
+    worst
+}
+
+/// The source of `m`'s file.
+pub fn file_of(m: Move, c: Cycle) -> String {
+    var out = String::new()
+    out.push_str(
+        "// Written by the moves tool (`wrela tool moves`, studio/moves): don't edit it by hand, change\n",
+    )
+    out.push_str(
+        "// the tool or what it fits and write it again. A cycle (engine::cycle): each bone's turn a\n",
+    )
+    out.push_str("// mean turn and a few harmonics of the phase.\n\n")
+    out.push_str("use engine::cycle::{Cycle, Swing, wave}\nuse std::quat::Quat\n\n")
+    var doc: Vec<String> = Vec::new()
+    for line in m.about {
+        doc.push(line.to_string())
+    }
+    out.push_str(cycle::source(c, m.constant.to_string().as_str(), doc).as_str())
+    out
+}
+
+pub fn tool() -> u32 {
+    let wanted = args()
+    let rig = HERO.rig.clone()
+    var done = 0
+    for m in moves() {
+        var chosen = wanted.is_empty()
+        for w in wanted {
+            if w.as_str() == m.name {
+                chosen = true
+            }
+        }
+        if !chosen {
+            continue
+        }
+        let c = cycle::rounded(cycle::cycle_of(m.clip.clone(), rig.clone(), Fit {}))
+        let back = c.clip(rig.clone(), m.clip.fps)
+        let off = strays(rig.clone(), m.clip.clone(), back)
+        var most = c.sway.len()
+        var terms = c.sway.len()
+        for s in c.bones {
+            most = max(most, s.waves.len())
+            terms += s.waves.len()
+        }
+        let Some(path) = rooted("ws", f"content/moves/{m.file}".as_str()) else {
+            print(f"moves: no path for {m.file}")
+            return 1
+        }
+        let text = file_of(m.clone(), c)
+        if files::write(path.as_str(), text.as_bytes()).wait().is_err() {
+            print(f"moves: couldn't write {path}")
+            return 1
+        }
+        print(
+            f"{m.name}: content/moves/{m.file}, {c.bones.len()} bones, {terms} harmonics (at most {most} a bone), joints within {off * 100.0:.2} cm of the clip",
+        )
+        done += 1
+    }
+    if done == 0 {
+        print(USAGE)
+        return 2
+    }
+    0
+}
+
+@test
+fn the_written_walk_is_the_clip_it_was_fitted_to() {
+    // The file in content/moves, played on the body, against the clip as it is now: a change to
+    // the clip without writing the file again fails here.
+    let rig = HERO.rig.clone()
+    let back = moves::walk::WALK.clip(rig.clone(), ACCAD_M2_WALK.fps)
+    assert(back.frames == ACCAD_M2_WALK.frames, "a frame of the walk for each of the clip's")
+    let off = strays(rig, ACCAD_M2_WALK.clone(), back)
+    assert(off < 0.005, f"the walk's joints within 5 mm of the clip's ({off * 100.0:.2} cm)")
+}

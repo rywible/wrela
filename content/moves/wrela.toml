@@ -1,0 +1,8 @@
+# The body's moves written as Wrela code (engine::cycle): each fitted once from a reference
+# capture by the moves tool (studio/moves), which writes these files. The game plays them; it
+# reads no motion file.
+[package]
+name = "moves"
+
+[dependencies]
+engine = { workspace = true }

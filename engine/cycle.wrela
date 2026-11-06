@@ -1,0 +1,451 @@
+// Motion written as code: a body's movement as functions of time, not frames read from a file.
+// A capture (or anything else that made a `humanoid::Clip`) is a reference: the motion tool
+// (studio/moves) fits it once and writes what it fitted as Wrela source, and the game plays the
+// source. Nothing the game builds reads a motion file.
+//
+// A cycle (a walk, a run, a stance's bounce: motion that repeats) is a Fourier series in its
+// phase: each bone's turn is a mean turn, then a rotation vector that is a sum of a few cosines
+// and sines of the phase (its harmonics), and the hips' place the same, less their steady travel.
+// Every harmonic is a knob: the first is the stride's swing, the second the double bob of the
+// hips, the higher ones the snap of a heel strike. A mean turn can be set, a harmonic scaled.
+//
+// What's written doesn't depend on the rig it was fitted on: each bone's turn is the turn it
+// makes from a T-pose, in the body's frame (+y up, +z ahead, +x the body's left), its parent's
+// taken off; the hips' place is in the body's frame, over the rest hips' height. Any rig standing
+// in a T-pose at rest plays it (`Cycle::clip`): Quaternius's body, or one whose bones are
+// unturned at rest (`engine::creature`'s), where a written turn is the bone's own.
+
+use humanoid::{BONES, Clip, NONE, Rig, bone}
+use std::quat::Quat
+
+/// One harmonic of a series: which multiple of the phase it is (1 once a cycle, 2 twice, ...),
+/// and how much of the cosine and how much of the sine of that multiple. For a turn, rotation vectors (rad, the body's frame); for the hips, places (over the
+/// rest hips' height).
+pub struct Harmonic: Copy {
+    pub k: u32,
+    pub cos: vec3,
+    pub sin: vec3,
+}
+
+/// A bone's turn through a cycle: the VRM bone, its mean turn from the T-pose (its parent's taken
+/// off), and its swing about that mean: a constant rotation vector, then its harmonics (only
+/// those it needs: a boxer's bounce, four to a cycle, is mostly its fourth).
+pub struct Swing: Clone {
+    pub bone: Text,
+    pub mean: Quat,
+    pub bias: vec3,
+    pub waves: Vec<Harmonic>,
+}
+
+impl Swing {
+    /// Its turn at phase `t` (0 to 1 a cycle).
+    pub fn at(self, t: f32) -> Quat {
+        self.mean.mul(exp(series(self.bias, self.waves, t)))
+    }
+}
+
+/// A cycle: how long one lasts (s); how far the body goes in one (the body's frame, over the rest
+/// hips' height: a walk's stride pair); the hips' place through it about their steady travel (over
+/// the rest hips' height, from the rest hips): a mean and its harmonics; and each bone's swing.
+pub struct Cycle: Clone {
+    pub period: f32,
+    pub travel: vec3,
+    pub hips: vec3,
+    pub sway: Vec<Harmonic>,
+    pub bones: Vec<Swing>,
+}
+
+/// A series' value at phase `t`: `bias`, then each harmonic as `cos` times cos(2πkt) and `sin`
+/// times sin(2πkt).
+pub fn series(bias: vec3, waves: [Harmonic], t: f32) -> vec3 {
+    var v = bias
+    let w = 6.28318531 * t
+    for h in waves {
+        let a = w * f32(h.k)
+        v = v + h.cos * cos(a) + h.sin * sin(a)
+    }
+    v
+}
+
+/// The rotation vector of turn `q` (its axis times its angle, rad): the shorter way round.
+pub fn log(q: Quat) -> vec3 {
+    var v = q.v
+    if v.w < 0.0 {
+        v = -v
+    }
+    let s = length(v.xyz)
+    if s < 1.0e-9 {
+        return v.xyz * 2.0
+    }
+    v.xyz * (2.0 * atan2(s, v.w) / s)
+}
+
+/// The turn a rotation vector `r` makes.
+pub fn exp(r: vec3) -> Quat {
+    let a = length(r)
+    if a < 1.0e-9 {
+        return Quat { v: normalize(vec4(r * 0.5, 1.0)) }
+    }
+    Quat { v: vec4(r * (sin(a * 0.5) / a), cos(a * 0.5)) }
+}
+
+/// The angle between turns `a` and `b` (rad).
+pub fn apart(a: Quat, b: Quat) -> f32 {
+    let d = a.inverse().mul(b).v
+    2.0 * atan2(length(d.xyz), abs(d.w))
+}
+
+/// Each rig bone's turn at rest in the body's frame, and its parent's (the rig's base for the
+/// hips).
+fn rest_turns(rig: Rig) -> (Vec<Quat>, Vec<Quat>) {
+    let rw = rig.rest_world()
+    var own: Vec<Quat> = Vec::with_capacity(rw.len())
+    var up: Vec<Quat> = Vec::with_capacity(rw.len())
+    for b in 0..rw.len() {
+        own.push(rw[b].q)
+        let p = rig.bones[b].parent
+        up.push(if p == NONE { rig.base.q } else { rw[p].q })
+    }
+    (own, up)
+}
+
+/// The rest hips' height over the body's floor (m), which a cycle's places are over.
+fn hips_height(rig: Rig) -> f32 {
+    rig.rest_world()[0].t.y
+}
+
+impl Cycle {
+    /// The swing of VRM bone `name`, or `None` where the cycle has none.
+    pub fn swing(self, name: str) -> Option<u32> {
+        for i in 0..self.bones.len() {
+            if self.bones[i].bone == name {
+                return Some(i)
+            }
+        }
+        None
+    }
+
+    /// The cycle played on `rig` as a looped clip at `fps` frames a second: each bone's written
+    /// turn moved into the rig's own frames (a bone the cycle doesn't write keeps its rest), the
+    /// hips' places and travel scaled by the rig's hips' height.
+    pub fn clip(self, rig: Rig, fps: f32) -> Clip {
+        let nb = rig.bones.len()
+        let (own, up) = rest_turns(rig.clone())
+        let h = hips_height(rig.clone())
+        let base = rig.base.q.inverse()
+        var swings: Vec<u32> = Vec::with_capacity(nb)
+        for b in 0..nb {
+            swings.push(self.swing(BONES[rig.bones[b].vrm]).unwrap_or(NONE))
+        }
+        let span = max(u32(round(self.period * fps)), 2)
+        let frames = span + 1
+        let travel_local = base.rotate(self.travel * h)
+        var turns: Vec<Quat> = Vec::with_capacity(frames * nb)
+        var hips: Vec<vec3> = Vec::with_capacity(frames)
+        for j in 0..frames {
+            let t = f32(j) / f32(span)
+            for b in 0..nb {
+                let s = swings[b]
+                if s == NONE {
+                    turns.push(rig.bones[b].rest.q)
+                } else {
+                    let l = self.bones[s].at(t)
+                    turns.push(up[b].inverse().mul(l).mul(own[b]))
+                }
+            }
+            let d = self.hips + series(vec3(0.0), self.sway, t)
+            hips.push(rig.bones[0].rest.t + base.rotate(d * h) + travel_local * t)
+        }
+        Clip {
+            fps: f32(span) / self.period,
+            frames,
+            bones: nb,
+            turns,
+            hips,
+            looped: true,
+            travel: self.travel * h,
+            travel_local,
+        }
+    }
+}
+
+// ---- fitting: the tool's half -------------------------------------------------------------
+
+/// How closely a fit follows its clip: a bone's turn within `turn` (rad) at every frame, the
+/// hips' place within `place` (m); at most `most` harmonics.
+pub struct Fit: Copy {
+    pub turn: f32 = 0.0035,
+    pub place: f32 = 0.001,
+    pub most: u32 = 40,
+}
+
+/// The constant and the first `most` harmonics (fewer where there are too few samples) of
+/// `values`, a cycle's samples evenly spaced, the first after the last.
+fn harmonics(values: [vec3], most: u32) -> (vec3, Vec<Harmonic>) {
+    let n = values.len()
+    var bias = vec3(0.0)
+    for v in values {
+        bias = bias + v
+    }
+    bias = bias / f32(n)
+    let top = min(most, (n - 1) / 2)
+    var all: Vec<Harmonic> = Vec::with_capacity(top)
+    for k in 1..(top + 1) {
+        var c = vec3(0.0)
+        var s = vec3(0.0)
+        for i in 0..n {
+            let a = 6.28318531 * f32(k) * f32(i) / f32(n)
+            c = c + values[i] * cos(a)
+            s = s + values[i] * sin(a)
+        }
+        all.push(Harmonic { k, cos: c * (2.0 / f32(n)), sin: s * (2.0 / f32(n)) })
+    }
+    (bias, all)
+}
+
+/// How much a harmonic moves its series.
+fn strength(h: Harmonic) -> f32 {
+    dot(h.cos, h.cos) + dot(h.sin, h.sin)
+}
+
+/// `all` strongest first.
+fn by_strength(all: [Harmonic]) -> Vec<Harmonic> {
+    var out: Vec<Harmonic> = Vec::from(all)
+    for i in 1..out.len() {
+        var j = i
+        while j > 0 && strength(out[j - 1]) < strength(out[j]) {
+            let t = out[j - 1]
+            out[j - 1] = out[j]
+            out[j] = t
+            j -= 1
+        }
+    }
+    out
+}
+
+/// The first `n` of `ranked` (`by_strength`), in their multiples' order.
+fn first(ranked: [Harmonic], n: u32) -> Vec<Harmonic> {
+    var out: Vec<Harmonic> = Vec::with_capacity(n)
+    for i in 0..n {
+        out.push(ranked[i])
+    }
+    for i in 1..out.len() {
+        var j = i
+        while j > 0 && out[j - 1].k > out[j].k {
+            let t = out[j - 1]
+            out[j - 1] = out[j]
+            out[j] = t
+            j -= 1
+        }
+    }
+    out
+}
+
+/// A looped clip on `rig` fitted as a cycle, as closely as `fit` says.
+pub fn cycle_of(clip: Clip, rig: Rig, fit: Fit) -> Cycle {
+    assert(clip.looped && clip.frames > 3, "a cycle is fitted to a looped clip")
+    let nb = rig.bones.len()
+    let n = clip.frames - 1
+    let (own, up) = rest_turns(rig.clone())
+    let h = hips_height(rig.clone())
+    var bones: Vec<Swing> = Vec::with_capacity(nb)
+    for b in 0..nb {
+        // The bone's turns in the body's frame, its parent's taken off, all on one side.
+        var ls: Vec<Quat> = Vec::with_capacity(n)
+        for i in 0..n {
+            let l = up[b].mul(clip.turns[i * nb + b]).mul(own[b].inverse())
+            ls.push(l)
+        }
+        var sum = vec4(0.0)
+        for i in 0..n {
+            var v = ls[i].v
+            if dot(v, ls[0].v) < 0.0 {
+                v = -v
+            }
+            sum = sum + v
+        }
+        let mean = Quat { v: normalize(sum) }
+        let back = mean.inverse()
+        var rs: Vec<vec3> = Vec::with_capacity(n)
+        for i in 0..n {
+            rs.push(log(back.mul(ls[i])))
+        }
+        let (bias, every) = harmonics(rs, fit.most)
+        let all = by_strength(every)
+        var keep = 0
+        while keep < all.len() {
+            let waves = first(all, keep)
+            var worst = 0.0
+            for i in 0..n {
+                let r = series(bias, waves, f32(i) / f32(n))
+                worst = max(worst, apart(ls[i], mean.mul(exp(r))))
+            }
+            if worst <= fit.turn {
+                break
+            }
+            keep += 1
+        }
+        let waves = first(all, keep)
+        bones.push(Swing { bone: BONES[rig.bones[b].vrm], mean, bias, waves })
+    }
+    // The hips' places in the body's frame, their steady travel taken off, over the hips' height.
+    let rest = rig.bones[0].rest.t
+    var ds: Vec<vec3> = Vec::with_capacity(n)
+    for i in 0..n {
+        let d = clip.hips[i] - rest - clip.travel_local * (f32(i) / f32(n))
+        ds.push(rig.base.q.rotate(d) / h)
+    }
+    let (hips, every) = harmonics(ds, fit.most)
+    let all = by_strength(every)
+    var keep = 0
+    while keep < all.len() {
+        let sway = first(all, keep)
+        var worst = 0.0
+        for i in 0..n {
+            worst = max(worst, length(ds[i] - series(hips, sway, f32(i) / f32(n))))
+        }
+        if worst * h <= fit.place {
+            break
+        }
+        keep += 1
+    }
+    let sway = first(all, keep)
+    Cycle {
+        period: f32(n) / clip.fps,
+        travel: rig.base.q.rotate(clip.travel_local) / h,
+        hips,
+        sway,
+        bones,
+    }
+}
+
+// ---- writing: the cycle as source ---------------------------------------------------------
+
+/// Harmonic `k`: `cos` of its cosine, `sin` of its sine (the written form).
+pub fn wave(k: u32, cos: vec3, sin: vec3) -> Harmonic {
+    Harmonic { k, cos, sin }
+}
+
+/// `x` to `places` decimal places, as it's written (`-0` written `0`).
+fn rounded_to(x: f32, places: u32) -> f32 {
+    let k = pow(10.0, f32(places))
+    let r = round(x * k) / k
+    if r == 0.0 { 0.0 } else { r }
+}
+
+fn rounded_v(v: vec3, places: u32) -> vec3 {
+    vec3(rounded_to(v.x, places), rounded_to(v.y, places), rounded_to(v.z, places))
+}
+
+fn rounded_waves(ws: [Harmonic]) -> Vec<Harmonic> {
+    var out: Vec<Harmonic> = Vec::with_capacity(ws.len())
+    for w in ws {
+        out.push(Harmonic { k: w.k, cos: rounded_v(w.cos, PLACES), sin: rounded_v(w.sin, PLACES) })
+    }
+    out
+}
+
+/// The decimal places a cycle's numbers are written to: 0.0001 rad is 0.006°, and 0.0001 of a
+/// body's hips' height a tenth of a millimetre.
+pub const PLACES: u32 = 4
+
+/// `c` as it's written: its numbers rounded (`PLACES`; a mean turn to 6), so what's measured of
+/// it is what's played.
+pub fn rounded(c: Cycle) -> Cycle {
+    var bones: Vec<Swing> = Vec::with_capacity(c.bones.len())
+    for s in c.bones {
+        let q = s.mean.v
+        let m = vec4(
+            rounded_to(q.x, 6),
+            rounded_to(q.y, 6),
+            rounded_to(q.z, 6),
+            rounded_to(q.w, 6),
+        )
+        bones.push(
+            Swing {
+                bone: s.bone,
+                mean: Quat { v: m },
+                bias: rounded_v(s.bias, PLACES),
+                waves: rounded_waves(s.waves),
+            },
+        )
+    }
+    Cycle {
+        period: rounded_to(c.period, 6),
+        travel: rounded_v(c.travel, 6),
+        hips: rounded_v(c.hips, PLACES),
+        sway: rounded_waves(c.sway),
+        bones,
+    }
+}
+
+fn n(x: f32, places: u32) -> String {
+    let r = rounded_to(x, places)
+    if places == 4 { f"{r:.4}" } else { f"{r:.6}" }
+}
+
+fn v3(v: vec3, places: u32) -> String {
+    f"vec3({n(v.x, places)}, {n(v.y, places)}, {n(v.z, places)})"
+}
+
+fn waves_of(out: mut String, waves: [Harmonic], indent: str) {
+    if waves.is_empty() {
+        out.push_str("Vec::new()")
+        return
+    }
+    out.push_str(f"Vec::from(\n{indent}    [\n")
+    for w in waves {
+        out.push_str(f"{indent}        wave({w.k}, {v3(w.cos, PLACES)}, {v3(w.sin, PLACES)}),\n")
+    }
+    out.push_str(f"{indent}    ],\n{indent})")
+}
+
+/// `c` (`rounded`) as a Wrela constant named `name`, after `doc` (its doc comment's lines,
+/// without `///`).
+pub fn source(c: Cycle, name: str, doc: [String]) -> String {
+    var out = String::new()
+    for line in doc {
+        if line.is_empty() {
+            out.push_str("///\n")
+        } else {
+            out.push_str(f"/// {line}\n")
+        }
+    }
+    out.push_str(f"pub const {name}: Cycle = Cycle {{\n")
+    out.push_str(f"    period: {n(c.period, 6)},\n")
+    out.push_str(f"    travel: {v3(c.travel, 6)},\n")
+    out.push_str(f"    hips: {v3(c.hips, PLACES)},\n")
+    out.push_str("    sway: ")
+    waves_of(mut out, c.sway, "    ")
+    out.push_str(",\n    bones: Vec::from(\n        [\n")
+    for s in c.bones {
+        let q = s.mean.v
+        let i = "                "
+        out.push_str("            Swing {\n")
+        out.push_str(f"{i}bone: \"{s.bone}\",\n")
+        out.push_str(
+            f"{i}mean: Quat {{ v: vec4({n(q.x, 6)}, {n(q.y, 6)}, {n(q.z, 6)}, {n(q.w, 6)}) }},\n",
+        )
+        out.push_str(f"{i}bias: {v3(s.bias, PLACES)},\n")
+        out.push_str(f"{i}waves: ")
+        waves_of(mut out, s.waves, i)
+        out.push_str(",\n            },\n")
+    }
+    out.push_str("        ],\n    ),\n}\n")
+    out
+}
+
+@test
+fn a_turn_survives_log_then_exp() {
+    for r in [vec3(0.0), vec3(0.3, -0.2, 0.1), vec3(0.0, 2.9, 0.0), vec3(1.0e-7, 0.0, 0.0)] {
+        assert(apart(exp(r), exp(log(exp(r)))) < 1.0e-5, "a turn comes back")
+        assert(length(log(exp(r)) - r) < 1.0e-5, "a rotation vector comes back")
+    }
+}
+
+@test
+fn a_series_is_its_bias_then_its_harmonics() {
+    let w = [Harmonic { k: 1, cos: vec3(1.0, 0.0, 0.0), sin: vec3(0.0, 2.0, 0.0) }]
+    assert(length(series(vec3(0.5), w, 0.0) - vec3(1.5, 0.5, 0.5)) < 1.0e-6)
+    assert(length(series(vec3(0.5), w, 0.25) - vec3(0.5, 2.5, 0.5)) < 1.0e-5)
+}
