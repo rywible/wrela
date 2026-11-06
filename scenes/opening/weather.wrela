@@ -123,11 +123,13 @@ fn scud(
     t_max: f32,
     px_angle: f32,
 ) -> vec4 {
-    if d.y <= 0.004 {
+    // Seen only from under it: an eye over it (the views from up by the rock) looks down
+    // through a layer drawn for looking up, and grazing the horizon it would step.
+    if d.y <= 0.004 || s.eye.y > SCUD_AT - 50.0 {
         return vec4(0.0)
     }
     let t = reach(s.eye.y, d.y, SCUD_AT)
-    if t > t_max || t > 40000.0 {
+    if t <= 0.0 || t > t_max || t > 40000.0 {
         return vec4(0.0)
     }
     let along = wind()
