@@ -388,6 +388,7 @@ fn pose_at(time: f32) -> Pose {
         28 => exchange::striker_hit(
             exchange::played_striker(time, exchange::TUNED),
             exchange::played_at(time, exchange::TUNED),
+            time - exchange::hit_at(),
             exchange::TUNED,
         ),
         27 => kimodo::FIGHT_IDLE_M.pose(time % kimodo::FIGHT_IDLE_M.length()),
@@ -495,7 +496,7 @@ fn lab_panel(s: mut State, time: f32, width: u32, height: u32) {
         ui.slider("Camera push in (m)", mut t.push, lo: 0.0, hi: 0.8)
         ui.slider("Blast ring size (0 = off)", mut t.blast, lo: 0.0, hi: 4.0)
         ui.slider("Giant flinch", mut t.give, lo: 0.0, hi: 1.5)
-        ui.slider("Body drives in during stop", mut t.grind, lo: 0.0, hi: 1.0)
+        ui.slider("Body leans in during stop", mut t.grind, lo: 0.0, hi: 1.0)
         ui.slider("Fist rides the hit (s)", mut t.pin, lo: 0.0, hi: 0.15)
         ui.slider("Recoil into puncher", mut t.recoil, lo: 0.0, hi: 0.4)
         ui.toggle("Drawn on twos", mut t.twos)

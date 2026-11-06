@@ -27,10 +27,10 @@ pub const X_KICK_LIFE: f32 = 0.12
 pub const X_PUSH_LIFE: f32 = 0.45
 /// Where the blow lands on him: how far past his face's front the fist reaches (m; his head
 /// is struck as the fist reaches its furthest).
-pub const X_DEPTH: f32 = 0.02
+pub const X_DEPTH: f32 = 0.0
 /// How far into the reaction (from its own impact frame) the struck drawing is (s): the one
 /// that's held through the hit-stop, already knocked back.
-pub const X_INTO: f32 = 0.03
+pub const X_INTO: f32 = 0.1
 /// How long the reaction takes to give way to his guard again (s).
 pub const X_BACK: f32 = 0.4
 /// His bounce's phase against the striker's (s).
@@ -108,13 +108,15 @@ pub const X_EARLY: f32 = 0.062
 /// of its speed, while his fist stays on what it struck, so his elbow loads; his fist rides what
 /// it struck back for `X_PIN` (s) after the hit-stop, then drives on through; and the blow jolts
 /// back into him, his chest and head rocked back by up to `X_RECOIL` (radians).
-pub const X_GRIND: f32 = 0.3
+pub const X_GRIND: f32 = 0.0
 pub const X_PIN: f32 = 0.05
 pub const X_RECOIL: f32 = 0.12
 /// How fast the jolt rises and dies (s on his clock), and how long his fist takes to leave what
 /// it struck for its own path.
-pub const X_RECOIL_LIFE: f32 = 0.035
-pub const X_LET_GO: f32 = 0.08
+pub const X_RECOIL_LIFE: f32 = 0.08
+pub const X_LET_GO: f32 = 0.14
+/// How far his trunk leans on into the blow through the hit-stop at `X_GRIND` (radians).
+pub const X_DRIVE: f32 = 0.14
 
 /// The clock the bodies play on: held through the hit-stop.
 pub fn played_at(time: f32, t: Tune) -> f32 {
@@ -281,8 +283,21 @@ fn foe_place() -> mat4 {
 }
 
 pub fn foe_idle(p: f32) -> Pose {
-    FIGHT_IDLE_M.pose((p + X_PHASE) % FIGHT_IDLE_M.length())
+    // (His lead hand kept tighter to his chin than the bounce holds it: stood as near as the
+    // blow lands, it would reach into the striker.)
+    borrow rig = HERO.rig
+    let c0 = one_pose(FIGHT_IDLE_M.pose((p + X_PHASE) % FIGHT_IDLE_M.length()))
+    var c = c0.clone()
+    var w = stride::worlds(rig, c0, 0)
+    let hand = w[rig.find("leftHand")].t
+    let chin = w[rig.find("head")].t + vec3(0.0, -0.12, 0.0)
+    arm_to(rig, mut w, 0, mix(hand, chin, X_TUCK))
+    stride::store(rig, w, mut c, 0)
+    c.pose(0.0)
 }
+
+/// How far his lead hand is drawn in toward his chin (0 as the bounce holds it, 1 at his chin).
+pub const X_TUCK: f32 = 0.4
 
 /// The opponent at played time `p` (in his own place, `FOE`): his bounce; struck, the reaction,
 /// turned to face the way his bounce did and stood over its hips; then back to his bounce where
@@ -297,7 +312,7 @@ pub fn foe(p: f32) -> Pose {
     let inv = base.inverse()
     let i0 = foe_idle(h)
     let r0 = REACT.pose(REACT_HIT / 30.0)
-    let turn = yaw_q(guard_yaw(i0) - guard_yaw(r0))
+    let turn = yaw_q(REACT_TURN)
     let from = base.t + base.q.rotate(r0.hips)
     let to = base.t + base.q.rotate(i0.hips)
     let placed = |q: Pose| -> Pose {
@@ -310,7 +325,14 @@ pub fn foe(p: f32) -> Pose {
     }
     let v = p - h
     let home = (REACT_HOME - REACT_HIT) / 30.0 - X_INTO
-    let r = placed(REACT.pose(REACT_HIT / 30.0 + X_INTO + min(v, home)))
+    // (Held as he was through the hit-stop, the blow on his face; then taken by it, quickly but
+    // never in one drawing.)
+    let r = humanoid::blend(
+        i0,
+        placed(REACT.pose(REACT_HIT / 30.0 + X_INTO + min(v, home))),
+        smoothstep(0.0, X_TAKE, v),
+        n,
+    )
     if v < home {
         return r
     }
@@ -323,6 +345,26 @@ pub fn foe(p: f32) -> Pose {
     var b = foe_idle(p)
     b.hips = b.hips + inv.q.rotate(off)
     humanoid::blend(r, b, smoothstep(0.0, X_BACK, v - home), n)
+}
+
+/// How long the struck one takes to go from his guard to the reaction's drawing (s).
+pub const X_TAKE: f32 = 0.1
+
+/// How the reaction is turned to stand as his guard did: between squaring its hands and its
+/// chest to his (his guard is bladed, the reaction square; turned by either alone, he'd spin).
+@fuel(2 ** 40)
+const REACT_TURN: f32 = react_turn()
+
+fn react_turn() -> f32 {
+    borrow rig = HERO.rig
+    let i0 = foe_idle(hit_at())
+    let r0 = REACT.pose(REACT_HIT / 30.0)
+    let chest = |p: Pose| -> f32 {
+        let w = stride::worlds(rig, one_pose(p), 0)
+        facing(w[rig.find("upperChest")].q)
+    }
+    let wrap = |a: f32| -> f32 { atan2(sin(a), cos(a)) }
+    0.5 * (wrap(guard_yaw(i0) - guard_yaw(r0)) + wrap(chest(i0) - chest(r0)))
 }
 
 /// How long he takes to step back in to his mark once his reaction's done (s).
@@ -388,6 +430,15 @@ pub fn fist_track() -> String {
     borrow rig = HERO.rig
     var out = String::new()
     let h = hit_at()
+    {
+        let i0 = foe_idle(h)
+        let r0 = REACT.pose(REACT_HIT / 30.0)
+        let yaws = |p: Pose| -> String {
+            let w = stride::worlds(rig, one_pose(p), 0)
+            f"hips {facing(w[0].q) * 57.3:.0} chest {facing(w[rig.find("upperChest")].q) * 57.3:.0} guard {guard_yaw(p) * 57.3:.0} head {facing(w[rig.find("head")].q) * 57.3:.0}"
+        }
+        out.push_str(f"idle: {yaws(i0)}\nreact: {yaws(r0)}\ncontact {contact()}\n".as_str())
+    }
     for k in 0..24 {
         let t = h - 0.14 + f32(k) * 0.01
         let w = stride::worlds(rig, one_pose(striker(t)), 0)
@@ -428,65 +479,85 @@ fn struck_bone(t: Tune) -> u32 {
     if LEAD_LEFT { rig.find("leftLowerLeg") } else { rig.find("rightLowerLeg") }
 }
 
-/// How far the place he was struck has moved since the contact, by played time `pf` (his clock).
-fn struck_moved(pf: f32, t: Tune) -> vec3 {
+/// Where point `c` (in the world, on him at the contact) is by played time `pf` (his clock):
+/// carried with the bone the blow landed on, turning with it (his jaw, as his head snaps back).
+fn struck_point(c: vec3, pf: f32, t: Tune) -> vec3 {
     borrow rig = HERO.rig
     let h = hit_at()
     if pf <= h {
-        return vec3(0.0)
+        return c
     }
     let b = struck_bone(t)
     let at = place(t)
+    let f = at[2].xyz
+    let k = length(f)
+    let yaw = yaw_q(atan2(f.x, f.z))
     let w0 = stride::worlds(rig, one_pose(struck(h, t)), 0)
     let w1 = stride::worlds(rig, one_pose(struck(pf, t)), 0)
-    (at * vec4(w1[b].t - w0[b].t, 0.0)).xyz
+    let p0 = (at * vec4(w0[b].t, 1.0)).xyz
+    let p1 = (at * vec4(w1[b].t, 1.0)).xyz
+    let local = w0[b].q.inverse().rotate(yaw.inverse().rotate(c - p0) / k)
+    p1 + yaw.rotate(w1[b].q.rotate(local)) * k
 }
 
-/// The striker at his clock `ps` (the one struck at his clock `pf`), connecting: from the
-/// contact his fist stays on the place it struck, riding it back as it gives, while his body
-/// drives on (his elbow loads); then it leaves it for its own path, driving through; and the
-/// blow rocks his chest and head back, a sprung bump that rises and dies.
-pub fn striker_hit(ps: f32, pf: f32, t: Tune) -> Pose {
+/// The striker at his clock `ps` (the one struck at his clock `pf`; `wall` s since the contact,
+/// on the clock that doesn't stop), connecting: from the contact his fist stays on the place it
+/// struck; the shock jolts back up into him, his punching shoulder lifted and pushed back, his
+/// chest and head snapped back, held so through the hit-stop and let go after; then his fist
+/// rides the place it struck as it's knocked away, and leaves it for its own path, driving
+/// through. (`t.grind` also leans his trunk on in through the hit-stop.)
+pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
     let base = striker(ps)
     let h = hit_at()
     let since = ps - h
-    let held = t.hold * t.grind
+    let held = max(t.hold * t.grind, 1.0e-3)
     let free = held + t.pin
-    if since <= 0.0 || since > free + X_LET_GO + 4.0 * X_RECOIL_LIFE {
+    let end = free + X_LET_GO
+    let jolt_end = t.hold + 6.0 * X_RECOIL_LIFE
+    if wall <= 0.0 || (since > end && wall > jolt_end) {
         return base
     }
     borrow rig = HERO.rig
-    var pose = base
-    // The jolt back up the arm into his trunk and head.
-    if t.recoil > 0.0 {
-        let x = since / X_RECOIL_LIFE
-        let b = x * exp(1.0 - x)
-        let side = vec3(1.0, 0.0, 0.0)
-        for (name, part) in [
-            ("chest", 0.3),
-            ("upperChest", 0.4),
-            ("rightShoulder", 0.6),
-            ("head", 0.5),
-        ] {
-            let i = rig.find(name)
-            if i != humanoid::NONE {
-                pose.turns[i] = Quat::axis_angle(side, -t.recoil * part * b).mul(pose.turns[i])
-            }
-        }
-    }
-    if since > free + X_LET_GO {
-        return pose
-    }
-    // His fist on what it struck, then let go.
-    let c0 = one_pose(pose)
+    let c0 = one_pose(base)
     var c = c0.clone()
     var w = stride::worlds(rig, c0, 0)
-    let hand = rig.find("rightHand")
-    let on = KNUCKLES - BLOW * 0.09 + struck_moved(pf, t)
-    let own = w[hand].t
-    let k = 1.0 - smoothstep(free, free + X_LET_GO, since)
-    let want = mix(own, on, k)
-    arm_to(rig, mut w, 1, want)
+    let own = w[rig.find("rightHand")].t
+    // (About `lift`, a positive turn raises the punching shoulder.)
+    let out = normalize(w[rig.find("rightUpperArm")].t - w[rig.find("rightShoulder")].t)
+    let lift = normalize(cross(out, vec3(0.0, 1.0, 0.0)))
+    // (About `back`, a positive turn leans the top of a bone toward the blow.)
+    let back = normalize(cross(vec3(0.0, 1.0, 0.0), BLOW))
+    let turn = |name: str, axis: vec3, a: f32| {
+        let i = rig.find(name)
+        if i != humanoid::NONE && a != 0.0 {
+            stride::turn_below(rig, mut w, i, Quat::axis_angle(axis, a))
+        }
+    }
+    // The trunk leaned on in through the hit-stop, given back as the fist goes on through.
+    if t.grind > 0.0 {
+        turn(
+            "spine",
+            back,
+            X_DRIVE * smoothstep(0.0, held, since) * (1.0 - smoothstep(free, end, since)),
+        )
+    }
+    // The shock: in over two drawings, held through the hit-stop, then let go.
+    let j = smoothstep(0.0, 0.03, wall) * (if wall < t.hold { 1.0 } else {
+        exp(-(wall - t.hold) / X_RECOIL_LIFE)
+    })
+    let r = t.recoil * j
+    if r > 0.0 {
+        turn("rightShoulder", lift, r * 1.6)
+        turn("rightShoulder", back, -r * 0.8)
+        turn("upperChest", back, -r * 0.5)
+        turn("head", back, -r * 0.6)
+    }
+    // His fist on the place it struck, carried with it, then let go.
+    if since < end {
+        let on = struck_point(KNUCKLES - BLOW * 0.09, pf, t)
+        let k = 1.0 - smoothstep(free, end, since)
+        arm_to(rig, mut w, 1, mix(own, on, k))
+    }
     stride::store(rig, w, mut c, 0)
     c.pose(0.0)
 }
