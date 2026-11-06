@@ -92,6 +92,8 @@ pub fn preset_name(k: u32) -> String {
 pub struct Press: Copy {
     pub at: f32,
     pub tune: Tune,
+    /// Whether it came through slot B.
+    pub b: bool,
 }
 
 /// The lab: the two slots and which is being tuned, the last two presses, the take and its
@@ -121,17 +123,17 @@ impl Lab {
     pub fn new() -> Lab {
         let a = preset(2, giant: false)
         var punches: Vec<f32> = Vec::new()
-        punches.push(0.4)
+        punches.push(0.15)
         Lab {
             a,
             b: preset(3, giant: false),
             editing_b: false,
-            now: Press { at: NEVER, tune: a },
-            prev: Press { at: NEVER, tune: a },
+            now: Press { at: NEVER, tune: a, b: false },
+            prev: Press { at: NEVER, tune: a, b: false },
             recording: false,
             rec_from: 0.0,
             punches,
-            take_len: 2.6,
+            take_len: 1.6,
             replaying: false,
             replay_from: 0.0,
             replay_b: false,
@@ -153,15 +155,15 @@ impl Lab {
         g - self.now.at >= busy(self.now.tune)
     }
 
-    /// A press at `at`, through `tune`.
-    pub fn fire(mut self, at: f32, tune: Tune) {
+    /// A press at `at`, through `tune` (slot B's, if `b`).
+    pub fn fire(mut self, at: f32, tune: Tune, b: bool) {
         self.prev = self.now
-        self.now = Press { at, tune }
+        self.now = Press { at, tune, b }
         self.last_clock = clock(at, at) - 1.0e-3
     }
 
-    /// A press from the player at `g`: taken if the last is done, and recorded if a take is being recorded.
-    /// It stops a replay.
+    /// A press from the player at `g`: taken if the last is done, and recorded if a take is
+    /// being recorded. It stops a replay.
     pub fn press(mut self, g: f32) {
         if self.replaying {
             self.replaying = false
@@ -169,7 +171,7 @@ impl Lab {
         if !self.ready(g) {
             return
         }
-        self.fire(g, self.live())
+        self.fire(g, self.live(), self.editing_b)
         if self.recording {
             self.punches.push(g - self.rec_from)
         }
@@ -189,7 +191,7 @@ impl Lab {
             if self.punches.len() > 0 {
                 // (The last strike's whole exchange is in the take.)
                 let last = self.punches[self.punches.len() - 1]
-                self.take_len = max(self.take_len, last + busy(self.b) + 0.6)
+                self.take_len = max(self.take_len, last + busy(self.b) + 0.3)
             }
         }
         self.replaying = false
@@ -211,7 +213,7 @@ impl Lab {
         if !self.replaying {
             return
         }
-        let round = self.take_len + 0.6
+        let round = self.take_len + 0.2
         if g - self.replay_from > round {
             self.replay_from += round
             self.replay_b = !self.replay_b
@@ -219,7 +221,7 @@ impl Lab {
         }
         while self.fired < self.punches.len() && self.replay_from + self.punches[self.fired] <= g {
             let tune = if self.replay_b { self.b } else { self.a }
-            self.fire(self.replay_from + self.punches[self.fired], tune)
+            self.fire(self.replay_from + self.punches[self.fired], tune, self.replay_b)
             self.fired += 1
         }
     }

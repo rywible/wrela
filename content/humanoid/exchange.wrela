@@ -299,8 +299,8 @@ pub fn foe(p: f32) -> Pose {
     let rh = base.t + base.q.rotate(placed(REACT.pose(REACT_HOME / 30.0)).hips)
     var off = rh - to
     off.y = 0.0
-    // (Then he steps back in to where he stood, over a second, so the next blow finds him.)
-    off *= 1.0 - smoothstep(home + X_BACK, home + X_BACK + 1.0, v)
+    // (Then he steps back in to where he stood, so the next blow finds him.)
+    off *= 1.0 - smoothstep(home + X_BACK * 0.5, home + X_BACK + 0.5, v)
     var b = foe_idle(p)
     b.hips = b.hips + inv.q.rotate(off)
     humanoid::blend(r, b, smoothstep(0.0, X_BACK, v - home), n)

@@ -6,17 +6,13 @@ use std::input::{Key, Script}
 /// Two punches at the fighter, J then F, a second and a half apart.
 pub const LAB_PUNCH: Script = Script::frames().press(60, Key::J).press(150, Key::F)
 
-/// At 1280 x 720: a punch through A; B tuned for the giant (its toggle clicked), a punch
-/// through it; then the take (one punch, by default) replayed through A, then B.
+/// At 1280 x 720: a punch through A, then the take (one punch, by default) replayed through A,
+/// then B; then the giant (its toggle clicked) and the replay again.
 pub const LAB_AB: Script = Script::frames()
     .press(30, Key::J)
-    .move_to(110, vec2(1089.0, 79.0))
-    .down(111, vec2(1089.0, 79.0))
-    .up(112, vec2(1089.0, 79.0))
-    .move_to(114, vec2(990.0, 107.0))
-    .down(115, vec2(990.0, 107.0))
-    .up(116, vec2(990.0, 107.0))
-    .press(130, Key::F)
-    .move_to(250, vec2(1123.0, 454.0))
-    .down(251, vec2(1123.0, 454.0))
-    .up(252, vec2(1123.0, 454.0))
+    .move_to(140, vec2(1123.0, 454.0))
+    .down(141, vec2(1123.0, 454.0))
+    .up(142, vec2(1123.0, 454.0))
+    .move_to(560, vec2(990.0, 107.0))
+    .down(561, vec2(990.0, 107.0))
+    .up(562, vec2(990.0, 107.0))

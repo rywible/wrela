@@ -41,7 +41,8 @@ use std::gpu::{
     ClipPosition, Cull, DepthTexture, GpuBuffer, Rgba16Float, Rgba8, Texture, VertexIndex,
     begin_pass3_with_depth, begin_screen_pass, buffer_of, depth_texture, draw, texture, write,
 }
-use engine::sound::{Cue, Palette, Surface, Swish, Babble, Breath, mix, mixer}
+use engine::sound::{Cue, Palette, Surface, Swish, Babble, Breath, mixer}
+use engine::sound
 use lab::{Lab, preset, preset_name}
 use std::audio::{RingWriter, play}
 use std::input::{Event, Key, PadButton, events}
@@ -176,7 +177,7 @@ pub fn init() -> State {
     )
     let (cues, voice) = mixer(LAB_SOUNDS, seed: 7)
     if SHOW == 29 {
-        play(take voice, mix)
+        play(take voice, sound::mix)
     }
     State {
         lab: Lab::new(),
@@ -423,7 +424,7 @@ fn lab_aside(t: exchange::Tune, l: Lab, width: u32) -> vec3 {
     let side = -exchange::BLOW.z / exchange::BLOW.x
     let d = normalize(vec3(side, 0.0, 1.0))
     let right = vec3(d.z, 0.0, -d.x)
-    let far = if t.giant { 10.0 } else { 3.4 }
+    let far = if t.giant { 8.0 } else { 3.4 }
     right * far * l.zoom * 0.45 * (LAB_W + 20.0) / f32(width)
 }
 
@@ -466,16 +467,20 @@ fn lab_panel(s: mut State, time: f32, width: u32, height: u32) {
         if ui.button("Tune B") {
             l.editing_b = true
         }
-        ui.label(if l.editing_b { "  tuning B" } else { "  tuning A" })
+        ui.label(if l.editing_b { "  editing B" } else { "  editing A" })
         ui.end_row()
         var t = l.live()
-        ui.toggle("Opponent: stone giant", mut t.giant)
+        // (Both slots strike the same opponent, so A and B differ only in their tuning.)
+        if ui.toggle("Opponent: stone giant", mut t.giant) {
+            l.a.giant = t.giant
+            l.b.giant = t.giant
+        }
         ui.slider("Hit-stop (s)", mut t.hold, lo: 0.0, hi: 0.3)
         ui.slider("Impact frame (s)", mut t.flash, lo: 0.0, hi: 0.12)
         ui.slider("Camera kick (m)", mut t.kick, lo: 0.0, hi: 0.2)
         ui.slider("Camera push in (m)", mut t.push, lo: 0.0, hi: 0.8)
-        ui.slider("Blast size (m, 0 off)", mut t.blast, lo: 0.0, hi: 4.0)
-        ui.slider("Giant gives", mut t.give, lo: 0.0, hi: 1.0)
+        ui.slider("Blast ring size (0 = off)", mut t.blast, lo: 0.0, hi: 4.0)
+        ui.slider("Giant flinch", mut t.give, lo: 0.0, hi: 1.0)
         ui.toggle("Drawn on twos", mut t.twos)
         ui.begin_row()
         for k in 0..2 {
@@ -513,19 +518,21 @@ fn lab_panel(s: mut State, time: f32, width: u32, height: u32) {
         }
         ui.end_row()
         let status = if l.recording {
-            f"Recording: {l.punches.len()} punches, {time - l.rec_from:.1} s"
+            f"Recording: {l.punches.len()} punch(es), {time - l.rec_from:.1} s"
         } else if l.replaying {
-            if l.replay_b { "Replaying through B" } else { "Replaying through A" }.to_string()
+            if l.now.b { "Replaying: this punch is B" } else {
+                "Replaying: this punch is A"
+            }.to_string()
         } else {
-            f"Take: {l.punches.len()} punches, {l.take_len:.1} s"
+            f"Take: {l.punches.len()} punch(es), {l.take_len:.1} s"
         }
         ui.label(status)
         ui.end_panel()
     }
     if l.replaying {
         // (Big enough to read at a glance which slot is playing.)
-        ui.panel("", Anchor::TopLeft, width: 120.0, height: 44.0)
-        ui.label(if l.replay_b { "B" } else { "A" })
+        ui.panel("", Anchor::TopLeft, width: 130.0, height: 44.0)
+        ui.label(if l.now.b { "Showing B" } else { "Showing A" })
         ui.end_panel()
     }
     if punch {
@@ -646,9 +653,11 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let hips = if SHOW == 28 {
         (vec3(0.0, 0.0, 0.25) + exchange::PLACE[3].xyz) * 0.5 + exchange::BLOW * kick
     } else if SHOW == 29 {
-        (vec3(0.0, 0.0, 0.25) + exchange::place(shown)[3].xyz) * 0.5 +
-            exchange::BLOW * kick +
-            lab_aside(shown, s.lab, width)
+        // (The giant framed from the striker's side: the blow and the striker large enough to
+        // read, the giant's head left out.)
+        mix(vec3(0.0, 0.0, 0.25), exchange::place(shown)[3].xyz, if shown.giant { 0.35 } else {
+            0.5
+        }) + exchange::BLOW * kick + lab_aside(shown, s.lab, width)
     } else if SHOW == 26 { vec3(0.0, 0.0, 0.25) } else if SHOW == 19 {
         vec3(0.0, 0.0, 0.25) +
             kimodo::a_shake(time % kimodo::stance_round() - kimodo::STANCE.length())
@@ -667,7 +676,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
     // (The lab frames the fighter or the giant, as far as its panel says.)
     let (far, focus) = if SHOW != 29 { (FAR, FOCUS) } else if shown.giant {
-        (10.0 * s.lab.zoom, 3.0)
+        (8.0 * s.lab.zoom, 2.4)
     } else { (3.4 * s.lab.zoom, 1.05) }
     var shot = shot_at(
         time,
