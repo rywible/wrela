@@ -1,0 +1,105 @@
+// What the fight needs of the idol's shape: a player strikes its heads and its hands, so each is
+// a part of its own that no other touches. The heads are 3 cm apart or more; a hand meets the
+// body only at its wrist's cuff.
+
+use idol::{body, hands, heads, MIDDLE_WRIST, WRIST}
+use engine::creature::Creature
+use std::field::Surface
+
+/// The least the larger of two parts' distances gets over a grid of `step` from `lo` to `hi`:
+/// how far apart they are (negative where they overlap).
+fn apart<F: Surface>(field: F, a: u32, b: u32, lo: vec3, hi: vec3, step: f32) -> f32 {
+    var least = 1.0e9
+    var x = lo.x
+    while x <= hi.x {
+        var y = lo.y
+        while y <= hi.y {
+            var z = lo.z
+            while z <= hi.z {
+                let p = vec3(x, y, z)
+                least = min(least, max(field.part_distance(p, a), field.part_distance(p, b)))
+                z += step
+            }
+            y += step
+        }
+        x += step
+    }
+    least
+}
+
+/// The heads: the middle, the left and its mirror image, the right. Each pair is checked where
+/// they come nearest, between them (the whole of each, at every point, would outlast a test).
+@test
+fn heads_apart() {
+    let f = heads().field()
+    let n = f.parts()
+    assert(n == 3, f"the heads are {n} parts")
+    let left = apart(
+        f,
+        a: 0,
+        b: 1,
+        lo: vec3(0.2, 5.15, -0.95),
+        hi: vec3(0.9, 6.5, 0.8),
+        step: 0.035,
+    )
+    let right = apart(
+        f,
+        a: 0,
+        b: 2,
+        lo: vec3(-0.9, 5.15, -0.95),
+        hi: vec3(-0.2, 6.5, 0.8),
+        step: 0.035,
+    )
+    let sides = apart(
+        f,
+        a: 1,
+        b: 2,
+        lo: vec3(-0.3, 5.15, -1.1),
+        hi: vec3(0.3, 6.5, 0.8),
+        step: 0.05,
+    )
+    assert(left > 0.03, f"the middle and left heads come within {left} m of each other")
+    assert(right > 0.03, f"the middle and right heads come within {right} m of each other")
+    assert(sides > 0.03, f"the side heads come within {sides} m of each other")
+}
+
+@test
+fn hands_apart() {
+    let h = hands().field()
+    let n = h.parts()
+    assert(n == 3, f"the hands are {n} parts")
+    for a in 0..n {
+        for b in a + 1..n {
+            let d = apart(
+                h,
+                a: a,
+                b: b,
+                lo: vec3(-3.0, 0.6, -1.0),
+                hi: vec3(3.0, 2.7, 2.4),
+                step: 0.06,
+            )
+            assert(d > 0.3, f"hands {a} and {b} come within {d} m of each other")
+        }
+    }
+    // Where a hand is, the body isn't, but at its wrist (the cuff it comes out of).
+    let bd = body().field()
+    var worst = 1.0e9
+    var x = -3.0
+    while x <= 3.0 {
+        var y = 0.6
+        while y <= 2.7 {
+            var z = -1.0
+            while z <= 2.4 {
+                let p = vec3(x, y, z)
+                let at_wrist = abs(p.y - WRIST.y) < 0.25 || length(p - MIDDLE_WRIST) < 0.45
+                if !at_wrist && h.distance(p) < 0.0 {
+                    worst = min(worst, bd.distance(p))
+                }
+                z += 0.05
+            }
+            y += 0.05
+        }
+        x += 0.05
+    }
+    assert(worst > 0.02, f"a hand comes within {worst} m of the body away from its wrist")
+}

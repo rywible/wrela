@@ -1,0 +1,257 @@
+// The idol's two designs that come three times each: a head and a hand, as rounded stone blocks
+// in their own spaces. A head's blocks were fitted to the reference's left head (with its finer
+// form, `head_detail`); the hand was drawn as blocks over the reference's (whose fingers are a
+// mitten) so that its fingers read apart: a palm, four fingers of three knuckled segments and a
+// two-segment thumb. Written by /mnt/project-files/idol-3d/fit/export.py.
+
+use std::field::{smax, smin}
+
+/// A box of half-extents `half` with its edges rounded by `round`, centred at the origin.
+pub fn block(p: vec3, half: vec3, round: f32) -> f32 {
+    let q = abs(p) - half + vec3(round)
+    length(max(q, vec3(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - round
+}
+
+/// That box at `at`, its axes along `x`, `y` and `z` (unit, at right angles).
+pub fn turned_block(p: vec3, at: vec3, half: vec3, x: vec3, y: vec3, z: vec3, round: f32) -> f32 {
+    let d = p - at
+    block(vec3(dot(d, x), dot(d, y), dot(d, z)), half, round)
+}
+
+/// A head's blocks, in its own space: its base's middle at the origin, its face to +z, mirrored in x;
+/// joined smoothly; its finer form (`head_detail`) and `head_carve` make its features.
+pub fn head_blocks(p: vec3) -> f32 {
+    // cranium
+    var d = block(p - vec3(0.0, 0.606, -0.0715), vec3(0.438, 0.579, 0.432), 0.17)
+    // face
+    d = smin(d, block(p - vec3(0.0, 0.455, 0.277), vec3(0.324, 0.469, 0.158), 0.09), 0.1)
+    // brow
+    d = smin(d, block(p - vec3(0.0, 0.771, 0.4), vec3(0.38, 0.0835, 0.1), 0.0793), 0.1)
+    // nose
+    d = smin(
+        d,
+        turned_block(
+            p,
+            vec3(0.0, 0.55, 0.506),
+            vec3(0.0958, 0.194, 0.0683),
+            vec3(1.0, 0.0, -0.0),
+            vec3(-0.0, 0.978, -0.208),
+            vec3(0.0, 0.208, 0.978),
+            0.0649,
+        ),
+        0.1,
+    )
+    // jaw
+    d = smin(d, block(p - vec3(0.0, 0.176, 0.25), vec3(0.295, 0.165, 0.221), 0.09), 0.1)
+    // neck
+    d = smin(d, block(p - vec3(0.0, -0.14, -0.06), vec3(0.27, 0.22, 0.28), 0.08), 0.1)
+    d
+}
+
+/// A hand's blocks, its left, in its own space: the wrist at the origin, the arm up (+y), the palm in
+/// (−x), the thumb ahead (+z). Each finger is joined to the palm alone, so the fingers stay apart.
+pub fn hand_blocks(p: vec3) -> f32 {
+    // the cuff, the palm and the thumb, one stone
+    var d = block(p - vec3(0.02, 0.0, 0.0), vec3(0.3, 0.09, 0.4), 0.04)
+    // palm
+    d = smin(
+        d,
+        turned_block(
+            p,
+            vec3(0.0, -0.4, 0.0),
+            vec3(0.32, 0.36, 0.43),
+            vec3(0.999, -0.0523, -0.0),
+            vec3(0.0523, 0.999, 0.0),
+            vec3(0.0, -0.0, 1.0),
+            0.1,
+        ),
+        0.06,
+    )
+    // thumb 0
+    d = smin(
+        d,
+        turned_block(
+            p,
+            vec3(-0.23, -0.37, 0.41),
+            vec3(0.15, 0.22, 0.16),
+            vec3(2.5e-16, 0.504, 0.864),
+            vec3(-0.683, -0.631, 0.368),
+            vec3(0.73, -0.59, 0.344),
+            0.08,
+        ),
+        0.06,
+    )
+    // thumb 1
+    d = smin(
+        d,
+        turned_block(
+            p,
+            vec3(-0.43, -0.59, 0.47),
+            vec3(0.135, 0.152, 0.14),
+            vec3(4.16e-17, -0.0995, 0.995),
+            vec3(-0.572, -0.816, -0.0816),
+            vec3(0.821, -0.569, -0.0569),
+            0.08,
+        ),
+        0.06,
+    )
+    let held = d
+    // finger 0: three segments, knuckled
+    var f0 = turned_block(
+        p,
+        vec3(0.027, -0.848, 0.32),
+        vec3(0.15, 0.14, 0.102),
+        vec3(-0.978, 0.208, 0.0),
+        vec3(-0.208, -0.978, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        0.06,
+    )
+    f0 = smin(
+        f0,
+        turned_block(
+            p,
+            vec3(-0.0503, -1.02, 0.32),
+            vec3(0.137, 0.115, 0.0975),
+            vec3(-0.766, 0.643, 0.0),
+            vec3(-0.643, -0.766, 0.0),
+            vec3(0.0, 0.0, 1.0),
+            0.06,
+        ),
+        0.03,
+    )
+    f0 = smin(
+        f0,
+        turned_block(
+            p,
+            vec3(-0.171, -1.11, 0.32),
+            vec3(0.125, 0.0999, 0.0925),
+            vec3(-0.309, 0.951, 0.0),
+            vec3(-0.951, -0.309, 0.0),
+            vec3(0.0, 0.0, 1.0),
+            0.06,
+        ),
+        0.03,
+    )
+    d = min(d, smin(held, f0, 0.05))
+    // finger 1: three segments, knuckled
+    var f1 = turned_block(
+        p,
+        vec3(0.0236, -0.864, 0.107),
+        vec3(0.15, 0.157, 0.102),
+        vec3(-0.978, 0.208, 0.0),
+        vec3(-0.208, -0.978, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        0.06,
+    )
+    f1 = smin(
+        f1,
+        turned_block(
+            p,
+            vec3(-0.0656, -1.06, 0.107),
+            vec3(0.137, 0.128, 0.0975),
+            vec3(-0.766, 0.643, 0.0),
+            vec3(-0.643, -0.766, 0.0),
+            vec3(0.0, 0.0, 1.0),
+            0.06,
+        ),
+        0.03,
+    )
+    f1 = smin(
+        f1,
+        turned_block(
+            p,
+            vec3(-0.205, -1.16, 0.107),
+            vec3(0.125, 0.111, 0.0925),
+            vec3(-0.309, 0.951, 0.0),
+            vec3(-0.951, -0.309, 0.0),
+            vec3(0.0, 0.0, 1.0),
+            0.06,
+        ),
+        0.03,
+    )
+    d = min(d, smin(held, f1, 0.05))
+    // finger 2: three segments, knuckled
+    var f2 = turned_block(
+        p,
+        vec3(0.0251, -0.857, -0.107),
+        vec3(0.15, 0.15, 0.102),
+        vec3(-0.978, 0.208, 0.0),
+        vec3(-0.208, -0.978, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        0.06,
+    )
+    f2 = smin(
+        f2,
+        turned_block(
+            p,
+            vec3(-0.059, -1.05, -0.107),
+            vec3(0.137, 0.122, 0.0975),
+            vec3(-0.766, 0.643, 0.0),
+            vec3(-0.643, -0.766, 0.0),
+            vec3(0.0, 0.0, 1.0),
+            0.06,
+        ),
+        0.03,
+    )
+    f2 = smin(
+        f2,
+        turned_block(
+            p,
+            vec3(-0.19, -1.14, -0.107),
+            vec3(0.125, 0.106, 0.0925),
+            vec3(-0.309, 0.951, 0.0),
+            vec3(-0.951, -0.309, 0.0),
+            vec3(0.0, 0.0, 1.0),
+            0.06,
+        ),
+        0.03,
+    )
+    d = min(d, smin(held, f2, 0.05))
+    // finger 3: three segments, knuckled
+    var f3 = turned_block(
+        p,
+        vec3(0.03, -0.834, -0.32),
+        vec3(0.15, 0.126, 0.102),
+        vec3(-0.978, 0.208, 0.0),
+        vec3(-0.208, -0.978, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        0.06,
+    )
+    f3 = smin(
+        f3,
+        turned_block(
+            p,
+            vec3(-0.0372, -0.984, -0.32),
+            vec3(0.137, 0.104, 0.0975),
+            vec3(-0.766, 0.643, 0.0),
+            vec3(-0.643, -0.766, 0.0),
+            vec3(0.0, 0.0, 1.0),
+            0.06,
+        ),
+        0.03,
+    )
+    f3 = smin(
+        f3,
+        turned_block(
+            p,
+            vec3(-0.142, -1.06, -0.32),
+            vec3(0.125, 0.0908, 0.0925),
+            vec3(-0.309, 0.951, 0.0),
+            vec3(-0.951, -0.309, 0.0),
+            vec3(0.0, 0.0, 1.0),
+            0.06,
+        ),
+        0.03,
+    )
+    d = min(d, smin(held, f3, 0.05))
+    d
+}
+
+/// A head's carved features, after its blocks and finer form: a mouth's slot and the eyes'
+/// sockets, cut crisp (the network alone left them soft).
+pub fn head_carve(d: f32, p: vec3) -> f32 {
+    let m = vec3(abs(p.x), p.y, p.z)
+    let mouth = block(p - vec3(0.0, 0.27, 0.49), vec3(0.16, 0.016, 0.08), 0.01)
+    let eyes = block(m - vec3(0.17, 0.6, 0.4), vec3(0.09, 0.05, 0.06), 0.02)
+    smax(smax(d, -mouth, 0.015), -eyes, 0.02)
+}

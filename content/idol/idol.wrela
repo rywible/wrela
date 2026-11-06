@@ -1,0 +1,462 @@
+// The idol as fields: its skeleton, and its parts, each a field on a bone. Three creatures, each
+// realized on its own grid: the body (rounded stone blocks with carved panel lines), the three heads (one design: `shapes::head_blocks`, its finer form `head_detail`, a small network, and its
+// carved features `shapes::head_carve`) and the
+// three hands (one design: `shapes::hand_blocks`). A head and a hand are what a player can reach
+// and strike, so each is a part of its own, on a bone of its own, apart from the others (the
+// tests' `heads_apart` and `hands_apart`).
+//
+// The blocks and networks were fitted to a reference mesh made from a generated concept
+// (docs/generated.jsonl: FLUX.2 [pro] then TRELLIS, Nov 6 2026), which never ships. This file is
+// written by /mnt/project-files/idol-3d/fit/export.py from the fit; its shapes, its paint and its
+// skeleton's names are the template's.
+
+use engine::creature::{Bone, Creature, Skeleton, creature, hard}
+use engine::character::Shaded
+use shapes::{hand_blocks, head_blocks, head_carve}
+use std::derive::{Box3, Interval}
+use std::field::{Blend, Bound, Surface, value_noise}
+use std::quat::Quat
+
+/// What a point of it is made of: its colour (linear), how rough and how metallic.
+pub struct Stone: Copy + GpuData + Blend {
+    pub albedo: vec3,
+    pub rough: f32,
+    pub metal: f32,
+}
+
+impl Shaded for Stone {
+    fn albedo(self) -> vec3 {
+        self.albedo
+    }
+
+    fn roughness(self) -> f32 {
+        self.rough
+    }
+
+    fn metallic(self) -> f32 {
+        self.metal
+    }
+}
+
+/// Its granite (sRGB 0.50 grey, cool).
+pub const GRANITE: vec3 = vec3(0.200, 0.205, 0.215)
+
+/// The stone's colour at `p` (m, the idol's rest space): grain at two scales, and faint darker
+/// weathering where rain has run down it (stretched in y).
+pub fn stone_paint(p: vec3) -> Stone {
+    let grain = 0.6 * value_noise(p * 3.1) + 0.4 * value_noise(p * 9.7 + vec3(4.2, 1.3, 7.7))
+    let stain = value_noise(vec3(p.x * 1.3, p.y * 0.35, p.z * 1.3) + vec3(11.0, 3.0, 5.0))
+    let wet = clamp((stain - 0.5) * 3.0, 0.0, 1.0) * 0.18
+    Stone { albedo: GRANITE * (1.0 + 0.18 * grain) * (1.0 - wet), rough: 0.88, metal: 0.0 }
+}
+
+/// Where its heads and hands are, at rest (m): each head's base and each wrist; how the side
+/// heads turn out (the left's; the right's is its mirror image) and how the middle hand turns
+/// and is scaled.
+pub const HEAD_MIDDLE: vec3 = vec3(0.0, 5.2, 0.2)
+pub const HEAD_SIDE: vec3 = vec3(1.1, 5.08, -0.58)
+pub const HEAD_TURN: Quat = Quat { v: vec4(0.00000, 0.42262, 0.00000, 0.90631) }
+pub const WRIST: vec3 = vec3(2.5, 2.52, 0.12)
+pub const MIDDLE_WRIST: vec3 = vec3(0.0, 2.74, 1.3)
+pub const MIDDLE_TURN: Quat = Quat { v: vec4(0.00000, 0.70711, 0.00000, 0.70711) }
+pub const MIDDLE_SCALE: f32 = 0.9
+
+/// Its skeleton at rest (m; +x its left, +y up, +z ahead; 6.4 m to its crowns): one spine, three
+/// heads on one neck, two arms and the middle arm from its chest, two legs.
+pub fn skeleton() -> Skeleton {
+    var s = Skeleton::new()
+    let pelvis = s.root("pelvis", vec3(0.0, 2.60, -0.40))
+    let spine = s.joint("spine", pelvis, vec3(0.0, 3.30, -0.42))
+    let chest = s.joint("chest", spine, vec3(0.0, 4.00, -0.45))
+    let neck = s.joint("neck", chest, vec3(0.0, 5.05, -0.30))
+    s.joint("head middle", neck, HEAD_MIDDLE)
+    s.joint_pair("head left", "head right", neck, HEAD_SIDE)
+    let (upper, _) = s.joint_pair(
+        "upper arm left",
+        "upper arm right",
+        chest,
+        vec3(1.85, 4.55, -0.45),
+    )
+    let (fore, _) = s.joint_pair("forearm left", "forearm right", upper, vec3(2.20, 3.65, -0.40))
+    s.joint_pair("hand left", "hand right", fore, WRIST)
+    let mu = s.joint("middle upper arm", chest, vec3(0.0, 4.20, 0.60))
+    let mf = s.joint("middle forearm", mu, vec3(0.0, 3.35, 0.95))
+    s.joint("middle hand", mf, MIDDLE_WRIST)
+    let (thigh, _) = s.joint_pair("thigh left", "thigh right", pelvis, vec3(0.85, 2.55, -0.42))
+    let (calf, _) = s.joint_pair("calf left", "calf right", thigh, vec3(0.95, 1.50, -0.40))
+    s.joint_pair("foot left", "foot right", calf, vec3(1.15, 0.45, -0.40))
+    s
+}
+
+/// The panel lines carved round the big plates' faces: how far in from the edges (m), and the
+/// groove's radius (as wide as twice it, as deep as it).
+pub const INSET: f32 = 0.16
+pub const GROOVE: f32 = 0.055
+
+/// A box of half-extents `half` with its edges rounded by `round`, centred at the origin; with
+/// `groove` 1, a panel line carved round each face, `INSET` in from its edges.
+pub struct Block: Copy + GpuData {
+    pub half: vec3,
+    pub round: f32,
+    pub groove: f32,
+}
+
+impl Surface for Block {
+    fn distance(self, p: vec3) -> f32 {
+        let q = abs(p) - self.half + vec3(self.round)
+        let d = length(max(q, vec3(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - self.round
+        // Each face's line: a tube along the rectangle `INSET` in from its edges, in its plane.
+        let a = abs(p) - self.half
+        let g = a + vec3(INSET)
+        let line_x = length(vec2(max(g.y, g.z), a.x))
+        let line_y = length(vec2(max(g.x, g.z), a.y))
+        let line_z = length(vec2(max(g.x, g.y), a.z))
+        let line = min(line_x, min(line_y, line_z)) - GROOVE
+        mix(d, max(d, -line), self.groove)
+    }
+
+    fn bound(self) -> Bound {
+        Bound { centre: vec3(), radius: length(self.half), slope: 1.0 }
+    }
+
+    /// Exact.
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
+
+/// A head, in its own space (its base's middle at the origin, its face to +z): its blocks, its
+/// finer form and its carved mouth and eyes.
+pub struct Head: Copy + GpuData {}
+
+impl Surface for Head {
+    fn bound(self) -> Bound {
+        Bound { centre: vec3(0.0, 0.6, 0.0), radius: 1.0, slope: 0.5 }
+    }
+
+    /// The blocks' distance changes by at most the box's half-diagonal from its centre, and the
+    /// network adds at most `MOST` either way, at the centre and anywhere else (the carving only
+    /// cuts, smoothly: a centimetre's room): no derived interval of the network, which would be
+    /// most of a culling pass's shader.
+    fn interval(self, over: Box3) -> Interval {
+        let r = 0.5 * length(over.hi - over.lo) + 2.0 * head_detail::MOST + 0.01
+        let d = self.distance(over.center())
+        Interval { lo: d - r, hi: d + r }
+    }
+
+    fn distance(self, p: vec3) -> f32 {
+        head_carve(head_blocks(p) + head_detail::detail(p), p)
+    }
+
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0 + head_detail::STEEPEST
+    }
+}
+
+/// A hand, its left, in its own space (the wrist at the origin, the palm in, the thumb ahead).
+pub struct Hand: Copy + GpuData {}
+
+impl Surface for Hand {
+    fn bound(self) -> Bound {
+        Bound { centre: vec3(-0.1, -0.8, 0.0), radius: 1.3, slope: 0.5 }
+    }
+
+    /// By its bound on the gradient from its centre's distance.
+    fn interval(self, over: Box3) -> Interval {
+        let r = 1.0 * 0.5 * length(over.hi - over.lo)
+        let d = self.distance(over.center())
+        Interval { lo: d - r, hi: d + r }
+    }
+
+    fn distance(self, p: vec3) -> f32 {
+        hand_blocks(p)
+    }
+
+    /// Boxes, smoothly joined: 1, with room.
+    fn lipschitz(self, near: f32) -> f32 {
+        1.2
+    }
+}
+
+/// The idol's body at rest: its blocks (its heads and hands are `heads` and `hands`).
+pub fn body() -> Creature<Stone> {
+    let s = skeleton()
+    let b = |name: Text| s.find(name)
+    creature(s)
+        .join(
+            "hips",
+            b("pelvis"),
+            Block { half: vec3(1.1, 0.228, 0.66), round: 0.07, groove: GROOVE }
+                .rotate(Quat { v: vec4(0.07996, 0.00000, 0.00000, 0.99680) })
+                .translate(vec3(0.0, 2.56, -0.381))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("pelvis"))),
+        )
+        .join(
+            "belt",
+            b("pelvis"),
+            Block { half: vec3(1.19, 0.133, 0.882), round: 0.07, groove: 0.0 }
+                .rotate(Quat { v: vec4(0.00005, 0.00000, 0.00000, 1.00000) })
+                .translate(vec3(0.0, 2.99, -0.388))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("pelvis"))),
+            seam: hard(),
+        )
+        .join(
+            "belly",
+            b("spine"),
+            Block { half: vec3(0.938, 0.547, 0.73), round: 0.07, groove: GROOVE }
+                .rotate(Quat { v: vec4(0.05003, 0.00000, 0.00000, 0.99875) })
+                .translate(vec3(0.0, 3.63, -0.417))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("spine"))),
+            seam: hard(),
+        )
+        .join(
+            "chest",
+            b("chest"),
+            Block { half: vec3(1.42, 0.614, 0.822), round: 0.12, groove: GROOVE }
+                .rotate(Quat { v: vec4(0.09988, 0.00000, 0.00000, 0.99500) })
+                .translate(vec3(0.0, 4.39, -0.531))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("chest"))),
+            seam: hard(),
+        )
+        .join(
+            "collar",
+            b("chest"),
+            Block { half: vec3(0.988, 0.148, 0.613), round: 0.07, groove: 0.0 }
+                .rotate(Quat { v: vec4(0.00005, 0.00000, 0.00000, 1.00000) })
+                .translate(vec3(0.0, 5.06, -0.366))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("chest"))),
+            seam: hard(),
+        )
+        .join(
+            "neck",
+            b("neck"),
+            Block { half: vec3(0.406, 0.267, 0.431), round: 0.07, groove: 0.0 }
+                .rotate(Quat { v: vec4(0.00005, 0.00000, 0.00000, 1.00000) })
+                .translate(vec3(0.0, 5.25, -0.239))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("neck"))),
+            seam: hard(),
+        )
+        .join(
+            "apron",
+            b("pelvis"),
+            Block { half: vec3(0.398, 0.498, 0.0911), round: 0.07, groove: 0.0 }
+                .rotate(Quat { v: vec4(-0.12463, 0.00000, 0.00000, 0.99220) })
+                .translate(vec3(0.0, 2.4, 0.33))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("pelvis"))),
+            seam: hard(),
+        )
+        .join(
+            "pec",
+            b("chest"),
+            Block { half: vec3(0.594, 0.396, 0.314), round: 0.0883, groove: GROOVE }
+                .rotate(Quat { v: vec4(-0.14939, 0.00005, 0.00005, 0.98878) })
+                .translate(vec3(0.64, 4.38, 0.226))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("chest"))),
+            seam: hard(),
+            mirror: true,
+        )
+        .join(
+            "pauldron",
+            b("upper arm left"),
+            Block { half: vec3(0.53, 0.445, 0.686), round: 0.07, groove: GROOVE }
+                .rotate(Quat { v: vec4(0.00005, 0.00005, 0.09988, 0.99500) })
+                .translate(vec3(1.97, 4.81, -0.489))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("upper arm left"))),
+            seam: hard(),
+            mirror: true,
+        )
+        .join(
+            "upper arm",
+            b("upper arm left"),
+            Block { half: vec3(0.406, 0.658, 0.613), round: 0.07, groove: GROOVE }
+                .rotate(Quat { v: vec4(0.00005, 0.00005, 0.07498, 0.99719) })
+                .translate(vec3(2.04, 4.02, -0.385))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("upper arm left"))),
+            seam: hard(),
+            mirror: true,
+        )
+        .join(
+            "forearm",
+            b("forearm left"),
+            Block { half: vec3(0.515, 0.544, 0.517), round: 0.07, groove: GROOVE }
+                .rotate(Quat { v: vec4(0.00000, 0.00000, 0.05996, 0.99820) })
+                .translate(vec3(2.39, 3.13, -0.176))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("forearm left"))),
+            seam: hard(),
+            mirror: true,
+        )
+        .join(
+            "thigh",
+            b("thigh left"),
+            Block { half: vec3(0.582, 0.567, 0.61), round: 0.07, groove: GROOVE }
+                .rotate(Quat { v: vec4(0.00005, 0.00005, 0.05003, 0.99875) })
+                .translate(vec3(0.825, 2.18, -0.406))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("thigh left"))),
+            seam: hard(),
+            mirror: true,
+        )
+        .join(
+            "knee",
+            b("calf left"),
+            Block { half: vec3(0.537, 0.169, 0.611), round: 0.07, groove: 0.0 }
+                .rotate(Quat { v: vec4(0.00005, 0.00005, 0.00005, 1.00000) })
+                .translate(vec3(0.98, 1.48, -0.38))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("calf left"))),
+            seam: hard(),
+            mirror: true,
+        )
+        .join(
+            "shin",
+            b("calf left"),
+            Block { half: vec3(0.576, 0.462, 0.571), round: 0.07, groove: GROOVE }
+                .rotate(Quat { v: vec4(0.05001, 0.00005, 0.05001, 0.99750) })
+                .translate(vec3(1.08, 0.87, -0.575))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("calf left"))),
+            seam: hard(),
+            mirror: true,
+        )
+        .join(
+            "foot",
+            b("foot left"),
+            Block { half: vec3(0.6, 0.216, 0.94), round: 0.07, groove: 0.0 }
+                .rotate(Quat { v: vec4(0.00005, 0.00005, 0.00005, 1.00000) })
+                .translate(vec3(1.2, 0.217, -0.42))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("foot left"))),
+            seam: hard(),
+            mirror: true,
+        )
+        .join(
+            "toes",
+            b("foot left"),
+            Block { half: vec3(0.543, 0.149, 0.202), round: 0.07, groove: 0.0 }
+                .rotate(Quat { v: vec4(0.00005, 0.00005, 0.00005, 1.00000) })
+                .translate(vec3(1.15, 0.16, 0.382))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("foot left"))),
+            seam: hard(),
+            mirror: true,
+        )
+        .join(
+            "shoulder",
+            b("upper arm left"),
+            Block { half: vec3(0.4, 0.32, 0.46), round: 0.1, groove: 0.0 }
+                .rotate(Quat { v: vec4(0.00000, 0.00000, 0.00000, 1.00000) })
+                .translate(vec3(2.02, 4.42, -0.45))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("upper arm left"))),
+            seam: hard(),
+            mirror: true,
+        )
+        .join(
+            "elbow",
+            b("forearm left"),
+            Block { half: vec3(0.38, 0.26, 0.42), round: 0.1, groove: 0.0 }
+                .rotate(Quat { v: vec4(0.00000, 0.00000, 0.07493, 0.99719) })
+                .translate(vec3(2.1, 3.62, -0.36))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("forearm left"))),
+            seam: hard(),
+            mirror: true,
+        )
+        .join(
+            "mid root",
+            b("chest"),
+            Block { half: vec3(0.4, 0.28, 0.42), round: 0.08, groove: 0.0 }
+                .rotate(Quat { v: vec4(0.00000, 0.00000, 0.00000, 1.00000) })
+                .translate(vec3(0.0, 4.25, 0.54))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("chest"))),
+            seam: hard(),
+        )
+        .join(
+            "mid upper",
+            b("middle upper arm"),
+            Block { half: vec3(0.3, 0.47, 0.28), round: 0.08, groove: GROOVE }
+                .rotate(Quat { v: vec4(-0.18224, 0.00000, 0.00000, 0.98325) })
+                .translate(vec3(0.0, 3.79, 1.02))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("middle upper arm"))),
+            seam: hard(),
+        )
+        .join(
+            "mid elbow",
+            b("middle forearm"),
+            Block { half: vec3(0.3, 0.2, 0.3), round: 0.08, groove: 0.0 }
+                .rotate(Quat { v: vec4(0.00000, 0.00000, 0.00000, 1.00000) })
+                .translate(vec3(0.0, 3.36, 1.19))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("middle forearm"))),
+            seam: hard(),
+        )
+        .join(
+            "mid fore",
+            b("middle forearm"),
+            Block { half: vec3(0.33, 0.32, 0.31), round: 0.08, groove: GROOVE }
+                .rotate(Quat { v: vec4(-0.08716, 0.00000, 0.00000, 0.99619) })
+                .translate(vec3(0.0, 3.04, 1.25))
+                .with_at(stone_paint)
+                .translate(-s.rest(b("middle forearm"))),
+            seam: hard(),
+        )
+}
+
+/// Its three heads, one design: the middle facing ahead, the side heads turned out.
+pub fn heads() -> Creature<Stone> {
+    let s = skeleton()
+    let b = |name: Text| s.find(name)
+    creature(s)
+        .join("head middle", b("head middle"), Head {}.with_at(head_paint))
+        .join(
+            "head side",
+            b("head left"),
+            Head {}.rotate(HEAD_TURN).with_at(side_head_paint),
+            seam: hard(),
+            mirror: true,
+        )
+}
+
+/// A head's paint, from a point in the head bone's space (`stone_paint`, at the point's place).
+fn head_paint(p: vec3) -> Stone {
+    stone_paint(p + HEAD_MIDDLE)
+}
+
+fn side_head_paint(p: vec3) -> Stone {
+    stone_paint(p + HEAD_SIDE)
+}
+
+/// Its three hands, one design: its left, its right (the left's mirror image) and its middle.
+pub fn hands() -> Creature<Stone> {
+    let s = skeleton()
+    let b = |name: Text| s.find(name)
+    creature(s)
+        .join("hand side", b("hand left"), Hand {}.with_at(hand_paint), mirror: true)
+        .join(
+            "hand middle",
+            b("middle hand"),
+            Hand {}.scale(MIDDLE_SCALE).rotate(MIDDLE_TURN).with_at(middle_hand_paint),
+            seam: hard(),
+        )
+}
+
+fn hand_paint(p: vec3) -> Stone {
+    stone_paint(p + WRIST)
+}
+
+fn middle_hand_paint(p: vec3) -> Stone {
+    stone_paint(p + MIDDLE_WRIST)
+}

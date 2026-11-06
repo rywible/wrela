@@ -1,0 +1,9 @@
+# The idol: the cathedral god's statue come alive, the first boss (a giant stone man with three
+# heads and three hands), written as fields on a skeleton (engine::creature) and realized as
+# meshes by the engine (engine::realize). It was fitted to a generated reference (an image to 3D
+# model's mesh, docs/generated.jsonl), which is only measured: nothing here is loaded from a file.
+[package]
+name = "idol"
+
+[dependencies]
+engine = { workspace = true }
