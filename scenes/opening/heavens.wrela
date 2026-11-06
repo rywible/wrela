@@ -52,6 +52,10 @@ fn weather() -> Weather {
     }
 }
 
+/// How fully the deck's own column shades it (`engine::sky::Clouds::gloom`): a little under
+/// all, so its billows still take some of the light from above and show their form.
+const GLOOM: f32 = 1.0
+
 /// The share of the sun's light that comes through the overcast's deck.
 const UNDER_DECK: f32 = 0.1
 
@@ -76,7 +80,7 @@ pub fn heavens(sun: vec3, eye: f32) -> Heavens {
     }
     // (A storm's deck: `engine::sky::Clouds::gloom`.)
     var sky = new_sky::<Approved>()
-    sky.gloom = OVERCAST
+    sky.gloom = OVERCAST * GLOOM
     let clouds = sky.clouds::<Approved>(
         light,
         vec3(0.0, eye, 0.0),
