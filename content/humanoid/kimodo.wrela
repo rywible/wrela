@@ -779,7 +779,7 @@ fn boxer_loop(c: Clip) -> Clip {
     let nb = c.bones
     let (a, b) = (BOX_FROM / 30.0, BOX_TO / 30.0)
     let span = b - a
-    let n = u32(span * 60.0)
+    let n = u32(span * 60.0 + 0.5)
     var drift = c.pose(b).hips - c.pose(a).hips
     drift.y = 0.0
     var out = Clip {
@@ -793,7 +793,7 @@ fn boxer_loop(c: Clip) -> Clip {
         travel_local: vec3(0.0),
     }
     for f in 0..n + 1 {
-        let t = f32(f) / 60.0
+        let t = span * f32(f) / f32(n)
         var p = c.pose(a + t)
         p.hips = p.hips - drift * (t / span)
         if t > span - BOX_FADE {
@@ -825,26 +825,40 @@ pub struct Swagger: Copy {
 
 pub const SWAGGERS: [Swagger; 4] = [
     // Cool: side-on, hands low, chin down.
-    Swagger { lead: 0.3, out: 0.0, rear: 0.24, chin: -0.06, lean: -0.08, blade: 0.2, sink: 0.09 },
+    Swagger { lead: 0.35, out: 0.0, rear: 0.3, chin: -0.04, lean: -0.05, blade: 0.35, sink: 0.08 },
     // Dangerous: hands lower still, chin tucked, leaning in.
-    Swagger { lead: 0.4, out: 0.0, rear: 0.3, chin: -0.12, lean: -0.12, blade: 0.25, sink: 0.1 },
+    Swagger { lead: 0.42, out: 0.0, rear: 0.38, chin: -0.18, lean: -0.22, blade: 0.3, sink: 0.12 },
     // Cocky: chin up, sat back, hands hanging.
-    Swagger { lead: 0.45, out: 0.0, rear: 0.36, chin: 0.1, lean: 0.04, blade: 0.15, sink: 0.07 },
-    // Explosive: low in the legs, hands half up, coiled side-on.
-    Swagger { lead: 0.2, out: 0.0, rear: 0.18, chin: -0.08, lean: -0.15, blade: 0.3, sink: 0.13 },
+    Swagger { lead: 0.5, out: 0.0, rear: 0.45, chin: 0.18, lean: 0.1, blade: 0.1, sink: 0.05 },
+    // Explosive: low in the legs, coiled well side-on, leaning in.
+    Swagger { lead: 0.3, out: 0.0, rear: 0.28, chin: -0.1, lean: -0.2, blade: 0.45, sink: 0.17 },
 ]
 
-/// How many frames (60 a second) the loose hands trail the chest, how much of its ride they
-/// keep back, and how far the fingers curl (1 loose, 2 a claw-like curl).
-pub const SW_LAG: u32 = 5
-pub const SW_TRAIL: f32 = 0.7
+/// The loose hands' spring on the chest (Hz, damping ratio), how much of its swing they keep,
+/// how far short of full reach they hang, and how far the fingers curl (1 loose, 2 a claw-like curl).
+pub const SW_HZ: f32 = 2.2
+pub const SW_DAMP: f32 = 0.3
+pub const SW_SLACK: f32 = 0.96
+pub const SW_TRAIL: f32 = 1.0
 pub const SW_CURL: f32 = 2.6
 
 /// Which swagger `SHOW=22` plays.
-pub const SWAG: u32 = 0
+pub const SWAG: u32 = 2
 
 @fuel(2 ** 40)
 pub const SWAGGERED: Clip = swaggered(BOUNCE.clone(), SWAGGERS[SWAG])
+
+/// `goal` for the `side` hand, pulled in to `SW_SLACK` of the arm's full reach from its shoulder.
+fn slack(rig: humanoid::Rig, w: Vec<humanoid::Rigid>, side: Text, goal: vec3) -> vec3 {
+    let (u, l, h) = (rig.find(f"{side}UpperArm"), rig.find(f"{side}LowerArm"), rig.find(f"{side}Hand"))
+    let reach = length(w[l].t - w[u].t) + length(w[h].t - w[l].t)
+    let d = goal - w[u].t
+    let most = reach * SW_SLACK
+    if length(d) > most {
+        return w[u].t + normalize(d) * most
+    }
+    goal
+}
 
 fn swaggered(c: Clip, s: Swagger) -> Clip {
     borrow rig = HERO.rig
@@ -868,6 +882,22 @@ fn swaggered(c: Clip, s: Swagger) -> Clip {
         rides[f] = stride::worlds(rig, out, f)[chest].t
     }
     let n = max(c.frames, 2) - 1
+    // The loose hands ride a damped spring on the chest: they lag its bounce and overshoot a
+    // little, run three times round the loop so the last round is settled and loops cleanly.
+    var swing: Vec<vec3> = Vec::filled(c.frames, vec3(0.0))
+    var at = rides[0]
+    var speed = vec3(0.0)
+    let (k, damp, dt) = (SW_HZ * SW_HZ * 39.478, 2.0 * SW_DAMP * SW_HZ * 6.2832, 1.0 / 60.0)
+    for round in 0..3 {
+        for f in 0..n {
+            speed = speed + (k * (rides[f] - at) - damp * speed) * dt
+            at = at + speed * dt
+            if round == 2 {
+                swing[f] = at - rides[f]
+            }
+        }
+    }
+    swing[n] = swing[0]
     for f in 0..c.frames {
         var w = stride::worlds(rig, out, f)
         // Sat lower into the knees, the feet where they were.
@@ -876,12 +906,11 @@ fn swaggered(c: Clip, s: Swagger) -> Clip {
         let foot_q = [w[fl].q, w[fr].q]
         stride::shift(mut w, vec3(0.0, -s.sink, 0.0))
         legs_to(rig, mut w, feet, foot_q)
-        // Loose arms: the hands hang back on the chest's ride by `SW_LAG` frames.
-        let lag = rides[(f % n + n - SW_LAG) % n] - rides[f % n]
-        let trail = lag * SW_TRAIL
+        // Loose arms: each hand dropped, kept short of a locked elbow so it has slack, then swung.
+        let trail = swing[f] * SW_TRAIL
         let (l, r) = (w[lh].t, w[rh].t)
-        engine::keys::arm_to(rig, mut w, 0, l + down * s.lead + trail)
-        engine::keys::arm_to(rig, mut w, 1, r + down * s.rear + trail * 0.8)
+        engine::keys::arm_to(rig, mut w, 0, slack(rig, w, "left", l + down * s.lead) + trail)
+        engine::keys::arm_to(rig, mut w, 1, slack(rig, w, "right", r + down * s.rear) + trail * 0.85)
         stride::store(rig, w, mut out, f)
         let (head, neck) = (rig.find("head"), rig.find("neck"))
         out.turns[f * nb + head] = out.turns[f * nb + head].mul(Quat::axis_angle(x, -s.chin * 0.6))
@@ -889,3 +918,26 @@ fn swaggered(c: Clip, s: Swagger) -> Clip {
     }
     stride::curled_hands(straight_wrists(out), HERO.rig, SW_CURL)
 }
+
+/// The swagger loop's hips and fists frame to frame (cm) across its seam, for finding pops.
+@test
+fn kimodo_swagger_seam() {
+    borrow rig = HERO.rig
+    let c = SWAGGERED.clone()
+    let (lh, rh) = (rig.find("leftHand"), rig.find("rightHand"))
+    var last = [vec3(0.0), vec3(0.0), vec3(0.0)]
+    for k in 170..215 {
+        let time = f32(k) / 60.0
+        let p = c.pose(time % c.length())
+        var one = Clip { fps: 60.0, frames: 1, bones: c.bones, turns: Vec::new(), hips: Vec::new(), looped: false, travel: vec3(0.0), travel_local: vec3(0.0) }
+        for b in 0..c.bones {
+            one.turns.push(p.turns[b])
+        }
+        one.hips.push(p.hips)
+        let w = stride::worlds(rig, one, 0)
+        let now = [p.hips, w[lh].t, w[rh].t]
+        std::io::print(f"KS {k} {now[0].y * 100.0:.1} {length(now[0] - last[0]) * 100.0:.2} {length(now[1] - last[1]) * 100.0:.2} {length(now[2] - last[2]) * 100.0:.2}")
+        last = now
+    }
+}
+
