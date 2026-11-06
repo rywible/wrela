@@ -941,3 +941,179 @@ fn kimodo_swagger_seam() {
     }
 }
 
+
+/// ACCAD Male 2's sparring round (Extended_1, the one Ryan picked as cool) on the hero, as captured.
+@fuel(2 ** 40)
+pub const SPAR: Clip = stride::curled_hands(
+    straight_wrists(
+        cleanup::cleaned(
+            humanoid::retarget(
+                humanoid::take_of_bvh(
+                    bvh::read(embed("assets/accad_male2_boxing.bvh")),
+                    humanoid::ACCAD,
+                    humanoid::NO_NAMES,
+                    from: 0,
+                    to: 601,
+                )
+                    .rested_as(body::ACCAD_M2_STAND.clone(), 0),
+                HERO.rig.clone(),
+                Retarget { face_ahead: false, looped: false, carried: true, stood: true },
+            ),
+            HERO.rig.clone(),
+            cleanup::KEYED,
+        ),
+    ),
+    HERO.rig,
+    2.0,
+)
+
+/// The stretches of the round where he only moves in his guard (frames at 30 a second), no punches.
+pub const SPAR_CUTS: [[f32; 2]; 3] = [[79.0, 128.0], [173.0, 226.0], [347.0, 412.0]]
+/// How long each stretch eases into the next (s), and how wide (s) the window his drift and
+/// turning are averaged over before they are taken out, so he stays in place facing one way
+/// but keeps his own sway.
+pub const SPAR_FADE: f32 = 0.3
+pub const SPAR_SETTLE: f32 = 0.6
+
+/// The guard stretches chained in place and facing one way, each easing into the next and the last
+/// back into the first: an idle that runs ~6 s before it repeats.
+@fuel(2 ** 40)
+pub const SPAR_IDLE: Clip = in_guard(SPAR.clone())
+
+fn facing(q: Quat) -> f32 {
+    let f = q.rotate(vec3(0.0, 0.0, 1.0))
+    atan2(f.x, f.z)
+}
+
+/// `c`'s pose at `s` (s), its drift across the floor and its turning (averaged over
+/// `SPAR_SETTLE`) taken out: standing over `at` and facing `ahead` (radians about up), in the
+/// body's space (`base`, the rig's).
+fn settled(c: Clip, s: f32, ahead: f32, at: vec3, base: humanoid::Rigid) -> humanoid::Pose {
+    var mid = vec3(0.0)
+    var dir = vec3(0.0)
+    for k in 0..13 {
+        let p = c.pose(s + SPAR_SETTLE * (f32(k) / 12.0 - 0.5))
+        mid = mid + (base.t + base.q.rotate(p.hips)) / 13.0
+        let f = base.q.mul(p.turns[0]).rotate(vec3(0.0, 0.0, 1.0))
+        dir = dir + vec3(f.x, 0.0, f.z)
+    }
+    let turn = Quat::axis_angle(vec3(0.0, 1.0, 0.0), ahead - atan2(dir.x, dir.z))
+    var p = c.pose(s)
+    let hw = base.t + base.q.rotate(p.hips)
+    var off = hw - mid
+    off.y = 0.0
+    let o = turn.rotate(off)
+    let inv = base.inverse()
+    p.hips = inv.t + inv.q.rotate(vec3(at.x + o.x, hw.y, at.z + o.z))
+    p.turns[0] = base.q.inverse().mul(turn.mul(base.q.mul(p.turns[0])))
+    p
+}
+
+fn in_guard(c: Clip) -> Clip {
+    borrow rig = HERO.rig
+    let nb = c.bones
+    let base = rig.base
+    let first = c.pose(SPAR_CUTS[0][0] / 30.0)
+    let ahead = facing(base.q.mul(first.turns[0]))
+    let at = vec3(0.0)
+    var spans: [f32; 3] = [0.0; 3]
+    var total = 0.0
+    for k in 0..3 {
+        spans[k] = (SPAR_CUTS[k][1] - SPAR_CUTS[k][0]) / 30.0 - SPAR_FADE
+        total = total + spans[k]
+    }
+    let n = u32(total * 60.0 + 0.5)
+    var out = Clip {
+        fps: 60.0,
+        frames: n + 1,
+        bones: nb,
+        turns: Vec::filled((n + 1) * nb, Quat::identity()),
+        hips: Vec::filled(n + 1, vec3(0.0)),
+        looped: true,
+        travel: vec3(0.0),
+        travel_local: vec3(0.0),
+    }
+    for f in 0..n + 1 {
+        var t = total * f32(f) / f32(n)
+        var k = 0
+        while k < 2 && t >= spans[k] {
+            t = t - spans[k]
+            k = k + 1
+        }
+        if t > spans[k] {
+            t = spans[k]
+        }
+        var p = settled(c, SPAR_CUTS[k][0] / 30.0 + t, ahead, at, base)
+        if t < SPAR_FADE {
+            let j = (k + 2) % 3
+            let q = settled(c, SPAR_CUTS[j][0] / 30.0 + spans[j] + t, ahead, at, base)
+            p = humanoid::blend(q, p, smoothstep(0.0, SPAR_FADE, t), nb)
+        }
+        for b in 0..nb {
+            out.turns[f * nb + b] = p.turns[b]
+        }
+        out.hips[f] = p.hips
+    }
+    out
+}
+
+/// Kimodo takes of the loose shrug Ryan picked (`shrug_d`, "D") and the closest new take to it
+/// (`shrug_n`), on the hero.
+fn kimodo_take(b: bvh::Bvh, last: u32) -> Clip {
+    stride::curled_hands(
+        straight_wrists(
+            cleanup::cleaned(
+                humanoid::retarget(
+                    humanoid::take_of_bvh(b, SOMA, humanoid::NO_NAMES, from: 0, to: last).rested_as(STAND.clone(), 0),
+                    HERO.rig.clone(),
+                    Retarget { face_ahead: false, looped: false, carried: true, stood: true },
+                ),
+                HERO.rig.clone(),
+                cleanup::KEYED,
+            ),
+        ),
+        HERO.rig,
+        2.0,
+    )
+}
+
+/// Each shrug take looped over its best-matching frames (30 a second), its end eased into its start.
+@fuel(2 ** 40)
+pub const SHRUG_D: Clip = span_loop(kimodo_take(bvh::read(embed("assets/kimodo/shrug_d.bvh")), 149), 44.0, 133.0, 0.4)
+@fuel(2 ** 40)
+pub const SHRUG_N: Clip = span_loop(kimodo_take(bvh::read(embed("assets/kimodo/shrug_n.bvh")), 239), 73.0, 205.0, 0.4)
+
+/// `c` from frame `from` to `to` (30 a second) as a seamless loop at 60: drift across the floor
+/// taken out evenly and its last `fade` seconds eased into the frames before its first.
+fn span_loop(c: Clip, from: f32, to: f32, fade: f32) -> Clip {
+    let nb = c.bones
+    let (a, b) = (from / 30.0, to / 30.0)
+    let span = b - a
+    let n = u32(span * 60.0 + 0.5)
+    var drift = c.pose(b).hips - c.pose(a).hips
+    drift.y = 0.0
+    var out = Clip {
+        fps: 60.0,
+        frames: n + 1,
+        bones: nb,
+        turns: Vec::filled((n + 1) * nb, Quat::identity()),
+        hips: Vec::filled(n + 1, vec3(0.0)),
+        looped: true,
+        travel: vec3(0.0),
+        travel_local: vec3(0.0),
+    }
+    for f in 0..n + 1 {
+        let t = span * f32(f) / f32(n)
+        var p = c.pose(a + t)
+        p.hips = p.hips - drift * (t / span)
+        if t > span - fade {
+            let w = smoothstep(span - fade, span, t)
+            p = humanoid::blend(p, c.pose(a + t - span), w, nb)
+        }
+        for j in 0..nb {
+            out.turns[f * nb + j] = p.turns[j]
+        }
+        out.hips[f] = p.hips
+    }
+    out
+}
