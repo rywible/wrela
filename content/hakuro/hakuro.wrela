@@ -12,8 +12,9 @@ use detail::Detail
 use engine::creature::{Bone, Creature, Skeleton, creature, hard, smooth}
 use engine::character::Shaded
 use shapes::{
-    digits, palm, thumb, HEAD_JOINT, HEAD_SCALE, boot_foot, boot_paint, boot_shaft, ellip, fox,
-    fox_paint, hair, tails, unscaled,
+    digits, palm, thumb,
+    HEAD_JOINT, HEAD_SCALE, boot_foot, boot_paint, boot_shaft, ellip, fox, fox_paint, hair, tails,
+    unscaled,
 }
 use std::derive::{Box3, Interval}
 use std::field::{Blend, Bound, Surface, cuboid, oval, round_cone}
@@ -45,7 +46,7 @@ impl Shaded for Cloth {
 pub const BLACK = Cloth { albedo: vec3(0.050, 0.050, 0.066), rough: 0.6, metal: 0.0 }
 pub const CHARCOAL = Cloth { albedo: vec3(0.070, 0.070, 0.088), rough: 0.85, metal: 0.0 }
 pub const GOLD = Cloth { albedo: vec3(0.690, 0.380, 0.016), rough: 0.35, metal: 1.0 }
-pub const SKIN = Cloth { albedo: vec3(0.500, 0.250, 0.130), rough: 0.6, metal: 0.0 }
+pub const SKIN = Cloth { albedo: vec3(0.500, 0.250, 0.130), rough: 0.72, metal: 0.0 }
 pub const SASH = Cloth { albedo: vec3(0.043, 0.043, 0.055), rough: 0.8, metal: 0.0 }
 pub const HAIR = Cloth { albedo: vec3(0.027, 0.028, 0.045), rough: 0.7, metal: 0.0 }
 pub const VOID = Cloth { albedo: vec3(0.004, 0.003, 0.004), rough: 1.0, metal: 0.0 }
@@ -60,18 +61,8 @@ pub fn skeleton() -> Skeleton {
     let spine3 = s.joint("spine 3", spine2, vec3(0.0, 1.311, 0.007))
     let neck = s.joint("neck", spine3, vec3(0.0, 1.52, -0.041))
     s.joint("head", neck, HEAD_JOINT)
-    let (clav, _) = s.joint_pair(
-        "collarbone left",
-        "collarbone right",
-        spine3,
-        vec3(0.031, 1.495, 0.033),
-    )
-    let (upper, _) = s.joint_pair(
-        "upper arm left",
-        "upper arm right",
-        clav,
-        vec3(0.212, 1.455, -0.065),
-    )
+    let (clav, _) = s.joint_pair("collarbone left", "collarbone right", spine3, vec3(0.031, 1.495, 0.033))
+    let (upper, _) = s.joint_pair("upper arm left", "upper arm right", clav, vec3(0.212, 1.455, -0.065))
     let (fore, _) = s.joint_pair("forearm left", "forearm right", upper, vec3(0.463, 1.455, -0.073))
     let (hand, _) = s.joint_pair("hand left", "hand right", fore, vec3(0.706, 1.455, -0.065))
     s.joint_pair("fingers left", "fingers right", hand, vec3(0.822, 1.451, -0.05))
@@ -89,8 +80,10 @@ pub fn body_paint(p: vec3) -> Cloth {
     if p.y > 1.56 {
         return if p.z > 0.0 { VOID } else { BLACK }
     }
-    // The arms, from the jacket's armholes.
-    if p.y > 1.30 && p.x > 0.17 {
+    // The arms, from the jacket's armholes: cut like a vest's, the jacket over the top of his
+    // shoulder and the armhole curving in to his armpit.
+    let hole = 0.16 + 0.06 * smoothstep(1.38, 1.50, p.y)
+    if p.y > 1.30 && p.x > hole {
         // His left: bare, a charcoal wrap round the forearm.
         return if p.x > 0.50 && p.x < 0.70 { CHARCOAL } else { SKIN }
     }
@@ -350,276 +343,35 @@ pub fn hero() -> Creature<Cloth> {
     let s = skeleton()
     let b = |name: Text| s.find(name)
     creature(s)
-        .join(
-            "hips",
-            b("pelvis"),
-            oval(vec3(0.1371, 0.1023, 0.1529))
-                .rotate(Quat { v: vec4(-0.01941, -0.41782, -0.56536, 0.71092) })
-                .translate(vec3(0.0317, 0.9941, -0.0266))
-                .with_at(body_paint)
-                .translate(-s.rest(b("pelvis"))),
-        )
-        .join(
-            "belly",
-            b("spine 1"),
-            oval(vec3(0.1280, 0.1899, 0.1049))
-                .rotate(Quat { v: vec4(-0.03690, 0.13404, 0.23177, 0.96279) })
-                .translate(vec3(0.0301, 1.1355, 0.0110))
-                .with_at(body_paint)
-                .translate(-s.rest(b("spine 1"))),
-            seam: smooth(0.050),
-        )
-        .join(
-            "ribs",
-            b("spine 2"),
-            oval(vec3(0.1463, 0.1830, 0.1393))
-                .rotate(Quat { v: vec4(-0.17054, 0.37271, -0.12666, 0.90331) })
-                .translate(vec3(0.0374, 1.3311, -0.0120))
-                .with_at(body_paint)
-                .translate(-s.rest(b("spine 2"))),
-            seam: smooth(0.050),
-        )
-        .join(
-            "chest",
-            b("spine 3"),
-            oval(vec3(0.3175, 0.0830, 0.1034))
-                .rotate(Quat { v: vec4(-0.30595, -0.01746, 0.11856, 0.94448) })
-                .translate(vec3(0.1067, 1.4374, -0.0777))
-                .with_at(body_paint)
-                .translate(-s.rest(b("spine 3"))),
-            seam: smooth(0.050),
-        )
-        .join(
-            "pec",
-            b("spine 3"),
-            oval(vec3(0.1378, 0.0798, 0.1620))
-                .rotate(Quat { v: vec4(0.36704, 0.12316, -0.08427, 0.91816) })
-                .translate(vec3(0.0706, 1.4446, -0.0057))
-                .with_at(body_paint)
-                .translate(-s.rest(b("spine 3"))),
-            seam: smooth(0.040),
-            mirror: true,
-        )
-        .join(
-            "lat",
-            b("spine 2"),
-            oval(vec3(0.0824, 0.1343, 0.0788))
-                .rotate(Quat { v: vec4(-0.07146, 0.23889, -0.32935, 0.91069) })
-                .translate(vec3(0.1086, 1.3121, -0.0816))
-                .with_at(body_paint)
-                .translate(-s.rest(b("spine 2"))),
-            seam: smooth(0.040),
-            mirror: true,
-        )
-        .join(
-            "glute",
-            b("pelvis"),
-            oval(vec3(0.1130, 0.3543, 0.1249))
-                .rotate(Quat { v: vec4(0.08958, -0.00065, -0.02044, 0.99577) })
-                .translate(vec3(0.0971, 0.6988, -0.0468))
-                .with_at(body_paint)
-                .translate(-s.rest(b("pelvis"))),
-            seam: smooth(0.040),
-            mirror: true,
-        )
-        .join(
-            "neck",
-            b("neck"),
-            round_cone(
-                vec3(0.0516, 1.4723, -0.0768),
-                vec3(-0.0000, 1.7139, -0.0293),
-                r_top: 0.0880,
-                r_bottom: 0.0429,
-            )
-                .with_at(body_paint)
-                .translate(-s.rest(b("neck"))),
-            seam: smooth(0.040),
-        )
-        .join(
-            "cranium",
-            b("head"),
-            oval(vec3(0.0808, 0.0996, 0.1112))
-                .rotate(Quat { v: vec4(0.06730, -0.04130, -0.16363, 0.98336) })
-                .translate(vec3(0.0002, 1.7345, -0.0045))
-                .with_at(body_paint)
-                .translate(-s.rest(b("head"))),
-            seam: smooth(0.030),
-        )
-        .join(
-            "jaw",
-            b("head"),
-            oval(vec3(0.0628, 0.0965, 0.0842))
-                .rotate(Quat { v: vec4(-0.15377, 0.06336, -0.20921, 0.96363) })
-                .translate(vec3(0.0068, 1.6543, 0.0157))
-                .with_at(body_paint)
-                .translate(-s.rest(b("head"))),
-            seam: smooth(0.030),
-        )
-        .join(
-            "deltoid left",
-            b("upper arm left"),
-            oval(vec3(0.1555, 0.0540, 0.1099))
-                .rotate(Quat { v: vec4(-0.07208, -0.02176, 0.56834, 0.81934) })
-                .translate(vec3(0.1360, 1.3593, -0.0526))
-                .with_at(body_paint)
-                .translate(-s.rest(b("upper arm left"))),
-            seam: smooth(0.040),
-        )
-        .join(
-            "deltoid right",
-            b("upper arm right"),
-            oval(vec3(0.1715, 0.0700, 0.1259))
-                .rotate(Quat { v: vec4(-0.07208, 0.02176, -0.56834, 0.81934) })
-                .translate(vec3(-0.1360, 1.3593, -0.0526))
-                .with_at(body_paint)
-                .translate(-s.rest(b("upper arm right"))),
-            seam: smooth(0.040),
-        )
-        .join(
-            "biceps left",
-            b("upper arm left"),
-            oval(vec3(0.1328, 0.0421, 0.0460))
-                .rotate(Quat { v: vec4(0.25923, 0.03389, -0.00100, 0.96522) })
-                .translate(vec3(0.3480, 1.4407, -0.0474))
-                .with_at(body_paint)
-                .translate(-s.rest(b("upper arm left"))),
-            seam: smooth(0.030),
-        )
-        .join(
-            "biceps right",
-            b("upper arm right"),
-            oval(vec3(0.1488, 0.0581, 0.0620))
-                .rotate(Quat { v: vec4(0.25923, -0.03389, 0.00100, 0.96522) })
-                .translate(vec3(-0.3480, 1.4407, -0.0474))
-                .with_at(body_paint)
-                .translate(-s.rest(b("upper arm right"))),
-            seam: smooth(0.030),
-        )
-        .join(
-            "triceps left",
-            b("upper arm left"),
-            oval(vec3(0.1787, 0.0796, 0.0583))
-                .rotate(Quat { v: vec4(0.38564, -0.02522, -0.19827, 0.90074) })
-                .translate(vec3(0.2256, 1.4598, -0.0857))
-                .with_at(body_paint)
-                .translate(-s.rest(b("upper arm left"))),
-            seam: smooth(0.030),
-        )
-        .join(
-            "triceps right",
-            b("upper arm right"),
-            oval(vec3(0.1947, 0.0956, 0.0743))
-                .rotate(Quat { v: vec4(0.38564, 0.02522, 0.19827, 0.90074) })
-                .translate(vec3(-0.2256, 1.4598, -0.0857))
-                .with_at(body_paint)
-                .translate(-s.rest(b("upper arm right"))),
-            seam: smooth(0.030),
-        )
-        .join(
-            "forearm left",
-            b("forearm left"),
-            oval(vec3(0.1924, 0.0601, 0.0516))
-                .rotate(Quat { v: vec4(0.10474, 0.00152, 0.00720, 0.99447) })
-                .translate(vec3(0.4676, 1.4324, -0.0902))
-                .with_at(body_paint)
-                .translate(-s.rest(b("forearm left"))),
-            seam: smooth(0.030),
-        )
-        .join(
-            "forearm right",
-            b("forearm right"),
-            oval(vec3(0.2024, 0.0701, 0.0616))
-                .rotate(Quat { v: vec4(0.10474, -0.00152, -0.00720, 0.99447) })
-                .translate(vec3(-0.4676, 1.4324, -0.0902))
-                .with_at(body_paint)
-                .translate(-s.rest(b("forearm right"))),
-            seam: smooth(0.030),
-        )
-        .join(
-            "wrist left",
-            b("forearm left"),
-            round_cone(
-                vec3(0.4858, 1.4722, -0.0703),
-                vec3(0.7104, 1.4434, -0.0663),
-                r_top: 0.0418,
-                r_bottom: 0.0345,
-            )
-                .with_at(body_paint)
-                .translate(-s.rest(b("forearm left"))),
-            seam: smooth(0.030),
-        )
-        .join(
-            "wrist right",
-            b("forearm right"),
-            round_cone(
-                vec3(-0.4858, 1.4722, -0.0703),
-                vec3(-0.7104, 1.4434, -0.0663),
-                r_top: 0.0498,
-                r_bottom: 0.0425,
-            )
-                .with_at(body_paint)
-                .translate(-s.rest(b("forearm right"))),
-            seam: smooth(0.030),
-        )
-        .join(
-            "thigh",
-            b("thigh left"),
-            oval(vec3(0.0830, 0.2892, 0.0877))
-                .rotate(Quat { v: vec4(0.04534, 0.30884, -0.00545, 0.95002) })
-                .translate(vec3(0.1221, 0.7258, -0.0113))
-                .with_at(body_paint)
-                .translate(-s.rest(b("thigh left"))),
-            seam: smooth(0.040),
-            mirror: true,
-        )
-        .join(
-            "adductor",
-            b("thigh left"),
-            oval(vec3(0.1009, 0.3094, 0.1181))
-                .rotate(Quat { v: vec4(0.06203, -0.16765, 0.04373, 0.98292) })
-                .translate(vec3(0.0949, 0.8357, -0.0265))
-                .with_at(body_paint)
-                .translate(-s.rest(b("thigh left"))),
-            seam: smooth(0.030),
-            mirror: true,
-        )
-        .join(
-            "calf",
-            b("calf left"),
-            oval(vec3(0.0892, 0.1836, 0.1037))
-                .rotate(Quat { v: vec4(0.06653, -0.11183, 0.00873, 0.99146) })
-                .translate(vec3(0.1277, 0.3882, -0.0850))
-                .intersect(cuboid(vec3(1.0, 0.37, 1.0)).translate(vec3(0.0, 0.64, 0.0)))
-                .with_at(body_paint)
-                .translate(-s.rest(b("calf left"))),
-            seam: smooth(0.030),
-            mirror: true,
-        )
-        .join(
-            "shin",
-            b("calf left"),
-            round_cone(
-                vec3(0.1312, 0.8252, -0.0573),
-                vec3(0.1258, 0.1209, -0.0870),
-                r_top: 0.0750,
-                r_bottom: 0.0683,
-            )
-                .intersect(cuboid(vec3(1.0, 0.37, 1.0)).translate(vec3(0.0, 0.64, 0.0)))
-                .with_at(body_paint)
-                .translate(-s.rest(b("calf left"))),
-            seam: smooth(0.030),
-            mirror: true,
-        )
-        .then(Detail {})
+        .join("hips", b("pelvis"), oval(vec3(0.1371, 0.1023, 0.1529)).rotate(Quat { v: vec4(-0.01941, -0.41782, -0.56536, 0.71092) }).translate(vec3(0.0317, 0.9941, -0.0266)).with_at(body_paint).translate(-s.rest(b("pelvis"))))
+        .join("belly", b("spine 1"), oval(vec3(0.1280, 0.1899, 0.1049)).rotate(Quat { v: vec4(-0.03690, 0.13404, 0.23177, 0.96279) }).translate(vec3(0.0301, 1.1355, 0.0110)).with_at(body_paint).translate(-s.rest(b("spine 1"))), seam: smooth(0.050))
+        .join("ribs", b("spine 2"), oval(vec3(0.1463, 0.1830, 0.1393)).rotate(Quat { v: vec4(-0.17054, 0.37271, -0.12666, 0.90331) }).translate(vec3(0.0374, 1.3311, -0.0120)).with_at(body_paint).translate(-s.rest(b("spine 2"))), seam: smooth(0.050))
+        .join("chest", b("spine 3"), oval(vec3(0.3175, 0.0830, 0.1034)).rotate(Quat { v: vec4(-0.30595, -0.01746, 0.11856, 0.94448) }).translate(vec3(0.1067, 1.4374, -0.0777)).with_at(body_paint).translate(-s.rest(b("spine 3"))), seam: smooth(0.050))
+        .join("pec", b("spine 3"), oval(vec3(0.1378, 0.0798, 0.1620)).rotate(Quat { v: vec4(0.36704, 0.12316, -0.08427, 0.91816) }).translate(vec3(0.0706, 1.4446, -0.0057)).with_at(body_paint).translate(-s.rest(b("spine 3"))), seam: smooth(0.040), mirror: true)
+        .join("lat", b("spine 2"), oval(vec3(0.0824, 0.1343, 0.0788)).rotate(Quat { v: vec4(-0.07146, 0.23889, -0.32935, 0.91069) }).translate(vec3(0.1086, 1.3121, -0.0816)).with_at(body_paint).translate(-s.rest(b("spine 2"))), seam: smooth(0.040), mirror: true)
+        .join("glute", b("pelvis"), oval(vec3(0.1130, 0.3543, 0.1249)).rotate(Quat { v: vec4(0.08958, -0.00065, -0.02044, 0.99577) }).translate(vec3(0.0971, 0.6988, -0.0468)).with_at(body_paint).translate(-s.rest(b("pelvis"))), seam: smooth(0.040), mirror: true)
+        .join("neck", b("neck"), round_cone(vec3(0.0516, 1.4723, -0.0768), vec3(-0.0000, 1.7139, -0.0293), r_top: 0.0880, r_bottom: 0.0429).with_at(body_paint).translate(-s.rest(b("neck"))), seam: smooth(0.040))
+        .join("cranium", b("head"), oval(vec3(0.0808, 0.0996, 0.1112)).rotate(Quat { v: vec4(0.06730, -0.04130, -0.16363, 0.98336) }).translate(vec3(0.0002, 1.7345, -0.0045)).with_at(body_paint).translate(-s.rest(b("head"))), seam: smooth(0.030))
+        .join("jaw", b("head"), oval(vec3(0.0628, 0.0965, 0.0842)).rotate(Quat { v: vec4(-0.15377, 0.06336, -0.20921, 0.96363) }).translate(vec3(0.0068, 1.6543, 0.0157)).with_at(body_paint).translate(-s.rest(b("head"))), seam: smooth(0.030))
+        .join("deltoid left", b("upper arm left"), oval(vec3(0.1555, 0.0540, 0.1099)).rotate(Quat { v: vec4(-0.07208, -0.02176, 0.56834, 0.81934) }).translate(vec3(0.1360, 1.3593, -0.0526)).with_at(body_paint).translate(-s.rest(b("upper arm left"))), seam: smooth(0.040))
+        .join("deltoid right", b("upper arm right"), oval(vec3(0.1715, 0.0700, 0.1259)).rotate(Quat { v: vec4(-0.07208, 0.02176, -0.56834, 0.81934) }).translate(vec3(-0.1360, 1.3593, -0.0526)).with_at(body_paint).translate(-s.rest(b("upper arm right"))), seam: smooth(0.040))
+        .join("biceps left", b("upper arm left"), oval(vec3(0.1328, 0.0421, 0.0460)).rotate(Quat { v: vec4(0.25923, 0.03389, -0.00100, 0.96522) }).translate(vec3(0.3480, 1.4407, -0.0474)).with_at(body_paint).translate(-s.rest(b("upper arm left"))), seam: smooth(0.030))
+        .join("biceps right", b("upper arm right"), oval(vec3(0.1488, 0.0581, 0.0620)).rotate(Quat { v: vec4(0.25923, -0.03389, 0.00100, 0.96522) }).translate(vec3(-0.3480, 1.4407, -0.0474)).with_at(body_paint).translate(-s.rest(b("upper arm right"))), seam: smooth(0.030))
+        .join("triceps left", b("upper arm left"), oval(vec3(0.1787, 0.0796, 0.0583)).rotate(Quat { v: vec4(0.38564, -0.02522, -0.19827, 0.90074) }).translate(vec3(0.2256, 1.4598, -0.0857)).with_at(body_paint).translate(-s.rest(b("upper arm left"))), seam: smooth(0.030))
+        .join("triceps right", b("upper arm right"), oval(vec3(0.1947, 0.0956, 0.0743)).rotate(Quat { v: vec4(0.38564, 0.02522, 0.19827, 0.90074) }).translate(vec3(-0.2256, 1.4598, -0.0857)).with_at(body_paint).translate(-s.rest(b("upper arm right"))), seam: smooth(0.030))
+        .join("forearm left", b("forearm left"), oval(vec3(0.2004, 0.0681, 0.0596)).rotate(Quat { v: vec4(0.10474, 0.00152, 0.00720, 0.99447) }).translate(vec3(0.4676, 1.4324, -0.0902)).with_at(body_paint).translate(-s.rest(b("forearm left"))), seam: smooth(0.030))
+        .join("forearm right", b("forearm right"), oval(vec3(0.2024, 0.0701, 0.0616)).rotate(Quat { v: vec4(0.10474, -0.00152, -0.00720, 0.99447) }).translate(vec3(-0.4676, 1.4324, -0.0902)).with_at(body_paint).translate(-s.rest(b("forearm right"))), seam: smooth(0.030))
+        .join("wrist left", b("forearm left"), round_cone(vec3(0.4858, 1.4722, -0.0703), vec3(0.7104, 1.4434, -0.0663), r_top: 0.0478, r_bottom: 0.0405).with_at(body_paint).translate(-s.rest(b("forearm left"))), seam: smooth(0.030))
+        .join("wrist right", b("forearm right"), round_cone(vec3(-0.4858, 1.4722, -0.0703), vec3(-0.7104, 1.4434, -0.0663), r_top: 0.0498, r_bottom: 0.0425).with_at(body_paint).translate(-s.rest(b("forearm right"))), seam: smooth(0.030))
+        .join("thigh", b("thigh left"), oval(vec3(0.0830, 0.2892, 0.0877)).rotate(Quat { v: vec4(0.04534, 0.30884, -0.00545, 0.95002) }).translate(vec3(0.1221, 0.7258, -0.0113)).with_at(body_paint).translate(-s.rest(b("thigh left"))), seam: smooth(0.040), mirror: true)
+        .join("adductor", b("thigh left"), oval(vec3(0.1009, 0.3094, 0.1181)).rotate(Quat { v: vec4(0.06203, -0.16765, 0.04373, 0.98292) }).translate(vec3(0.0949, 0.8357, -0.0265)).with_at(body_paint).translate(-s.rest(b("thigh left"))), seam: smooth(0.030), mirror: true)
+        .join("calf", b("calf left"), oval(vec3(0.0892, 0.1836, 0.1037)).rotate(Quat { v: vec4(0.06653, -0.11183, 0.00873, 0.99146) }).translate(vec3(0.1277, 0.3882, -0.0850)).intersect(cuboid(vec3(1.0, 0.37, 1.0)).translate(vec3(0.0, 0.64, 0.0))).with_at(body_paint).translate(-s.rest(b("calf left"))), seam: smooth(0.030), mirror: true)
+        .join("shin", b("calf left"), round_cone(vec3(0.1312, 0.8252, -0.0573), vec3(0.1258, 0.1209, -0.0870), r_top: 0.0750, r_bottom: 0.0683).intersect(cuboid(vec3(1.0, 0.37, 1.0)).translate(vec3(0.0, 0.64, 0.0))).with_at(body_paint).translate(-s.rest(b("calf left"))), seam: smooth(0.030), mirror: true)
+        .then(Detail { from: -1.0, reach: 1.0 })
         .join(
             "collar",
             b("spine 3"),
-            round_cone(
-                vec3(0.0, 1.47, -0.045),
-                vec3(0.0, 1.595, -0.055),
-                r_top: 0.082,
-                r_bottom: 0.094,
-            )
+            round_cone(vec3(0.0, 1.47, -0.045), vec3(0.0, 1.595, -0.055), r_top: 0.082, r_bottom: 0.094)
                 .intersect(cuboid(vec3(1.0, 1.0, 0.1)).translate(vec3(0.0, 1.5, -0.075)))
                 .with_at(collar_paint)
                 .translate(-s.rest(b("spine 3"))),
@@ -635,6 +387,16 @@ pub fn hero() -> Creature<Cloth> {
                 .translate(-s.rest(b("spine 1"))),
             seam: hard(),
         )
+        .join("boot", b("foot left"), BootFoot { at: vec3(0.114, 0.086, -0.088) }.with_at(foot_paint), seam: hard(), mirror: true)
+        .join("boot shaft", b("calf left"), BootShaft { at: vec3(0.114, 0.542, -0.036) }.with_at(shaft_paint), seam: smooth(0.004), mirror: true)
+}
+
+/// His hands, realized on their own finer grid (their fingers are thin): the same skeleton, so one
+/// palette poses them with the rest of him.
+pub fn hands() -> Creature<Cloth> {
+    let s = skeleton()
+    let b = |name: Text| s.find(name)
+    creature(s)
         .join(
             "hand left",
             b("hand left"),
@@ -671,20 +433,7 @@ pub fn hero() -> Creature<Cloth> {
             HandPiece { at: s.rest(b("thumb right")), side: -1.0, piece: 2 }.with_at(glove_paint),
             seam: smooth(0.010),
         )
-        .join(
-            "boot",
-            b("foot left"),
-            BootFoot { at: vec3(0.114, 0.086, -0.088) }.with_at(foot_paint),
-            seam: hard(),
-            mirror: true,
-        )
-        .join(
-            "boot shaft",
-            b("calf left"),
-            BootShaft { at: vec3(0.114, 0.542, -0.036) }.with_at(shaft_paint),
-            seam: smooth(0.004),
-            mirror: true,
-        )
+        .bounded(Box3 { lo: vec3(-0.95, 1.22, -0.22), hi: vec3(0.95, 1.66, 0.12) })
 }
 
 /// His coat's tails, realized on their own finer grid (thin cloth): on his pelvis's bone.

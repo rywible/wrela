@@ -2,7 +2,7 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use hakuro::{coat, head, hero, skeleton}
+use hakuro::{coat, hands, head, hero, skeleton}
 use engine::character::{ByChannels, colours}
 use engine::creature::{Bone, Creature, MAX_BONES, Skeleton}
 use engine::look::CreatureLook
@@ -22,6 +22,10 @@ pub const POSED: f32 = 1.0
 /// The body's grid: cells of about 13 mm (what a realization's scratch has room for over a
 /// T-pose's span); the coat's tails', about 7 mm; the head's, about 5 mm.
 const HOW = CreatureLook { surface: Tolerance { tolerance: 1.0e-3, radius: 0.021, largest: 0.013 } }
+/// His hands' grid: cells of about 6 mm (their fingers are thin).
+const HOW_HANDS = CreatureLook {
+    surface: Tolerance { tolerance: 0.5e-3, radius: 0.010, largest: 0.006 },
+}
 const HOW_COAT = CreatureLook {
     surface: Tolerance { tolerance: 0.5e-3, radius: 0.012, largest: 0.007 },
 }
@@ -116,8 +120,8 @@ fn posed() -> [mat4; 64] {
 const TURNS = [0.0, -0.7853982, -1.5707963, 3.1415927, 1.5707963]
 
 pub struct State {
-    meshes: [Mesh; 3],
-    colours: [GpuBuffer<Unorm8x4>; 3],
+    meshes: [Mesh; 4],
+    colours: [GpuBuffer<Unorm8x4>; 4],
     palettes: GpuBuffer<mat4>,
     tallies: Vec<Pending<Tally>>,
     shadow: DepthTexture,
@@ -134,6 +138,9 @@ pub fn init() -> State {
     let ct = coat()
     let coat_mesh = realize_once(ct, HOW_COAT)
     let c2 = colours(coat_mesh, ct.field(), ByChannels {}, cell: 0.003)
+    let ar = hands()
+    let hands_mesh = realize_once(ar, HOW_HANDS)
+    let c3 = colours(hands_mesh, ar.field(), ByChannels {}, cell: 0.003)
     let pose = posed()
     var palettes: GpuBuffer<mat4> = buffer(5 * MAX_BONES)
     for v in 0..5 {
@@ -148,9 +155,10 @@ pub fn init() -> State {
     tallies.push(read(body.tally.items()))
     tallies.push(read(head_mesh.tally.items()))
     tallies.push(read(coat_mesh.tally.items()))
+    tallies.push(read(hands_mesh.tally.items()))
     State {
-        meshes: [body, head_mesh, coat_mesh],
-        colours: [c0, c1, c2],
+        meshes: [body, head_mesh, coat_mesh, hands_mesh],
+        colours: [c0, c1, c2, c3],
         palettes,
         tallies,
         shadow: unlit_shadow(),
@@ -177,7 +185,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     )
     var depth = depth_texture(width: width, height: height)
     let pass = begin_screen_pass_with_depth(mut depth, clear: vec4(0.85, 0.82, 0.76, 1.0))
-    for k in 0..15 {
+    for k in 0..20 {
         let m = k / 5
         draw(
             pass,

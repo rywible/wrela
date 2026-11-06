@@ -311,8 +311,8 @@ fn held(p: vec3) -> f32 {
 }
 
 /// How far the sculpt's surface is beyond his shapes' at `p` (m; in his rest space).
-pub fn detail(p: vec3) -> f32 {
-    let w = held(p)
+pub fn detail(p: vec3, from: f32, reach: f32) -> f32 {
+    let w = held(p) * ramp(abs(p.x), lo: from - 0.06, hi: from) * (1.0 - ramp(abs(p.x), lo: reach, hi: reach + 0.06))
     if w <= 0.0 {
         return 0.0
     }
@@ -343,11 +343,13 @@ pub fn detail(p: vec3) -> f32 {
 }
 
 /// His finer form, after his body's pieces (`.then(Detail {})`).
-pub struct Detail: Copy + GpuData {}
+/// Between `from` and `reach` out from his middle it holds (m): his body's creature stops at
+/// the shoulders, where his arms' own creature takes over.
+pub struct Detail: Copy + GpuData { pub from: f32, pub reach: f32 }
 
 impl Modifier for Detail {
     fn apply(self, d: f32, p: vec3) -> f32 {
-        d + detail(p)
+        d + detail(p, from: self.from, reach: self.reach)
     }
 
     fn lipschitz(self, inner: f32, near: f32) -> f32 {
