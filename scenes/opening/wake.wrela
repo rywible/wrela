@@ -165,7 +165,7 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32, f32) {
     let clots = froth * (0.55 + 0.9 * fbm(grain * 0.5, 2))
     // (Churn: froth everywhere it's been stirred, not only where the lace drifts: gated by the
     // drifts, the trail astern went missing in long stretches.)
-    let churned = 0.6 * fbm(grain * 1.3 + vec2(1.7, 9.2), 3) + 0.55 * froth
+    let churned = fbm(grain * 1.3 + vec2(1.7, 9.2), 3) + 0.4 * froth
     // Its arms: the bow wave's own crests carried on aft, one V from the stem, each a thin
     // broken line of froth riding the crest, dashes and clots with the dark sea between, fading
     // to nothing a few lengths astern. (Never a soft band: smooth, it glowed like a beam.)
@@ -207,7 +207,7 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32, f32) {
         (0.6 + 0.4 * smoothstep(0.3, 0.0, from_bow)) *
         smoothstep(0.0, 0.15, from_bow) *
         smoothstep(2.4, 1.2, from_bow) *
-        smoothstep(0.62 - 0.2 * smoothstep(1.2, 0.0, from_bow), 0.85, churned) *
+        smoothstep(0.55 - 0.25 * smoothstep(1.2, 0.0, from_bow), 0.8, churned) *
         way
     // (Thinned only right under the eye, where a pixel's footprint is a hand across.)
     let near_eye = smoothstep(1.5, 3.5, length(p - s.eye))
