@@ -114,7 +114,7 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32) {
     let wavelets = smoothstep(
         0.1,
         0.9,
-        0.5 + 0.5 * sin(behind_ * 5.0 + abs(off) * 3.0 - s.held * 4.0),
+        0.5 + 0.5 * sin(behind_ * 5.0 + abs(off) * 3.0 - s.held * 4.0 + 6.0 * noise(rest * 0.45)),
     )
     let arms = exp(-pow(abs(off) - behind_ * 0.36 - 0.4, 2.0) / (0.03 + behind_ * 0.02)) *
         smoothstep(0.0, 1.0, behind_) *
@@ -205,7 +205,7 @@ const FLIGHT: f32 = 0.8
 pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
     let run = running(s)
     let thrown = max(
-        max(run * (0.35 + 0.65 * s.power), s.slap * smoothstep(0.5, 2.0, s.speed)),
+        max(run * (0.1 + 0.9 * s.power), s.slap * smoothstep(0.5, 2.0, s.speed) * (0.3 + 0.7 * s.power)),
         s.jolt,
     )
     if thrown <= 0.0 {
