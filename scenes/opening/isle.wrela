@@ -634,9 +634,6 @@ const SHARDS = [
     vec4(316.0, -783.0, -483.0, 34.0),
     vec4(220.0, -1199.0, -217.0, 22.0),
     vec4(309.0, -1091.0, 226.0, 18.0),
-    vec4(297.0, -1181.0, 93.0, 14.0),
-    vec4(-717.0, -502.0, 281.0, 12.0),
-    vec4(-685.0, -606.0, 166.0, 9.0),
 ]
 
 /// A boulder of radius `r` at `p` (from its centre, the world's m), `seed` its own: a lump of the
@@ -702,7 +699,7 @@ pub fn isle(p: vec3) -> vec2 {
     // The boulders round it.
     let w = p - ISLE
     var rock = d * SCALE
-    for i in 0..11 {
+    for i in 0..8 {
         let sh = SHARDS[i]
         rock = min(rock, boulder(w - vec3(sh.x, sh.y, sh.z), sh.w, f32(i) + 1.0))
     }

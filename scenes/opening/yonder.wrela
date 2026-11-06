@@ -145,7 +145,7 @@ fn isle_shade(
         glow0 +
             light.sun_colour *
                 vec3(1.0, 0.74, 0.4) *
-                (0.7 + 2.4 * max(dot(n, light.sun), 0.0)) *
+                (0.25 + 0.8 * max(dot(n, light.sun), 0.0)) *
                 far_
     } else if id == GLASS { glow0 * (1.0 + 20.0 * s.lantern) } else { glow0 }
     // (Its shadows likewise: none from a recess too small for a pixel to hold.)
