@@ -2,15 +2,17 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use hakuro::{coat, hands, head, hero, skeleton}
+use hakuro::{Cloth, coat, hands, head, hero, skeleton}
 use engine::character::{ByChannels, colours}
-use engine::creature::{Bone, Creature, MAX_BONES, Skeleton}
+use engine::character::skin_matrix
+use engine::creature::{Bone, Creature, MAX_BONES, PartMask, Parts, Skeleton}
 use engine::look::CreatureLook
 use engine::look::Mesh as Tolerance
-use engine::plain::{LIGHTS, coloured, skin_coloured, unlit_shadow, view}
-use engine::realize::{Mesh, Tally, realize_once}
+use engine::plain::{LIGHTS, Lights, View, unlit_shadow, view}
+use engine::realize::{Mesh, SkinVertex, Tally, realize_once}
 use std::gpu::{
-    ComparisonSampler, Cull, DepthTexture, GpuBuffer, Unorm8x4, begin_screen_pass_with_depth,
+    ClipPosition, ComparisonSampler, Cull, DepthTexture, Flat, GpuBuffer, Unorm8x4, VertexIndex,
+    begin_screen_pass_with_depth,
     buffer, comparison_sampler, depth_texture, draw, read, write,
 }
 use std::io::{Pending, print}
@@ -49,13 +51,13 @@ const POSE: [(Text, vec3, f32); 25] = [
     ("foot right", vec3(0.0, 1.0, 0.0), -8.0),
     ("collarbone left", vec3(0.0, 0.0, 1.0), -6.0),
     ("collarbone right", vec3(0.0, 0.0, 1.0), 4.0),
-    ("upper arm left", vec3(0.0, 0.0, 1.0), -58.0),
+    ("upper arm left", vec3(0.0, 0.0, 1.0), -53.0),
     ("upper arm right", vec3(0.0, 0.0, 1.0), 78.0),
     ("upper arm left", vec3(0.0, 1.0, 0.0), 4.0),
     ("upper arm right", vec3(1.0, 0.0, 0.0), 4.0),
     ("forearm left", vec3(0.0, 0.0, 1.0), -58.0),
     ("forearm left", vec3(0.0, 1.0, 0.0), 12.0),
-    ("hand left", vec3(0.0, 0.0, 1.0), -20.0),
+    ("hand left", vec3(0.0, 0.0, 1.0), -32.0),
     ("forearm right", vec3(1.0, 0.0, 0.0), -14.0),
     ("neck", vec3(1.0, 0.0, 0.0), 6.0),
     ("head", vec3(1.0, 0.0, 0.0), 10.0),
@@ -185,22 +187,143 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     )
     var depth = depth_texture(width: width, height: height)
     let pass = begin_screen_pass_with_depth(mut depth, clear: vec4(0.85, 0.82, 0.76, 1.0))
-    for k in 0..20 {
-        let m = k / 5
+    // (Each of his meshes with its own creature's fields: they're of different types.)
+    let fields = (hero(), head(), coat(), hands())
+    for k in 0..5 {
         draw(
             pass,
-            skin_coloured.bind(
-                verts: s.meshes[m].verts.items(),
-                colours: s.colours[m].items(),
+            fielded.bind(
+                verts: s.meshes[0].verts.items(),
                 palettes: s.palettes.items(),
-                first: (k % 5) * MAX_BONES,
+                first: k * MAX_BONES,
                 view: v,
             ),
-            coloured.bind(view: v, lights: LIGHTS, shadow: s.shadow, shadow_sampler: s.smp),
-            indices: s.meshes[m].quads.items(),
-            indirect: s.meshes[m].draw.items(),
+            fielded_pixel.bind(
+                field: fields.0.field(),
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.smp,
+            ),
+            indices: s.meshes[0].quads.items(),
+            indirect: s.meshes[0].draw.items(),
+            cull: Cull::Back,
+        )
+    }
+    for k in 0..5 {
+        draw(
+            pass,
+            fielded.bind(
+                verts: s.meshes[1].verts.items(),
+                palettes: s.palettes.items(),
+                first: k * MAX_BONES,
+                view: v,
+            ),
+            fielded_pixel.bind(
+                field: fields.1.field(),
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.smp,
+            ),
+            indices: s.meshes[1].quads.items(),
+            indirect: s.meshes[1].draw.items(),
+            cull: Cull::Back,
+        )
+    }
+    for k in 0..5 {
+        draw(
+            pass,
+            fielded.bind(
+                verts: s.meshes[2].verts.items(),
+                palettes: s.palettes.items(),
+                first: k * MAX_BONES,
+                view: v,
+            ),
+            fielded_pixel.bind(
+                field: fields.2.field(),
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.smp,
+            ),
+            indices: s.meshes[2].quads.items(),
+            indirect: s.meshes[2].draw.items(),
+            cull: Cull::Back,
+        )
+    }
+    for k in 0..5 {
+        draw(
+            pass,
+            fielded.bind(
+                verts: s.meshes[3].verts.items(),
+                palettes: s.palettes.items(),
+                first: k * MAX_BONES,
+                view: v,
+            ),
+            fielded_pixel.bind(
+                field: fields.3.field(),
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.smp,
+            ),
+            indices: s.meshes[3].quads.items(),
+            indirect: s.meshes[3].draw.items(),
             cull: Cull::Back,
         )
     }
     pass.present()
+}
+
+/// What his vertex passes on: where it is, where it is on him at rest, its skin's turn and which
+/// of his parts are near (so his pixel reads his fields there, as the opening draws him).
+pub struct Fielded: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub rest: vec3,
+    pub tx: vec3,
+    pub ty: vec3,
+    pub tz: vec3,
+    pub lo: Flat<u32>,
+    pub hi: Flat<u32>,
+}
+
+@vertex
+pub fn fielded(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, view: View) -> Fielded {
+    let sv = verts[v.index]
+    let m = skin_matrix(sv, palettes, first)
+    let world = (m * vec4(sv.pos, 1.0)).xyz
+    Fielded {
+        clip: ClipPosition { position: view.view_proj * vec4(world, 1.0) },
+        world,
+        rest: sv.pos,
+        tx: m[0].xyz,
+        ty: m[1].xyz,
+        tz: m[2].xyz,
+        lo: Flat { value: sv.mask.lo },
+        hi: Flat { value: sv.mask.hi },
+    }
+}
+
+/// His pixel in plain light, its normal and cloth read from his fields at that point of him (his
+/// finer relief, his clothes' edges and folds, finer than his mesh's cells).
+@fragment
+pub fn fielded_pixel<F: Parts<Cloth>>(
+    v: Fielded,
+    field: F,
+    view: View,
+    lights: Lights,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+) -> vec4 {
+    let mask = PartMask { lo: v.lo.value, hi: v.hi.value }
+    let (_, grad, c) = field.sample_masked(v.rest, mask, 0.002)
+    var n = normalize(mat3(v.tx, v.ty, v.tz) * grad)
+    let d = normalize(v.world - view.eye)
+    if dot(n, d) > 0.0 {
+        n = normalize(n - d * (dot(n, d) + 0.05))
+    }
+    let lit = lights.shadow(view, v.world, n, shadow, shadow_sampler)
+    vec4(lights.light(c.albedo, c.rough, n, v.world, view, lit), 1.0)
 }
