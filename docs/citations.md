@@ -5,7 +5,8 @@
 ## The rules
 
 - **Learn, don't copy.** A reference teaches light, colour, form, scale or composition. We don't trace it, sample it, or rebuild a specific shot, character or design from it.
-- **No generative image, sound, music, voice or video model makes anything in wrela.** Every image and sound comes from wrela code. Ryan directs; Claude and Codex agents write the code.
+- **Generative models make references and sources; only wrela code ships.** An image, 3D, motion, sound, music or video model may make a target to judge against, or a source that a converter turns into wrela code or fields (a mesh fitted to field parts, a take written as `content/moves`, a sound fitted to `engine::sound`'s synth). Nothing a model made is embedded, sampled or loaded by a game as it came out: a stored image, mesh, clip or audio sample written out as numbers counts as embedded. Ryan directs; Claude and Codex agents write the code.
+- **Every converted source is logged.** Code converted from a model's output names, in a comment beside it and in a row of the table below, the model and its version, the prompt or input, and the date. Use only models whose terms allow commercial use worldwide (no territory or user-count limits) and that aren't built on a non-commercial body model such as SMPL.
 - **Ship only what a licence allows, with its credit.** A reference file in the repo has its source, author and licence in the `references` package beside it. Work adapted from a CC BY source carries its credit into the game.
 - **Style references stay private.** Images used only to judge the look are kept outside the repo.
 
@@ -235,6 +236,14 @@ None is vendored or in a game. Each is a granted program in `wrela.toml`, found 
 | [sfizz](https://sfz.tools/sfizz/) `sfizz_render` | BSD 2-clause | Plays the reference piano for the listening tests |
 | [FFmpeg](https://ffmpeg.org/) with x264 | GPL | Makes the motion tool's clips from frames |
 | [Wrangler](https://developers.cloudflare.com/workers/wrangler/), through `npx` | MIT or Apache-2.0 | Deploys releases to Cloudflare |
+
+## Generative models
+
+Code converted from a model's output, one row per converted piece. Targets only judged against (style frames, reference clips) aren't listed.
+
+| Code | Model and version | Input | Date | Terms |
+|---|---|---|---|---|
+| `content/moves/rest.wrela` (`moves::rest::REST`) | NVIDIA Kimodo, through Replicate (`sprited/kimodo`, version `17111248e89a`) | A text prompt of a person shrugging their shoulders loose (take `kimodo::SHRUG_N` in content/humanoid); the exact prompt was not recorded | 2026-11-06 | Licence of the model's training data under legal review before launch |
 
 ## Style references
 
