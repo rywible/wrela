@@ -302,7 +302,7 @@ fn tails_paint(p: vec3) -> Cloth {
         deg += 360.0
     }
     let low = shapes::hem(clamp(deg, 42.0, 318.0))
-    if through < -0.004 || q.y < low + 0.012 { GOLD } else { BLACK }
+    if through < -0.004 || q.y < low + 0.022 { GOLD } else { BLACK }
 }
 
 /// Hakuro's body, dressed, standing at rest in a T-pose (his head's finer work is `head`).

@@ -301,7 +301,13 @@ fn ramp(v: f32, lo: f32, hi: f32) -> f32 {
 fn held(p: vec3) -> f32 {
     // (The collar's height only round his neck: his arms reach out at it.)
     let collar = ramp(p.y, lo: 1.50, hi: 1.56) * (1.0 - ramp(abs(p.x), lo: 0.10, hi: 0.16))
-    ramp(p.y, lo: 0.82, hi: 0.90) * (1.0 - collar) * (1.0 - ramp(abs(p.x), lo: 0.56, hi: 0.62))
+    // (Under his jacket and its sleeve, a third of it: cloth softens what's under it. His bare
+    // left arm, all of it.)
+    let bare = mix(0.35, 1.0, ramp(p.x, lo: 0.14, hi: 0.20))
+    ramp(p.y, lo: 0.82, hi: 0.90) *
+        (1.0 - collar) *
+        (1.0 - ramp(abs(p.x), lo: 0.56, hi: 0.62)) *
+        bare
 }
 
 /// How far the sculpt's surface is beyond his shapes' at `p` (m; in his rest space).
