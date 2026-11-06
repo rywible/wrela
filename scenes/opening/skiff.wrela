@@ -147,7 +147,7 @@ fn cloth(s: Shot, q: vec3) -> (f32, vec2) {
     let flutter = s.quiver.x * x * x * x * sin(3.1415927 * up) * 4.0
     let loose = c.w
     let shiver = loose *
-        (0.08 + 0.26 * x) *
+        (0.1 + 0.32 * x) *
         x *
         sin(u * 4.0 + v * 1.1 - s.held * 26.0) +
         smoothstep(0.3, 1.0, loose) * 0.06 * x * sin(u * 11.0 - v * 2.5 - s.held * 47.0)
@@ -202,8 +202,8 @@ fn parts(s: Shot, q: vec3) -> vec4 {
         wood = min(wood, sd_box(q - vec3(0.0, -0.05, -1.75), vec3(0.32, 0.025, 0.25)))
     }
     // The stem carried up past the bow and curled back over it, as a fern's head.
-    let stem = sd_capsule(q, vec3(0.0, 0.4, 2.12), vec3(0.0, 0.82, 2.3), 0.035)
-    wood = min(wood, min(stem, sd_capsule(q, vec3(0.0, 0.82, 2.3), vec3(0.0, 0.9, 2.16), 0.03)))
+    let stem = sd_capsule(q, vec3(0.0, 0.36, 2.1), vec3(0.0, 0.58, 2.22), 0.04)
+    wood = min(wood, stem)
     if PLANING > 0.5 {
         // An old crate lashed down aft, its lid warped; a coil of rope by the mast's foot; the
         // mast's step a block of wood bound to the deck.
@@ -295,7 +295,7 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
         let stain = noise(uv * vec2(3.0, 2.0)) * 0.6 + noise(uv * vec2(11.0, 7.0)) * 0.4
         // (Tanned canvas, as a working sail's is: oiled and weathered, darker toward the foot
         // where the spray reaches it.)
-        var c = mix(vec3(0.58, 0.5, 0.38), vec3(0.78, 0.7, 0.56), stain)
+        var c = mix(vec3(0.44, 0.38, 0.29), vec3(0.62, 0.55, 0.42), stain)
         c *= 0.8 + 0.2 * smoothstep(0.2, 1.4, uv.y)
         let band_ = smoothstep(2.3, 2.33, uv.y) * (1.0 - smoothstep(2.58, 2.61, uv.y))
         c = mix(c, vec3(0.36, 0.06, 0.04) * (0.8 + 0.35 * stain), band_)
@@ -314,21 +314,19 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
         var seam = sin(uv.y * 5.2 - uv.x * 0.6) + 0.96
         // Years on it: patches of newer canvas sewn over its tears, their stitches dark; rust run
         // down from the lashing at the mast; mildew speckling it, and grime thickest low.
-        let (pa, pa_edge) = patch(uv, vec2(1.12, 2.05), vec2(0.2, 0.15), 0.12)
-        let (pb, pb_edge) = patch(uv, vec2(1.72, 1.2), vec2(0.14, 0.17), -0.2)
-        let (pc, pc_edge) = patch(uv, vec2(0.55, 3.05), vec2(0.1, 0.12), 0.3)
-        c = mix(c, vec3(0.74, 0.68, 0.54) * (0.9 + 0.15 * stain), pa)
-        c = mix(c, vec3(0.5, 0.42, 0.3) * (0.9 + 0.2 * stain), pb)
-        c = mix(c, vec3(0.66, 0.6, 0.47), pc)
-        let stitch = max(max(pa_edge, pb_edge), pc_edge) * step(0.5, fract((uv.x + uv.y) * 22.0))
-        c = mix(c, vec3(0.1, 0.08, 0.06), stitch * 0.8)
-        seam = min(seam, 1.0 - 1.4 * max(max(pa_edge, pb_edge), pc_edge))
+        // (Two patches, broad ones, their stitching a faint darker line: small sharp squares
+        // scattered over it read as marks drawn on it.)
+        let (pa, pa_edge) = patch(uv, vec2(1.15, 2.0), vec2(0.34, 0.26), 0.12)
+        let (pb, pb_edge) = patch(uv, vec2(1.62, 1.22), vec2(0.22, 0.2), -0.2)
+        c = mix(c, vec3(0.7, 0.64, 0.5) * (0.9 + 0.15 * stain), pa * 0.8)
+        c = mix(c, vec3(0.52, 0.44, 0.32) * (0.9 + 0.2 * stain), pb * 0.8)
+        c *= 1.0 - 0.18 * max(pa_edge, pb_edge)
         let rust = smoothstep(0.35, 0.05, uv.x) *
             smoothstep(LASHED + 0.05, LASHED - 0.15, uv.y) *
             smoothstep(0.3, 0.7, noise(vec2(uv.x * 30.0, uv.y * 2.0)))
         c = mix(c, vec3(0.3, 0.14, 0.06), rust * 0.6)
-        let mildew = smoothstep(0.6, 0.8, noise(uv * 23.0)) * smoothstep(0.45, 0.6, noise(uv * 3.1 + vec2(4.0)))
-        c *= 1.0 - 0.35 * mildew
+        let mildew = smoothstep(0.4, 0.75, noise(uv * 4.3)) * smoothstep(0.45, 0.65, noise(uv * 1.7 + vec2(4.0)))
+        c *= 1.0 - 0.22 * mildew
         c *= 0.78 + 0.22 * smoothstep(0.0, 1.8, uv.y + 0.4 * noise(uv * 2.0))
         return (c, 0.85, seam)
     }
