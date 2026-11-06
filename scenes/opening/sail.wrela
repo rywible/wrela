@@ -28,9 +28,8 @@ pub struct Rig: Copy {
     /// The boom's angle off the centreline aft (rad, positive to starboard): where the wind and
     /// the sheet hold it, on its own side (`tack`).
     pub boom: f32,
-    /// The side the sail sits (1 starboard, -1 port). It keeps it: the sail never swings right
-    /// across. Only as the bow comes up through the wind, the boom near the centreline anyway,
-    /// does it step over to the other side.
+    /// The side the sail sits (1 starboard, -1 port). It keeps it: the sail never swings
+    /// across the boat.
     pub tack: f32,
     /// How far it heels (rad, positive starboard side down), and how fast.
     pub heel: f32,
@@ -356,10 +355,6 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     // streams out with the wind as far as its side lets it. With the wind round on the other
     // side (by the lee), it stays where it is, full, rather than swinging right across: a slam
     // over the skiff reads as a glitch, not a gybe.
-    let wants = if off > 0.0 { -1.0 } else { 1.0 }
-    if wants != r.tack && abs(off) < 0.5 {
-        r.tack = wants
-    }
     let side = r.tack
     let trimmed = side * clamp((abs(off) - 0.45) * 0.62, 0.12, 1.42)
     let free = side * clamp(-off * side, 0.15, 1.5)
@@ -489,11 +484,9 @@ fn rigged(off: f32, turn: f32, p: f32, phi: f32, jolt: f32) -> Pose {
     let mast = normalize(vec3(wind * sin(tilt), cos(tilt) * cos(rake), sin(rake)))
     let b0 = vec3(side * sin(a), 0.0, -cos(a))
     let boom = normalize(b0 - mast * dot(b0, mast))
-    var belly = normalize(cross(mast, boom))
-    let from = vec3(sin(off), 0.0, cos(off))
-    if dot(belly, from) > 0.0 {
-        belly = -belly
-    }
+    // (Its belly out on the boom's side, away from the traveller, whichever side the wind's on:
+    // turned by the wind, it flipped him and the sail round in a frame as the wind crossed.)
+    let belly = -side * normalize(cross(mast, boom))
     // The hands on the wishbone's windward arm, the fore one near the mast; let fly, the fore
     // hand on the mast itself and the aft one on the boom near it, the rig held upright.
     let lash = FOOT + mast * LASHED
