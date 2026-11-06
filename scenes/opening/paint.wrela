@@ -882,7 +882,7 @@ fn sea_shade(
     // down, as the water under a whitecap is.
     let bubbles = smoothstep(mix(0.02, 0.2, OVERCAST), 0.5, foam_k)
     // The skiff's wake, and the lip of broken water along its waterline (`wake`).
-    let (wake, foam, wl) = marks(s, p, xz, rest)
+    let (wake, foam, wl, aer) = marks(s, p, xz, rest)
     // (Foam's a froth of bubbles: lit by the sun on it, and through it from behind when the eye
     // looks toward the sun, as a cloud's edge is; warm, not the sky's lilac.)
     // (And whiter than the light on it, as a froth's many bubbles scatter every colour alike: it
@@ -895,7 +895,7 @@ fn sea_shade(
         PI
     let foam_light = mix(foam_lit, vec3(luma(foam_lit)) * vec3(1.0, 0.97, 0.94), 0.45) * 1.6
     c *= mix(0.45, 1.0, smoothstep(0.0, 0.3, max(wl, 0.0)))
-    c += body * (1.0 - fresnel) * mix(2.6, 0.9, OVERCAST) * bubbles * (1.0 - white)
+    c += body * (1.0 - fresnel) * mix(2.6, 0.9, OVERCAST) * max(bubbles, aer * 0.8) * (1.0 - white)
     c = mix(c, foam_light * bright, white * 0.92)
     c = mix(c, foam_light, max(max(foam * 0.9, wake), splash))
     // What drifts on the water near the skiff, sliding by as it goes (`wake::flotsam`).

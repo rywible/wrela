@@ -3,8 +3,8 @@
 // swivel, a wishbone boom the traveller holds standing, leaning out against the sail's pull.
 // Sheeted in, it gathers way, slowly at first, then lifts onto the plane and runs; it's quickest
 // with the wind on its quarter, slow straight downwind, and stalls heading into it. It surfs down
-// the swell's faces, heels to a gust, banks into its turns, and its boom swings across when it
-// gybes. The camera rides behind it, falling back as it surges and widening as it runs. Not a
+// the swell's faces, heels to a gust, banks into its turns, and its sail keeps to its own
+// side (it never swings right across). The camera rides behind it, falling back as it surges and widening as it runs. Not a
 // simulator: what it should feel like, not what it would cost to learn. What a frame draws is
 // the rig as it stood at the last drawing (`HELD` a second).
 
@@ -26,8 +26,12 @@ pub struct Rig: Copy {
     pub trim: f32,
     pub power: f32,
     /// The boom's angle off the centreline aft (rad, positive to starboard): where the wind and
-    /// the sheet hold it, swinging across as it gybes.
+    /// the sheet hold it, on its own side (`tack`).
     pub boom: f32,
+    /// The side the sail sits (1 starboard, -1 port). It keeps it: the sail never swings right
+    /// across. Only as the bow comes up through the wind, the boom near the centreline anyway,
+    /// does it step over to the other side.
+    pub tack: f32,
     /// How far it heels (rad, positive starboard side down), and how fast.
     pub heel: f32,
     heel_rate: f32,
@@ -188,6 +192,7 @@ pub fn rest() -> Rig {
         trim: 0.0,
         power: 0.0,
         boom: flagged(0.0, 0.0),
+        tack: if flagged(0.0, 0.0) >= 0.0 { 1.0 } else { -1.0 },
         heel: 0.0,
         heel_rate: 0.0,
         plane: 0.0,
@@ -347,31 +352,21 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     r.turn += (wheel * TURN_RATE * grip - r.turn) * (1.0 - exp(-dt * 2.6))
     r.steer += r.turn * dt
     r.at += heading * r.speed * dt
-    // The boom: let fly, it streams with the wind; sheeted, held at the angle the wind wants on
-    // the side away from it. When the wind crosses the stern, it swings across: a gybe.
-    let side = if off > 0.0 { -1.0 } else { 1.0 }
+    // The boom: on its own side always. Sheeted, held at the angle the wind wants; let fly, it
+    // streams out with the wind as far as its side lets it. With the wind round on the other
+    // side (by the lee), it stays where it is, full, rather than swinging right across: a slam
+    // over the skiff reads as a glitch, not a gybe.
+    let wants = if off > 0.0 { -1.0 } else { 1.0 }
+    if wants != r.tack && abs(off) < 0.5 {
+        r.tack = wants
+    }
+    let side = r.tack
     let trimmed = side * clamp((abs(off) - 0.45) * 0.62, 0.12, 1.42)
-    let free = -off
+    let free = side * clamp(-off * side, 0.15, 1.5)
     let k = smoothstep(0.0, 0.55, r.power)
     let target = mix(free, trimmed, k)
-    let was = r.boom
-    var swing = target - r.boom
-    // (Let fly, it swings the short way round, through the bow if that's shorter: it's free.)
-    if k < 0.5 {
-        swing -= 6.2831853 * floor((swing + 3.1415927) / 6.2831853)
-    }
-    // (Sheeted, a gybe hangs a moment as the wind gets behind the sail, then slams it across.)
-    let slam = smoothstep(1.2, 2.2, abs(swing)) * k
-    // (Swung over in half a second or so, never in a frame or two: a snap reads as a glitch.)
-    r.boom += swing * (1.0 - exp(-dt * (2.0 + 1.5 * k + 1.2 * slam)))
-    if was * r.boom < 0.0 && abs(was) > 0.3 && k > 0.5 {
-        // (It lands with a jolt: the skiff knocked over onto its new side.)
-        r.heel_rate += (if r.boom > 0.0 { 1.0 } else { -1.0 }) * 2.6
-        r.jolt = 1.0
-    }
+    r.boom += (target - r.boom) * (1.0 - exp(-dt * (1.6 + 1.2 * k)))
     r.jolt = max(r.jolt - dt * 2.5, 0.0)
-    // (And carries past where it'll sit, as a slammed boom does, and springs back.)
-    r.boom += (if r.boom > 0.0 { 1.0 } else { -1.0 }) * 0.35 * r.jolt * r.jolt * sin(r.jolt * 9.0)
     // Heeling: the sail's pull to leeward (more in a gust, less once it planes, the traveller's
     // weight out to windward taking most of it), and banked into its turns, carving. On a
     // spring, so a gust or a gybe sets it rocking.
@@ -584,7 +579,9 @@ fn moved(r: mut Rig, time: f32, dt: f32, swell: Swell, off: f32) {
     let s_al = dot(f, face)
     let c_al = dot(f, chord)
     let q = clamp(va * va / (SEA.speed * SEA.speed), 0.4, 1.6)
-    let load = clamp(s_al / 0.3, -1.0, 1.0)
+    // (Always bellied out on its lee face, away from the traveller: never blown back through.)
+    let sheet_side = if r.boom >= 0.0 { 1.0 } else { -1.0 }
+    let load = -sheet_side * clamp(abs(s_al) / 0.3, 0.0, 1.0)
     let fill_to = load * (0.12 + 0.26 * sqrt(q))
     let luff = 1.0 - smoothstep(0.06, 0.24, abs(s_al))
     let flog_to = (1.0 - smoothstep(0.05, 0.2, abs(s_al))) * (if c_al > -0.2 { 1.0 } else { 0.6 })
