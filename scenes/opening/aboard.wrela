@@ -265,7 +265,7 @@ pub fn bones(s: Shot) -> [mat4; 64] {
         )
         // The hand round the boom: the palm down onto it, the knuckles on along the forearm.
         let r_hand = aim(along, vec3(0.0, -1.0, 0.0), wrist - elbow, -up + facing * 0.5)
-        let curl = r_hand * about(vec3(0.0, 0.0, 1.0), -1.2 * side)
+        let curl = r_hand * about(vec3(0.0, 0.0, 1.0), -1.5 * side)
         let i = u32(k)
         m[B_CLAVICLE + i] = placed(r_chest, clav, mirrored(CLAVICLE, side))
         m[B_UPPER + i] = placed(r_upper, shoulder, mirrored(UPPER, side))
@@ -275,7 +275,7 @@ pub fn bones(s: Shot) -> [mat4; 64] {
         m[B_FINGERS + i] = placed(curl, knuckles, mirrored(FINGERS, side))
         let thumb = wrist + r_hand * (mirrored(THUMB, side) - mirrored(HAND, side))
         m[B_THUMB + i] = placed(
-            r_hand * about(vec3(1.0, 0.0, 0.0), 0.6),
+            r_hand * about(vec3(1.0, 0.0, 0.0), 0.9),
             thumb,
             mirrored(THUMB, side),
         )

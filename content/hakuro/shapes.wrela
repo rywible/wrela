@@ -147,7 +147,7 @@ pub fn fox(p: vec3) -> f32 {
 /// marks over the eyes and up the brow, the ears' insides red, a black nose, a red mouth line.
 pub fn fox_paint(p: vec3) -> (vec3, f32) {
     let q = vec3(abs(p.x), p.y, p.z)
-    let white = vec3(0.87, 0.83, 0.76)
+    let white = vec3(0.66, 0.63, 0.57)
     let red = vec3(0.57, 0.016, 0.007)
     var marks = stroke(
         q.xy,
