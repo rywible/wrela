@@ -145,20 +145,12 @@ fn mirrored_sky(
 
 /// Where the ray from `o` along `d` meets the sea (`d` going down), or `far`. Near, found on the
 /// waves (a crest hides the trough behind it): the ocean's two longer tiles, each read as the
-/// pixel's footprint holds it, the waves a boat rides broken by the hull (`tiles`). Far off,
-/// where the waves a pixel holds are long and low, on the sea's level plane: a ray skimming the
-/// swell found it a few metres either way from pixel to pixel, and its shading speckled.
+/// pixel's footprint holds it, the waves a boat rides broken by the hull (`tiles`). Far off, on
+/// the swell alone (`trace_far`).
 fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
-    if d.y >= -0.0005 {
-        return far
-    }
-    let plane = o.y / -d.y
-    if plane > far {
-        return far
-    }
-    let level_k = smoothstep(120.0, 300.0, plane)
-    if level_k >= 1.0 {
-        return plane
+    let plane = if d.y < 0.0 { o.y / -d.y } else { 1.0e9 }
+    if plane > NEAR_SEA {
+        return min(trace_far(s, waves, o, d), far)
     }
     // (Stepping only forward, each step what the sea's slopes allow, so a ray skimming a crest
     // never hops back and forth between it and the trough behind; once under, halved onto it.
@@ -170,7 +162,7 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
     var before = t
     var under = false
     var i = 0
-    while i < 48 && !under {
+    while i < 64 && !under {
         let p = o + d * t
         let foot = t * 2.0 / (s.resolution.y * s.focal * slant)
         let f = p.y - sea_level(s, waves, p, foot)
@@ -178,7 +170,7 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
             under = true
         } else {
             before = t
-            t += f / (-d.y + 0.2) + 0.01
+            t += f / (-d.y + STEEPEST) + 0.01
         }
         i += 1
     }
@@ -198,8 +190,46 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
         }
         t = (lo + hi) * 0.5
     }
-    min(mix(t, plane, level_k), far)
+    min(t, far)
 }
+
+/// Where a ray from `o` along `d` that skims the sea further than `NEAR_SEA` meets it, or
+/// where it meets the level (going down) or nothing (`1.0e9`): on the swell alone, read as
+/// coarse as the ray's long footprint holds it, so the horizon is the crests of the sea's
+/// big waves standing against the spray, not a ruler's edge.
+fn trace_far(s: Shot, waves: Waves, o: vec3, d: vec3) -> f32 {
+    // (One loop, one read of the sea: stepping forward till under, then halving onto it.)
+    var lo = NEAR_SEA * 0.8
+    var hi = 0.0
+    var t = lo
+    var i = 0
+    var halves = 0
+    while i < 56 && t < HORIZON && halves < 6 {
+        let p = o + d * t
+        // (Read as a few pixels across hold it, not as foreshortened down the ray: the crests'
+        // outline is what's drawn here.)
+        let foot = t * 8.0 / (s.resolution.y * s.focal)
+        let f = p.y - level_at(waves, vec2(p.x, p.z), foot, 0.0)
+        if hi > 0.0 {
+            if f < 0.0 { hi = t } else { lo = t }
+            t = (lo + hi) * 0.5
+            halves += 1
+        } else if f < 0.0 {
+            hi = t
+            t = (lo + hi) * 0.5
+        } else {
+            lo = t
+            t += max(f / (-d.y + 0.08), t * 0.05)
+        }
+        i += 1
+    }
+    if hi > 0.0 { t } else if d.y < 0.0 { o.y / -d.y } else { 1.0e9 }
+}
+
+/// How far the waves are marched for (m), and how far the far march looks for the swell's crests
+/// (past it the spray hides them).
+const NEAR_SEA: f32 = 300.0
+const HORIZON: f32 = 5000.0
 
 /// The sea's height under `p` (read as a pixel `foot` m across holds it), the waves a boat rides
 /// broken by the hull (`tiles`). Close along the hull it lies no higher than a hand under the
@@ -658,6 +688,10 @@ const SPARK_GLINT: f32 = 1.5
 /// water).
 const THROUGH_SKY: f32 = 0.3
 
+/// The steepest a crest's face leans toward the eye (a slope): the march steps no further than
+/// a face so steep could rise to meet it, so it never steps past a crest's top.
+const STEEPEST: f32 = 0.5
+
 /// How high over the sea's level its highest crests stand (m): its significant height's
 /// worth (a gale's sea over its swell).
 const CREST: f32 = 7.0
@@ -890,17 +924,18 @@ fn sea_shade(
         (1.0 - smoothstep(0.0, 0.3, c2.y - c2.x)) * 0.2 +
         lace * 0.35
     // (Fresh, the froth's own rafts; old and thin, the streaks.)
-    let share = clamp(foam_k * 1.4, 0.0, 1.0)
-    let pattern = mix(streak, raft, smoothstep(0.1, 0.6, share))
+    let share = clamp(foam_k * 1.3, 0.0, 0.92)
+    let pattern = mix(noise(vec2(wa.x * 0.12, wa.y * 0.7) + warp) * 0.5 + raft * 0.5, raft, smoothstep(0.1, 0.6, share))
     let web_k = clamp(1.0 - px_m * 2.0, 0.0, 1.0)
     let edge = 0.04 + 0.25 * (1.0 - web_k)
     let drawn = smoothstep(1.0 - share - edge, 1.0 - share + edge, pattern)
     // (The streaks, laid where the foam upwind was blown: thin, greyer, never a sheet.)
-    let lines = smoothstep(1.0 - blown * 0.35 - edge, 1.0 - blown * 0.35 + edge, streak)
-    let white = max(mix(share, drawn, web_k), mix(blown * 0.25, lines * 0.6, web_k)) * 0.95
+    let lines = smoothstep(1.0 - blown * 0.35 - edge - 0.12, 1.0 - blown * 0.35 + edge + 0.06, streak) *
+        (0.5 + 0.5 * lace)
+    let white = max(mix(share, drawn, web_k), mix(blown * 0.08, lines * 0.16, web_k)) * 0.95
     // (Its thick froth bright, its thin film greyer, the water showing through it.)
     let froth = mix(0.5, noise(wa * vec2(8.0, 12.0) + vec2(2.0)), web_k)
-    let bright = (0.45 + 0.55 * smoothstep(0.3, 0.9, share)) * (0.75 + 0.5 * froth)
+    let bright = (0.4 + 0.6 * smoothstep(0.3, 0.9, share)) * (0.6 + 0.4 * lace + 0.4 * froth)
     // Under it and round it, the water's paler and greener, full of the bubbles the break drove
     // down, as the water under a whitecap is.
     let bubbles = smoothstep(0.02, 0.4, foam_k)
@@ -913,8 +948,11 @@ fn sea_shade(
     // (Lit as the water under it leans: the faces turned to the sun warm and bright, the rest in
     // the sky's blue-grey.)
     let toward_l = max(dot(n, l) + 0.3, 0.0) / 1.3
+    // (A froth's lit by the whole sky over it, the bright low sky round the horizon as much as
+    // the deck overhead: under an overcast it's the brightest thing on the sea.)
+    let horizon_sky = heaven(view, h.light, normalize(vec3(d.x, 0.006, d.z)), dome, smp).rgb
     let foam_lit = vec3(0.92, 0.92, 0.9) *
-        (h.light.sun_colour * (toward_l * 1.6 + 0.12 + 0.8 * behind) * sun + sky_up * 1.3) /
+        (h.light.sun_colour * (toward_l * 1.6 + 0.12 + 0.8 * behind) * sun + (sky_up + horizon_sky * PI) * 0.65) /
         PI
     let foam_light = mix(foam_lit, vec3(luma(foam_lit)) * vec3(1.0, 0.97, 0.94), 0.45) * 1.6
     c *= mix(0.45, 1.0, smoothstep(0.0, 0.3, max(wl, 0.0)))
@@ -922,11 +960,13 @@ fn sea_shade(
     c = mix(c, foam_light * bright, white * 0.92)
     // Spindrift: the spray the wind tears off a crest as it breaks, a thin white veil blown a few
     // metres down the wind of it, in streaks (the fresh foam upwind, read blurred).
-    let veil = smoothstep(0.3, 0.9, torn) *
-        smoothstep(0.35, 0.75, noise(vec2(wa.x * 0.25 - s.held * 2.0, wa.y * 2.2))) *
+    // (Wisps, not a sheet: torn finer the nearer, and thin.)
+    let veil = smoothstep(0.45, 0.95, torn) *
+        smoothstep(0.45, 0.8, noise(vec2(wa.x * 0.25 - s.held * 2.0, wa.y * 2.2)) * 0.6 +
+            noise(vec2(wa.x * 1.2 - s.held * 6.0, wa.y * 7.0)) * 0.4) *
         smoothstep(0.03, 0.1, whitecaps(SEA_STATE)) *
-        0.5
-    c = mix(c, foam_light * 0.85, veil)
+        0.28
+    c = mix(c, foam_light * 0.75, veil)
     c = mix(c, foam_light, max(max(foam * 0.9, wake), splash))
     // The crests' ink strokes and pale lips, light: the ink sits on the water's form.
     let footprint = t * 2.0 / (s.resolution.y * s.focal)
@@ -964,7 +1004,6 @@ fn sea_shade(
     // Far out, the sea and the sky meet in the air: no ruled edge where they do. Low over the
     // water, the air's thick with the spray the wind tears off the crests (the rougher the sea,
     // the thicker: some kilometres' sight in a gale), lit as the air at the horizon is.
-    let horizon_sky = heaven(view, h.light, normalize(vec3(d.x, 0.006, d.z)), dome, smp).rgb
     let spray = 1.0 - exp(-t * SPRAY * whitecaps(SEA_STATE))
     let hazy = mix(aired, horizon_sky, max(spray, smoothstep(2500.0, 30000.0, t) * 0.85))
     (hazy, line, detail * 0.6 + foam, n, cut)

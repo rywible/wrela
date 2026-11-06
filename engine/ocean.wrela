@@ -36,6 +36,10 @@ const PASSES: u32 = 8
 /// Gravity (m/s²).
 const G: f32 = 9.81
 
+/// How far past its breaking a crest's water goes white through, in its Jacobian's
+/// deviations: a breaking crest's froth is white at once, its foam greying only as it fades.
+const WHITENS: f32 = 0.6
+
 /// How many steps the sea's settled over before its first (`Ocean::step`).
 const WARM: u32 = 12
 
@@ -176,7 +180,7 @@ fn held_slopes(sea: SeaState) -> f32 {
 /// How long a broken crest's foam takes to fade to a third (s): longer as the sea's rougher (a
 /// gale's lies in streaks long after its crest broke).
 pub fn foam_fade(sea: SeaState) -> f32 {
-    FOAM_FADE * (1.0 + 30.0 * whitecaps(sea))
+    FOAM_FADE * (1.0 + 15.0 * whitecaps(sea))
 }
 
 /// The sea's directional spectrum at wavenumber `k` (rad/m, on x and z): its height's variance
@@ -358,8 +362,8 @@ fn butterfly(
 /// A tile's fields from the inverse FFT (`heights`, `slopes`), as the surface reads them. Into
 /// `shape`: its displacement (x, height, z; the crests leaned by `chop`) and its foam, the last
 /// frame's (`before`) faded over `dt` s (to a third in `fade` s), and fresh where a crest breaks: where the water is
-/// squeezed toward folding over, its Jacobian under `breaks` (white a deviation, `spread`, past
-/// it). Into `tilt`: its slopes and
+/// squeezed toward folding over, its Jacobian under `breaks` (white `WHITENS` of a deviation,
+/// `spread`, past it). Into `tilt`: its slopes and
 /// stretches (∂h/∂x, ∂h/∂z, ∂Dx/∂x, ∂Dz/∂z, leaned as the crests are).
 @compute(8, 8)
 fn settle(
@@ -395,7 +399,7 @@ fn settle(
     let old = here * (1.0 - ax) * (1.0 - az) + before.load(x: back_x, y: id.y).w * ax * (1.0 - az) +
         before.load(x: id.x, y: back_z).w * az * (1.0 - ax) +
         before.load(x: back_x, y: back_z).w * ax * az
-    let broke = clamp((breaks - squeezed) / spread, 0.0, 1.0)
+    let broke = clamp((breaks - squeezed) / (spread * WHITENS), 0.0, 1.0)
     let foam = max(old * exp(-dt / fade), broke)
     shape.store(id, vec4(hq.x * chop, hq.y, hq.z * chop, foam))
     tilt.store(id, vec4(sq.x, sq.y, dxx, dzz))
@@ -555,15 +559,15 @@ impl Ocean {
     /// The ocean of `sea`, the CPU summing its `kept` loudest long waves, the mid tile's as
     /// `mid` of them as the drawing shows them by a hull.
     pub fn new(sea: SeaState, kept: u32, mid: f32) -> Ocean {
-        // The crests break as often as the wind makes them (`breaking`): the waves a boat
-        // rides, and the longest a little rarer (their texels too coarse for a white horse's
-        // shape); the short waves and the ripples never (theirs would be speckle: a white
-        // horse is metres across, the shading draws its froth).
+        // The crests break as often as the wind makes them (`breaking`): most on the longest
+        // waves, the sea's own (a gale's white horses lie in bands along their crests, tens of
+        // metres long), the waves a boat rides a little rarer; the short waves and the ripples
+        // never (theirs would be speckle: the shading draws the froth's grain).
         let d = breaking(sea)
         Ocean {
             sea,
-            big: tile(sea, 0, d + 1.0),
-            mid: tile(sea, 1, d),
+            big: tile(sea, 0, d + 0.6),
+            mid: tile(sea, 1, d + 0.4),
             fine: tile(sea, 2, 0.0),
             ripple: tile(sea, 3, 0.0),
             scratch: Scratch {
