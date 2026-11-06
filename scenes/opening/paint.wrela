@@ -16,7 +16,7 @@ use engine::ocean::{Waves, level_at, shape_at, surface_at, whitecaps}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use yonder::falls
 use skiff::{dry, skiff, skiff_material, skiff_normal}
-use wake::{marks, spindrift, spray, stirred}
+use wake::{marks, spray, stirred}
 use engine::far::foot
 use engine::light::{Light, Lit, gloss, hazed, matte, sun_disc, world}
 use engine::air::aerial_uvw
@@ -1245,8 +1245,6 @@ fn sample(
         vec3(0.22, 0.25, 0.29) * mix(1.0, 1.6, OVERCAST)
     let thrown = spray(s, drops_lit, o, d, t)
     c = c * (1.0 - thrown.a) + thrown.rgb
-    let blown = spindrift(s, drops_lit, o, d, t)
-    c = c * (1.0 - blown.a) + blown.rgb
     if s.lantern > 0.5 {
         let beam = beams(s, h, aerial, smp, o, d, t)
         c = c * (1.0 - beam.a) + beam.rgb
