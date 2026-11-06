@@ -18,7 +18,7 @@ use engine::light::Light
 use engine::realize::{Mesh, SkinVertex, realize_once}
 use engine::sky::{Clouds, cloud_shadow, sky_uv}
 use heavens::Heavens
-use look::{SKIFF, Shot}
+use look::{OVERCAST, SKIFF, Shot}
 use paint::{Heaven, lit_solid, storm_sky}
 use played::cover
 use skiff::vessel_shadow
@@ -184,16 +184,16 @@ pub fn bones(s: Shot) -> [mat4; 64] {
     let mid = (s.fore_hand + s.aft_hand) * 0.5
     let facing = normalize(vec3(mid.x - s.hips.x, 0.0, mid.z - s.hips.z) + vec3(0.0, 0.0, 1.0e-4))
     let left = cross(up, facing)
-    // He leans into the boom rather than lock his arms: where his hands are further than a bent
-    // arm's reach (about four fifths of a straight one) from his chest, his chest goes the rest of
-    // the way, his hips a third as far.
+    // He hangs back from the boom on near straight arms, as a sailor of a board does, but never
+    // locked: where his hands are further than a little short of a straight arm's reach from his
+    // chest, his chest goes the rest of the way, his hips a third as far.
     let chest = s.hips + (s.neck - s.hips) * 0.8
     let toward = vec3(mid.x - chest.x, 0.0, mid.z - chest.z)
     let reach = length(toward)
-    let over = max(reach - 0.8 * length(HAND - UPPER), 0.0)
+    let over = max(reach - 0.93 * length(HAND - UPPER), 0.0)
     let lean = toward / max(reach, 1.0e-4) * over
     // Sunk a little into his knees, braced against the sea.
-    let hips = s.hips + lean * 0.35 - vec3(0.0, 0.09, 0.0)
+    let hips = s.hips + lean * 0.35 - vec3(0.0, 0.04, 0.0)
     let neck_at = s.neck + lean * 1.15
     // His trunk: the pelvis half way to the spine's lean, the chest along it.
     let spine = normalize(neck_at - hips)
@@ -241,7 +241,7 @@ pub fn bones(s: Shot) -> [mat4; 64] {
         let l1 = length(FORE - UPPER)
         let l2 = length(HAND - FORE)
         let out = left * side
-        let pole = -up * 0.8 + out * 0.6 - facing * 0.3
+        let pole = -up + out * 0.25 - facing * 0.15
         let elbow = bend(shoulder, goal, l1, l2, pole)
         let wrist = elbow + normalize(goal - elbow) * l2
         let along = vec3(side, 0.0, 0.0)
@@ -396,7 +396,8 @@ pub fn hero_pixel<F: Parts<Cloth>>(
     }
     // His fields at this point of him at rest: his normal (their gradient) and what he's made of.
     let fp = t * 1.5 / (s.focal * s.resolution.y)
-    let (_, grad, c) = field.sample_masked(v.rest, PartMask { lo: v.lo.value, hi: v.hi.value }, fp)
+    let mask = PartMask { lo: v.lo.value, hi: v.hi.value }
+    let (_, grad, c) = field.sample_masked(v.rest, mask, fp)
     let turn = mat3(v.tx, v.ty, v.tz)
     let d = normalize(v.world - s.eye)
     var n = normalize(turn * grad)
@@ -406,6 +407,16 @@ pub fn hero_pixel<F: Parts<Cloth>>(
     let h = Heaven { light, clouds }
     let p = v.world
     let sun = vessel_shadow(s, p + n * 0.01, light.sun) * cloud_shadow(clouds, cloud, smp, p)
+    // How much of the sky his own folds hide (the skiff's way): his distance a little out along
+    // his normal, at rest, short of how far out it was stepped.
+    let out = normalize(grad)
+    var hidden = 0.0
+    for i in 1..3 {
+        let step = 0.03 * f32(i * i)
+        let (e, _, _) = field.sample_masked(v.rest + out * step, mask, fp)
+        hidden += max(step - e, 0.0) / step * (if i == 1 { 1.0 } else { 0.6 })
+    }
+    let ao = clamp(1.0 - hidden * 0.6, 0.0, 1.0)
     var col = lit_solid(
         s,
         h,
@@ -421,12 +432,12 @@ pub fn hero_pixel<F: Parts<Cloth>>(
         c.metal,
         vec3(0.0),
         sun,
-        ao: 1.0,
+        ao: ao,
         haze: 0.0,
         glint: 1.0,
     )
-    // Lit as a character is, never lost in the shade: the sea's light thrown up under him, and a
-    // rim of the sun (the skiff's).
+    // Lit as the skiff is, a character's way: the sea's light thrown up under him, and a rim of
+    // the sun (its numbers, for the clean look).
     let sea_light = storm_sky(
         view,
         light,
@@ -436,13 +447,16 @@ pub fn hero_pixel<F: Parts<Cloth>>(
         disc: false,
     ).rgb
     let toward = max(dot(n, normalize(vec3(light.sun.x, -0.4, light.sun.z))), 0.0)
-    let bounce = sea_light * PI * 0.13 * 2.2 * (0.5 + 0.5 * toward)
+    let bounce = sea_light *
+        PI *
+        0.13 *
+        mix(1.0, 2.2, OVERCAST) *
+        (0.4 + 0.6 * ao) *
+        (0.5 + 0.5 * toward)
     let edge_k = pow(1.0 - max(dot(n, -d), 0.0), 3.0) *
         max(dot(n, normalize(vec3(light.sun.x, 0.3, light.sun.z))), 0.0)
-    let rim = light.sun_colour * vec3(1.0, 0.85, 0.6) * (1.2 * edge_k)
+    let rim = light.sun_colour * vec3(1.0, 0.85, 0.6) * (0.6 * edge_k)
     col += c.albedo * bounce + rim * sun
-    // And a cool edge of the sky's light all round him, so his black reads against the dark sea.
-    col += sea_light * (1.3 * pow(1.0 - max(dot(n, -d), 0.0), 3.0))
     Targets3 {
         first: vec4(col, 1.0),
         second: vec4(log2(max(t, 0.01)), SKIFF, 1.0, 0.5),

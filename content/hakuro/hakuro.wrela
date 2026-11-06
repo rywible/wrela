@@ -12,8 +12,8 @@ use detail::Detail
 use engine::creature::{Bone, Creature, Skeleton, creature, hard, smooth}
 use engine::character::Shaded
 use shapes::{
-    HEAD_JOINT, HEAD_SCALE, boot_foot, boot_paint, boot_shaft, ellip, fox, fox_paint, hair, tails,
-    unscaled,
+    digits, palm, thumb, HEAD_JOINT, HEAD_SCALE, boot_foot, boot_paint, boot_shaft, ellip, fox,
+    fox_paint, hair, tails, unscaled,
 }
 use std::derive::{Box3, Interval}
 use std::field::{Blend, Bound, Surface, cuboid, oval, round_cone}
@@ -118,11 +118,6 @@ pub fn body_paint(p: vec3) -> Cloth {
     BLACK
 }
 
-/// The hand's paint: his left bare, his right gloved.
-fn hand_paint(p: vec3) -> Cloth {
-    if p.x > 0.0 { SKIN } else { LEATHER }
-}
-
 /// The collar's paint: the jacket's black, standing up round his neck, open in front.
 fn collar_paint(p: vec3) -> Cloth {
     BLACK
@@ -198,6 +193,51 @@ impl Surface for Hair {
 
 fn hair_paint(p: vec3) -> Cloth {
     HAIR
+}
+
+/// A piece of a hand (`piece` 0 the palm, 1 the fingers, 2 the thumb), on its bone at `at`:
+/// the left hand's shapes (`shapes::palm`, `digits`, `thumb`), mirrored for the right
+/// (`side` −1).
+pub struct HandPiece: Copy + GpuData {
+    pub at: vec3,
+    pub side: f32,
+    pub piece: u32,
+}
+
+impl Surface for HandPiece {
+    fn bound(self) -> Bound {
+        let c = if self.piece == 0 {
+            vec3(0.06, -0.006, 0.01)
+        } else if self.piece == 1 { vec3(0.04, -0.005, -0.005) } else { vec3(0.035, -0.005, 0.018) }
+        Bound { centre: vec3(c.x * self.side, c.y, c.z), radius: 0.12, slope: 0.5 }
+    }
+
+    /// By its bound on the gradient from its centre's distance (`BootFoot`'s).
+    fn interval(self, over: Box3) -> Interval {
+        let r = 1.5 * 0.5 * length(over.hi - over.lo)
+        let d = self.distance(over.center())
+        Interval { lo: d - r, hi: d + r }
+    }
+
+    fn distance(self, p: vec3) -> f32 {
+        let q = p + self.at
+        let l = vec3(q.x * self.side, q.y, q.z)
+        if self.piece == 0 { palm(l) } else if self.piece == 1 { digits(l) } else { thumb(l) }
+    }
+
+    /// Cones, a rounded box narrowed across by up to a fifth: about 1.25, with room.
+    fn lipschitz(self, near: f32) -> f32 {
+        1.5
+    }
+}
+
+/// His bare left hand, and his right's black glove.
+fn skin_paint(p: vec3) -> Cloth {
+    SKIN
+}
+
+fn glove_paint(p: vec3) -> Cloth {
+    LEATHER
 }
 
 /// A boot's foot, on the left foot's bone (its image on the right's).
@@ -598,64 +638,38 @@ pub fn hero() -> Creature<Cloth> {
         .join(
             "hand left",
             b("hand left"),
-            oval(vec3(0.055, 0.026, 0.046))
-                .translate(vec3(0.765, 1.45, -0.055))
-                .with_at(hand_paint)
-                .translate(-s.rest(b("hand left"))),
+            HandPiece { at: s.rest(b("hand left")), side: 1.0, piece: 0 }.with_at(skin_paint),
             seam: smooth(0.02),
         )
         .join(
             "fingers left",
             b("fingers left"),
-            oval(vec3(0.052, 0.021, 0.045))
-                .translate(vec3(0.862, 1.448, -0.058))
-                .with_at(hand_paint)
-                .translate(-s.rest(b("fingers left"))),
-            seam: smooth(0.015),
+            HandPiece { at: s.rest(b("fingers left")), side: 1.0, piece: 1 }.with_at(skin_paint),
+            seam: smooth(0.010),
         )
         .join(
             "thumb left",
             b("thumb left"),
-            round_cone(
-                vec3(0.74, 1.428, -0.024),
-                vec3(0.80, 1.392, 0.008),
-                r_top: 0.015,
-                r_bottom: 0.011,
-            )
-                .with_at(hand_paint)
-                .translate(-s.rest(b("thumb left"))),
-            seam: smooth(0.012),
+            HandPiece { at: s.rest(b("thumb left")), side: 1.0, piece: 2 }.with_at(skin_paint),
+            seam: smooth(0.010),
         )
         .join(
             "hand right",
             b("hand right"),
-            oval(vec3(0.055, 0.026, 0.046))
-                .translate(vec3(-0.765, 1.45, -0.055))
-                .with_at(hand_paint)
-                .translate(-s.rest(b("hand right"))),
+            HandPiece { at: s.rest(b("hand right")), side: -1.0, piece: 0 }.with_at(glove_paint),
             seam: smooth(0.02),
         )
         .join(
             "fingers right",
             b("fingers right"),
-            oval(vec3(0.052, 0.021, 0.045))
-                .translate(vec3(-0.862, 1.448, -0.058))
-                .with_at(hand_paint)
-                .translate(-s.rest(b("fingers right"))),
-            seam: smooth(0.015),
+            HandPiece { at: s.rest(b("fingers right")), side: -1.0, piece: 1 }.with_at(glove_paint),
+            seam: smooth(0.010),
         )
         .join(
             "thumb right",
             b("thumb right"),
-            round_cone(
-                vec3(-0.74, 1.428, -0.024),
-                vec3(-0.80, 1.392, 0.008),
-                r_top: 0.015,
-                r_bottom: 0.011,
-            )
-                .with_at(hand_paint)
-                .translate(-s.rest(b("thumb right"))),
-            seam: smooth(0.012),
+            HandPiece { at: s.rest(b("thumb right")), side: -1.0, piece: 2 }.with_at(glove_paint),
+            seam: smooth(0.010),
         )
         .join(
             "boot",
