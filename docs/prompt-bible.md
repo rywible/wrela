@@ -8,7 +8,7 @@ Generated output is never shipped. It is a target to judge against, or a source 
 
 1. **Every image prompt is built from the same blocks, in the same order:** subject and action first, then the canon description of anything recurring, then the house style block, then the mood line, then camera. Copy the blocks below word for word. Don't paraphrase them.
 2. **The shared blocks name no things.** Anything a shared block mentions gets drawn. Our first mood line said "the sea is indifferent", and a cathedral door and a stone idol both came back standing in the sea. World nouns go in the subject, never in the prefix.
-3. **No negative prompts.** FLUX.2 and Stable Audio 2.5 don't take them, and naming a thing to forbid it tends to summon it. Say what you want instead (the rewrite table below).
+3. **No negative prompts for images.** FLUX.2 doesn't take them, and naming a thing to forbid it in an image prompt tends to summon it. Say what you want instead (the rewrite table below). Stable Audio 2.5 has no negative input either, but there a short "no music" clause at the end did work in the combat-sound refs, so the audio templates keep it.
 4. **Recurring things have one locked description** (the canon sheet). The idol is always "three separate heads side by side on one thick neck … exactly three arms". Never improvise a new phrasing for a canon thing.
 5. **A fixed seed ladder** (101, 202, 303, 404) for every new prompt, so prompt changes can be compared at equal seeds.
 6. **Check before use:** `onstyle.py` for palette, value and line; then a blind critic pass for canon and mood. Log every output, kept or not.
@@ -16,11 +16,11 @@ Generated output is never shipped. It is a target to judge against, or a source 
 
 ## House blocks (images)
 
-Version: **style v2**, 2026-11-06. If a block changes, bump the version and say so in the log's `note`.
+Version: **style v3**, 2026-11-06. If a block changes, bump the version and say so in the log's `note`.
 
 **STYLE**
 
-> Rendered in clean stylized CG with a hand-inked finish: sculptural simplified forms built from big flat planes, bold black ink contour lines of varying weight on every silhouette and major fold, thick near the viewer and thin and broken in the distance, graphic lighting in three flat value steps with hard-edged shadow shapes and deep ink-black darks, full value range from black to bone white, distance dissolving into flat pale haze. Cold desaturated colour: storm slate, grey-green sea, fog grey and bone white; no warm colours unless named.
+> Rendered in clean stylized CG with a hand-inked finish: sculptural simplified forms built from big flat planes, bold black ink contour lines of varying weight on every silhouette and major fold, thick near the viewer and thin and broken in the distance, graphic lighting in three flat value steps with hard-edged shadow shapes and deep ink-black darks, full value range from black to bone white, distance dissolving into flat pale haze. Cold desaturated colour: slate, grey-green, fog grey and bone white; no warm colours unless named.
 
 **MOOD**
 
@@ -33,8 +33,9 @@ Version: **style v2**, 2026-11-06. If a block changes, bump the version and say 
 Why this wording, from the test:
 
 - Style v1 listed the palette as hex codes, gold included. FLUX.2 treats a hex code as an order to paint that colour somewhere, so a gold beam appeared in two of three frames. BFL's guide says the same: attach a hex code to a named object or leave it out. Style v2 names colours in words and makes warmth opt-in.
-- "Deep ink-black darks, full value range" is there because frames made with reference images came back washed out without it.
-- "Hand-inked finish" and "contour lines of varying weight" are what gave consistent line work. Plain "ink lines" drifts between no lines (grand-03) and heavy outlines (sail-03).
+- Style v2 still said "grey-green sea", and the mood line named the sea; together they put the cathedral doors and the idol in the sea. Style v3 names only colours, and with the noun-free mood line the doors and the idol came back on land at both seeds tried (4242, 101).
+- "Deep ink-black darks, full value range" is there because v1 frames, with and without reference images, came back washed out without it.
+- "Hand-inked finish" and "contour lines of varying weight" are there because plain "ink lines" drifted between no lines (grand-03) and heavy outlines (sail-03). The test shows line work on every v2 and v3 frame, but how heavy still varies with the subject (near-black share 0.3% to 18%), so it is not yet tight.
 
 ## Canon sheet
 
@@ -93,13 +94,13 @@ Model `black-forest-labs/flux-2-pro`, licence key `flux-2-pro-api`.
 
 **Structured JSON prompts.** FLUX.2 reads a JSON prompt as well as prose (BFL's guide gives the schema: `scene`, `subjects[]` with `description`/`position`/`action`, `style`, `color_palette`, `lighting`, `mood`, `background`, `composition`, `camera`). Use it for crowded shots where prose mixes subjects up; put STYLE in `style`, MOOD in `mood`, canon rows in each subject's `description`.
 
-**Style anchors.** FLUX.2 [pro] takes up to 8 reference images. Attaching on-style frames with the REF line made a set of frames match each other more closely than text alone did. It also pulled them towards the anchors' haze and lost ink (all 6 anchored frames had a lower value range than the same prompt without anchors; 5 of 6 failed the ink or value check). So:
+**Style anchors.** FLUX.2 [pro] takes up to 8 reference images. Attaching on-style frames with the REF line made a set of frames match each other more closely than text alone did. It also pulled them towards the anchors' haze: 5 of 6 anchored frames had a lower value range than the same prompt without anchors, and 4 of 6 fail `onstyle.py`. (Unanchored v1 frames also lacked ink, so the anchors aren't the only cause.) So:
 
 - Default: text blocks only.
 - Use anchors when a set of frames must match each other (a sequence, a turnaround) and the text-only frames drift. Then add a contrast reminder to the subject.
-- Current anchor set (provisional, chosen by Claude, Ryan to confirm): `genai-targets/sail-02-from-helm`, `grand-01-rock-far`, `idol-03-impact`, downscaled copies in the project's `genai-bible/anchors/`. A better set would be three frames that pass `onstyle.py` with high contrast. Upload them with Replicate's files API and pass the URLs; logs record them under `inputs.input_images`.
+- Current anchor set (provisional, chosen by Claude, Ryan to confirm): `genai-targets/sail-02-from-helm`, `grand-01-rock-far` and `sky-02-squall-line`, downscaled copies in the project's `genai-bible/anchors/`. All three pass `onstyle.py`. The A/B test used `idol-03-impact` in place of the squall line; it was dropped because its Hakuro is off-canon (two sleeves, no gold lining). Upload them with Replicate's files API and pass the URLs; logs record them under `inputs.input_images`.
 - Never use an anchor that shows a canon thing drawn wrong; the model copies details too.
-- Don't use a FLUX output to train or fit a network (BFL's terms forbid it; generated.md).
+- Don't use a FLUX output to train or fit a network, and don't present one as made by a person (BFL's terms; generated.md).
 
 ## Image to 3D: TRELLIS on Replicate
 
@@ -108,10 +109,10 @@ Model `firtoz/trellis` (community model, needs `--version`), licence key `trelli
 **Concept image prompt** (FLUX.2, `1:1`):
 
 ```
-Single <object> concept for a game, clean stylized CG sculpt, full body three-quarter front view, the whole object in frame with margin on every side, isolated on a plain light grey background, even soft studio light with no cast shadows, matte surfaces. <Canon row>. <Shape details: silhouette, big forms, carved lines>. Hard-surface forms, bold readable silhouette.
+Single <object> concept for a game, clean stylized CG sculpt, full body three-quarter front view, long lens with minimal perspective, the whole object in frame with margin on every side, isolated on a plain light grey background, even soft studio light with no cast shadows, matte surfaces. <Canon row>. <Shape details: silhouette, big forms, carved lines>. Hard-surface forms, bold readable silhouette.
 ```
 
-Why: TRELLIS reads depth from shading and edges, so hard shadows become geometry and a busy background becomes missing geometry. A three-quarter view tells it more than a dead-on front view. One object per image. Shiny, glass or very thin parts fail. Keep the long lens: strong perspective distorts the mesh.
+Why (vendor guides written for TRELLIS 2; our model is TRELLIS 1, whose Replicate schema has the same inputs and defaults): TRELLIS reads depth from shading and edges, so hard shadows become geometry and a busy background becomes missing geometry. A three-quarter view tells it more than a dead-on front view. One object per image. Shiny, glass or very thin parts fail. Strong perspective distorts the mesh, hence the long lens. The idol's first source used a straight front view; try three-quarter against it before switching.
 
 **Settings**
 
@@ -129,7 +130,7 @@ Change one input at a time at a fixed seed. The back of the object is a guess; w
 
 ## Sound: Stable Audio 2.5 on Replicate
 
-Model `stability-ai/stable-audio-2.5`, licence key `stable-audio-2.5-api`. Sound refs are fitted into `engine::sound` and instruments; the soundtrack itself is written by us as wrela score (no generated music).
+Model `stability-ai/stable-audio-2.5`, licence key `stable-audio-2.5-api` (row in generated.md). Sound refs are fitted into `engine::sound` and instruments; the soundtrack itself is written by us as wrela score (no generated music).
 
 Stability's guide is written for music: genre or type first, then instruments or sources, then mood, then details. It has no sound-effect advice and no negative prompt; we use the same order for effects and state the envelope and the room, because those are what the fitter needs.
 
@@ -146,14 +147,14 @@ The mood words carry over here ("cold", "vast", "lonely", "ominous"); world noun
 
 ## Motion: Kimodo
 
-No lore, style or mood blocks. Kimodo is trained on real motion and game, anime or superhero words gave weaker motion. Style comes from our timing and pin layer. The tested rules are in the project's `kimodo/prompt-lessons.md`; in short: start with "A person…", one action at medium detail, force words ("angry", "heavy", "powerful"), body mechanics in one clause, and hand pins for control.
+Model `sprited/kimodo`, licence key `kimodo`. No lore, style or mood blocks. Kimodo is trained on real motion and game, anime or superhero words gave weaker motion. Style comes from our timing and pin layer. The tested rules are in the project's `kimodo/prompt-lessons.md`; in short: start with "A person…", one action at medium detail, force words ("angry", "heavy", "powerful"), body mechanics in one clause, and hand pins for control.
 
 ## Seeds, names and files
 
 - **Seed ladder:** 101, 202, 303, 404 for a new prompt. Once a seed is picked, keep it and change only the prompt, so the difference is the prompt's. A seed reproduces only with the same prompt, inputs and model version; the log keeps all three.
 - **Names:** `<area>-<nn>-<subject>[-v<k>]_<seedindex>`, such as `sky-02-squall-line-v2_0`. Areas: `sky`, `ocean`, `sail`, `grand`, `idol`, `hero`, `island`, `sfx`, `amb`, `note`.
 - **Where:** targets in the project's `genai-targets/`, tests in `genai-bible/`, area work in the area's folder. Run models through the project's `genai/gen.py`; it writes the log lines.
-- **Log:** every output, including rejects (`use: discarded`) and tests. Put the bible version in `note` (for example `prompt bible style v2`).
+- **Log:** every output, including rejects (`use: discarded`) and tests. Put the bible version in `note` (for example `prompt bible style v3`).
 
 ## Is it on style?
 
@@ -166,11 +167,11 @@ Two gates. An output that fails either is `discarded` (still logged), or fixed b
 | Cold palette | mean saturation | ≤ 0.24 |
 | No loud colour | 95th percentile saturation | ≤ 0.42 |
 | No stray warmth | share of saturated warm pixels | ≤ 1% (≤ 6% with `--warm`) |
-| Ink present | share of near-black pixels | 0.3% to 30% |
+| Ink present | share of near-black pixels, at full resolution | 0.3% to 30% |
 | Line work | share of strong edges | 3.5% to 19% |
 | Value range | 5th to 99th percentile luminance | ≥ 0.50 |
 
-Thresholds come from the 15 Nov 6 targets. On those and the A/B frames it flags what a person flags: `grand-03-cathedral` and `style-frame-opening-a` (no ink), `sky-03-after-rain` (warm, low contrast), and the washed-out anchored frames. It does not catch a wrong subject or a cliché shape (the green curling wave passes), which is why there is a second gate.
+The thresholds were hand-set from the same frames they are checked on (the 15 Nov 6 targets and the A/B frames), so treat them as a first calibration and widen or tighten them when they disagree with a critic on new frames. On those frames it flags `grand-03-cathedral` (no ink), `sky-03-after-rain` (warm, low contrast), the washed-out anchored frames and one fogged doors frame. "Warm" covers red through gold. It does not catch a wrong subject or a cliché shape (the green curling wave passes), which is why there is a second gate.
 
 **2. Critic pass.** A fresh agent that hasn't seen the prompt gets the image, the canon sheet and two anchor frames, and scores 0 to 2 on each:
 
@@ -185,18 +186,19 @@ Pass: 9 of 12 or more, and no 0 on canon. Before showing frames to Ryan, run at 
 
 ## Test behind this page (2026-11-06)
 
-Three new subjects (a sea stack with the skiff, the cathedral doors with Hakuro, the idol's three heads), seed 4242, FLUX.2 [pro]. All 17 frames are in the project's `genai-bible/abtest/` and logged.
+Three new subjects (a sea stack with the skiff, the cathedral doors with Hakuro, the idol's three heads), FLUX.2 [pro], seed 4242 unless noted. One seed per cell, so read it as direction, not proof. All 21 frames are in the project's `genai-bible/abtest/` and logged.
 
 | Arm | Prompt | What happened |
 |---|---|---|
 | A | the old one-line style suffix | Strong drama and contrast; ink varies from almost none (stack, 0.6% near-black) to heavy (idol, 29%) |
 | B | style v1 (hex palette with gold) + mood naming the sea | Gold beams in 2 of 3; the doors and the idol came back standing in the sea; curling "great wave" crests |
 | C | style v1 + 3 anchor images | Frames matched each other best, but washed out and lost ink |
-| B2 | style v2 (colours in words, value range) + mood still naming the sea | Gold gone, line work consistent, all three pass `onstyle.py`; but the sea still leaks into the doors and the idol, and the crests still curl. Only the critic pass catches these |
+| B2 | style v2 (colours in words, value range) + mood still naming the sea | Gold gone, line work on every frame, all three pass `onstyle.py`; but the sea still leaks into the doors and the idol, and the crests still curl. Only the critic pass catches these |
 | C2 | style v2 + anchors | Consistent, still lower contrast than B2 |
-| B3 | style v2 + the noun-free mood + canon sea line + "natural … cracked uneven sides" (seeds 4242, 77) | No curl, natural rock, consistent ink; passes `onstyle.py` |
+| B3 | style v2 + the noun-free mood + canon sea line + "natural … cracked uneven sides" (stack, seeds 4242, 77) | No curl, natural rock; both pass `onstyle.py` |
+| B4 | style v3 (no "sea" anywhere in the blocks) + noun-free mood (doors and idol, seeds 4242, 101) | Sea gone from all four. Idol frames strong. One doors frame (101) is fogged and fails the value check |
 
-Not yet tested: anchors chosen for high contrast, and the JSON prompt form.
+Not yet tested: the full seed ladder per cell, the new anchor set, and the JSON prompt form.
 
 ## Sources
 
