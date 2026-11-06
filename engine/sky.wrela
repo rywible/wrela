@@ -88,6 +88,9 @@ const EXTINCTION: f32 = 0.06
 /// a billow's skin; a fixed sample count spread across a grazing ray misses that skin.
 const VIEW_STEP: f32 = 40.0
 const LIGHT_SAMPLES: u32 = 8
+/// How strongly the cloud just over a point under a storm's deck shades it (`march`): a
+/// fraction of the field's own extinction, so a billow's relief reads in light.
+const RELIEF: f32 = 0.06
 
 fn view_samples(cell_length: f32) -> u32 {
     max(8, u32(ceil(cell_length / VIEW_STEP)))
@@ -392,7 +395,7 @@ pub fn cook_weather(
             saturate(broken),
             saturate(tall / (TOP - BASE)),
             bottom / (TOP - BASE),
-            1.0 - 0.65 * overcast,
+            1.0 - 0.15 * overcast,
         ),
     )
 }
@@ -624,7 +627,22 @@ fn march(
                 let over = max(local_top - h, 0.0) *
                     max(w.r, 0.7 * c.gloom * smoothstep(0.0, 0.3, w.r))
                 let shut = mix(1.0, exp(-over * 0.0016), c.gloom)
-                let dim = mix(1.0, 0.12 + 0.88 * hf * hf, c.gloom)
+                var dim = mix(1.0, 0.12 + 0.88 * hf * hf, c.gloom)
+                // Under a storm's deck, each billow's own relief: how much cloud is just over
+                // the point (a kilometre up, no farther). The deck's light comes down from above,
+                // so a pouch's thick core goes dark and its thin flanks and torn edges catch the
+                // light: rounded forms with lit rims, not one even shade.
+                if c.gloom > 0.0 {
+                    var od_up = 0.0
+                    for k in 0..3 {
+                        let rise = 70.0 * pow(3.0, f32(k))
+                        let qu = q + vec3(0.0, rise, 0.0)
+                        od_up += field(qu, h + rise, weather, shape, detail, rep, detailed: k == 0) *
+                            rise * 1.3
+                    }
+                    let lift = exp(-od_up * EXTINCTION * RELIEF)
+                    dim *= mix(1.0, 0.45 + 1.6 * lift, c.gloom)
+                }
                 let source = sun_light * to_sun * shut + ambient * dim
                 let step_t = exp(-dens * EXTINCTION * dt)
                 let absorbed = through * (1.0 - step_t)

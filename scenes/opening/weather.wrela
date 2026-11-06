@@ -63,7 +63,7 @@ fn rain(s: Shot, d: vec3, id: f32, t0: f32, t1: f32, jitter: f32) -> f32 {
     // march's steps): falling.
     let az = atan2(d.x, d.z)
     let streak = fbm2(vec2(az * 190.0, d.y * 6.0 + s.time * 0.6), 3)
-    let clear = clear_of_rock(id, 0.25)
+    let clear = clear_of_rock(id, 0.1)
     var through = 1.0
     let n = 18
     let k = log(t1 / t0)
@@ -107,7 +107,7 @@ fn clear_of_rock(id: f32, least: f32) -> f32 {
 /// How far a heavy shaft goes before it's taken all but a third of the light (m), what light
 /// the rain gives back (against the far air's), and how fast its cells go with the wind (m/s).
 const RAIN_THICK: f32 = 3200.0
-const RAIN_LIGHT: f32 = 0.5
+const RAIN_LIGHT: f32 = 0.72
 const RAIN_DRIFT: f32 = 11.0
 
 /// The scud: ragged cloud driven low under the deck along `d`, if it's nearer than `t_max`:
@@ -140,7 +140,7 @@ fn scud(
     let big = fbm2(w / 5000.0 + vec2(29.0, s.time * 0.002), 3)
     let torn = fbm2_seen(w / 520.0 + vec2(4.0, 1.0), 5, foot / 520.0)
     let cover = smoothstep(0.58, 0.74, torn + (big - 0.5) * 0.5) * smoothstep(0.45, 0.6, big) * (1.0 - smoothstep(60.0, 200.0, foot)) * smoothstep(32000.0, 14000.0, t) *
-        clear_of_rock(id, mix(0.7, 0.12, smoothstep(1100.0, 1700.0, s.eye.y + d.y * t_max)))
+        clear_of_rock(id, 0.0)
     if cover <= 0.0 {
         return vec4(0.0)
     }
@@ -253,7 +253,7 @@ pub fn weather(
         let one = dome.sample_level(smp, uv)
         var around = vec4(0.0)
         for k in 0..4 {
-            let o = vec2(f32(k & 1) * 2.0 - 1.0, f32(k >> 1) * 2.0 - 1.0) * texel * 1.7
+            let o = vec2(f32(k & 1) * 2.0 - 1.0, f32(k >> 1) * 2.0 - 1.0) * texel * 1.0
             around += dome.sample_level(smp, uv + o) * 0.25
         }
         let k = smoothstep(STORM_LOW * 0.5, STORM_LOW, d.y)
