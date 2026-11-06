@@ -79,12 +79,14 @@ fn sample<I: Isle>(
     } else if id == SEA {
         // Whether the water here mirrors the island: the mirrored ray met coarsely.
         var mirrors = false
-        if t > 60.0 {
+        if t > 4.0 {
             // (Off the waves' long slopes, not a flat mirror's: broken into the vertical strokes a
             // swell breaks a reflection into, and gone where the water tilts it past the rock.)
             let wob = (noise(vec2(p.x * 0.03, p.z * 0.3)) - 0.5) * 0.05 +
                 (noise(vec2(p.x * 0.11, p.z * 0.9)) - 0.5) * 0.02
-            let r0 = normalize(vec3(d.x, -d.y + wob, d.z))
+            // (And a little sideways, so its edges fray as the swell takes them.)
+            let side = (noise(vec2(p.x * 0.25, p.z * 0.06)) - 0.5) * 0.03
+            let r0 = normalize(vec3(d.x + side * d.z, -d.y + wob, d.z - side * d.x))
             let ib = sphere(p, r0, isle.bounds(), far)
             if ib.x < ib.y {
                 mirrors = march(isle, p, r0 + vec3(0.0, 0.006, 0.0), ib.x, ib.y, k * 1.5) < ib.y
@@ -138,7 +140,8 @@ fn sample<I: Isle>(
                 let qid = isle.field(q, (t + tm) * k).y
                 let qn = normal(isle, q, max(0.05, (t + tm) * k * 0.5), (t + tm) * k)
                 let g = isle.finish(q, qn, r, qid, (t + tm) * k)
-                let seen = lit_solid(
+                let other = isle.mirror_light(q, qn, r, g.albedo)
+                let seen = if other.w > 0.5 { other.rgb } else { lit_solid(
                     s,
                     h,
                     view,
@@ -156,7 +159,7 @@ fn sample<I: Isle>(
                     0.8,
                     0.0,
                     0.0,
-                )
+                ) }
                 let fres = 0.02 + 0.98 * pow(1.0 - max(dot(-d, n), 0.0), 5.0)
                 glow = seen * mix(fres, 1.0, clamp(mk - 1.0, 0.0, 1.0))
             }

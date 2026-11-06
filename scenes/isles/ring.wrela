@@ -130,7 +130,7 @@ fn cliffs(r: Ring, q: vec3) -> vec2 {
     // soft red bole weathers back, so the cliff stands in tiers, each its own colonnade.
     let flow = q.y / 11.0 + noise(vec2(round / 160.0, 3.0)) * 1.2
     let bole = smoothstep(0.12, 0.0, abs(fract(flow) - 0.5) - 0.38) * smoothstep(3.0, 6.0, q.y)
-    let half = line.y + wear + gully * 0.6 + scree - 1.6 * bole - if u > 0.0 && scree < 0.5 {
+    let half = line.y + wear + gully * 0.6 + scree - 0.8 * bole - if u > 0.0 && scree < 0.5 {
         notch
     } else { 0.0 }
     // Its brink crumbled: the top falls away over its last metres, under the turf.
@@ -210,70 +210,131 @@ fn talus(r: Ring, q: vec3, px: f32) -> f32 {
     boulder(p, rb, hash2(vec2(k, 7.3)))
 }
 
+/// A fisher's boat, `len` m long, its keel along z, its gunwale at `p`'s origin: a narrow open
+/// hull, its ends drawn up.
+fn boat(p: vec3, len: f32) -> f32 {
+    let half = len * 0.5
+    let u = p.z / half
+    let beam = 0.6 * sqrt(max(1.0 - u * u, 0.0)) + 0.02
+    let sheer = 0.25 * u * u
+    let outer = length(vec2(p.x / beam, min(p.y - sheer, 0.0) / 0.55)) - 1.0
+    let shell = max(outer * min(beam, 0.55), -(length(vec2(p.x / max(beam - 0.06, 0.01), min(p.y - sheer + 0.06, 0.0) / 0.5)) - 1.0) * 0.4)
+    max(max(shell, p.y - sheer), abs(p.z) - half)
+}
+
 /// The fishers' huts, on stilts in the lagoon along the inner shelf, in the stretch of the ring
-/// left of the mouth.
+/// left of the mouth: in a few hamlets, each hut on its own walk out from the shelf, some with a
+/// boat tied at its door.
 fn village(r: Ring, q: vec3, px: f32) -> vec2 {
-    let n = floor(6.2831853 * r.radius / 15.0)
+    let n = floor(6.2831853 * r.radius / 13.0)
     let (c, k) = sector(vec2(q.x, q.z), n)
     let a = k * 6.2831853 / n
     let m = a - r.mouth
     let side = m - 6.2831853 * floor(m / 6.2831853)
-    if side < 0.3 || side > 2.6 || hash2(vec2(k, 3.3)) < 0.25 {
+    // (Hamlets: the huts gather where the shelf is broad and the fishing good, and between them
+    // the shelf is bare.)
+    let gather = noise(vec2(k * 0.22, 2.0))
+    if side < 0.3 || side > 2.6 || gather < 0.45 || hash2(vec2(k, 3.3)) < 0.15 {
         return vec2(1.0e3, TIMBER)
     }
     let line = rim(r, a)
-    let out = line.x - line.y - 22.0 - 6.0 * hash2(vec2(k, 1.1))
+    let walk = 4.0 + 9.0 * hash2(vec2(k, 1.1))
+    let out = line.x - line.y - 16.0 - walk
     // (The door faces the lagoon: the hut's +x turned toward the centre.)
-    let p = vec3(out - c.x, q.y - 2.3, c.y + (hash2(vec2(k, 8.1)) - 0.5) * 4.0)
-    let w = 3.6 + 1.2 * hash2(vec2(k, 2.7))
-    let l = 4.4 + 1.6 * hash2(vec2(k, 5.9))
-    let reach = length(p) - 9.0
+    let p = vec3(out - c.x, q.y - 2.3 - 0.8 * hash2(vec2(k, 4.2)), c.y + (hash2(vec2(k, 8.1)) - 0.5) * 3.0)
+    let reach = length(p) - walk - 10.0
     if reach > 2.0 {
         return vec2(reach, TIMBER)
     }
-    let hh = hut(p, w, l, px)
-    near(vec2(hh.x, if hh.y < 0.5 { TIMBER } else {
-        THATCH
-    }), vec2(stilts(p, w, l, -3.3, px), TIMBER))
+    let big = hash2(vec2(k, 2.7))
+    let w = 3.4 + 2.4 * big
+    let l = 4.0 + 3.0 * hash2(vec2(k, 5.9))
+    // (Some turned, their ridges across the shelf, not along it.)
+    let turned = hash2(vec2(k, 6.3)) > 0.6
+    let ph = if turned { vec3(p.z, p.y, -p.x) } else { p }
+    let (hw, hl) = if turned { (l, w) } else { (w, l) }
+    let hh = hut(ph, hw, hl, px)
+    var f = near(vec2(hh.x, if hh.y < 0.5 { TIMBER } else { THATCH }), vec2(stilts(p, w, l, -3.6, px), TIMBER))
+    // Its walk: planks on posts back to the shelf.
+    let wl = walk * 0.5 + 0.6
+    let wp = p - vec3(-w * 0.5 - wl, -0.15, 0.0)
+    var plank = max(abs(wp.x) - wl, max(abs(wp.z) - 0.5, abs(wp.y) - 0.07))
+    if px < 0.3 {
+        let pk = wp.x - 2.4 * round(wp.x / 2.4)
+        plank = min(plank, max(length(vec2(pk, wp.z - 0.45 * sign(wp.z))) - 0.08, max(abs(wp.x) - wl, max(wp.y, -wp.y - 3.5))))
+    }
+    f = near(f, vec2(plank, TIMBER))
+    // A boat tied at its door.
+    if hash2(vec2(k, 9.7)) > 0.45 {
+        let bp = vec3(p.x - w * 0.5 - 1.6, q.y - 0.3, p.z - (hash2(vec2(k, 7.7)) - 0.5) * 2.0)
+        f = near(f, vec2(boat(bp, 4.2 + 1.5 * big), TIMBER))
+    }
+    f
 }
 
-/// The other sky, which the lagoon mirrors along `d`: night, few sharp stars, and a moon too large.
+/// Where the other sky's moon stands (the world's direction): risen over the far rim from the
+/// mouth, high enough that the lagoon holds it clear of the rim's own reflection.
+fn moon(r: Ring) -> vec3 {
+    normalize(vec3(-cos(r.mouth), 0.34, -sin(r.mouth)))
+}
+
+/// The other sky, which the lagoon mirrors along `d`: night, deep indigo low and toward its moon,
+/// a river of faint stars across it, a few sharp ones, and a moon too large.
 fn other_sky(r: Ring, d: vec3) -> vec3 {
-    var c = vec3(0.004, 0.006, 0.014) * (1.0 - 0.6 * clamp(d.y * 3.0, 0.0, 1.0))
-    let az = atan2(d.z, d.x)
     let el = asin(clamp(d.y, -1.0, 1.0))
-    // Two fields of stars: many faint and small, and a few large and bright, each its own colour,
-    // white, blue-white or a dull amber.
-    for layer in 0..2 {
-        let scale = if layer == 0 { 160.0 } else { 55.0 }
-        let rare = if layer == 0 { 0.985 } else { 0.992 }
-        let g = vec2(az, el) * scale
+    let m = moon(r)
+    let off = acos(clamp(dot(d, m), -1.0, 1.0))
+    // Black overhead, indigo toward its horizon and round the moon: the dark a silhouette reads on.
+    var c = vec3(0.003, 0.004, 0.012) +
+        vec3(0.012, 0.018, 0.05) * exp(-el * 3.5) +
+        vec3(0.02, 0.026, 0.06) * exp(-off * 2.2)
+    // Its galaxy: a band across the sky, tilted, clotted with dust lanes.
+    let band_n = normalize(vec3(0.35, 0.6, 0.72))
+    let across = dot(d, band_n)
+    let clot = noise3(d * 7.0 + vec3(2.0)) * 0.7 + noise3(d * 19.0) * 0.3
+    let band = exp(-across * across * 26.0) * smoothstep(0.25, 0.75, clot)
+    c += vec3(0.03, 0.032, 0.045) * band
+    // Three fields of stars: a dust of faint ones, thickest in the band; lesser ones; and a few
+    // large and bright, each its own colour, white, blue-white or a dull amber. (Each in a cell of
+    // a lattice round the sky, so none is drawn out where a chart's grid would crowd.)
+    for layer in 0..3 {
+        let scale = if layer == 0 { 300.0 } else if layer == 1 { 130.0 } else { 42.0 }
+        let rare = if layer == 0 { 0.93 - 0.12 * band } else if layer == 1 { 0.982 } else {
+            0.993
+        }
+        let g = d * scale
         let cell = floor(g)
-        let h = hash2(cell + vec2(f32(layer) * 31.0))
+        let key = cell.xy + vec2(cell.z * 17.31, cell.z * -7.77)
+        let h = hash2(key + vec2(f32(layer) * 31.0))
         if h > rare {
-            let at = cell + vec2(hash2(cell + vec2(1.7)), hash2(cell + vec2(9.2))) * 0.6 + vec2(0.2)
-            let sharp = if layer == 0 { 22.0 } else { 30.0 }
-            let k = exp(-dot(g - at, g - at) * sharp)
-            let tone = hash2(cell + vec2(4.4))
+            let at = cell +
+                vec3(hash2(key + vec2(1.7)), hash2(key + vec2(9.2)), hash2(key + vec2(3.9))) * 0.6 +
+                vec3(0.2)
+            // (Its distance across the view, not along it.)
+            let v = g - at
+            let w = v - d * dot(v, d)
+            let size = hash2(key + vec2(6.1))
+            let sharp = (if layer == 2 { 55.0 } else { 70.0 }) * (1.6 - size)
+            let k = exp(-dot(w, w) * sharp)
+            let tone = hash2(key + vec2(4.4))
             let hue = if tone < 0.6 { vec3(0.9, 0.92, 1.0) } else if tone < 0.85 {
                 vec3(0.7, 0.8, 1.0)
             } else { vec3(1.0, 0.75, 0.45) }
-            c += hue * k * (if layer == 0 { 1.2 } else { 4.0 }) * (h - rare) / (1.0 - rare)
+            let bright = if layer == 0 { 0.5 } else if layer == 1 { 1.8 } else { 6.0 }
+            c += hue * k * bright * (0.3 + 0.7 * (h - rare) / (1.0 - rare))
         }
     }
-    // The moon: risen over the far rim from the mouth, seven degrees across, so the lagoon holds
-    // it clear of the rim's own reflection. A sphere, full, darker toward its limb, its seas
-    // grey on it, in a ring of its own light.
-    let m = normalize(vec3(-cos(r.mouth), 0.26, -sin(r.mouth)))
-    let off = acos(clamp(dot(d, m), -1.0, 1.0))
-    let rr = clamp(off / 0.06, 0.0, 1.0)
-    let disc = 1.0 - smoothstep(0.058, 0.061, off)
+    // The moon: eleven degrees across, a sphere, full, darker toward its limb, its seas grey on it,
+    // in a ring of its own light.
+    let mr = 0.1
+    let rr = clamp(off / mr, 0.0, 1.0)
+    let disc = 1.0 - smoothstep(mr * 0.97, mr * 1.02, off)
     let limb = pow(max(1.0 - rr * rr, 0.0), 0.3)
-    let seas = 0.25 * smoothstep(0.5, 0.7, noise3(d * 28.0 + vec3(4.0))) + 0.1 * noise3(d * 120.0)
+    let seas = 0.25 * smoothstep(0.5, 0.7, noise3(d * 18.0 + vec3(4.0))) + 0.1 * noise3(d * 80.0)
     let face = limb * (0.85 - seas)
     c = mix(c, vec3(0.7, 0.69, 0.64) * face, disc)
     c += vec3(0.5, 0.55, 0.65) *
-        (0.06 * exp(-max(off - 0.06, 0.0) * 30.0) + 0.012 * exp(-off * 5.0))
+        (0.07 * exp(-max(off - mr, 0.0) * 18.0) + 0.015 * exp(-off * 4.0))
     c
 }
 
@@ -285,7 +346,7 @@ impl Isle for Ring {
     fn mirrored(self, p: vec3, px: f32) -> f32 {
         let q = p - self.at
         let mt = cliffs(self, q)
-        min(columns(q, mt.x, mt.y, 1.4, px), gates(self, q, px))
+        min(columns(q, mt.x, mt.y, 2.4, px), gates(self, q, px))
     }
 
     fn field(self, p: vec3, px: f32) -> vec2 {
@@ -294,7 +355,7 @@ impl Isle for Ring {
         let mass = mt.x
         let top = mt.y
         // (The columns stand in the faces; on the tops the turf has long since buried them.)
-        let rock = if q.y > top - 1.2 { mass } else { columns(q, mass, top, 1.4, px) }
+        let rock = if q.y > top - 1.2 { mass } else { columns(q, mass, top, 2.4, px) }
         var f = vec2(rock, BASALT)
         f = near(f, vec2(gates(self, q, px), BASALT))
         if q.y < 8.0 {
@@ -332,7 +393,7 @@ impl Isle for Ring {
             return matte(timber(q, q.x + q.z, foot), 0.85)
         }
         // Basalt, and the salt turf on its tops.
-        var a = basalt(q, n, 1.4, foot)
+        var a = basalt(q, n, 2.4, foot) * 1.35
         let top = cliffs(self, q).y
         // A lava flow's two tiers, as basalt cliffs stand: the colonnade below, its columns
         // straight and pale with salt; over it the entablature, darker, its columns thin and
@@ -345,7 +406,7 @@ impl Isle for Ring {
         a *= mix(1.15, 0.7, upper)
         let flow = q.y / 11.0 + noise(vec2(atan2(q.z, q.x) * self.radius / 160.0, 3.0)) * 1.2
         let bole = smoothstep(0.12, 0.0, abs(fract(flow) - 0.5) - 0.4) * smoothstep(3.0, 6.0, q.y)
-        a = mix(a, vec3(0.03, 0.025, 0.025), bole * 0.35)
+        a = mix(a, a * 0.7, bole * 0.4)
         let grass = smoothstep(0.75, 0.92, n.y) *
             smoothstep(top - 2.5, top - 0.4, q.y) *
             smoothstep(0.3, 0.5, noise3(q * 0.06))
@@ -358,10 +419,22 @@ impl Isle for Ring {
         let foam = if seaward {
             smoothstep(1.6 + 1.2 * wash, 0.3, q.y) *
                 smoothstep(-0.6, 0.2, q.y) *
-                smoothstep(0.3, 0.6, noise3(q * vec3(0.4, 1.5, 0.4)))
+                smoothstep(0.45, 0.75, noise3(q * vec3(0.4, 1.5, 0.4)))
         } else { 0.0 }
-        a = mix(a * 0.6, vec3(0.42, 0.44, 0.46), foam * 0.5)
+        // (And over it the rock the spray keeps wet, darker for a few metres.)
+        let wet = smoothstep(4.0 + 2.0 * wash, 0.0, q.y) * smoothstep(-0.5, 0.0, q.y)
+        a = mix(a * (1.0 - 0.45 * wet), vec3(0.26, 0.28, 0.3), foam * 0.35)
         matte(a, 0.9)
+    }
+
+    fn mirror_light(self, q: vec3, n: vec3, r: vec3, a: vec3) -> vec4 {
+        // What the lagoon holds is the ring under the other sky: lit by its moon and its night,
+        // never by this sun. So its rim stands black on the indigo, edged in moonlight.
+        let m = moon(self)
+        let sky = other_sky(self, vec3(r.x, max(r.y, 0.05), r.z))
+        let lit = a * (vec3(0.5, 0.56, 0.72) * 0.65 * max(dot(n, m), 0.0) + vec3(0.04, 0.05, 0.1))
+        let rim = pow(1.0 - abs(dot(n, r)), 4.0) * 0.5
+        vec4(lit + sky * rim, 1.0)
     }
 
     fn mirror(self, id: f32) -> f32 {

@@ -51,6 +51,12 @@ pub trait Isle: Copy + GpuData {
     fn mirrored_tint(self) -> vec4 {
         vec4(0.72, 0.6, 0.52, 0.35)
     }
+    /// How the island's mirroring water lights what it mirrors at `q` (its normal `n`, seen along
+    /// `r`, its albedo `a`): the colour and 1, or 0 in `.w` for this world's own light (the
+    /// default: a mirror of here).
+    fn mirror_light(self, q: vec3, n: vec3, r: vec3, a: vec3) -> vec4 {
+        vec4(0.0)
+    }
     /// The field without its mirroring water (what the water mirrors): by default all of it.
     fn mirrored(self, p: vec3, px: f32) -> f32 {
         self.field(p, px).x
