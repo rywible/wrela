@@ -73,7 +73,7 @@ pub const PICK_LAST: u32 = 89
 /// reach), and its guard again after. `PICK_TIMED=1` plays it to the fight's frame data
 /// (`accad_fists`' cross's: load, tell, snap, hold, pull home); 0 as Kimodo timed it.
 pub const PICK_GUARD: f32 = 0.0
-pub const PICK_LOADED: f32 = 0.0
+pub const PICK_LOADED: f32 = 8.0
 pub const PICK_CONTACT: f32 = 15.0
 pub const PICK_HOME: f32 = 37.0
 pub const PICK_TIMED: u32 = 2
@@ -195,12 +195,13 @@ fn a_beat(time: f32) -> (f32, f32, f32) {
         PICK_LOADED,
         PICK_LOADED + 0.4,
         PICK_CONTACT,
-        PICK_CONTACT,
+        // (The hold drifts on a little through the take's own follow-through, never dead still.)
+        PICK_CONTACT + 0.7,
         PICK_CONTACT + 2.0,
         // (Home is the guard it left from, so it comes back to the stance it left.)
         PICK_GUARD,
     ]
-    let coil = [0.0, 1.0, A_TENSION, -A_THROUGH, -A_THROUGH, -A_THROUGH * 1.2, 0.0]
+    let coil = [0.0, 1.0, 1.0, -A_THROUGH, -A_THROUGH, -A_THROUGH * 1.2, 0.0]
     let push = [0.0, 0.0, 0.0, 1.0, 1.0, 0.8, 0.0]
     if time <= 0.0 {
         return (src[0], 0.0, 0.0)
