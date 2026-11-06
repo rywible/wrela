@@ -729,8 +729,9 @@ fn begun(fight: mut Fight, peers: [u32], at: u64) {
 fn two_logs() -> Vec<Log> {
     var a: Vec<Change> = Vec::new()
     var b: Vec<Change> = Vec::new()
-    // Walk up (direction 4, full speed: 1 + 4 * 3 + 2), then attack over and over.
-    a.push(Change { frame: 0, input: 15 })
+    // Walk up (direction 4, full speed: 1 + 4 * 3 + 2), the first a little to the right too
+    // (direction 3), so both stand where they reach the boss, then attack over and over.
+    a.push(Change { frame: 0, input: 12 })
     b.push(Change { frame: 0, input: 15 })
     var f: u32 = 120
     while f < 3000 {
