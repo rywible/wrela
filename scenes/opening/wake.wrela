@@ -121,7 +121,7 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32) {
         smoothstep(7.0 + 6.0 * way + 22.0 * run, 1.0, behind_) *
         (0.6 + 0.5 * run) *
         mix(broken, 1.0, 0.45 * run * exp(-behind_ / 10.0)) *
-        wavelets
+        mix(1.0, wavelets, 0.4)
     // Straight astern, the churned water it leaves: lace on the water that rides with it (laid
     // where it rests), in patches that thin as it widens and fades; running, a broad white
     // furrow of it close astern.
@@ -146,8 +146,11 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32) {
         smoothstep(3.9, 2.8, from_bow) *
         smoothstep(0.3 - 0.15 * run, 0.55, noise(vec2(along * 3.0 - s.held * 4.0, across * 3.0))) *
         way
+    // (Thinned under the eye: so near, a pixel's footprint is a hand across and the froth blurs to
+    // soft glowing pools, as if on the lens.)
+    let near_eye = smoothstep(3.0, 7.0, length(p - s.eye))
     let wake = max(
-        max(arms, trail) * step(0.0, back) * smoothstep(0.0, 0.5, way),
+        max(arms, trail) * step(0.0, back) * smoothstep(0.0, 0.5, way) * near_eye,
         bow_wave * (0.7 + 0.3 * run),
     )
     // Where the sea meets the hull: a lip of churned water along its waterline, out past the

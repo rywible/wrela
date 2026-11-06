@@ -222,7 +222,7 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     // surge as it lifts onto the plane and the water lets go of it; braked when the sail's let
     // fly. Down a swell's face it surfs, up the back it slows.
     let want = RUN * polar(off) * r.power * r.gust
-    let rate = if want > r.speed { mix(0.3, 0.9, r.plane) } else { mix(0.3, 0.55, 1.0 - r.power) }
+    let rate = if want > r.speed { mix(0.3, 0.9, r.plane) } else { mix(0.3, 1.2, 1.0 - r.power) }
     r.speed += (want - r.speed) * rate * dt
     let bow = swell.height(r.at + heading * 1.6, time)
     let stern = swell.height(r.at - heading * 1.6, time)
