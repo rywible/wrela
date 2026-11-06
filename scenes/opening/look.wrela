@@ -81,6 +81,7 @@ pub struct Shot: Copy + GpuData {
     pub aft_hand: vec3,
     pub fore_foot: vec3,
     pub aft_foot: vec3,
+    pub gaze: vec3,
     /// Which shading language draws it all: 0 the drawn look (ink and hatching over the render),
     /// 1 painted CG, 2 cel and ink, 3 clean CG.
     pub look: f32,
@@ -100,7 +101,7 @@ const PLAY_UP: f32 = 2.5
 const PLAY_FOCAL: f32 = 1.75
 /// How far the player's camera stands out to windward of the skiff's wake (m): over the
 /// traveller's shoulder, the sail seen across, not edge on.
-const PLAY_SIDE: f32 = 1.6
+const PLAY_SIDE: f32 = 2.4
 
 /// `v` (x, z) turned `a` (rad) about the vertical, as a heading turns.
 fn turned(v: vec2, a: f32) -> vec2 {
@@ -243,6 +244,7 @@ pub fn shot_at(
         aft_hand: g.aft_hand,
         fore_foot: g.fore_foot,
         aft_foot: g.aft_foot,
+        gaze: g.gaze,
         look: 0.0,
         lantern: 0.0,
         fine: 1.0,

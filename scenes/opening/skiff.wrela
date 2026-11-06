@@ -120,13 +120,16 @@ fn cloth(s: Shot, q: vec3) -> (f32, vec2) {
     let edge = max(max(low - v, v - high) * 0.55, max(-u, u - BOOM))
     let up = clamp((v - 0.2) / HEAD, 0.0, 1.0)
     let depth = (0.08 + 0.32 * s.power) * (1.0 - 0.45 * up)
-    let shiver = (1.0 - smoothstep(0.1, 0.6, s.power)) *
-        (0.1 + 0.35 * x) *
+    let loose = 1.0 - smoothstep(0.1, 0.6, s.power)
+    let shiver = loose *
+        (0.08 + 0.26 * x) *
         x *
-        sin(u * 5.0 + v * 1.1 - s.held * 30.0) +
+        sin(u * 4.0 + v * 1.1 - s.held * 26.0) +
         (1.0 - smoothstep(0.2, 0.7, s.power)) * 0.06 * x * sin(u * 11.0 - v * 2.5 - s.held * 47.0)
     let off = w - depth * 4.0 * x * (1.0 - x) * (1.0 + 0.8 * x) - shiver
-    let face = abs(off) * 0.85 - 0.011
+    // (Its flogging folds steepen the field: march it more carefully the looser it flies, or
+    // the rays step through the cloth and it reads torn.)
+    let face = abs(off) * 0.85 / (1.0 + 1.6 * loose) - 0.011
     (length(max(vec2(face, edge), vec2(0.0))) + min(max(face, edge), 0.0), vec2(u, v))
 }
 
@@ -152,6 +155,7 @@ fn rider(s: Shot) -> (Joints, vec3) {
         fore_foot: s.fore_foot,
         aft_foot: s.aft_foot,
         sit: 0.0,
+        gaze: s.gaze,
     }
     let blow = normalize(vec3(s.belly.x, 0.0, s.belly.z) - vec3(0.0, 0.0, 0.6 + 0.08 * s.speed))
     (j, blow)

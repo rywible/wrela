@@ -16,6 +16,8 @@ pub struct Joints: Copy {
     pub aft_foot: vec3,
     /// 1 sat (knees drawn up, the coat's skirts over the seat behind), 0 standing.
     pub sit: f32,
+    /// Where the mask faces.
+    pub gaze: vec3,
 }
 
 fn capsule(p: vec3, a: vec3, b: vec3, r: f32) -> f32 {
@@ -62,6 +64,12 @@ fn hem_at(j: Joints, spine: vec3, face: vec3, q: vec3, blow: vec3, t: f32) -> ve
     j.hips - spine * 0.42 * (1.0 - 0.7 * j.sit) - face * 0.25 * j.sit + blow * 0.32 + up * flap
 }
 
+/// The way the mask faces, and square across it, from the gaze held level to the spine.
+fn facing(j: Joints, spine: vec3) -> (vec3, vec3) {
+    let gz = normalize(j.gaze - spine * dot(j.gaze, spine) + vec3(0.0001))
+    (gz, normalize(cross(spine, gz)))
+}
+
 /// The hero's parts at `q`: (skin and body, the coat, the mask, the hair), each a distance.
 pub fn parts(j: Joints, q: vec3, blow: vec3, t: f32) -> vec4 {
     let (spine, side, face) = frame(j)
@@ -91,13 +99,14 @@ pub fn parts(j: Joints, q: vec3, blow: vec3, t: f32) -> vec4 {
     // The coat: from the shoulders, open down the front, its skirts to the knee and its tails
     // streaming on the wind.
     let hem = hem_at(j, spine, face, q, blow, t)
-    var coat = taper(q, j.neck - spine * 0.04, j.hips, 0.2, 0.17)
-    coat = blend(coat, taper(q, j.hips, hem, 0.17, 0.15), 0.05)
+    var coat = taper(q, j.neck - spine * 0.04, j.hips, 0.235, 0.19)
+    coat = blend(coat, taper(q, j.hips, hem, 0.19, 0.12), 0.05)
     // (Its front open: the chest shows between its edges.)
     let open = dot(q - j.hips, face) - 0.08 - 0.06 * abs(dot(q - j.hips, side)) / 0.2
     coat = max(coat, -max(open, abs(dot(q - j.hips, side)) - 0.09))
     // The head: the mask's face plate and its long muzzle, its ears tall above it.
     let head = j.neck + spine * 0.17
+    let (face, side) = facing(j, spine)
     var mask = length((q - head - face * 0.03) / vec3(1.0)) - 0.12
     mask = blend(mask, taper(q, head + face * 0.05, head + face * 0.22 - spine * 0.04, 0.08, 0.025), 0.04)
     let ear_a = head + side * 0.07 + spine * 0.08
@@ -128,6 +137,7 @@ pub fn hero_material(j: Joints, q: vec3, blow: vec3, t: f32) -> (vec3, f32) {
     let (spine, side, face) = frame(j)
     if k.z <= min(min(k.x, k.y), k.w) + 0.001 {
         let head = j.neck + spine * 0.17
+        let (face, side) = facing(j, spine)
         let r = q - head
         let marks = smoothstep(0.62, 0.72, noise(vec2(dot(r, spine) * 30.0, dot(r, side) * 14.0))) *
             step(0.0, dot(r, face)) *
@@ -146,7 +156,7 @@ pub fn hero_material(j: Joints, q: vec3, blow: vec3, t: f32) -> (vec3, f32) {
         let hem = hem_at(j, spine, face, q, blow, t)
         let down = hem - j.hips
         let u = dot(q - j.hips, down) / dot(down, down)
-        let hemline = smoothstep(0.86, 0.9, u)
+        let hemline = smoothstep(0.93, 0.95, u)
         let gold = max(edge * front, hemline)
         return (mix(vec3(0.025, 0.025, 0.03), vec3(0.85, 0.62, 0.18), gold), mix(0.55, 0.3, gold))
     }
