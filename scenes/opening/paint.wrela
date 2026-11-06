@@ -639,6 +639,7 @@ fn sea_shade(
     smp: Sampler,
     waves: Waves,
     yon: Texture<Rgba16Float>,
+    yon_marks: Texture<Rgba16Float>,
     p: vec3,
     d: vec3,
     t: f32,
@@ -715,7 +716,10 @@ fn sea_shade(
             // texture's edge would smear across the water.)
             let inside = smoothstep(0.0, 8.0, min(min(at.x, at.y), 1.0e5)) *
                 smoothstep(0.0, 8.0, min(s.resolution.x - at.x, s.resolution.y - at.y))
-            if inside > 0.0 {
+            // (The rock's alone: the sea's own stacks stand near, where the eye's view of them is
+            // not the water's.)
+            let what = yon_marks.sample_level(smp, at / s.resolution)
+            if inside > 0.0 && exp2(what.x) > 2500.0 {
                 let far = yon.sample_level(smp, at / s.resolution) * inside
                 mirrored = mirrored * (1.0 - far.a) + far.rgb
             }
@@ -1050,6 +1054,7 @@ fn sample(
             smp,
             waves,
             yon_colour,
+            yon_marks,
             p,
             d,
             t,
