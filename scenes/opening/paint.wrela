@@ -450,6 +450,35 @@ pub(package) fn lit_solid(
     mix(aired, behind, haze - 1.0)
 }
 
+/// `raw` (a surface's light at `p`, as `lit_solid` gives it with no `haze`) seen from the eye
+/// through the air, `lit_solid`'s way: all of it, and past that (`haze` over 1) on toward the
+/// sky's own colour behind. For light shaded further after `lit_solid`, so the air is laid
+/// over the shading, never darkened by it.
+pub(package) fn hazed_far(
+    s: Shot,
+    h: Heaven,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    smp: Sampler,
+    raw: vec3,
+    p: vec3,
+    d: vec3,
+    haze: f32,
+) -> vec3 {
+    let aired = aired(aerial, smp, h.light, raw, p, s.eye)
+    let back = normalize(vec3(d.x, max(d.y, 0.02), d.z))
+    let behind = mix(
+        clear_sky(view, smp, h.light, back),
+        storm_sky(view, h.light, back, dome, smp, disc: false).rgb,
+        OVERCAST,
+    )
+    if haze <= 1.0 {
+        return mix(raw, aired, haze)
+    }
+    mix(aired, behind, haze - 1.0)
+}
+
 /// The middles of a normal spread's four quarters, in its deviations.
 const QUARTILES = [-1.15, -0.32, 0.32, 1.15]
 
@@ -699,6 +728,15 @@ fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
 
 /// The sea at `p`, seen along `d` from `t` away: its light, line field, weight, normal and energy.
 
+/// How much of the sky over the water at `p` the rock hides (0 to 1, cosine-weighted): as a
+/// disc 1.1 km across its broad middle, seen from under it.
+fn under_isle(p: vec3) -> f32 {
+    let v = ISLE + vec3(0.0, -450.0, 0.0) - p
+    let d2 = dot(v, v)
+    let r2 = 1100.0 * 1100.0
+    clamp(1.5 * r2 / (r2 + d2) * max(v.y, 0.0) / sqrt(d2), 0.0, 0.85)
+}
+
 fn sea_shade(
     s: Shot,
     h: Heaven,
@@ -773,21 +811,17 @@ fn sea_shade(
     mirrored /= max(fresnel, 1.0e-6)
     fresnel /= seen
     // The isle's reflection, far out on the water: the rock as its own pass met it (`yonder`),
-    // where the mirrored ray looks (from so far, the eye's own view of it), broken down the swell
-    // in vertical strokes as the waves under it each mirror a piece.
+    // where the water's own mirrored ray looks (from so far, the eye's view of it serves), so
+    // the waves under it break it as they break the sky's.
     if t > 60.0 {
-        let r0 = vec3(d.x, -d.y, d.z)
+        let r0 = normalize(vec3(r.x, max(r.y, 0.002), r.z))
         let z = dot(r0, s.forward)
         if z > 0.0 {
             let uv = vec2(dot(r0, s.right), -dot(r0, s.up)) * (s.focal / z)
             let at = (uv * s.resolution.y + s.resolution) * 0.5
-            let wob = (noise(vec2(p.x * 0.02, p.z * 0.25)) - 0.5) * 6.0
-            let q = clamp(at + vec2(0.0, wob), vec2(0.0), s.resolution - vec2(1.0))
-            let far = yon.load(u32(q.x), u32(q.y))
+            let far = yon.sample_level(smp, at / s.resolution)
             if far.a > 0.0 {
-                let broken = smoothstep(0.3, 0.7, noise(vec2(p.x * 0.02, p.z * 0.25)))
-                let seen = mirrored * (1.0 - far.a) + far.rgb
-                mirrored = mix(mirrored, seen, 0.55 + 0.35 * broken)
+                mirrored = mirrored * (1.0 - far.a) + far.rgb
             }
         }
     }
@@ -876,7 +910,11 @@ fn sea_shade(
     let glint = kept_ + carried * points * (1.0 + cut / max(luma(carried), 1.0e-4))
     // The light that comes back up out of the water: deep blue-green, brighter through the
     // crests lit from behind.
-    let sky_up = storm_sky(view, h.light, vec3(y: 1.0), dome, smp, disc: false).rgb * PI
+    // (Under the rock, less of it: the rock's mass hides a great piece of the sky over the water
+    // there, a darker pool on the sea round its foot.)
+    let sky_up = storm_sky(view, h.light, vec3(y: 1.0), dome, smp, disc: false).rgb *
+        PI *
+        (1.0 - under_isle(p))
     let body = vec3(0.018, 0.068, 0.082) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
     let behind = pow(max(dot(normalize(vec3(-d.x, 0.0, -d.z)), -l) * 0.5 + 0.5, 0.0), 4.0)
     // The sun through the waves' crests: their thin tops, where the waves crowd and sharpen,

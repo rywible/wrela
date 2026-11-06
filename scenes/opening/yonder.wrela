@@ -12,7 +12,7 @@
 
 use look::{GILT, GLASS, ISLE, OVERCAST, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
-use paint::{Heaven, aired, lit_solid, sphere}
+use paint::{Heaven, aired, hazed_far, lit_solid, sphere}
 use engine::far::foot
 use engine::light::Light
 use engine::sky::{Clouds, cloud_shadow}
@@ -140,7 +140,7 @@ fn isle_shade(
     )
     // The gilding shines: it holds the low sun, as if lit from within.
     // (Far off, a cross or a finial is a speck: held down, or it beads as a model's would.)
-    let far_ = 1.0 - 0.8 * smoothstep(2500.0, 7000.0, t)
+    let far_ = 1.0 - 0.95 * smoothstep(2000.0, 6000.0, t)
     let glow = if id == GILT {
         glow0 +
             light.sun_colour *
@@ -157,8 +157,10 @@ fn isle_shade(
     // little past it toward the sky's own colour, as a painter pushes back what's far; so the
     // building sits on its rock, not over it, and both sit far off, not near and small.
     // Its underside, hung in its own shade, given to the air: the lower, the more of the sky.
+    // (Thicker toward its tip, as the air is lower down: its underside fades to the sky before
+    // its top does, so it reads as deep in the air, not a flat shape on it.)
     let below = clamp((ISLE.y - p.y) / (210.0 * SCALE), 0.0, 1.0)
-    let haze = 1.06 + 0.08 * pow(below, 1.6)
+    let haze = 0.94 + 0.24 * pow(below, 1.5) * smoothstep(3000.0, 8000.0, t)
     let gloss = if id == ROCK { 0.0 } else { 1.0 }
     // (The rock lit by its planes more than its cracks: a crack's wall turned to the sun
     // catches it softly, not as a seam of gold.)
@@ -180,7 +182,7 @@ fn isle_shade(
         glow,
         sun,
         ao,
-        haze,
+        0.0,
         gloss,
     )
     // The underside hangs in its own shade, darker the lower: a mass over the sea, not a veil.
@@ -226,6 +228,8 @@ fn isle_shade(
         c += albedo * vec3(0.5, 0.58, 0.75) * 0.12 * ledge * fade
         c *= mix(1.0, mix(0.72, 1.0, wrap), fade)
     }
+    // (The air over all of that: the shading darkens the stone, never the air in front of it.)
+    c = hazed_far(s, h, view, aerial, dome, smp, c, p, d, haze)
     line = l
     weight = if id == ROCK { 0.55 } else { 0.5 }
     // (The ink reads the rock by its planes too.)
@@ -399,12 +403,12 @@ fn falls(
                     smoothstep(40.0, 320.0, drop) *
                     smoothstep(1700.0, 500.0, drop) *
                     smoothstep(0.28, 0.75, lump + 0.25 * body)
-                let a = clamp(sheet * 0.95 + spray * 0.8, 0.0, 0.95) * (1.0 - acc.a)
+                let a = clamp(sheet * 0.95 + spray * 0.9, 0.0, 0.95) * (1.0 - acc.a)
                 if a > 0.001 {
                     // Lit as the world is: a pale matte facing the eye and the sky over it, the
                     // spray's top lighter than its shadowed belly.
                     let n = normalize(-d + vec3(0.0, 0.6 + 0.3 * lump, 0.0))
-                    let white = mix(0.55, 0.85, smoothstep(0.0, 200.0, drop))
+                    let white = mix(0.7, 1.0, smoothstep(0.0, 200.0, drop))
                     let lit = lit_solid(
                         s,
                         h,
