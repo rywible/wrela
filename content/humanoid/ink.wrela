@@ -326,6 +326,18 @@ fn blast(s: Shot, px: vec2, scale: f32) -> vec2 {
         let kept = band(dry, edge: 0.18 + 0.45 * life, soft: 0.08)
         ink = max(ink, rim * kept * front * fade * (1.0 - 0.45 * kk))
     }
+    // At the contact itself: a burst of ink round the fist, ragged, all the way round, gone in a
+    // fifth of a second, so the eye finds where it landed first.
+    let rr = length(rel)
+    let ang2 = atan2(rel.y, rel.x)
+    let splash = reach *
+        0.3 *
+        (1.0 - exp(-age / 0.035)) *
+        (0.75 + 0.5 * noise(vec2(ang2 * 2.2, 7.0)))
+    let sthick = scale * 6.0 * (1.0 - smoothstep(0.0, 0.2, age))
+    let ring = 1.0 - band(abs(rr - splash), edge: sthick, soft: 1.2 * scale)
+    let sdry = band(noise(vec2(ang2 * 14.0, rr / (3.0 * scale))), edge: 0.25, soft: 0.08)
+    ink = max(ink, ring * sdry)
     vec2(clamp(ink, 0.0, 1.0), 0.0)
 }
 

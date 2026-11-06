@@ -126,7 +126,7 @@ pub fn struck(p: f32) -> Pose {
 
 /// How hard the giant gives under the blow (radians at its knee): one sprung bump, no swing back
 /// and forth.
-pub const X_GIVE: f32 = 0.3
+pub const X_GIVE: f32 = 0.5
 pub const X_GIVE_LIFE: f32 = 0.13
 
 /// The giant at played time `p`: still, until struck; then his struck leg gives (the knee dips),
@@ -281,8 +281,8 @@ pub fn camera(time: f32) -> (f32, f32) {
     if t < 0.0 {
         return (0.0, 0.0)
     }
-    let kick = X_KICK * smoothstep(0.0, 0.06, t) * exp(-t / X_KICK_LIFE)
-    let push = X_PUSH * smoothstep(0.0, 0.04, t) * exp(-t / X_PUSH_LIFE)
+    let kick = X_KICK * smoothstep(0.0, 0.1, t) * exp(-t / X_KICK_LIFE)
+    let push = X_PUSH * smoothstep(0.0, 0.14, t) * exp(-t / X_PUSH_LIFE)
     (kick, push)
 }
 
