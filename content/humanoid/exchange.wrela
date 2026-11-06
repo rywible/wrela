@@ -348,7 +348,7 @@ pub fn foe(p: f32) -> Pose {
 }
 
 /// How long the struck one takes to go from his guard to the reaction's drawing (s).
-pub const X_TAKE: f32 = 0.06
+pub const X_TAKE: f32 = 0.1
 
 /// How the reaction is turned to stand as his guard did: between squaring its hands and its
 /// chest to his (his guard is bladed, the reaction square; turned by either alone, he'd spin).
@@ -548,7 +548,8 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
         )
     }
     // The shock: in over two drawings, held through the hit-stop, then let go.
-    let j = smoothstep(0.0, 0.016, wall) * (if wall < t.hold { 1.0 } else {
+    // (It starts as the impact frame ends, so it's seen happening, not swapped in under the ink.)
+    let j = smoothstep(t.flash, t.flash + 0.035, wall) * (if wall < t.hold { 1.0 } else {
         exp(-(wall - t.hold) / X_RECOIL_LIFE)
     })
     let r = t.recoil * j
@@ -565,7 +566,12 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
         let moved = struck_point(at, pf, t) - at
         let on = at + BLOW * max(dot(moved, BLOW), 0.0) + vec3(0.0, moved.y * 0.3, 0.0)
         let k = 1.0 - smoothstep(free, end, since)
-        arm_to(rig, mut w, 1, mix(own, on, k))
+        // (Through the hit-stop it stays on it; after, it's only stopped there: it goes its own
+        // way, and where that would take it into him, no further along the blow than his face.)
+        let past = dot(own - on, BLOW)
+        let stopped = if past > 0.0 { own - BLOW * past } else { own }
+        let want = if wall < t.hold { on } else { stopped }
+        arm_to(rig, mut w, 1, mix(own, want, k))
     }
     stride::store(rig, w, mut c, 0)
     c.pose(0.0)
