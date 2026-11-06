@@ -43,7 +43,7 @@ fn weather() -> Weather {
             radius: BREAK,
         },
         // (The deck goes with the sea's wind, faster up where it is.)
-        wind: wind() * 12.0,
+        wind: wind() * 3.0,
         overcast: OVERCAST,
         thin: THIN,
         // (Thinner behind the cathedral, as the eye sees the deck over its spires: a soft,

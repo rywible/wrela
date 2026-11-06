@@ -358,7 +358,7 @@ pub fn cook_weather(
     // going away, not one even field of lumps.
     var lifted = 0.0
     if overcast > 0.0 {
-        let mass = fbm2(xz * (3.0 / SPAN) + vec2(13.0, 71.0), 4)
+        let mass = fbm2(xz * (5.0 / SPAN) + vec2(13.0, 71.0), 4)
         let along = normalize(wind + vec2(1.0e-4))
         let w2 = vec2(
             dot(xz, along) * (3.0 / SPAN),
