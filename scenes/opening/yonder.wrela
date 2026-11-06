@@ -291,11 +291,11 @@ pub fn yonder(
         n = inn
     }
     // The falls, in front of the rock.
-    let fall = falls(s, h, aerial, smp, o, d, t)
+    let (fall, fall_t) = falls(s, h, aerial, smp, o, d, t)
     c = c * (1.0 - fall.a) + fall.rgb
     cover = cover + fall.a * (1.0 - cover)
     if id == SKY && fall.a > 0.0 {
-        marks.x = log2(length(ISLE - o))
+        marks.x = log2(fall_t)
     }
     var now = vec4(c, cover)
     var third = vec4(n * 0.5 + 0.5, 0.0)
@@ -327,7 +327,8 @@ pub fn yonder(
     Targets3 { first: now, second: marks, third }
 }
 
-/// How much of the falls a ray `o` + `d` t meets before `hit`, and their light (premultiplied).
+/// How much of the falls a ray `o` + `d` t meets before `hit`, and their light (premultiplied);
+/// and how far the nearest is (`hit` if none).
 /// Each falls as water does: a sheet of strands, bright where they catch the light, dark between
 /// where the rock shows through, fraying at its edges, clumping as it drops, then gone to mist.
 fn falls(
@@ -338,8 +339,9 @@ fn falls(
     o: vec3,
     d: vec3,
     hit: f32,
-) -> vec4 {
+) -> (vec4, f32) {
     var acc = vec4(0.0)
+    var first = hit
     let dd = vec2(d.x, d.z)
     let len2 = max(dot(dd, dd), 1.0e-6)
     let k = SCALE / 4.5
@@ -404,7 +406,10 @@ fn falls(
             let lit = mix(water, haze_, clamp(mist / max(a + mist, 1.0e-3), 0.0, 1.0))
             let col = aired(aerial, smp, h.light, lit, p, s.eye)
             acc += vec4(col * a, a)
+            if a > 0.0 {
+                first = min(first, tc)
+            }
         }
     }
-    acc
+    (acc, first)
 }
