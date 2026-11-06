@@ -267,7 +267,7 @@ pub fn weather(
     }
     // Where the sea meets the sky, the far sea lost in the same air: no ruled line.
     if m.y != SKY && d.y < 0.0 {
-        let k = exp(d.y / 0.008) * 0.5
+        let k = exp(d.y / 0.02) * 0.75
         c = vec4(mix(c.rgb, air, k), c.a)
     }
     // The scud, in front of what's behind it.
