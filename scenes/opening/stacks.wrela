@@ -1,0 +1,255 @@
+// The sea's own rocks: stacks of black basalt columns and the skerries round their feet, standing
+// out of the open sea in clusters a few hundred metres apart, so the eye has something fixed to
+// see the skiff pass. Built at their real size (a column is a couple of metres across, a stack
+// tens of metres tall), never a small rock scaled up; drawn in the far pass (`yonder`) with the
+// rock, lit by the one light and seen through the one air.
+//
+// One cluster or none in each cell of a grid laid over the sea, its place, its kind and size from
+// the cell's hash; each kept inside its cell, so the field is only ever the cell's own cluster
+// and the way out of the cell (a ray steps to the cell's edge, then meets the next one's).
+// None in the skiff's first reach, none in the lane it sails out along, none in front of the
+// cathedral rock.
+
+use look::{ISLE, hash2, noise}
+
+/// A cell's side (m), and how far a cluster reaches from its middle (m): a cluster stays a margin
+/// inside its cell.
+const CELL: f32 = 170.0
+const REACH: f32 = 50.0
+/// How far out the rocks stand (m): past this, the sea is open to the horizon.
+const OUT: f32 = 2600.0
+/// The tallest rock (m).
+pub const TALLEST: f32 = 64.0
+
+/// A column's width across its flats (m): the size basalt cracks to as it cools.
+const COLUMN: f32 = 2.4
+
+/// The middle of the hexagon of a grid `s` m across its flats that `p` lies in, and `p` from it.
+fn hex_cell(p: vec2, s: f32) -> (vec2, vec2) {
+    let r = vec2(1.0, 1.7320508) * s
+    let h = r * 0.5
+    let a = p - r * floor(p / r) - h
+    let pb = p - h
+    let b = pb - r * floor(pb / r) - h
+    let local = if dot(a, a) < dot(b, b) { a } else { b }
+    (p - local, local)
+}
+
+/// How far `v` is outside a hexagon `s` m across its flats.
+fn sd_hex(v: vec2, s: f32) -> f32 {
+    let a = abs(v)
+    max(a.x, dot(a, vec2(0.5, 0.8660254))) - s * 0.5
+}
+
+/// Whether a cluster at `at` (x, z) is kept out: the skiff's first reach, the lane ahead of it,
+/// the cathedral rock's bearing.
+fn kept_out(at: vec2) -> bool {
+    let r = length(at)
+    let ahead = vec2(sin(-0.22), cos(-0.22))
+    let along = dot(at, ahead)
+    let off = abs(at.x * ahead.y - at.y * ahead.x)
+    let to_isle = normalize(vec2(ISLE.x, ISLE.z))
+    let bearing = dot(at / max(r, 1.0), to_isle)
+    r < 120.0 + REACH ||
+        (along > -60.0 && along < 900.0 && off < 40.0 + REACH) ||
+        (bearing > cos(0.16) && r > 300.0)
+}
+
+/// Cell `c`'s cluster: its middle (x, z), its main stack's height and girth (m), and its seed;
+/// height 0 if the cell has none.
+fn cluster(c: vec2) -> vec4 {
+    let h = hash2(c * 0.913 + vec2(3.7))
+    let at = (c + vec2(0.5)) * CELL + (vec2(hash2(c + vec2(1.1)), hash2(c + vec2(7.3))) - 0.5) * (CELL - 2.0 * REACH - 14.0)
+    // (In groups: whole stretches of sea bare, and where the rock is, several cells together.)
+    // (Thinner the farther out: a few far off, not a skyline of them along the horizon.)
+    let gather = smoothstep(0.35, 0.7, noise(c * 0.21 + vec2(5.3))) * (1.0 - 0.65 * smoothstep(700.0, 2400.0, length(at)))
+    if h > 0.45 * gather || kept_out(at) || length(at) > OUT {
+        return vec4(at, 0.0, 0.0)
+    }
+    let size = hash2(c + vec2(5.9))
+    vec4(at, 14.0 + (TALLEST - 18.0) * size * size, h * 97.0)
+}
+
+/// A stack: a bundle of columns `r` m round and `tall` m high, leaning, its crown tilted, its
+/// footprint lobed; each column to its own height under the crown, a few snapped short. `q` from
+/// its foot; finer than a pixel `px` holds, its mass alone.
+fn stack(q: vec3, r: f32, tall: f32, seed: f32, px: f32) -> f32 {
+    let lean = vec2(hash2(vec2(seed, 1.0)) - 0.5, hash2(vec2(seed, 2.0)) - 0.5) * 0.22
+    let v = vec2(q.x, q.z) - lean * max(q.y, 0.0)
+    let rv = length(v)
+    let dir = v / max(rv, 1.0e-3)
+    let ang = atan2(dir.y, dir.x)
+    // (Lobed, and ribbed by the columns' bays: the ribs a far eye still reads down its sides.)
+    let lobe = 1.0 + 0.32 * (noise(dir * 1.4 + vec2(seed)) - 0.5) + 0.12 * (noise(dir * 3.1 + vec2(seed * 2.0)) - 0.5) +
+        0.06 * abs(sin(ang * floor(5.0 + r * 0.6) + seed))
+    let up = clamp(q.y / tall, 0.0, 1.0)
+    // (Narrowing as it rises, waisted where the sea has worked at it a few metres up, and bellied
+    // out again at its shoulder.)
+    let waist = 1.0 - 0.12 * exp(-pow((q.y - tall * 0.35) / (tall * 0.12), 2.0))
+    let girth = r * lobe * (1.0 - 0.45 * up) * waist * (1.0 + 0.3 * smoothstep(4.0, 0.0, q.y))
+    let tilt = vec2(hash2(vec2(seed, 3.0)) - 0.5, hash2(vec2(seed, 4.0)) - 0.5) * 0.5
+    // (Its crown broken in steps, a column's length or two, round its top.)
+    let broken = floor(noise(dir * 2.2 + vec2(seed * 3.0)) * 3.0) * tall * 0.07
+    let crown = tall - dot(v, tilt) - 0.2 * rv - broken
+    let shell = max(rv - girth, max(q.y - crown, -q.y - 12.0))
+    if px > COLUMN * 0.5 || shell > 2.5 {
+        return shell * 0.8
+    }
+    let (cc, lv) = hex_cell(v + vec2(seed * 13.0), COLUMN)
+    let hc = hash2(cc * 0.37)
+    let ctop = tall - dot(cc - vec2(seed * 13.0), tilt) - 0.2 * length(cc - vec2(seed * 13.0)) -
+        floor(hc * 4.0) * 0.8 -
+        step(0.88, hc) * 5.0
+    let col = max(sd_hex(lv, COLUMN) + 0.06, q.y - ctop)
+    let edge = COLUMN * 0.5 - max(abs(lv.x), dot(abs(lv), vec2(0.5, 0.8660254)))
+    min(max(col, shell - 0.6), max(shell, 0.0) + max(edge, 0.05)) * 0.9
+}
+
+/// A skerry: a low hump of broken rock, `r` m round and `tall` high, awash.
+fn skerry(q: vec3, r: f32, tall: f32, seed: f32) -> f32 {
+    let v = vec2(q.x, q.z)
+    let wob = 1.0 + 0.35 * (noise(v / 7.0 + vec2(seed)) - 0.5)
+    (length(vec3(v.x / r, q.y / tall, v.y / r)) - wob) * min(r, tall) * 0.7
+}
+
+/// The cluster in cell `c`, its field at `p`: its main stack and the lesser stacks and skerries
+/// round it.
+fn in_cluster(cl: vec4, p: vec3, px: f32) -> f32 {
+    let q = p - vec3(cl.x, 0.0, cl.y)
+    let tall = cl.z
+    let seed = cl.w
+    var d = stack(q, 4.5 + tall * 0.16, tall, seed, px)
+    for i in 0..4 {
+        let fi = f32(i)
+        let a = hash2(vec2(seed, fi + 10.0)) * 6.2831853
+        let reach = 14.0 + 24.0 * hash2(vec2(seed, fi + 20.0))
+        let at = vec3(cos(a) * reach, 0.0, sin(a) * reach)
+        let k = hash2(vec2(seed, fi + 30.0))
+        if k < 0.45 {
+            let t2 = tall * (0.25 + 0.5 * k)
+            d = min(d, stack(q - at, 2.5 + t2 * 0.2, t2, seed + fi * 7.0, px))
+        } else {
+            d = min(d, skerry(q - at, 4.0 + 7.0 * k, 1.5 + 3.0 * k, seed + fi))
+        }
+    }
+    d
+}
+
+/// The rocks' field at `p` (m): the nearest rock of its cell, or the way out of the cell.
+pub fn stacks(p: vec3, px: f32) -> f32 {
+    if p.y > TALLEST + 4.0 {
+        return p.y - TALLEST
+    }
+    let g = vec2(p.x, p.z) / CELL
+    let c = floor(g)
+    let local = (g - c) * CELL
+    // (Clusters stand a margin inside their cells, so the way out of this one is a step past
+    // its edge and no nearer any rock: never so near the ray takes it for one.)
+    let out = min(min(local.x, CELL - local.x), min(local.y, CELL - local.y)) + 5.0
+    let cl = cluster(c)
+    if cl.z <= 0.0 {
+        return max(out, 1.0)
+    }
+    let near = length(vec2(p.x, p.z) - vec2(cl.x, cl.y)) - REACH
+    if near > 4.0 {
+        return min(near, out)
+    }
+    min(in_cluster(cl, p, px), out)
+}
+
+/// Where the ray `o` + `d` meets the rocks, from `lo` to `hi` (or `hi`); `k` a pixel's width per
+/// metre out.
+pub fn march_stacks(o: vec3, d: vec3, hi: f32, k: f32) -> f32 {
+    // (Only where the ray is low enough to meet one, out to where they stop.)
+    var lo = 0.0
+    var top = min(hi, OUT * 1.2 / max(length(vec2(d.x, d.z)), 1.0e-3))
+    if d.y > 0.0 {
+        top = min(top, max(TALLEST + 4.0 - o.y, 0.0) / d.y)
+    } else if o.y > TALLEST + 4.0 {
+        lo = (o.y - TALLEST - 4.0) / -d.y
+    }
+    var t = lo
+    var hit = hi
+    var i = 0
+    while i < 200 && t < top {
+        let px = t * k
+        let h = stacks(o + d * t, px)
+        if h < max(px * 0.4, 0.01) {
+            hit = t
+            t = top
+        } else {
+            t += h
+        }
+        i += 1
+    }
+    if hit < hi {
+        for _ in 0..2 {
+            hit += stacks(o + d * hit, hit * k) * 0.9
+        }
+    }
+    hit
+}
+
+/// The rocks' normal at `p`, read `e` m apart.
+pub fn stacks_normal(p: vec3, e: f32, px: f32) -> vec3 {
+    let a = vec2(1.0, -1.0)
+    normalize(
+        a.xyy * stacks(p + a.xyy * e, px) +
+            a.yyx * stacks(p + a.yyx * e, px) +
+            a.yxy * stacks(p + a.yxy * e, px) +
+            a.xxx * stacks(p + a.xxx * e, px),
+    )
+}
+
+/// How much of the light from `l` reaches `p` past the rocks (a soft shadow, a few steps).
+pub fn stacks_shadow(p: vec3, l: vec3, px: f32) -> f32 {
+    var t = 0.3 + px
+    var lit = 1.0
+    for _ in 0..24 {
+        let h = stacks(p + l * t, px)
+        lit = min(lit, 8.0 * h / t)
+        t += clamp(h, 0.4, 12.0)
+    }
+    clamp(lit, 0.0, 1.0)
+}
+
+/// How much of the sky reaches `p`, facing `n`.
+pub fn stacks_ao(p: vec3, n: vec3, px: f32) -> f32 {
+    var hidden = 0.0
+    var w = 1.0
+    for i in 1..5 {
+        let h = 1.2 * f32(i * i)
+        hidden += w * max(h - stacks(p + n * h, px), 0.0) / h
+        w *= 0.6
+    }
+    clamp(1.0 - hidden * 0.5, 0.0, 1.0)
+}
+
+/// The basalt at `p` facing `n`: dark blue-grey, each column a shade of its own (where a pixel
+/// `px` holds it), the tops pale with salt and the birds, wet and darker in the spray's reach,
+/// and white where the sea breaks on its foot.
+pub fn stacks_albedo(p: vec3, n: vec3, px: f32) -> vec3 {
+    let (cc, lv) = hex_cell(vec2(p.x, p.z), COLUMN)
+    let k = 1.0 - smoothstep(0.4, 1.2, px)
+    let own = mix(0.5, hash2(cc * 1.37), k)
+    var a = vec3(0.065, 0.068, 0.075) * (0.75 + 0.5 * own)
+    // (The joints between columns dark.)
+    let joint = (1.0 - smoothstep(0.0, 0.1, COLUMN * 0.5 - max(abs(lv.x), dot(abs(lv), vec2(0.5, 0.8660254))))) * k
+    a *= 1.0 - 0.5 * joint * smoothstep(0.6, 0.2, abs(n.y))
+    // Tops: salt-pale and birds' white.
+    a = mix(a, vec3(0.22, 0.22, 0.2), smoothstep(0.55, 0.9, n.y) * 0.7)
+    let guano = smoothstep(0.7, 0.85, noise(vec2((p.x + p.z) * 0.12, p.y * 0.04))) *
+        smoothstep(10.0, 25.0, p.y) *
+        smoothstep(0.4, -0.1, n.y)
+    a = mix(a, vec3(0.42, 0.42, 0.4), guano * 0.35)
+    // The spray's reach, wet; and the surf on its foot.
+    a *= mix(0.6, 1.0, smoothstep(0.5, 5.0, p.y))
+    // (The sea breaking on it: white a few metres up its foot, torn above, and higher where the
+    // swell throws it.)
+    let reach = 2.5 + 3.0 * noise(vec2((p.x - p.z) * 0.08, 1.0))
+    let surf = smoothstep(reach, reach * 0.3, p.y) *
+        smoothstep(0.25, 0.55, noise(vec2(p.x * 0.4 + p.z * 0.3, p.y * 0.9)) + 0.3 * smoothstep(reach * 0.5, 0.0, p.y))
+    // (On its sides, not over a skerry's back; and far off only a grey seam, never a spark.)
+    let seen = smoothstep(0.85, 0.45, n.y) * mix(0.9, 0.3, smoothstep(0.4, 2.0, px))
+    mix(a, vec3(0.62, 0.64, 0.66), surf * seen)
+}
