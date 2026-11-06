@@ -89,7 +89,10 @@ fn sample<I: Isle>(
     if is_far {
         // (Lit by the one sun and seen through the one air, as the near island is.)
         let sun = cloud_shadow(clouds, cloud, smp, p)
-        c = lit_solid(s, h, view, aerial, dome, smp, p, far_n, d, far_a, 0.9, 0.0, vec3(0.0), sun, 1.0, 1.0, 0.0)
+        // (And past a few kilometres pushed on toward the sky's colour there, as a painter pushes
+        // back what's far: by distance alone, the same for all of it.)
+        let push = 1.0 + 0.35 * smoothstep(4000.0, 12000.0, t)
+        c = lit_solid(s, h, view, aerial, dome, smp, p, far_n, d, far_a, 0.9, 0.0, vec3(0.0), sun, 1.0, push, 0.0)
         n = far_n
         line = 1.0
         weight = 0.3
@@ -220,7 +223,7 @@ fn sample<I: Isle>(
     let sq = squall(o, d, t)
     if sq.k > 0.0 {
         let q = o + d * sq.t
-        let lit = lit_solid(s, h, view, aerial, dome, smp, q, sq.n, d, sq.albedo, 1.0, 0.0, vec3(0.0), 1.0, 1.0, 1.0, 0.0)
+        let lit = lit_solid(s, h, view, aerial, dome, smp, q, sq.n, d, sq.albedo, 1.0, 0.0, vec3(0.0), 1.0, 1.0, 1.0 + 0.35 * smoothstep(4000.0, 12000.0, sq.t), 0.0)
         c = mix(c, lit, sq.k)
     }
     let thrown = spray(s, h, o, d, t)

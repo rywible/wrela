@@ -57,8 +57,8 @@ pub fn charted(i: u32) -> Far {
         Far {
             at: placed(2.2, 9.0),
             kind: FLOAT,
-            half: 650.0,
-            tall: 520.0,
+            half: 500.0,
+            tall: 700.0,
             lift: 300.0,
             seed: 1.3,
             stone: vec3(0.16, 0.15, 0.14),
@@ -99,10 +99,10 @@ pub fn charted(i: u32) -> Far {
     } else {
         // A leaning needle, taller than anything near it.
         Far {
-            at: placed(0.6, 4.2),
+            at: placed(0.95, 2.6),
             kind: NEEDLE,
-            half: 70.0,
-            tall: 260.0,
+            half: 45.0,
+            tall: 150.0,
             lift: 0.0,
             seed: 5.5,
             stone: basalt,
@@ -134,7 +134,7 @@ fn outline(f: Far, u: f32, y: f32) -> f32 {
         // A knuckle of rock at the sea, and from it the stair: a ribbon swinging side to side as
         // it coils, each turn a little narrower and thinner, to nothing at its top; a landing at
         // each turn.
-        let foot = length(vec2(u / (w * 1.6), y / 60.0)) - 1.0
+        let foot = length(vec2(u / (w * 0.9), y / 30.0)) - 1.0
         let up = clamp(y / h, 0.0, 1.0)
         let phase = y / 75.0 + s
         let swing = w * (1.0 - 0.45 * up) * sin(phase)
@@ -159,7 +159,10 @@ fn outline(f: Far, u: f32, y: f32) -> f32 {
         // its two towers and its spire.
         let b = f.lift
         let k = clamp((y - b) / h, 0.0, 1.0)
-        let half = w * (0.04 + 0.96 * pow(k, 0.75)) + w * 0.06 * (noise(vec2(y / 30.0 + s, 2.0)) - 0.5)
+        let lean = if u > 0.0 { 1.15 } else { 0.85 }
+        let half = w * lean * (0.04 + 0.96 * pow(k, 0.75 + 0.25 * sign(u))) +
+            w * 0.12 * (noise(vec2(y / 130.0 + s + sign(u) * 3.0, 2.0)) - 0.5) +
+            w * 0.03 * (noise(vec2(y / 40.0 + s, 5.0)) - 0.5)
         let top = b + h * (0.97 + 0.03 * noise(vec2(u / 80.0, s)))
         let rock = max(abs(u) - half, max(y - top, b - y))
         let c = u + w * 0.05
@@ -167,17 +170,7 @@ fn outline(f: Far, u: f32, y: f32) -> f32 {
         let towers = max(abs(abs(c) - w * 0.2) - 16.0, y - top - 170.0)
         let spire = max(abs(c) - 18.0 * (1.0 - clamp((y - top) / 290.0, 0.0, 1.0)) - 2.0, y - top - 290.0)
         let church = max(min(nave, min(towers, spire)), top - 5.0 - y)
-        // Pieces of it hanging off it in the air.
-        var bits = 1.0e4
-        for i in 0..4 {
-            let fi = f32(i)
-            let bu = (hash2(vec2(fi, s)) - 0.5) * w * 2.8
-            let by = b + h * (hash2(vec2(fi, s + 3.0)) * 0.9 - 0.25)
-            let br = 25.0 + 45.0 * hash2(vec2(fi, s + 7.0))
-            let q = vec2(u - bu, y - by)
-            bits = min(bits, (abs(q.x) + abs(q.y) * 0.8) - br)
-        }
-        return min(min(rock, church), bits)
+        return min(rock, church)
     }
     if f.kind == ARCH {
         let side = w * (1.0 - 0.1 * y / h)
@@ -226,16 +219,19 @@ fn meet(f: Far, o: vec3, d: vec3, k: f32, best: FarHit) -> FarHit {
     }
     // Its faces as its outline turns them, round toward the eye: a face's light from its slopes.
     let px = max(along * k * 2.0, 1.0)
-    let gu = outline(f, u + px, y) - outline(f, u - px, y)
-    let gy = outline(f, u, y + px) - outline(f, u, y - px)
+    // (Its slopes read at a few pixels' width: what's finer than that is its material, not its form.)
+    let ep = px * 4.0
+    let gu = outline(f, u + ep, y) - outline(f, u - ep, y)
+    let gy = outline(f, u, y + ep) - outline(f, u, y - ep)
     let side = vec3(-dh.y, 0.0, dh.x)
     let toward = -vec3(dh.x, 0.0, dh.y)
     // (A cliff's columns turn it a little this way and that across its face.)
-    let flute = (noise(vec2(u / 14.0 + f.seed, 0.0)) - 0.5) * 0.9
+    let fine = smoothstep(px * 3.0, px * 1.0, 14.0)
+    let flute = (noise(vec2(u / 14.0 + f.seed, 0.0)) - 0.5) * 0.9 * (1.0 - fine)
     let g = normalize(vec2(gu, gy) + vec2(1.0e-5, 0.0))
     let n = normalize(side * (g.x + flute) * 0.9 + vec3(y: 1.0) * g.y * 0.9 + toward * 0.7)
     // Its stone; and white at its foot where the sea breaks on it.
-    var a = f.stone * (0.8 + 0.4 * noise(vec2(u / 9.0 + f.seed, y / 30.0)))
+    var a = f.stone * (0.8 + 0.4 * mix(noise(vec2(u / 9.0 + f.seed, y / 30.0)), 0.5, fine))
     let surf = smoothstep(1.4 + 1.2 * noise(vec2(u / 4.0, f.seed)), 0.2, y) * step(f.lift, 1.0)
     a = mix(a, vec3(0.5, 0.52, 0.54), surf * 0.7)
     FarHit { t: along / hl, n, albedo: a }
@@ -251,12 +247,13 @@ fn rock_in(c: vec2) -> Far {
     // (None within a kilometre and a half of the skiff's start, nor in the sight line to the
     // chart's islands: the filler never stands in front of what you are rowing to.)
     let near_start = length(at) < 600.0
-    if h > 0.32 || near_start {
+    let gather = smoothstep(0.35, 0.75, noise(c * 0.33 + vec2(1.7)))
+    if h > 0.5 * gather || near_start {
         return Far { at, kind: SKERRY, half: 0.0, tall: 0.0, lift: 0.0, seed: 0.0, stone: vec3(0.0) }
     }
-    let size = hash2(c + vec2(5.9))
+    let size = pow(hash2(c + vec2(5.9)), 2.0) * 1.6
     let basalt = vec3(0.06, 0.062, 0.07)
-    if h < 0.2 {
+    if h < 0.3 * gather {
         Far {
             at,
             kind: SKERRY,
@@ -395,7 +392,7 @@ pub fn squall(o: vec3, d: vec3, t: f32) -> Squall {
             cover = max(cover, smoothstep(0.0, 0.3, soft))
             if z > best_z {
                 best_z = z
-                nn = normalize(side * q.x + vec3(y: 1.0) * q.y + toward * z)
+                nn = normalize(mix(normalize(side * q.x + vec3(y: 1.0) * q.y + toward * z), normalize(toward + vec3(y: 0.5)), 0.55))
             }
         }
     }
@@ -404,19 +401,19 @@ pub fn squall(o: vec3, d: vec3, t: f32) -> Squall {
     // thinning at its edges.
     let slant = u + y * 0.35
     let shafts = 0.55 + 0.45 * noise(vec2(slant / 70.0, 2.0)) * noise(vec2(slant / 23.0, y / 400.0))
-    let veil = smoothstep(w * 1.0, w * 0.35, abs(u + 150.0)) *
+    let veil = smoothstep(w * (1.0 + 0.3 * (1.0 - y / base)), w * 0.3, abs(u + 150.0)) *
         smoothstep(base + 10.0, base - 80.0, y) *
         (0.6 + 0.4 * smoothstep(0.0, 300.0, y)) *
         shafts * 1.0
     if cloud > veil {
         // (Its base shadowed by the cloud over it.)
         let under = smoothstep(base + 250.0, base, y)
-        return Squall { k: cloud * 0.92, n: nn, albedo: vec3(0.78, 0.78, 0.8) * (1.0 - 0.7 * under), t: tt }
+        return Squall { k: cloud * 0.92, n: nn, albedo: vec3(0.55, 0.57, 0.62) * (1.0 - 0.75 * under), t: tt }
     }
     Squall {
         k: veil,
         n: normalize(toward + vec3(y: 0.4)),
-        albedo: vec3(0.2, 0.21, 0.23),
+        albedo: vec3(0.12, 0.13, 0.16),
         t: tt,
     }
 }
