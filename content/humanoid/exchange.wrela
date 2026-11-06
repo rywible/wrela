@@ -110,10 +110,20 @@ pub const X_EARLY: f32 = 0.068
 /// back into him, his chest and head rocked back by up to `X_RECOIL` (radians).
 pub const X_GRIND: f32 = 0.0
 pub const X_PIN: f32 = 0.05
-pub const X_RECOIL: f32 = 0.2
+pub const X_RECOIL: f32 = 0.3
 /// How fast the jolt rises and dies (s on his clock), and how long his fist takes to leave what
 /// it struck for its own path.
-pub const X_RECOIL_LIFE: f32 = 0.08
+pub const X_RECOIL_LIFE: f32 = 0.12
+
+/// How far on past the place it struck the fist may go after the hit-stop (m), and for how long
+/// after the hit-stop the striker's arm is still minded (s; by then it's on its way home).
+pub const X_THROUGH: f32 = 0.03
+pub const X_STOPPED: f32 = 0.7
+
+/// How far the fist is drawn back off the face after the hit-stop, ahead of the take's own
+/// recovery (m), and over how long (s).
+pub const X_BACK_OFF: f32 = 0.1
+pub const X_BACK_OFF_TIME: f32 = 0.16
 pub const X_LET_GO: f32 = 0.14
 /// How far his trunk leans on into the blow through the hit-stop at `X_GRIND` (radians).
 pub const X_DRIVE: f32 = 0.14
@@ -348,7 +358,7 @@ pub fn foe(p: f32) -> Pose {
 }
 
 /// How long the struck one takes to go from his guard to the reaction's drawing (s).
-pub const X_TAKE: f32 = 0.1
+pub const X_TAKE: f32 = 0.14
 
 /// How the reaction is turned to stand as his guard did: between squaring its hands and its
 /// chest to his (his guard is bladed, the reaction square; turned by either alone, he'd spin).
@@ -534,8 +544,8 @@ pub const X_EASE_OUT: f32 = 0.1
 
 /// How much of the cross's follow-through is passed over after the hit-stop (s), and over how
 /// long (s).
-pub const X_SKIP: f32 = 0.1
-pub const X_SKIP_OVER: f32 = 0.15
+pub const X_SKIP: f32 = 0.18
+pub const X_SKIP_OVER: f32 = 0.2
 
 /// Where the blow lands on him, and which bone carries it: his face (his head's), or the giant's
 /// lead shin.
@@ -582,7 +592,7 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
     let free = held + t.pin
     let end = free + X_LET_GO
     let jolt_end = t.hold + 6.0 * X_RECOIL_LIFE
-    if wall <= 0.0 || (since > end && wall > jolt_end) {
+    if wall <= 0.0 || wall > max(jolt_end, t.hold + X_STOPPED) {
         return base
     }
     borrow rig = HERO.rig
@@ -622,18 +632,23 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
         turn("head", back, -r * 1.2)
     }
     // His fist on the place it struck, carried with it, then let go.
-    if since < end {
-        // (It rides the struck point back along the blow, not up as the head tips back.)
+    {
         let at = KNUCKLES - BLOW * 0.09
-        let moved = struck_point(at, pf, t) - at
-        let on = at + BLOW * max(dot(moved, BLOW), 0.0) + vec3(0.0, moved.y * 0.3, 0.0)
-        let k = 1.0 - smoothstep(free, end, since)
-        // (Through the hit-stop it stays on it; after, it's only stopped there: it goes its own
-        // way, and where that would take it into him, no further along the blow than his face.)
-        let past = dot(own - on, BLOW)
-        let stopped = if past > 0.0 { own - BLOW * past } else { own }
-        let want = if wall < t.hold { on } else { stopped }
-        arm_to(rig, mut w, 1, mix(own, want, k))
+        let want = if wall < t.hold {
+            // (Through the hit-stop it stays on the place it struck, riding it back along the
+            // blow, not up as the head tips back.)
+            let moved = struck_point(at, pf, t) - at
+            let on = at + BLOW * max(dot(moved, BLOW), 0.0) + vec3(0.0, moved.y * 0.3, 0.0)
+            mix(own, on, 1.0 - smoothstep(free, end, since))
+        } else {
+            // (After, it goes its own way but no further along the blow than where it struck,
+            // and a hair: the head is knocked off the fist, the arm isn't shoved on after it.)
+            // (And it's drawn back off the face at once, ahead of the take's own way home.)
+            let back_off = X_BACK_OFF * smoothstep(0.0, X_BACK_OFF_TIME, wall - t.hold)
+            let past = dot(own - at, BLOW) - X_THROUGH + back_off
+            if past > 0.0 { own - BLOW * past } else { own }
+        }
+        arm_to(rig, mut w, 1, want)
     }
     stride::store(rig, w, mut c, 0)
     c.pose(0.0)
@@ -642,7 +657,7 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
 /// How near the middle of the struck one's glove may come to the striker's arms and fists, as
 /// the side-on camera sees them (m): a glove's half-width, an arm's, and a gap between. (Seen
 /// side on, a glove a hand's width in front of the arm still reads as on it.)
-pub const X_CLEAR: f32 = 0.14
+pub const X_CLEAR: f32 = 0.19
 
 /// The struck one (`foe`, stood at `at`) with his gloves kept off the striker's arms and fists
 /// (`striker`, in the world), as seen side on: a glove that would be over one is moved off it,
@@ -655,8 +670,9 @@ pub fn clear_of(foe: Pose, at: mat4, striker: Pose) -> Pose {
     let yaw = yaw_q(atan2(f.x, f.z))
     let o = at[3].xyz
     // (Across the picture: the depth the side-on camera looks along taken out.)
-    let side_on = normalize(cross(vec3(0.0, 1.0, 0.0), BLOW))
-    let flat = |x: vec3| -> vec3 { x - side_on * dot(x, side_on) }
+    // (In depth too: measured across the picture alone, a glove passing the arm has to jump
+    // from over it to under it.)
+    let flat = |x: vec3| -> vec3 { x }
     var segs: Vec<(vec3, vec3)> = Vec::new()
     for arm in ["left", "right"] {
         let s0 = ws[rig.find(f"{arm}UpperArm".as_str())].t
