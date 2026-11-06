@@ -27,7 +27,7 @@ pub const X_KICK_LIFE: f32 = 0.12
 pub const X_PUSH_LIFE: f32 = 0.45
 /// Where the blow lands on him: how far past his face's front the fist reaches (m; his head
 /// is struck as the fist reaches its furthest).
-pub const X_DEPTH: f32 = 0.0
+pub const X_DEPTH: f32 = -0.015
 /// How far into the reaction (from its own impact frame) the struck drawing is (s): the one
 /// that's held through the hit-stop, already knocked back.
 pub const X_INTO: f32 = 0.1
@@ -100,9 +100,9 @@ pub fn hit_at() -> f32 {
 }
 
 /// How long before the cross's full reach the fist lands (s): a blow lands with the arm still
-/// bent and the fist still fast (the elbow at about 155 degrees, some 20 cm of reach left to
+/// bent and the fist still fast (the elbow at about 135 degrees, some 25 cm of reach left to
 /// drive through), never at full extension, where the arm is locked and the fist has stopped.
-pub const X_EARLY: f32 = 0.062
+pub const X_EARLY: f32 = 0.068
 
 /// The connection: through the hit-stop the striker's body keeps driving in, slowed to `X_GRIND`
 /// of its speed, while his fist stays on what it struck, so his elbow loads; his fist rides what
@@ -348,7 +348,7 @@ pub fn foe(p: f32) -> Pose {
 }
 
 /// How long the struck one takes to go from his guard to the reaction's drawing (s).
-pub const X_TAKE: f32 = 0.1
+pub const X_TAKE: f32 = 0.06
 
 /// How the reaction is turned to stand as his guard did: between squaring its hands and its
 /// chest to his (his guard is bladed, the reaction square; turned by either alone, he'd spin).
@@ -465,9 +465,15 @@ pub fn played_striker(time: f32, t: Tune) -> f32 {
     } else if time < h + t.hold {
         h + (time - h) * t.grind
     } else {
-        time - t.hold * (1.0 - t.grind)
+        // (He comes out of the hit-stop easing back up to speed, never lunging on at once.)
+        let u = time - h - t.hold
+        let r = X_EASE_OUT
+        h + t.hold * t.grind + (if u < r { u * u / (2.0 * r) } else { u - r * 0.5 })
     }
 }
+
+/// How long the striker takes to come back up to speed after the hit-stop (s).
+pub const X_EASE_OUT: f32 = 0.1
 
 /// Where the blow lands on him, and which bone carries it: his face (his head's), or the giant's
 /// lead shin.
@@ -542,7 +548,7 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
         )
     }
     // The shock: in over two drawings, held through the hit-stop, then let go.
-    let j = smoothstep(0.0, 0.03, wall) * (if wall < t.hold { 1.0 } else {
+    let j = smoothstep(0.0, 0.016, wall) * (if wall < t.hold { 1.0 } else {
         exp(-(wall - t.hold) / X_RECOIL_LIFE)
     })
     let r = t.recoil * j
@@ -554,7 +560,10 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
     }
     // His fist on the place it struck, carried with it, then let go.
     if since < end {
-        let on = struck_point(KNUCKLES - BLOW * 0.09, pf, t)
+        // (It rides the struck point back along the blow, not up as the head tips back.)
+        let at = KNUCKLES - BLOW * 0.09
+        let moved = struck_point(at, pf, t) - at
+        let on = at + BLOW * max(dot(moved, BLOW), 0.0) + vec3(0.0, moved.y * 0.3, 0.0)
         let k = 1.0 - smoothstep(free, end, since)
         arm_to(rig, mut w, 1, mix(own, on, k))
     }
