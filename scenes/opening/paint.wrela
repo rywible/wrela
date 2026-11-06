@@ -760,7 +760,9 @@ fn sea_shade(
     // rough sea seen low mirrors its facets' higher, deeper sky, and less of it, and lies darker
     // than the bright sky over the horizon, as a real sea does, its glitter bright on it (the
     // ocean BRDF of Bruneton, Neyret and Holzschuch, 2010).
-    let slope = sqrt(lost.y)
+    // (The capillaries' own tilts blur the glitter, but hardly the sky the waves a pixel holds
+    // mirror: their faces still split into the bright low sky's and the dark deck's.)
+    let slope = sqrt(max(lost.y - waves.sea.unseen * 0.75, 0.0))
     let rise = asin(clamp(r.y, 0.0, 1.0))
     let across = normalize(vec2(r.x, r.z) + vec2(1.0e-6, 0.0))
     var mirrored = vec3(0.0)
@@ -915,15 +917,15 @@ fn sea_shade(
     let warp = vec2(noise(wq * 0.5 + vec2(2.1, 8.3)), noise(wq * 0.5 + vec2(6.7, 3.9))) - vec2(0.5)
     let c1 = cells(wq + warp * 2.2 + vec2(0.3, 5.1))
     let c2 = cells(wa * vec2(1.6, 5.2) + warp * 3.0 + vec2(8.2, 1.7))
-    // (Ridged: thin lines a metre or so apart, wandering, each running some metres down the
+    // (Ridged: thin lines some metres apart, wandering, each running tens of metres down the
     // wind.)
     let streak = 1.0 -
-        abs(noise(vec2(wa.x * 0.07, wa.y * 0.9 + warp.x * 1.5)) * 1.4 + noise(wa * vec2(0.3, 3.5)) * 0.6 - 1.0)
+        abs(noise(vec2(wa.x * 0.03, wa.y * 0.22 + warp.x * 0.8)) * 1.4 + noise(wa * vec2(0.1, 0.9)) * 0.6 - 1.0)
     // The foam upwind, read blurred, a few metres back and further: what the wind has drawn out
     // down to here (the streaks), and the fresh breaks' torn spray (the spindrift, below).
     let torn = shape_at(waves, rest - wind * DRIFT, du * 6.0 + wind * 0.5, dv * 6.0, tiles(calm)).w
     let upwind = shape_at(waves, rest - wind * (DRIFT * 4.0), du * 12.0 + wind * 3.0, dv * 12.0, tiles(calm)).w
-    let blown = clamp(max(torn, upwind * 0.8) * 1.5, 0.0, 1.0)
+    let blown = clamp(max(torn, upwind * 0.9) * 2.0, 0.0, 1.0)
     let raft = (1.0 - smoothstep(0.0, 0.25 + 0.5 * lace, c1.y - c1.x)) * 0.45 +
         (1.0 - smoothstep(0.0, 0.3, c2.y - c2.x)) * 0.2 +
         lace * 0.35
@@ -934,9 +936,9 @@ fn sea_shade(
     let edge = 0.1 + 0.25 * (1.0 - web_k)
     let drawn = smoothstep(1.0 - share - edge, 1.0 - share + edge, pattern)
     // (The streaks, laid where the foam upwind was blown: thin, greyer, never a sheet.)
-    let lines = smoothstep(1.0 - blown * 0.6 - edge - 0.3, 1.0 - blown * 0.6 + edge + 0.1, streak) *
+    let lines = smoothstep(0.93 - blown * 0.12 - edge * 0.5, 0.97 - blown * 0.12 + edge * 0.5, streak) *
         (0.4 + 0.6 * lace)
-    let white = max(mix(share, drawn, web_k), mix(blown * 0.12, lines * 0.3, web_k)) * 0.95
+    let white = max(mix(share, drawn, web_k), mix(blown * 0.1, lines * 0.55, web_k)) * 0.95
     // (Its thick froth bright, its thin film greyer, the water showing through it.)
     let froth = mix(0.5, noise(wa * vec2(8.0, 12.0) + vec2(2.0)), web_k)
     let bright = (0.4 + 0.6 * smoothstep(0.3, 0.9, share)) * (0.6 + 0.4 * lace + 0.4 * froth)
