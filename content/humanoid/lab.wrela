@@ -256,7 +256,8 @@ fn striker_by(g: f32, p: Press) -> Pose {
     if p.at <= NEVER {
         return FIGHT_IDLE_M.pose(g % FIGHT_IDLE_M.length())
     }
-    striker(played_at(clock(g, p.at), p.tune))
+    let c = clock(g, p.at)
+    exchange::striker_hit(exchange::played_striker(c, p.tune), played_at(c, p.tune), p.tune)
 }
 
 /// The one struck at `g` as press `p` left him.

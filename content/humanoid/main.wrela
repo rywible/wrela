@@ -74,6 +74,9 @@ const PLAYED_ACTS: [Move; 2] = if CODE == 1 { ACTS_CODE.clone() } else { ACTS.cl
 /// cuts from move to move and lets the feet go where the moves put them.
 pub const CUT: u32 = 0
 
+/// (Measuring: `--set PROBE_FIST=1` prints the fist's path round the contact.)
+pub const PROBE_FIST: u32 = 0
+
 /// `SHOW=11`'s fight moves drawn as anime is (`engine::anime`: on twos, the strike pushed past
 /// and held, fists and feet smeared): `--set ANIME=0` draws them smooth.
 pub const ANIME: u32 = 1
@@ -167,6 +170,9 @@ pub const LAB_SOUNDS: Palette = Palette {
 }
 
 pub fn init() -> State {
+    if SHOW == 29 && PROBE_FIST == 1 {
+        print(exchange::fist_track())
+    }
     if SHOW == 28 {
         print(
             f"exchange: hit at {exchange::hit_at():.3} s, blow {exchange::BLOW}, foe at {exchange::PLACE[3].xyz}, contact {exchange::contact()}",
@@ -379,7 +385,11 @@ fn pose_at(time: f32) -> Pose {
         24 => kimodo::SHRUG_D.pose(time % kimodo::SHRUG_D.length()),
         25 => kimodo::SHRUG_N.pose(time % kimodo::SHRUG_N.length()),
         26 => kimodo::fight_round(time),
-        28 => exchange::striker(exchange::played_at(time, exchange::TUNED)),
+        28 => exchange::striker_hit(
+            exchange::played_striker(time, exchange::TUNED),
+            exchange::played_at(time, exchange::TUNED),
+            exchange::TUNED,
+        ),
         27 => kimodo::FIGHT_IDLE_M.pose(time % kimodo::FIGHT_IDLE_M.length()),
         _ => if time < IDLE_AT {
             T_POSE.pose(0.0)
@@ -457,7 +467,7 @@ fn lab_panel(s: mut State, time: f32, width: u32, height: u32) {
     if ui.key(Key::H) {
         l.panel = !l.panel
     }
-    let r = Rect::new(screen.x - LAB_W - 10.0, 10.0, LAB_W, 560.0)
+    let r = Rect::new(screen.x - LAB_W - 10.0, 10.0, LAB_W, 640.0)
     if ui.pointer_pressed() && !(l.panel && r.contains(ui.pointer())) {
         punch = true
     }
@@ -485,6 +495,9 @@ fn lab_panel(s: mut State, time: f32, width: u32, height: u32) {
         ui.slider("Camera push in (m)", mut t.push, lo: 0.0, hi: 0.8)
         ui.slider("Blast ring size (0 = off)", mut t.blast, lo: 0.0, hi: 4.0)
         ui.slider("Giant flinch", mut t.give, lo: 0.0, hi: 1.5)
+        ui.slider("Body drives in during stop", mut t.grind, lo: 0.0, hi: 1.0)
+        ui.slider("Fist rides the hit (s)", mut t.pin, lo: 0.0, hi: 0.15)
+        ui.slider("Recoil into puncher", mut t.recoil, lo: 0.0, hi: 0.4)
         ui.toggle("Drawn on twos", mut t.twos)
         ui.begin_row()
         for k in 0..2 {

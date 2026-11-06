@@ -10,9 +10,12 @@ pub const LAB_PUNCH: Script = Script::frames().press(60, Key::J).press(150, Key:
 /// then B; then the giant (its toggle clicked) and the replay again.
 pub const LAB_AB: Script = Script::frames()
     .press(30, Key::J)
-    .move_to(140, vec2(1123.0, 482.0))
-    .down(141, vec2(1123.0, 482.0))
-    .up(142, vec2(1123.0, 482.0))
+    .move_to(140, vec2(1123.0, 566.0))
+    .down(141, vec2(1123.0, 566.0))
+    .up(142, vec2(1123.0, 566.0))
     .move_to(560, vec2(990.0, 107.0))
     .down(561, vec2(990.0, 107.0))
     .up(562, vec2(990.0, 107.0))
+
+/// The panel hidden (H), then one punch: for looking at the contact close.
+pub const LAB_CLOSE: Script = Script::frames().press(5, Key::H).press(60, Key::J)
