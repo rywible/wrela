@@ -115,19 +115,19 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32) {
     let arms = exp(-pow(abs(off) - behind_ * 0.36 - 0.4, 2.0) / (0.03 + behind_ * 0.02)) *
         smoothstep(0.0, 1.0, behind_) *
         smoothstep(7.0 + 6.0 * way + 22.0 * run, 1.0, behind_) *
-        (0.6 + 0.3 * run) *
-        broken *
+        (0.6 + 0.4 * run) *
+        mix(broken, 1.0, 0.45 * run * exp(-behind_ / 10.0)) *
         wavelets
     // Straight astern, the churned water it leaves: lace on the water that rides with it (laid
     // where it rests), in patches that thin as it widens and fades; running, a broad white
     // furrow of it close astern.
-    let churn = 0.25 + behind_ * 0.06 + 0.3 * run
+    let churn = 0.2 + behind_ * 0.05 + 0.12 * run
     let trail = exp(-off * off / churn) *
         smoothstep(0.0, 0.8, behind_) *
-        exp(-behind_ / (3.0 + 9.0 * way + 16.0 * run)) *
+        exp(-behind_ / (3.0 + 9.0 * way + 26.0 * run)) *
         smoothstep(
-            0.15 - 0.12 * run * exp(-behind_ / 5.0),
-            0.7,
+            0.15 - 0.06 * run * exp(-behind_ / 8.0),
+            0.7 - 0.15 * run * exp(-behind_ / 8.0),
             lace_at(rest * 1.6) * (0.5 + fbm(rest * 0.7, 2)),
         )
     // The bow's wave, peeling off either side; running, it breaks white along the forward third
@@ -188,15 +188,16 @@ fn drop(o: vec3, d: vec3, hit: f32, p0: vec3, p1: vec3, r: f32, px_k: f32, lit: 
     vec4(lit * cover, cover)
 }
 
-/// How many drops the bow throws at once, and how long each flies (s).
-const DROPS: u32 = 36
-const FLIGHT: f32 = 0.75
+/// How many drops the bow's sheets tear into at once, and how long each flies (s).
+const DROPS: u32 = 24
+const FLIGHT: f32 = 0.8
 
-/// The bow's spray, in front of what the ray met at `hit`: as the skiff runs, sheets of drops
-/// thrown up and out from either side of its forward sections (more from the side the swell
-/// strikes and as it slaps down), falling back within a second and torn downwind by the gale as
-/// they fly, the smallest furthest. Each streaked by its flight through the frame, in the light
-/// `lit`. Its light (premultiplied) and cover.
+/// The bow's spray, in front of what the ray met at `hit`: as the skiff runs, a sheet of water
+/// peeled off either side of its forward sections (the lee one the higher, where the hull's
+/// pressed into the sea), flung up and out and aft, thin and glassy where it leaves the hull,
+/// tearing into streaks and then drops at its crest, and the drops it tears torn downwind by the
+/// gale. Each drop streaked by its flight through the frame. In the light `lit`. Its light
+/// (premultiplied) and cover.
 pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
     let run = running(s)
     let thrown = max(run, s.slap * smoothstep(0.5, 2.0, s.speed))
@@ -210,13 +211,55 @@ pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
         return vec4(0.0)
     }
     let up = vec3(y: 1.0)
+    let lee_side = if s.boom.x > 0.0 { 1.0 } else { -1.0 }
+    var acc = vec4(0.0)
+    // The sheets: each a surface leaning out from the hull's side, read where the ray crosses
+    // it as (how far aft along it, how high up it).
+    for k in 0..2 {
+        let side = if k == 0 { lee_side } else { -lee_side }
+        let strong = thrown * (if k == 0 { 1.0 } else { 0.55 }) * (0.75 + 0.35 * s.gust)
+        let root = s.boat + s.boat_x * (side * 0.34) + s.boat_z * 1.55 - s.boat_y * 0.12
+        let aft = normalize(-s.boat_z + s.boat_x * (side * 0.55))
+        let rise = normalize(up + s.boat_x * (side * 0.4))
+        let n = normalize(cross(aft, rise))
+        let dn = dot(d, n)
+        if abs(dn) > 1.0e-4 {
+            let t = dot(root - o, n) / dn
+            if t > 0.0 && t < hit {
+                let rel = o + d * t - root
+                let a = dot(rel, aft)
+                let b = dot(rel, rise)
+                let long = 1.2 + 2.6 * strong
+                let x = a / long
+                // (Its crest an arc: up from the hull, falling back aft.)
+                let crest = (0.35 + 1.25 * strong) * 3.2 * x * (1.0 - x) * (1.0 - 0.3 * x)
+                if x > 0.0 && x < 1.0 && b > -0.05 && b < crest + 0.1 {
+                    // (Streaked along its flight, as a sheet of water thrown fast is.)
+                    let flow = vec2(a * 2.2 - s.held * s.speed * 0.6, b * 16.0 + a * 3.0)
+                    let streaks = noise(flow) * 0.55 +
+                        noise(flow * vec2(2.3, 2.9) + vec2(4.0)) * 0.45
+                    let up_k = clamp(b / max(crest, 0.02), 0.0, 1.2)
+                    // (Glassy and whole near the hull, streaked higher, in drops at its crest.)
+                    let torn = smoothstep(0.05 + 0.45 * up_k, 0.3 + 0.45 * up_k, streaks)
+                    let edge = 1.0 - smoothstep(0.75, 1.05, up_k + 0.25 * (streaks - 0.5))
+                    let ends = smoothstep(0.0, 0.12, x) * smoothstep(1.0, 0.6, x)
+                    let cover = torn *
+                        edge *
+                        ends *
+                        smoothstep(-0.04, 0.3, b) *
+                        smoothstep(s.boat.y - 0.3, s.boat.y + 0.35, o.y + d.y * t) *
+                        mix(0.3, 0.8, up_k) *
+                        min(strong * 1.6, 1.0)
+                    acc = acc * (1.0 - cover) + vec4(lit * (0.85 + 0.3 * streaks) * cover, cover)
+                }
+            }
+        }
+    }
+    // The drops torn off its crest, flying on and torn downwind.
     let px_k = 2.0 / (s.resolution.y * s.focal)
-    // The air the drops are dragged into: the gale, less the skiff's own way.
     let air = vec3(SEA.wind.x, 0.0, SEA.wind.y) * SEA.speed - s.boat_z * s.speed
     let pull = up * -9.81 + air * 0.55
-    // (The shutter: a 40th of a second.)
     let open = 0.025
-    var acc = vec4(0.0)
     for i in 0..DROPS {
         let fi = f32(i)
         let h1 = hash2(vec2(fi, 3.7))
@@ -226,24 +269,63 @@ pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
         let age = fract(cycle) * FLIGHT
         let born = floor(cycle)
         let h4 = hash2(vec2(fi, born))
-        let side = if hash2(vec2(born, fi + 3.0)) > 0.5 { 1.0 } else { -1.0 }
-        // Thrown from the waterline either side of the forward sections, out and up, faster as
-        // it runs; this one's flight only if its throw's strong enough.
+        let side = if hash2(vec2(born, fi + 3.0)) > 0.33 { lee_side } else { -lee_side }
         let from = s.boat +
-            s.boat_x * (side * (0.42 - 0.12 * h4)) +
-            s.boat_z * (0.6 + 1.1 * h4) -
-            s.boat_y * 0.22
-        let v0 = s.boat_x * (side * (0.8 + 2.6 * h2) * thrown) +
-            up * ((0.7 + 2.4 * h3 * (1.2 - h2 * 0.5)) * thrown) +
-            s.boat_z * (s.speed * 0.15)
+            s.boat_x * (side * (0.6 + 0.3 * h4)) +
+            s.boat_z * (0.9 + 0.6 * h4) +
+            up * (0.2 + 0.4 * thrown)
+        let v0 = s.boat_x * (side * (1.2 + 2.4 * h2) * thrown) +
+            up * ((1.0 + 2.0 * h3) * thrown) -
+            s.boat_z * (0.6 * s.speed * 0.2)
         let t0 = max(age - open, 0.0)
         let p1 = from + v0 * age + pull * (0.5 * age * age)
         let p0 = from + v0 * t0 + pull * (0.5 * t0 * t0)
-        if p1.y > s.boat.y - 0.45 && h4 < thrown * 1.2 {
-            let r = 0.006 + 0.016 * (1.0 - h2) * (1.0 - h2)
+        if p1.y > s.boat.y - 0.45 && h4 < thrown * 1.3 {
+            let r = 0.005 + 0.012 * (1.0 - h2) * (1.0 - h2)
             let dr = drop(o, d, hit, p0, p1, r, px_k, lit)
             acc = acc * (1.0 - dr.a) + dr
         }
     }
-    vec4(acc.rgb, min(acc.a, 1.0)) * 0.85
+    vec4(acc.rgb, min(acc.a, 1.0))
+}
+
+/// How many streaks of spindrift fly past near the eye, the box they fly through (m), and how
+/// long the shutter draws each (s): long, so each is a streak of its flight, not a drop.
+const DRIFT: u32 = 28
+const DRIFT_BOX: f32 = 22.0
+const DRIFT_SHUTTER: f32 = 0.07
+
+/// The gale's spindrift round the eye, in front of what the ray met at `hit`: spray torn off the
+/// crests flying on the wind in streaks, low over the water, past the skiff as fast as the air
+/// goes by it. The faster it runs across the wind, the faster they cross the view. In the light
+/// `lit`; its light (premultiplied) and cover.
+pub fn spindrift(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
+    let wind = vec3(SEA.wind.x, 0.0, SEA.wind.y) * SEA.speed
+    // (Seen from the eye that rides with the skiff, the air goes by at the wind less its way.)
+    let by = wind - vec3(s.boat_z.x, 0.0, s.boat_z.z) * s.speed
+    let centre = s.eye + vec3(s.forward.x, 0.0, s.forward.z) * (DRIFT_BOX * 0.45)
+    let px_k = 2.0 / (s.resolution.y * s.focal)
+    var acc = vec4(0.0)
+    for i in 0..DRIFT {
+        let fi = f32(i)
+        let seed = vec3(hash2(vec2(fi, 1.1)), hash2(vec2(fi, 2.7)), hash2(vec2(fi, 5.3)))
+        // (Each rides the wind through the box, wrapped round it as it leaves: a steady stream
+        // past the eye, wherever the skiff's sailed. Its height low over the sea.)
+        let w = vec3(seed.x * DRIFT_BOX, 0.0, seed.z * DRIFT_BOX) + wind * s.held
+        let rel = w - vec3(centre.x, 0.0, centre.z)
+        let wrapped = (fract(rel / DRIFT_BOX + vec3(0.5)) - vec3(0.5)) * DRIFT_BOX
+        let at = vec3(
+            centre.x + wrapped.x,
+            s.boat.y + 0.4 + 3.5 * seed.y * seed.y,
+            centre.z + wrapped.z,
+        )
+        // (Faded in and out at the box's walls so none blinks into being.)
+        let fade = (1.0 - smoothstep(0.3, 0.5, abs(wrapped.x) / DRIFT_BOX)) *
+            (1.0 - smoothstep(0.3, 0.5, abs(wrapped.z) / DRIFT_BOX))
+        let p0 = at - by * DRIFT_SHUTTER
+        let dr = drop(o, d, hit, p0, at, 0.006, px_k, lit * 0.9)
+        acc = acc * (1.0 - dr.a * fade) + dr * fade
+    }
+    let strength = smoothstep(4.0, 16.0, length(by))
+    vec4(acc.rgb, min(acc.a, 1.0)) * (0.55 * strength)
 }

@@ -6,16 +6,16 @@ use std::input::{Key, Script}
 /// Sheeted in from rest and held, a turn up onto a reach, eased, a long turn away down through a
 /// gybe, then the sail let fly.
 pub const SAIL: Script = Script::frames()
-    .key_down(12, Key::W)
-    .key_up(180, Key::W)
-    .key_down(200, Key::D)
-    .key_up(260, Key::D)
-    .key_down(300, Key::W)
-    .key_up(380, Key::W)
-    .key_down(420, Key::A)
-    .key_up(540, Key::A)
-    .key_down(600, Key::S)
-    .key_up(680, Key::S)
+    .key_down(52, Key::W)
+    .key_up(220, Key::W)
+    .key_down(240, Key::D)
+    .key_up(300, Key::D)
+    .key_down(340, Key::W)
+    .key_up(420, Key::W)
+    .key_down(460, Key::A)
+    .key_up(580, Key::A)
+    .key_down(640, Key::S)
+    .key_up(720, Key::S)
 
 /// Sheeted in from the first frame and held: for stills under way.
 pub const RUN: Script = Script::frames()

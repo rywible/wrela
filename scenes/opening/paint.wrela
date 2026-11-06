@@ -13,7 +13,7 @@ use sea::{SEA as SEA_STATE, lee, strokes, tiles}
 use engine::ocean::{Waves, level_at, surface_at}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use skiff::{dry, skiff, skiff_material, skiff_normal}
-use wake::{marks, spray, stirred}
+use wake::{marks, spindrift, spray, stirred}
 use engine::far::foot
 use engine::light::{Light, Lit, gloss, hazed, matte, sun_disc, world}
 use engine::air::aerial_uvw
@@ -208,8 +208,11 @@ fn sea_level(s: Shot, waves: Waves, p: vec3, foot: f32) -> f32 {
     let mid = tiles(lee(rel, s.boat_x, s.boat_z)).y
     let level = level_at(waves, vec2(p.x, p.z), foot, mid)
     let e = length(vec2(dot(rel, s.boat_x) / 0.62, dot(rel, s.boat_z) / 2.2))
-    let near = 1.0 - smoothstep(1.0, 1.7, e)
-    mix(level, min(level, s.boat.y - 0.14), near)
+    // (The cap follows the gunwale as the skiff heels and pitches, and lets go over a hull's
+    // width or so, so the water slopes down to it rather than standing in a wall round it.)
+    let gunwale = s.boat.y - (s.boat_y.x * rel.x + s.boat_y.z * rel.z) / max(s.boat_y.y, 0.5)
+    let near = 1.0 - smoothstep(1.0, 2.6, e)
+    mix(level, min(level, gunwale - 0.14), near * near * (3.0 - 2.0 * near))
 }
 
 fn march_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
@@ -1317,6 +1320,8 @@ fn sample(
         vec3(0.22, 0.25, 0.29) * mix(1.0, 1.6, OVERCAST)
     let thrown = spray(s, drops_lit, o, d, t)
     c = c * (1.0 - thrown.a) + thrown.rgb
+    let blown = spindrift(s, drops_lit, o, d, t)
+    c = c * (1.0 - blown.a) + blown.rgb
     if s.lantern > 0.5 {
         let beam = beams(s, h, aerial, smp, o, d, t)
         c = c * (1.0 - beam.a) + beam.rgb

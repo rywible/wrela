@@ -93,9 +93,12 @@ pub struct Shot: Copy + GpuData {
 
 /// The player's camera (`Rig::framing` 1): how far behind the skiff (m), how high over the sea
 /// (m), and its focal length (screen half-heights; the opening's shot is a long 3.7).
-const PLAY_BACK: f32 = 9.0
-const PLAY_UP: f32 = 3.4
-const PLAY_FOCAL: f32 = 1.9
+const PLAY_BACK: f32 = 6.2
+const PLAY_UP: f32 = 2.5
+const PLAY_FOCAL: f32 = 1.75
+/// How far the player's camera stands out to windward of the skiff's wake (m): over the
+/// traveller's shoulder, the sail seen across, not edge on.
+const PLAY_SIDE: f32 = 1.6
 
 /// `v` (x, z) turned `a` (rad) about the vertical, as a heading turns.
 fn turned(v: vec2, a: f32) -> vec2 {
@@ -122,7 +125,7 @@ pub fn shot_at(
     let bx1 = bx0 * cos(hl) - by0 * sin(hl)
     let by1 = by0 * cos(hl) + bx0 * sin(hl)
     let pl = r.shown_plane
-    let pitch = 0.07 * pl * (1.0 - pl) * 4.0 * smoothstep(0.5, 4.0, r.shown_speed) + 0.02 * pl
+    let pitch = 0.1 * pl * (1.0 - pl) * 4.0 * smoothstep(0.5, 4.0, r.shown_speed) + 0.02 * pl
     let bz = bz0 * cos(pitch) + by1 * sin(pitch)
     let by = by1 * cos(pitch) - bz0 * sin(pitch)
     let bx = bx1
@@ -143,17 +146,32 @@ pub fn shot_at(
     // (Under way it falls back as the skiff surges and catches up as it settles, lower and wider
     // the faster it runs.)
     let run = smoothstep(2.0, 10.0, r.shown_rush)
-    let back = PLAY_BACK + clamp(r.shown_speed - r.shown_rush, -1.0, 3.0) * 0.9
+    let surge = clamp(r.shown_speed - r.shown_rush, -1.0, 3.0)
+    let back = PLAY_BACK - 0.8 * run + surge * 0.8
+    let beside = vec2(heading.y, -heading.x) * (PLAY_SIDE * r.shown_perch)
     let high = vec3(
-        r.shown_at.x - heading.x * back,
-        PLAY_UP - 0.5 * run + boat.y * 0.4,
-        r.shown_at.y - heading.y * back,
+        r.shown_at.x - heading.x * back + beside.x,
+        PLAY_UP - 0.7 * run + boat.y * 0.5,
+        r.shown_at.y - heading.y * back + beside.y,
     )
-    let ahead_of = vec3(r.shown_at.x + heading.x * 32.0, 0.0, r.shown_at.y + heading.y * 32.0)
+    let ahead_of = vec3(
+        r.shown_at.x + heading.x * 24.0 + beside.x * 0.4,
+        0.9,
+        r.shown_at.y + heading.y * 24.0 + beside.y * 0.4,
+    )
     let k = smoothstep(0.0, 1.0, clamp(r.framing, 0.0, 1.0))
-    let eye = mix(low, high, k)
+    // (Running, the camera shakes a little with the hull's chatter over the chop, and with a
+    // knock as the boom slams across or the bow slaps down.)
+    let chatter = 0.025 * run + 0.12 * r.jolt
+    let shake = vec3(
+        noise(vec2(t * 13.0, 1.0)) - 0.5,
+        noise(vec2(t * 17.0, 4.0)) - 0.5,
+        noise(vec2(t * 11.0, 7.0)) - 0.5,
+    ) *
+        chatter
+    let eye = mix(low, high + shake, k)
     let at = eye + normalize(mix(rock, normalize(ahead_of - high), k)) * 1000.0
-    let near = mix(3.7, PLAY_FOCAL - 0.35 * run, k)
+    let near = mix(3.7, PLAY_FOCAL - 0.32 * run - 0.12 * max(surge, 0.0) - 0.2 * r.jolt, k)
     // The other views, for looking closer: the rock from 1.1 km, the skiff from beside it, the
     // cathedral from 900 m, the low sun raking across it from the left, the sea from 30 m over
     // it, looking down its sun path, and the sun from the skiff's own eye.
