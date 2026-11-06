@@ -72,7 +72,7 @@ pub fn charted(i: u32) -> Far {
             tall: 900.0,
             lift: 0.0,
             seed: 4.1,
-            stone: vec3(0.13, 0.12, 0.11),
+            stone: vec3(0.12, 0.115, 0.11),
         }
     } else if i == 2 {
         // A long table of an island, low, its cliffs a wall along the horizon.
@@ -144,14 +144,15 @@ fn outline(f: Far, u: f32, y: f32) -> f32 {
         let turn = 1.0 + 1.2 * abs(sin(phase))
         // (Both its flights: the near one swinging across, the far one swinging back behind it,
         // so the coil reads as a coil, crossing itself at each half turn.)
-        let ribbon = max(min(abs(u - swing), abs(u + swing)) - thick * turn, max(y - h, 40.0 - y))
+        let ribbon = max(min(abs(u - swing), abs(u + swing)) - thick * turn, max(y - h, 70.0 - y))
         // The landings: where it turns, a shelter of stone on it.
         let at_turn = 75.0 * (floor((y / 75.0 + s) / 3.1415927 + 0.5) * 3.1415927 + 1.5707963 - s)
         let ty = at_turn
         let tx = w * (1.0 - 0.45 * clamp(ty / h, 0.0, 1.0)) * sin(ty / 75.0 + s)
         let landing = max(abs(u - tx) - 28.0 * (1.0 - 0.6 * clamp(ty / h, 0.0, 1.0)), abs(y - ty - 14.0) - 16.0)
         let shelter = if ty < h * 0.9 && ty > 60.0 { landing } else { 1.0e4 }
-        return min(min(foot * 50.0, ribbon), shelter)
+        // (Its foot a stub of rock awash: the stair itself stands on nothing over it.)
+        return min(min(max(foot * 30.0, y - 12.0), ribbon), shelter)
     }
     if f.kind == FLOAT {
         // A mountain torn up by its roots and hung in the air: flat-topped, its underside drawn
@@ -168,7 +169,7 @@ fn outline(f: Far, u: f32, y: f32) -> f32 {
         let c = u + w * 0.05
         let nave = max(abs(c) - w * 0.2, y - top - 70.0 - max(w * 0.2 - abs(c), 0.0) * 0.5)
         let towers = max(abs(abs(c) - w * 0.2) - 16.0, y - top - 170.0)
-        let spire = max(abs(c) - 18.0 * (1.0 - clamp((y - top) / 290.0, 0.0, 1.0)) - 2.0, y - top - 290.0)
+        let spire = max(abs(c) - 26.0 * (1.0 - clamp((y - top) / 380.0, 0.0, 1.0)) - 3.0, y - top - 380.0)
         let church = max(min(nave, min(towers, spire)), top - 5.0 - y)
         return min(rock, church)
     }
