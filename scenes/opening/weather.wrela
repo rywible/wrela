@@ -156,6 +156,9 @@ fn scud(
 }
 
 /// The scud's height (m), and how fast it's driven (m/s): faster than the deck.
+/// How much brighter the higher layer seen through a hole in the deck is than the deck round it.
+const HIGHER: f32 = 1.15
+
 const SCUD_AT: f32 = 650.0
 const SCUD_DRIFT: f32 = 19.0
 
@@ -258,6 +261,24 @@ pub fn weather(
         }
         let k = smoothstep(STORM_LOW * 0.5, STORM_LOW, d.y)
         c = vec4(max(c.rgb + (around.rgb - one.rgb) * k, vec3(0.0)), c.a)
+    }
+    // Through a hole torn in the deck under the storm there's no clear sky, only a higher
+    // layer: the deck's own light round the hole, a little brighter, in place of the open
+    // sky's flat glow (it cut hard-edged patches into the clouds).
+    if m.y == SKY && d.y > STORM_LOW {
+        let uv = sky_uv(d)
+        let here = dome.sample_level(smp, uv)
+        let hole = 1.0 - saturate(here.a)
+        if hole > 0.01 {
+            var round = vec4(0.0)
+            for k in 0..8 {
+                let a = f32(k) * 0.785398
+                let o = vec2(cos(a), sin(a)) * vec2(1.0 / f32(SKY_W), 1.0 / f32(SKY_H)) * 14.0
+                round += dome.sample_level(smp, uv + o)
+            }
+            let behind = round.rgb / max(round.a, 1.0e-3) * HIGHER
+            c = vec4(mix(c.rgb, behind, hole * smoothstep(STORM_LOW, STORM_LOW * 2.0, d.y)), c.a)
+        }
     }
     // Low over the horizon, the far deck's sunlit edges held under the air's own light: no
     // white slivers cut out of the far clouds.
