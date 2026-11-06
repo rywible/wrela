@@ -149,6 +149,29 @@ pub fn ink(
     let c0 = display(at(colour, px, size).xyz)
     let m0 = at(marks, px, size)
     let n0 = at8(normal, px, size)
+    // An impact frame (the frame's energy at its peak): the page goes flat, two values and one
+    // clean, heavy line. The striker in solid ink, the one struck in bare paper, so the fist
+    // reads black against his face. No grain, no strands: the contact is the cleanest shape on
+    // the page.
+    if s.kinetic > 0.95 {
+        let body = m0.y >= BODY - 0.5
+        let struck = m0.y >= BODY + 19.5
+        var e = 0.0
+        for i in 0..8 {
+            for k in 1..3 {
+                let q = px + AROUND[i] * scale * 1.6 * f32(k)
+                let mq = at(marks, q, size)
+                if body || mq.y >= BODY - 0.5 {
+                    e = max(
+                        e,
+                        edge(m0, mq, n0.xyz * 2.0 - 1.0, at8(normal, q, size).xyz * 2.0 - 1.0),
+                    )
+                }
+            }
+        }
+        let flat = if body && !struck { INK * 1.2 } else { PAPER }
+        return vec4(display(mix(flat, INK * 1.2, band(e, edge: 0.35, soft: 0.1))), 1.0)
+    }
     // The energy here: the frame's, or the most of this pixel's and its near neighbours'.
     var local = n0.w
     for i in 0..4 {

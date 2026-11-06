@@ -25,9 +25,7 @@ use body::{
 }
 use engine::anime
 use engine::anime::{Anime, Drawer}
-use fists::{
-    ACT_CROSS, ACT_STEP_IN, ACT_STEP_LEFT, ACT_STEP_OUT, ACT_STEP_RIGHT, FIGHT_GAITS, LOOKS,
-}
+use fists::{ACT_CROSS, ACT_STEP_IN, ACT_STEP_LEFT, ACT_STEP_OUT, ACT_STEP_RIGHT, FIGHT_GAITS, LOOKS}
 use engine::cleanup
 use engine::cleanup::Cleanup
 use engine::humanoid
@@ -100,6 +98,8 @@ pub struct State {
     verts: GpuBuffer<BodyVertex>,
     indices: GpuBuffer<u32>,
     palette: GpuBuffer<mat4>,
+    /// `SHOW=28`'s second fighter's.
+    palette2: GpuBuffer<mat4>,
     colour: Texture<Rgba16Float>,
     marks: Texture<Rgba16Float>,
     normal: Texture<Rgba8>,
@@ -114,6 +114,11 @@ pub struct State {
 }
 
 pub fn init() -> State {
+    if SHOW == 28 {
+        print(
+            f"exchange: hit at {exchange::hit_at():.3} s, blow {exchange::BLOW}, foe at {exchange::FOE[3].xyz}, contact {exchange::contact()}",
+        )
+    }
     print(
         f"humanoid: {HERO.rig.bones.len()} bones, {HERO.verts.len()} vertices, {HERO.indices.len() / 3} triangles; idle {IDLE.frames} frames, walk {WALK.frames} frames ({WALK.travel.z:.2} m a loop)",
     )
@@ -121,6 +126,7 @@ pub fn init() -> State {
         verts: buffer_of(HERO.verts),
         indices: buffer_of(HERO.indices),
         palette: buffer_of([identity(); 64]),
+        palette2: buffer_of([identity(); 64]),
         colour: texture(width: 640, height: 360),
         marks: texture(width: 640, height: 360),
         normal: texture(width: 640, height: 360),
@@ -225,7 +231,18 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
     }
     // (Each gaits const passed whole: an `if` choosing between consts would move one out.)
     let pose = if SHOW == 12 {
-        playback::step(mut s.mover, FIGHT_GAITS, fists::ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
+        playback::step(
+            mut s.mover,
+            FIGHT_GAITS,
+            fists::ACTS,
+            HERO.rig,
+            s.mask,
+            stick,
+            act,
+            upper,
+            how,
+            dt,
+        )
     } else if SHOW == 13 {
         playback::step(
             mut s.mover,
@@ -253,7 +270,18 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
             dt,
         )
     } else {
-        playback::step(mut s.mover, PLAYED_GAITS, PLAYED_ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
+        playback::step(
+            mut s.mover,
+            PLAYED_GAITS,
+            PLAYED_ACTS,
+            HERO.rig,
+            s.mask,
+            stick,
+            act,
+            upper,
+            how,
+            dt,
+        )
     }
     s.last = time
     (pose, playback::placed(s.mover))
@@ -290,6 +318,7 @@ fn pose_at(time: f32) -> Pose {
         24 => kimodo::SHRUG_D.pose(time % kimodo::SHRUG_D.length()),
         25 => kimodo::SHRUG_N.pose(time % kimodo::SHRUG_N.length()),
         26 => kimodo::fight_round(time),
+        28 => exchange::striker(exchange::played_at(time)),
         27 => kimodo::FIGHT_IDLE_M.pose(time % kimodo::FIGHT_IDLE_M.length()),
         _ => if time < IDLE_AT {
             T_POSE.pose(0.0)
@@ -335,7 +364,20 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.height = height
     }
     let game = SHOW == 11 || SHOW == 12 || SHOW == 13 || SHOW == 14
-    let crosses = SHOW == 13 || SHOW == 14 || SHOW == 16 || SHOW == 18 || SHOW == 19 || SHOW == 20 || SHOW == 21 || SHOW == 22 || SHOW == 23 || SHOW == 24 || SHOW == 25 || SHOW == 26 || SHOW == 27
+    let crosses = SHOW == 13 ||
+        SHOW == 14 ||
+        SHOW == 16 ||
+        SHOW == 18 ||
+        SHOW == 19 ||
+        SHOW == 20 ||
+        SHOW == 21 ||
+        SHOW == 22 ||
+        SHOW == 23 ||
+        SHOW == 24 ||
+        SHOW == 25 ||
+        SHOW == 26 ||
+        SHOW == 27 ||
+        SHOW == 28
 
     let dt = clamp(time - s.last, 1.0e-4, 0.1)
     let (pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
@@ -376,16 +418,39 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         force = d.force
     }
     write(mut s.palette, 0, bones)
+    if SHOW == 28 {
+        var foe = palette(HERO.rig, exchange::foe(exchange::played_at(time)), exchange::FOE)
+        foe[63] = mat4(
+            exchange::X_TINT,
+            vec4(normalize((exchange::FOE * vec4(1.0, 0.0, 0.0, 0.0)).xyz), 1.0),
+            vec4(0.0),
+            vec4(0.0),
+        )
+        write(mut s.palette2, 0, foe)
+    }
     // The camera follows the hips along the ground, steadily: where they are on average over a
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
     // followed where gameplay puts it, which is steady already.
-    let hips = if SHOW == 26 { vec3(0.0, 0.0, 0.25) } else if SHOW == 19 { vec3(0.0, 0.0, 0.25) + kimodo::a_shake(time % kimodo::stance_round() - kimodo::STANCE.length()) } else if SHOW == 16 { vec3(0.0, 0.0, 0.25) + kimodo::a_shake(time % (kimodo::TIMED.length() + 0.4) - kimodo::STILL) } else if SHOW == 12 || crosses { vec3(0.0, 0.0, 0.25) } else if game {
+    let (kick, push) = if SHOW == 28 { exchange::camera(time) } else { (0.0, 0.0) }
+    if SHOW == 28 {
+        kinetic = max(kinetic, exchange::flash(time))
+    }
+    let hips = if SHOW == 28 {
+        (vec3(0.0, 0.0, 0.25) + exchange::FOE[3].xyz) * 0.5 + exchange::BLOW * kick
+    } else if SHOW == 26 { vec3(0.0, 0.0, 0.25) } else if SHOW == 19 {
+        vec3(0.0, 0.0, 0.25) +
+            kimodo::a_shake(time % kimodo::stance_round() - kimodo::STANCE.length())
+    } else if SHOW == 16 {
+        vec3(0.0, 0.0, 0.25) +
+            kimodo::a_shake(time % (kimodo::TIMED.length() + 0.4) - kimodo::STILL)
+    } else if SHOW == 12 || crosses { vec3(0.0, 0.0, 0.25) } else if game {
         s.mover.place
     } else {
         steady_hips(time)
     }
     let walking = SHOW != 12 && !crosses && (SHOW >= 3 || (SHOW == 0 && time >= WALK_AT))
-    let side = if SHOW == 12 || crosses { CROSS_SIDE } else if walking { SIDE } else { -0.55 }
+    let side = if SHOW == 28 { -exchange::BLOW.z / exchange::BLOW.x } else if SHOW == 12 ||
+        crosses { CROSS_SIDE } else if walking { SIDE } else { -0.55 }
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
     var shot = shot_at(
         time,
@@ -393,7 +458,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         vec3(hips.x, 0.0, hips.z),
         width,
         height,
-        FAR,
+        FAR - push,
         side,
         kinetic,
         left,
@@ -425,6 +490,18 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         cull: Cull::Back,
         depth: engine::view::NEAREST,
     )
+    if SHOW == 28 && exchange::X_FOE == 1 {
+        let shot2 = shot
+        draw(
+            p,
+            body.bind(verts: s.verts.items(), palette: s.palette2.items(), shot: shot2),
+            paint_body.bind(shot: shot2),
+            indices: s.indices,
+            index_count: HERO.indices.len(),
+            cull: Cull::Back,
+            depth: engine::view::NEAREST,
+        )
+    }
     p.end()
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(

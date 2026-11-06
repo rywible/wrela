@@ -152,6 +152,9 @@ pub struct BodyOut: Copy {
     pub albedo: vec3,
     pub rest: vec3,
     pub part: Flat<u32>,
+    /// The body's tint (`Shot::tint`, from its palette's last slot) and its left (xyz).
+    pub tint: vec4,
+    pub left: vec4,
 }
 
 /// A vertex's skinning matrix: its four bones' matrices in the palette, blended by its weights.
@@ -178,6 +181,8 @@ pub fn body(v: VertexIndex, verts: [BodyVertex], palette: [mat4], shot: Shot) ->
         albedo: c * c,
         rest: sv.pos,
         part: Flat { value: sv.part },
+        tint: palette[63][0],
+        left: palette[63][1],
     }
 }
 
@@ -196,6 +201,7 @@ pub fn paint_body(b: BodyOut, shot: Shot) -> Targets3<vec4, vec4, vec4> {
         Some(c) => c * c,
         None => b.albedo,
     }
+    let albedo = mix(albedo, albedo * b.tint.rgb, vec3(saturate(b.tint.w)))
     let ndl = dot(n, l)
     let lit_side = band(ndl, edge: 0.02, soft: 0.035)
     let full = band(ndl, edge: 0.45, soft: 0.035)
@@ -212,12 +218,15 @@ pub fn paint_body(b: BodyOut, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     c += COOL * edge * 0.10 * (1.0 - lit_side)
     // The far side: a limb's side (by its x at rest) against the side the camera's on.
     let to_eye = shot.cam.eye - shot.feet
-    let facing = dot(shot.left, normalize(vec3(to_eye.x, 0.0, to_eye.z)))
+    let own_left = if b.left.w > 0.5 { b.left.xyz } else { shot.left }
+    let facing = dot(own_left, normalize(vec3(to_eye.x, 0.0, to_eye.z)))
     let side = if abs(b.rest.x) > 0.07 { sign(b.rest.x) } else { 0.0 }
     let far = saturate(-side * facing * 3.0)
     c = mix(c, c * mix(COOL, vec3(1.0), vec3(0.55)) * 0.78, vec3(far))
     let t = length(b.world - shot.cam.eye)
-    var out = targets(c, t, BODY, line: field, weight: mix(0.8, 0.55, far), n: n)
+    var out = targets(c, t, if b.tint.w > 0.0 { BODY + 20.0 } else {
+        BODY
+    }, line: field, weight: mix(0.8, 0.55, far), n: n)
     // A strike's force: his energy along it.
     let f = shot.force_from
     if shot.force_to.w > 0.0 {

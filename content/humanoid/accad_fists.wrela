@@ -129,7 +129,12 @@ fn cross_pose(c: Clip, time: f32) -> humanoid::Pose {
     // between chamber the elbow out and back (a hitch, at 24 drawings a second).
     if time > LOAD + TELL && time < CROSS_HIT {
         let x = (time - LOAD - TELL) / SNAP
-        p = humanoid::blend(c.pose((LOADED_F + 0.3) / c.fps), c.pose(CONTACT_F / c.fps), x * x * (2.0 - x), nb)
+        p = humanoid::blend(
+            c.pose((LOADED_F + 0.3) / c.fps),
+            c.pose(CONTACT_F / c.fps),
+            x * x * (2.0 - x),
+            nb,
+        )
     }
     let guard = c.pose(GUARD_F / c.fps)
     for name in LEAD_ARM {
@@ -230,9 +235,12 @@ pub fn breathed(c: Clip, period: f32) -> Clip {
         let t = f32(f) / c.fps
         let s = sin(6.2831853 * t / period)
         if chest != humanoid::NONE {
-            out.turns[f * nb + chest] = Quat::axis_angle(vec3(1.0, 0.0, 0.0), -0.022 * s).mul(c.turns[f * nb + chest])
+            out.turns[f * nb + chest] = Quat::axis_angle(vec3(1.0, 0.0, 0.0), -0.022 * s).mul(
+                c.turns[f * nb + chest],
+            )
         }
-        out.hips[f] = c.hips[f] + HERO.rig.base.q.inverse().rotate(vec3(0.0, 0.004 * cos(6.2831853 * t / period), 0.0))
+        out.hips[f] = c.hips[f] +
+            HERO.rig.base.q.inverse().rotate(vec3(0.0, 0.004 * cos(6.2831853 * t / period), 0.0))
     }
     out
 }

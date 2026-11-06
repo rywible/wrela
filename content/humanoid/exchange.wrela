@@ -1,0 +1,191 @@
+// One exchange, for judging how a punch reads (`SHOW=28`): the cross out of the bounce lands on a
+// second fighter, who takes it (a hit reaction Kimodo made from a text prompt, `REACT`). Around
+// the contact: a hit-stop (both bodies held), the camera kicked once along the blow and eased
+// back, and (for the anime look) an impact frame, the palette drained for a few frames.
+//
+// `--set X_HOLD=0 --set X_FLASH=0 --set X_KICK=0 --set X_PUSH=0` is the bare exchange.
+
+use engine::bvh
+use engine::humanoid
+use engine::humanoid::{Clip, Pose}
+use engine::stride
+use body::HERO
+use kimodo::{
+    FIGHT_IDLE_M, FT_EARLY, a_end, a_hit, facing, fight_length, fight_round, guard_yaw, kimodo_take,
+    one_pose,
+}
+
+/// The hit-stop: how long both bodies hold at contact (s).
+pub const X_HOLD: f32 = 0.15
+/// The impact frame: how long the palette drains at contact (s).
+pub const X_FLASH: f32 = 0.05
+/// The camera's kick along the blow (m) and its push in (m), and how fast each eases off (s).
+pub const X_KICK: f32 = 0.07
+pub const X_PUSH: f32 = 0.3
+pub const X_KICK_LIFE: f32 = 0.12
+pub const X_PUSH_LIFE: f32 = 0.45
+/// Where the blow lands on him: how far past his face's front the fist reaches (m; his head
+/// is struck as the fist reaches its furthest).
+pub const X_DEPTH: f32 = 0.02
+/// How far into the reaction (from its own impact frame) the struck drawing is (s): the one
+/// that's held through the hit-stop, already knocked back.
+pub const X_INTO: f32 = 0.05
+/// How long the reaction takes to give way to his guard again (s).
+pub const X_BACK: f32 = 0.4
+/// His bounce's phase against the striker's (s).
+pub const X_PHASE: f32 = 0.31
+/// The opponent's tint: what his clothes are multiplied by, and how much.
+pub const X_TINT = vec4(0.3, 0.45, 0.85, 1.0)
+/// Whether the opponent is there (0: the cross thrown at the air, as before), and whether both
+/// bodies are drawn on twos (12 drawings a second, the camera on ones).
+pub const X_FOE: u32 = 1
+pub const X_TWOS: u32 = 0
+
+/// The hit reaction: a Kimodo take, its last frame, the frame where the blow lands (the head
+/// starts snapping back) and the frame where he's back on guard (30 fps).
+pub const REACT_LAST: u32 = 59
+pub const REACT_HIT: f32 = 8.0
+pub const REACT_HOME: f32 = 50.0
+pub const REACT: Clip = kimodo_take(bvh::read(embed("assets/kimodo/react.bvh")), REACT_LAST)
+
+/// When the cross lands, on the played clock (s).
+pub fn hit_at() -> f32 {
+    FIGHT_IDLE_M.length() * 2.0 + a_hit()
+}
+
+/// The clock the bodies play on: held through the hit-stop.
+pub fn played_at(time: f32) -> f32 {
+    let h = hit_at()
+    let p = if time < h { time } else if time < h + X_HOLD { h } else { time - X_HOLD }
+    if X_TWOS == 1 {
+        // (On twos, a drawing lands on the contact.)
+        return h + floor((p - h) * 12.0 + 1.0e-4) / 12.0
+    }
+    p
+}
+
+/// The striker at played time `p`: the cross, then the bounce on past the round's end.
+pub fn striker(p: f32) -> Pose {
+    if p < fight_length() {
+        return fight_round(p)
+    }
+    let back = FIGHT_IDLE_M.length() * 2.0 + a_end() - FT_EARLY
+    FIGHT_IDLE_M.pose((p - back) % FIGHT_IDLE_M.length())
+}
+
+fn yaw_q(a: f32) -> Quat {
+    Quat::axis_angle(vec3(0.0, 1.0, 0.0), a)
+}
+
+/// The opponent's place: turned to face the striker and stood so the fist, at full reach, lands
+/// `X_DEPTH` into his face.
+@fuel(2 ** 40)
+pub const FOE: mat4 = foe_place()
+
+fn foe_place() -> mat4 {
+    borrow rig = HERO.rig
+    let h = hit_at()
+    let w = stride::worlds(rig, one_pose(striker(h)), 0)
+    var reach = w[rig.find("rightHand")].t - w[rig.find("hips")].t
+    reach.y = 0.0
+    let d = normalize(reach)
+    let fist = w[rig.find("rightHand")].t
+    let me = foe_idle(h)
+    let turn = atan2(-d.x, -d.z) - guard_yaw(me)
+    let q = yaw_q(turn)
+    let wf = stride::worlds(rig, one_pose(me), 0)
+    let head = q.rotate(wf[rig.find("head")].t)
+    // (The fist's knuckles are about 9 cm past the wrist; his face about 10 cm in front of the
+    // head bone, which sits at the base of the skull.)
+    let at = fist + d * (0.19 - X_DEPTH) - head
+    let r = q.rotate(vec3(1.0, 0.0, 0.0))
+    let f = q.rotate(vec3(0.0, 0.0, 1.0))
+    mat4(vec4(r, 0.0), vec4(0.0, 1.0, 0.0, 0.0), vec4(f, 0.0), vec4(at.x, 0.0, at.z, 1.0))
+}
+
+fn foe_idle(p: f32) -> Pose {
+    FIGHT_IDLE_M.pose((p + X_PHASE) % FIGHT_IDLE_M.length())
+}
+
+/// The opponent at played time `p` (in his own place, `FOE`): his bounce; struck, the reaction,
+/// turned to face the way his bounce did and stood over its hips; then back to his bounce where
+/// the reaction left him.
+pub fn foe(p: f32) -> Pose {
+    let n = HERO.rig.bones.len()
+    let h = hit_at()
+    if p < h {
+        return foe_idle(p)
+    }
+    let base = HERO.rig.base
+    let inv = base.inverse()
+    let i0 = foe_idle(h)
+    let r0 = REACT.pose(REACT_HIT / 30.0)
+    let turn = yaw_q(guard_yaw(i0) - guard_yaw(r0))
+    let from = base.t + base.q.rotate(r0.hips)
+    let to = base.t + base.q.rotate(i0.hips)
+    let placed = |q: Pose| -> Pose {
+        var c = q
+        let hw = base.t + base.q.rotate(c.hips)
+        let o = turn.rotate(hw - from)
+        c.hips = inv.t + inv.q.rotate(to + o)
+        c.turns[0] = base.q.inverse().mul(turn.mul(base.q.mul(c.turns[0])))
+        c
+    }
+    let v = p - h
+    let home = (REACT_HOME - REACT_HIT) / 30.0 - X_INTO
+    let r = placed(REACT.pose(REACT_HIT / 30.0 + X_INTO + min(v, home)))
+    if v < home {
+        return r
+    }
+    // (His bounce picked up where the reaction left him: shifted by how far it carried him.)
+    let rh = base.t + base.q.rotate(placed(REACT.pose(REACT_HOME / 30.0)).hips)
+    var off = rh - to
+    off.y = 0.0
+    var b = foe_idle(p)
+    b.hips = b.hips + inv.q.rotate(off)
+    humanoid::blend(r, b, smoothstep(0.0, X_BACK, v - home), n)
+}
+
+/// The camera at clock `time`: its kick along the blow (m), and how far it's pushed in (m).
+pub fn camera(time: f32) -> (f32, f32) {
+    // (On twos, the camera's drawn on twos too: one cadence for the whole frame.)
+    let t = if X_TWOS == 1 { floor((time - hit_at()) * 12.0 + 1.0e-4) / 12.0 } else {
+        time - hit_at()
+    }
+    if t < 0.0 {
+        return (0.0, 0.0)
+    }
+    let kick = X_KICK * smoothstep(0.0, 0.02, t) * exp(-t / X_KICK_LIFE)
+    let push = X_PUSH * smoothstep(0.0, 0.04, t) * exp(-t / X_PUSH_LIFE)
+    (kick, push)
+}
+
+/// How kinetic the moment is at clock `time`: the impact frame drains the palette.
+pub fn flash(time: f32) -> f32 {
+    let t = time - hit_at()
+    if t >= 0.0 && t < X_FLASH { 1.0 } else { 0.0 }
+}
+
+/// The way the blow travels, along the ground.
+@fuel(2 ** 40)
+pub const BLOW: vec3 = blow()
+
+fn blow() -> vec3 {
+    borrow rig = HERO.rig
+    let w = stride::worlds(rig, one_pose(striker(hit_at())), 0)
+    var reach = w[rig.find("rightHand")].t - w[rig.find("hips")].t
+    reach.y = 0.0
+    normalize(reach)
+}
+
+/// Where the blow lands, for checking: the fist's height, his head's height, and the fist's
+/// distance past his head's centre along the blow (m), at contact.
+pub fn contact() -> vec3 {
+    borrow rig = HERO.rig
+    let h = hit_at()
+    let w = stride::worlds(rig, one_pose(striker(h)), 0)
+    let fist = w[rig.find("rightHand")].t
+    let wf = stride::worlds(rig, one_pose(foe_idle(h)), 0)
+    let head = (FOE * vec4(wf[rig.find("head")].t, 1.0)).xyz
+    vec3(fist.y, head.y, dot(fist - head, BLOW))
+}
