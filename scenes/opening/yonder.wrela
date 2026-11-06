@@ -357,9 +357,8 @@ pub fn yonder(
     Targets3 { first: now, second: marks, third }
 }
 
-/// The wind the falls' spray goes with (the sky's, `heavens`: 9 m/s east, 14 south), and how
-/// far it carries a drop for each metre it falls (the spray's slow fall against it).
-const WIND = vec2(0.54, -0.84)
+/// How far the wind (`Shot::wind`, the world's one: `wind`) carries a drop for each metre it
+/// falls (the spray's slow fall against it).
 const CARRY: f32 = 0.55
 
 /// How much of the falls a ray `o` + `d` t meets before `hit`, and their light (premultiplied);
@@ -398,7 +397,7 @@ pub(package) fn falls(
                 let p = o + d * tc
                 let drop = lip.y - p.y
                 // Where the fall's middle is at this depth: off down the wind as it falls.
-                let carried = dot(WIND, side_dir) * CARRY * max(drop - 60.0, 0.0)
+                let carried = dot(normalize(s.wind), side_dir) * CARRY * max(drop - 60.0, 0.0)
                 let side = dot(vec2(p.x - lip.x, p.z - lip.z), side_dir) - carried
                 let fi = f32(i) * 13.7
                 let px_m = tc * 2.0 / (s.resolution.y * s.focal)

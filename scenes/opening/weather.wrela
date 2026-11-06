@@ -8,7 +8,7 @@
 // dither is smoothed out, its far sunlit edges held under the air's light, and the far sea lost
 // into the same air, so there's no ruled line between them.
 
-use look::{ROCK, SKY, STORM_LOW, Shot, hash2, luma, ray, wind}
+use look::{ROCK, SKY, STORM_LOW, Shot, hash2, luma, ray}
 use engine::air::{ALTITUDE, BOTTOM}
 use engine::light::Light
 use engine::light::sky as clear_sky
@@ -55,7 +55,7 @@ fn rain(s: Shot, d: vec3, id: f32, t0: f32, t1: f32, jitter: f32) -> f32 {
     if t1 <= t0 {
         return 1.0
     }
-    let along = wind()
+    let along = normalize(s.wind)
     // (The shafts lean across the view as they fall, the wind up there veering from the sea's.)
     let lean = along
     let moved = along * (RAIN_DRIFT * s.time)
@@ -94,7 +94,7 @@ fn rain(s: Shot, d: vec3, id: f32, t0: f32, t1: f32, jitter: f32) -> f32 {
 /// How heavy the rain's cell is over `xz` (world, m, at the deck's base): its cells drifting
 /// on the wind and turning slowly.
 fn rain_cell(s: Shot, xz: vec2) -> f32 {
-    fbm2((xz - wind() * (RAIN_DRIFT * s.time)) / 6500.0 + vec2(11.0, s.time * 0.0015), 3)
+    fbm2((xz - normalize(s.wind) * (RAIN_DRIFT * s.time)) / 6500.0 + vec2(11.0, s.time * 0.0015), 3)
 }
 
 /// How much weather is let stand in front of what the pixel met (`id`): `least` of it over the
@@ -132,7 +132,7 @@ fn scud(
     if t <= 0.0 || t > t_max || t > 40000.0 {
         return vec4(0.0)
     }
-    let along = wind()
+    let along = normalize(s.wind)
     let across = vec2(-along.y, along.x)
     let xz = s.eye.xz + d.xz * t - along * (SCUD_DRIFT * s.time)
     let w = vec2(dot(xz, across), dot(xz, along))

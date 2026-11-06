@@ -95,6 +95,9 @@ pub struct Shot: Copy + GpuData {
     /// How much of the storm is here, where the eye is (0 clear to 1 the storm's deck: the
     /// weather of the region it's in, `heavens::Heavens::storm`), eased as it sails between.
     pub storm: f32,
+    /// The wind's mean where the eye is (m/s, toward where it blows: `wind::mean_wind`, eased
+    /// as the skiff sails between regions); its gusts over it are `wind::air_over`'s.
+    pub wind: vec2,
 }
 
 /// The player's camera (`Rig::framing` 1): how far behind the skiff (m), how high over the sea
@@ -189,6 +192,7 @@ pub fn shot_at(
         lantern: 0.0,
         fine: 1.0,
         storm: OVERCAST,
+        wind: WATER.wind * WATER.speed,
     }
 }
 
