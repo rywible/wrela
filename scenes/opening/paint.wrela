@@ -12,6 +12,7 @@ use look::{
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
 use engine::ocean::{Waves, level_at, surface_at}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
+use yonder::falls
 use skiff::{dry, hull_off, paddle, skiff, skiff_material, skiff_normal}
 use engine::far::foot
 use engine::light::{Light, Lit, gloss, hazed, matte, sun_disc, world}
@@ -819,8 +820,12 @@ fn sea_shade(
         if z > 0.0 {
             let uv = vec2(dot(r0, s.right), -dot(r0, s.up)) * (s.focal / z)
             let at = (uv * s.resolution.y + s.resolution) * 0.5
-            let far = yon.sample_level(smp, at / s.resolution)
-            if far.a > 0.0 {
+            // (Only where that lands on the screen, fading at its edges: past them the
+            // texture's edge would smear across the water.)
+            let inside = smoothstep(0.0, 8.0, min(min(at.x, at.y), 1.0e5)) *
+                smoothstep(0.0, 8.0, min(s.resolution.x - at.x, s.resolution.y - at.y))
+            if inside > 0.0 {
+                let far = yon.sample_level(smp, at / s.resolution) * inside
                 mirrored = mirrored * (1.0 - far.a) + far.rgb
             }
         }
@@ -1400,6 +1405,9 @@ fn sample(
             }
         }
     }
+    // The falls, fresh each drawing, in front of what's behind them (the rock too).
+    let (fall, _) = falls(s, h, view, aerial, dome, smp, o, d, t)
+    c = c * (1.0 - fall.a) + fall.rgb
     let thrown = spray(s, h, o, d, t)
     c = c * (1.0 - thrown.a) + thrown.rgb
     if s.lantern > 0.5 {

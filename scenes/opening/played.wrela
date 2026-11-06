@@ -43,6 +43,7 @@ pub struct State {
     pub(package) yon: Yon,
     pub(package) yon_shot: Shot,
     pub(package) yon_count: f32,
+    pub(package) yon_seq: u32,
     pub(package) width: u32,
     pub(package) height: u32,
     /// The skiff as the player rows it.
@@ -80,6 +81,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         yon: afresh(shot),
         yon_shot: shot,
         yon_count: 0.0,
+        yon_seq: 0,
         image: texture(width: 1, height: 1),
         image_size: (1, 1),
         spare: texture(width: 1, height: 1),
@@ -135,7 +137,10 @@ fn next_yon(s: mut State, shot: Shot) {
     swap(mut s.yon_marks, mut s.past_marks)
     swap(mut s.yon_normal, mut s.past_normal)
     let n = s.yon_count
-    let i = u32(n) % 16 + 1
+    // (The sequence runs on past the most a pixel holds: held at its cap, the offset would stop
+    // on one place and the crawl come back.)
+    s.yon_seq += 1
+    let i = s.yon_seq % 16 + 1
     s.yon = Yon {
         held: n,
         jitter: vec2(halton(i, 2), halton(i, 3)) - vec2(0.5),

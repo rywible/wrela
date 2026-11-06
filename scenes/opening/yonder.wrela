@@ -7,8 +7,9 @@
 // many, and holds still as the skiff rocks. They don't move, so what was met is still true.
 //
 // It writes what the paint reads of them: their light, already in their air, premultiplied by how
-// much of the pixel they cover (the falls too, in front of the rock); how far, what, the ink's
-// line and weight; and the normal.
+// much of the pixel they cover; how far, what, the ink's line and weight; and the normal. (Their
+// falls move each drawing, so they're not added up here, which would smear them: the paint draws
+// them fresh, with `falls`.)
 
 use look::{GILT, GLASS, ISLE, OVERCAST, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
@@ -326,13 +327,6 @@ pub fn yonder(
         marks = vec4(log2(t), id, il, iw)
         n = inn
     }
-    // The falls, in front of the rock.
-    let (fall, fall_t) = falls(s, h, view, aerial, dome, smp, o, d, t)
-    c = c * (1.0 - fall.a) + fall.rgb
-    cover = cover + fall.a * (1.0 - cover)
-    if id == SKY && fall.a > 0.0 {
-        marks.x = log2(fall_t)
-    }
     var now = vec4(c, cover)
     var third = vec4(n * 0.5 + 0.5, 0.0)
     // What the drawings before met here, carried to where the camera has gone: the point this
@@ -376,7 +370,7 @@ const CARRY: f32 = 0.55
 /// widens as it falls, billowing, carried off down the wind and thinning till it's gone, long
 /// before the sea. (Big things fall slowly on the screen: the billows sink at the spray's own
 /// slow pace.) Each is drawn on the plane through its lip turned to the eye.
-fn falls(
+pub(package) fn falls(
     s: Shot,
     h: Heaven,
     view: Texture<Rgba16Float>,
