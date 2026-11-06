@@ -349,7 +349,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // The camera follows the hips along the ground, steadily: where they are on average over a
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
     // followed where gameplay puts it, which is steady already.
-    let hips = if SHOW == 12 || crosses { vec3(0.0, 0.0, 0.25) } else if game {
+    let hips = if SHOW == 16 { vec3(0.0, 0.0, 0.25) + kimodo::a_shake(time % (kimodo::TIMED.length() + 0.4) - kimodo::STILL) } else if SHOW == 12 || crosses { vec3(0.0, 0.0, 0.25) } else if game {
         s.mover.place
     } else {
         steady_hips(time)
