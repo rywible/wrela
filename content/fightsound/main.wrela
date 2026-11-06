@@ -15,11 +15,28 @@
 // after `PREROLL` seconds of the sea and wind alone.
 
 use engine::sound::{Babble, Breath, Cue, Mixer, Mode, Palette, Surface, Swish, mix, mixer}
+use engine::strike
 use std::audio::{QUANTUM, RingWriter, SAMPLE_RATE, play}
 use std::math::tanh
 
 pub const CUE: u32 = 6
 pub const BLAST: u32 = 1
+
+/// The blow, from first principles (engine::strike): what strikes (`BY`: 0 fist, 1 elbow,
+/// 2 shin, 3 palm), what's struck (`ON`: 0 face, 1 ribs, 2 belly, 3 guard, 4 stone) and how fast
+/// (m/s).
+pub const BY: u32 = 0
+pub const ON: u32 = 0
+pub const HIT_SPEED: f32 = 9.0
+const BYS: [strike::Striker; 4] = [strike::FIST, strike::ELBOW, strike::SHIN, strike::PALM]
+const ONS: [strike::Target; 5] = [strike::FACE, strike::RIBS, strike::BELLY, strike::GUARD, strike::STONE]
+
+/// The palette with its blow worked out from the bodies that meet.
+fn palette() -> Palette {
+    var p = PALETTE
+    p.impacts[BLOW] = strike::struck(BYS[BY], ONS[ON], speed: HIT_SPEED)
+    p
+}
 
 /// The palette's kinds.
 pub const BLOW: u32 = 0
@@ -344,7 +361,7 @@ pub struct Game {
 }
 
 pub fn init() -> Game {
-    let (writer, m) = mixer(PALETTE, seed: 5)
+    let (writer, m) = mixer(palette(), seed: 5)
     var cues = take writer
     let _ = cues.push(Cue::Listen { at: EARS, forward: vec2(0.0, 1.0) })
     let at = vec3(0.0, 1.5, 0.0)
