@@ -5,6 +5,7 @@
 // lines fray: they break into strands, throw off static, and the palette drains toward black
 // and white. Quiet, it's a painting with ink; at the edges of a violent thing, chaos.
 
+use main::LOOK
 use look::{INK, LIFT, OVERCAST, PAPER, ROCK, SEA, SKIFF, SKY, Shot, band, hash2, luma, noise, ray}
 use engine::light::{LUMA, Light, aces, display, srgb}
 use std::gpu::{FragCoord, Rgba16Float, Rgba8, Texture}
@@ -185,16 +186,16 @@ fn styled(s: Shot, c: vec3, px: vec2, m: vec4, n: vec3, sun: vec3, scale: f32, s
     o
 }
 
-/// The stylized-CG looks' tones, one language for the whole frame (`s.look` which): the painted
+/// The stylized-CG looks' tones, one language for the whole frame (`LOOK` which): the painted
 /// look's five values with a brush's edge; the cel look's three hard tones and a highlight; the
 /// clean look's own smooth light. The same on the skiff as on the building, the sea and the clouds.
 fn toned(s: Shot, c: vec3, px: vec2, m: vec4, scale: f32, seed: f32) -> vec3 {
     let l = max(luma(c), 1.0e-4)
     let cloud = if m.y == SKY { clamp((0.45 - m.z) * 4.0, 0.0, 1.0) } else { 0.0 }
-    if s.look > 2.5 {
+    if LOOK > 2.5 {
         return c
     }
-    if s.look < 1.5 {
+    if LOOK < 1.5 {
         // Painted: six values, their edges broken by a slow brush; the open sky left to its
         // gradient.
         let brush = (noise(px / (scale * 34.0) + vec2(seed * 0.05, 0.0)) - 0.5) * 0.4 +
@@ -300,10 +301,10 @@ pub fn ink(
     let px = pixel.position.xy
     let scale = size.y / 720.0
     let seed = s.held * 12.0
-    let drawn = s.look < 0.5
-    let painted = s.look > 0.5 && s.look < 1.5
-    let cel = s.look > 1.5 && s.look < 2.5
-    let clean = s.look > 2.5
+    let drawn = LOOK < 0.5
+    let painted = LOOK > 0.5 && LOOK < 1.5
+    let cel = LOOK > 1.5 && LOOK < 2.5
+    let clean = LOOK > 2.5
     var c0 = seen(light, at(colour, px, size).xyz, clean)
     let m0 = at(marks, px, size)
     let n0 = at8(normal, px, size)
