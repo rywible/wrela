@@ -183,10 +183,10 @@ fn isle_shade(
     // little past it toward the sky's own colour, as a painter pushes back what's far; so the
     // building sits on its rock, not over it, and both sit far off, not near and small.
     // Its underside, hung in its own shade, given to the air: the lower, the more of the sky.
-    // (Thicker toward its tip, as the air is lower down: its underside fades to the sky before
-    // its top does, so it reads as deep in the air, not a flat shape on it.)
+    // (The same air top to tip: an underside fading to the sky more than its top reads as a
+    // ghost, not stone. Its own shade, below, keeps it dark.)
     let below = clamp((ISLE.y - p.y) / (210.0 * SCALE), 0.0, 1.0)
-    let haze = 0.94 + 0.24 * pow(below, 1.5) * smoothstep(3000.0, 8000.0, t)
+    let haze = 0.97
     let gloss = if id == ROCK { 0.0 } else { 1.0 }
     // (The rock lit by its planes more than its cracks: a crack's wall turned to the sun
     // catches it softly, not as a seam of gold.)
@@ -213,7 +213,7 @@ fn isle_shade(
     )
     // The underside hangs in its own shade, darker the lower: a mass over the sea, not a veil.
     if id == ROCK {
-        c *= mix(1.0, 0.72, smoothstep(0.15, 0.9, below))
+        c *= mix(1.0, 0.5, smoothstep(0.1, 0.8, below))
     }
     // The keep's foot darker where it meets the town's top terraces, and the town's walls
     // under it darker still, in their own shade and the grime their rain runs down to: the
