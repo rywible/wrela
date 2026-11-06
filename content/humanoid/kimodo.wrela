@@ -656,7 +656,12 @@ fn chambered(c: Clip) -> Clip {
 pub const A_BACK: f32 = 0.0
 
 /// Both legs reached so the ankles are at `feet` again, each foot turned as `foot_q`.
-fn legs_to(rig: humanoid::Rig, w: mut Vec<humanoid::Rigid>, feet: [vec3; 2], foot_q: [Quat; 2]) {
+pub fn legs_to(
+    rig: humanoid::Rig,
+    w: mut Vec<humanoid::Rigid>,
+    feet: [vec3; 2],
+    foot_q: [Quat; 2],
+) {
     let rw = rig.rest_world()
     for i in 0..2 {
         let side = if i == 0 { "left" } else { "right" }

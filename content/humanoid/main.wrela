@@ -116,7 +116,7 @@ pub struct State {
 pub fn init() -> State {
     if SHOW == 28 {
         print(
-            f"exchange: hit at {exchange::hit_at():.3} s, blow {exchange::BLOW}, foe at {exchange::FOE[3].xyz}, contact {exchange::contact()}",
+            f"exchange: hit at {exchange::hit_at():.3} s, blow {exchange::BLOW}, foe at {exchange::PLACE[3].xyz}, contact {exchange::contact()}",
         )
     }
     print(
@@ -419,10 +419,10 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     }
     write(mut s.palette, 0, bones)
     if SHOW == 28 {
-        var foe = palette(HERO.rig, exchange::foe(exchange::played_at(time)), exchange::FOE)
+        var foe = palette(HERO.rig, exchange::struck(exchange::played_at(time)), exchange::PLACE)
         foe[63] = mat4(
-            exchange::X_TINT,
-            vec4(normalize((exchange::FOE * vec4(1.0, 0.0, 0.0, 0.0)).xyz), 1.0),
+            exchange::STRUCK_TINT,
+            vec4(normalize((exchange::PLACE * vec4(1.0, 0.0, 0.0, 0.0)).xyz), 1.0),
             vec4(0.0),
             vec4(0.0),
         )
@@ -436,7 +436,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         kinetic = max(kinetic, exchange::flash(time))
     }
     let hips = if SHOW == 28 {
-        (vec3(0.0, 0.0, 0.25) + exchange::FOE[3].xyz) * 0.5 + exchange::BLOW * kick
+        (vec3(0.0, 0.0, 0.25) + exchange::PLACE[3].xyz) * 0.5 + exchange::BLOW * kick
     } else if SHOW == 26 { vec3(0.0, 0.0, 0.25) } else if SHOW == 19 {
         vec3(0.0, 0.0, 0.25) +
             kimodo::a_shake(time % kimodo::stance_round() - kimodo::STANCE.length())
@@ -465,6 +465,11 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     )
     shot.force_from = vec4(force.from, if force.heavy { 1.0 } else { 0.0 })
     shot.force_to = vec4(force.to, force.by)
+    if SHOW == 28 {
+        let (b0, b1) = exchange::blast(time)
+        shot.blast = b0
+        shot.blast_dir = b1
+    }
     let p = begin_pass3_with_depth(
         mut s.colour,
         mut s.marks,

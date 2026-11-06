@@ -170,7 +170,9 @@ pub fn ink(
             }
         }
         let flat = if body && !struck { INK * 1.2 } else { PAPER }
-        return vec4(display(mix(flat, INK * 1.2, band(e, edge: 0.35, soft: 0.1))), 1.0)
+        let bl = blast(s, px, scale)
+        let fc = mix(mix(flat, PAPER, bl.y), INK * 1.2, max(band(e, edge: 0.35, soft: 0.1), bl.x))
+        return vec4(display(fc), 1.0)
     }
     // The energy here: the frame's, or the most of this pixel's and its near neighbours'.
     var local = n0.w
@@ -268,12 +270,63 @@ pub fn ink(
     c = mix(c, ink_c, ink_line)
     // The strike's fibres, frayed off his form.
     c = mix(c, INK * 0.6, fury.x)
+    // A blast thrown off the blow: its air paler, its ink over all.
+    let bl = blast(s, px, scale)
+    c = mix(c, PAPER * 1.02, bl.y)
+    c = mix(c, INK * 0.6, bl.x)
     // The paper: its tooth and fibres, and a vignette as a page's edge darkens.
     let tooth = noise(px / (1.3 * scale)) * 0.6 + noise(px / (6.0 * scale)) * 0.4
     c *= 0.975 + 0.035 * tooth
     let uv = px / size - vec2(0.5)
     c *= 1.0 - 0.18 * pow(length(uv * vec2(1.0, 1.2)), 2.4)
     vec4(c, 1.0)
+}
+
+/// A blast thrown off a blow at pixel `px`: (ink, air). The air the blow drives on past what it
+/// struck: a cone opening ahead of the fist, its front a heavy broken ink rim (two fainter rims
+/// behind it), the air inside it a pale wash; and ink thrown off the contact along the blow in
+/// drops, long and thin as they fly, each its own speed. It's over everything: the force goes
+/// through what it hit.
+fn blast(s: Shot, px: vec2, scale: f32) -> vec2 {
+    let age = s.blast.w
+    if age < 0.0 || s.blast_dir.w <= 0.0 {
+        return vec2(0.0)
+    }
+    let life = clamp(age / 0.45, 0.0, 1.0)
+    let c = screen_of(s, s.blast.xyz)
+    let ahead = screen_of(s, s.blast.xyz + s.blast_dir.xyz * s.blast_dir.w)
+    let reach = max(length(ahead - c), 1.0)
+    let u = (ahead - c) / reach
+    let v = vec2(-u.y, u.x)
+    let rel = px - c
+    // (The front: an ellipse about the contact, stretched along the blow, wrapping round the
+    // sides of what it struck and gone behind the fist.)
+    let q = vec2(dot(rel, u), dot(rel, v) / 0.7)
+    let r = length(q)
+    let ang = atan2(abs(q.y), q.x)
+    let front = 1.0 - band(ang, edge: 1.65, soft: 0.3)
+    let grow = 1.0 - exp(-age / 0.11)
+    let fade = 1.0 - smoothstep(0.3, 1.0, life)
+    // (It wobbles as a hand's stroke would, thick ahead and drawn out to points at its sides.)
+    let wob = (noise(vec2(ang * 2.5, 3.0)) - 0.5) * 0.1 * reach
+    let taper = max(1.0 - (ang / 1.65) * (ang / 1.65), 0.0)
+    var ink = 0.0
+    for k in 0..2 {
+        let kk = f32(k)
+        // (It starts at the contact itself and runs out from there; the echo lags behind.)
+        let radius = reach * grow * (1.0 - 0.3 * kk) + wob * grow
+        let thick = scale *
+            (7.5 - 3.5 * kk) *
+            taper *
+            (1.0 - 0.7 * life) *
+            (0.4 + 0.6 * smoothstep(0.0, 0.05, age))
+        let rim = 1.0 - band(abs(r - radius), edge: thick, soft: 1.2 * scale)
+        // A dry brush: streaks of paper through it along the stroke, more as it fades.
+        let dry = noise(vec2(ang * 40.0 + kk * 13.0, (r - radius) / (2.0 * scale)))
+        let kept = band(dry, edge: 0.18 + 0.45 * life, soft: 0.08)
+        ink = max(ink, rim * kept * front * fade * (1.0 - 0.45 * kk))
+    }
+    vec2(clamp(ink, 0.0, 1.0), 0.0)
 }
 
 /// A linear colour for the screen: a soft shoulder, then sRGB's curve.
