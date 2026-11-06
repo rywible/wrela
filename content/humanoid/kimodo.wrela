@@ -1126,8 +1126,14 @@ pub const FIGHT_IDLE: Clip = moves::stance::STANCE.clip(HERO.rig.clone(), 60.0)
 /// How long a round of `fight_round` runs: three bounce loops, the cross thrown in the third,
 /// so the bounce runs on across the seam.
 pub fn fight_length() -> f32 {
-    FIGHT_IDLE.length() * 3.0
+    FIGHT_IDLE_M.length() * 3.0 + a_end() - FT_EARLY
 }
+
+/// How far the hips turn into the cross before the rear foot has pivoted all the way (radians),
+/// and how far it pivots then: its heel swung out about the ball, and lifted.
+pub const PIV_HIP: f32 = 1.2
+pub const PIV_YAW: f32 = 0.85
+pub const PIV_HEEL: f32 = 0.6
 
 /// The fight idle bouncing, then the Kimodo cross fired out of it and settling back into it
 /// (`SHOW=26`): the cross stood where the bounce stands.
@@ -1135,16 +1141,16 @@ pub fn fight_round(time: f32) -> humanoid::Pose {
     let n = HERO.rig.bones.len()
     let base = HERO.rig.base
     let u = time % fight_length()
-    let bounce = FIGHT_IDLE.pose(u % FIGHT_IDLE.length())
-    let start = FIGHT_IDLE.length() * 2.0
+    let bounce = FIGHT_IDLE_M.pose(u % FIGHT_IDLE_M.length())
+    let start = FIGHT_IDLE_M.length() * 2.0
     if u < start {
         return bounce
     }
     let v = u - start
     // The cross turned to face the way the bounce faces and stood over its hips as it starts.
-    let b0 = FIGHT_IDLE.pose(start % FIGHT_IDLE.length())
+    let b0 = FIGHT_IDLE_M.pose(start % FIGHT_IDLE_M.length())
     let c0 = TIMED.pose(STILL)
-    let turn = Quat::axis_angle(vec3(0.0, 1.0, 0.0), facing(base.q.mul(b0.turns[0])) - facing(base.q.mul(c0.turns[0])))
+    let turn = Quat::axis_angle(vec3(0.0, 1.0, 0.0), guard_yaw(b0) - guard_yaw(c0))
     let from = base.t + base.q.rotate(c0.hips)
     let to = base.t + base.q.rotate(b0.hips)
     let inv = base.inverse()
@@ -1162,17 +1168,44 @@ pub fn fight_round(time: f32) -> humanoid::Pose {
     let (fl, fr) = (HERO.rig.find("leftFoot"), HERO.rig.find("rightFoot"))
     let feet = [wb[fl].t, wb[fr].t]
     let foot_q = [wb[fl].q, wb[fr].q]
-    let cross = placed(TIMED.pose(STILL + min(v, a_end() + STILL * 0.9)))
-    var c = one_pose(cross)
+    let thrown = placed(TIMED.pose(STILL + min(v, a_end() + STILL * 0.9)))
+    var c = one_pose(thrown)
     var w = stride::worlds(HERO.rig, c, 0)
-    legs_to(HERO.rig, mut w, feet, foot_q)
+    // The rear foot turned with the hips: as they come round, its heel lifts and swings out
+    // about the ball of the foot, which stays where it stood ("squash the bug"); as they come
+    // back, it settles flat again. The lead foot stays put and takes the weight.
+    let hp = HERO.rig.find("hips")
+    let w0 = stride::worlds(HERO.rig, one_pose(placed(c0)), 0)
+    let dy = facing(w[hp].q) - facing(w0[hp].q)
+    let s = smoothstep(0.0, PIV_HIP, atan2(sin(dy), cos(dy)))
+    let tr = HERO.rig.find("rightToes")
+    let ball = wb[tr].t
+    let up = vec3(0.0, 1.0, 0.0)
+    var ahead = ball - feet[1]
+    ahead.y = 0.0
+    let yaw = Quat::axis_angle(up, PIV_YAW * s)
+    let r = yaw.mul(Quat::axis_angle(normalize(cross(up, ahead)), PIV_HEEL * s))
+    let planted = [feet[0], ball + r.rotate(feet[1] - ball)]
+    let planted_q = [foot_q[0], r.mul(foot_q[1])]
+    legs_to(HERO.rig, mut w, planted, planted_q)
+    stride::set_turn(HERO.rig, mut w, tr, yaw.mul(wb[tr].q))
     stride::store(HERO.rig, w, mut c, 0)
     let held = c.pose(0.0)
     let back = a_end() - FT_EARLY
     if v < back {
         return humanoid::blend(bounce, held, smoothstep(0.0, FT_IN, v), n)
     }
-    humanoid::blend(held, bounce, smoothstep(0.0, FT_OUT, v - back), n)
+    // (The bounce picked up where the cross left it, its feet where his are.)
+    let again = FIGHT_IDLE_M.pose((v - back) % FIGHT_IDLE_M.length())
+    humanoid::blend(held, again, smoothstep(0.0, FT_OUT, v - back), n)
+}
+
+/// Which way a pose's guard points (radians about up): from the chest to between the fists.
+fn guard_yaw(p: humanoid::Pose) -> f32 {
+    borrow rig = HERO.rig
+    let w = stride::worlds(rig, one_pose(p), 0)
+    let d = (w[rig.find("leftHand")].t + w[rig.find("rightHand")].t) * 0.5 - w[rig.find("upperChest")].t
+    atan2(d.x, d.z)
 }
 
 /// A pose as a one-frame clip (to take its bones' places).
@@ -1191,3 +1224,84 @@ pub const FT_IN: f32 = 0.2
 pub const FT_OUT: f32 = 0.5
 /// How long before the cross ends it starts settling back into the bounce (s).
 pub const FT_EARLY: f32 = 0.15
+
+/// The cross out of the bounce, measured frame by frame around the punch: hips', chest's and each
+/// foot's facing (degrees about up), the rear heel's height (cm) and the hips along the punch (cm).
+@test
+fn kimodo_cross_form() {
+    borrow rig = HERO.rig
+    let (hp, ch, fl, fr, tl, tr, rh) = (rig.find("hips"), rig.find("upperChest"), rig.find("leftFoot"), rig.find("rightFoot"), rig.find("leftToes"), rig.find("rightToes"), rig.find("rightHand"))
+    let start = FIGHT_IDLE_M.length() * 2.0
+    let w0 = stride::worlds(rig, one_pose(fight_round(start)), 0)
+    for f in 0..90 {
+        let w = stride::worlds(rig, one_pose(fight_round(start + f32(f) / 60.0)), 0)
+        let yaw = |q: Quat| -> f32 { facing(q) * 57.2958 }
+        std::io::print(f"KF {f} toesR {w[tr].t.x * 100.0:.1} {w[tr].t.y * 100.0:.1} {w[tr].t.z * 100.0:.1} hips {yaw(w[hp].q):.0} chest {yaw(w[ch].q):.0} footL {yaw(w[fl].q):.0} footR {yaw(w[fr].q):.0} heelR {(w[fr].t.y - w[tr].t.y) * 100.0:.1} heelL {(w[fl].t.y - w[tl].t.y) * 100.0:.1} hipsY {w[hp].t.y * 100.0:.1} hipsXZ {w[hp].t.x * 100.0:.1} {w[hp].t.z * 100.0:.1} fist {w[rh].t.x * 100.0:.0} {w[rh].t.z * 100.0:.0} feetXZ {w[fl].t.x * 100.0:.0} {w[fl].t.z * 100.0:.0} {w[fr].t.x * 100.0:.0} {w[fr].t.z * 100.0:.0}")
+    }
+}
+
+
+/// The VRM bones that come in left and right pairs (the part after "left" / "right").
+pub const SIDED: [Text; 24] = [
+    "Eye",
+    "UpperLeg",
+    "LowerLeg",
+    "Foot",
+    "Toes",
+    "Shoulder",
+    "UpperArm",
+    "LowerArm",
+    "Hand",
+    "ThumbMetacarpal",
+    "ThumbProximal",
+    "ThumbDistal",
+    "IndexProximal",
+    "IndexIntermediate",
+    "IndexDistal",
+    "MiddleProximal",
+    "MiddleIntermediate",
+    "MiddleDistal",
+    "RingProximal",
+    "RingIntermediate",
+    "RingDistal",
+    "LittleProximal",
+    "LittleIntermediate",
+    "LittleDistal",
+]
+
+/// `c` mirrored left for right (through the body's own middle): a right-foot-forward stance becomes
+/// left-foot-forward, each side moving as the other side did.
+fn mirrored_clip(c: Clip) -> Clip {
+    borrow rig = HERO.rig
+    let nb = c.bones
+    var partner: Vec<u32> = Vec::with_capacity(nb)
+    for b in 0..nb {
+        partner.push(b)
+    }
+    for s in SIDED {
+        let (l, r) = (rig.find(f"left{s}".as_str()), rig.find(f"right{s}".as_str()))
+        if l != humanoid::NONE && r != humanoid::NONE {
+            partner[l] = r
+            partner[r] = l
+        }
+    }
+    let base = rig.base
+    let inv = base.inverse()
+    var out = c.clone()
+    for f in 0..c.frames {
+        let w = stride::worlds(rig, c, f)
+        var m = w.clone()
+        for b in 0..nb {
+            let r = inv.then(w[partner[b]])
+            let q = Quat { v: vec4(r.q.v.x, -r.q.v.y, -r.q.v.z, r.q.v.w) }
+            m[b] = base.then(humanoid::Rigid { q: q, t: vec3(-r.t.x, r.t.y, r.t.z) })
+        }
+        stride::store(rig, m, mut out, f)
+    }
+    out
+}
+
+/// The fight idle mirrored (`SHOW=27`): to stand orthodox, left foot forward, so the right hand is
+/// the rear hand that throws the cross.
+@fuel(2 ** 40)
+pub const FIGHT_IDLE_M: Clip = mirrored_clip(FIGHT_IDLE.clone())
