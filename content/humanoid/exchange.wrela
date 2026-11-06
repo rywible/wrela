@@ -300,10 +300,18 @@ pub fn foe(p: f32) -> Pose {
     var off = rh - to
     off.y = 0.0
     // (Then he steps back in to where he stood, so the next blow finds him.)
-    off *= 1.0 - smoothstep(home + X_BACK * 0.5, home + X_BACK + 0.5, v)
+    off *= 1.0 - smoothstep(home, home + STEP_IN, v)
     var b = foe_idle(p)
     b.hips = b.hips + inv.q.rotate(off)
     humanoid::blend(r, b, smoothstep(0.0, X_BACK, v - home), n)
+}
+
+/// How long he takes to step back in to his mark once his reaction's done (s).
+pub const STEP_IN: f32 = 0.6
+
+/// How long after the contact he's back on his mark (s).
+pub fn reaction_home() -> f32 {
+    (REACT_HOME - REACT_HIT) / 30.0 - X_INTO + STEP_IN
 }
 
 /// The camera at clock `time`: its kick along the blow (m), and how far it's pushed in (m).

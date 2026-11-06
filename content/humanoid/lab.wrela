@@ -27,6 +27,12 @@ pub fn busy(t: Tune) -> f32 {
     a_end() + t.hold + 0.1
 }
 
+/// How long after a press the one struck is back on his mark (s): a replay's punch waits for
+/// it, so it never starts with him gliding back in.
+pub fn settle(t: Tune) -> f32 {
+    to_contact() + t.hold + exchange::reaction_home() + 0.15
+}
+
 /// How long from a press to the contact (s, on the clock).
 pub fn to_contact() -> f32 {
     hit_at() - start()
@@ -116,6 +122,10 @@ pub struct Lab: Clone {
     pub last_clock: f32,
     pub zoom: f32,
     pub volume: f32,
+    /// The lab's clock (s), how fast it runs against the real one, and the real one last frame.
+    pub clock: f32,
+    pub speed: f32,
+    pub last_time: f32,
     pub panel: bool,
 }
 
@@ -141,6 +151,9 @@ impl Lab {
             last_clock: -1.0,
             zoom: 1.0,
             volume: 0.8,
+            clock: 0.0,
+            speed: 1.0,
+            last_time: 0.0,
             panel: true,
         }
     }
@@ -191,7 +204,7 @@ impl Lab {
             if self.punches.len() > 0 {
                 // (The last strike's whole exchange is in the take.)
                 let last = self.punches[self.punches.len() - 1]
-                self.take_len = max(self.take_len, last + busy(self.b) + 0.3)
+                self.take_len = max(self.take_len, last + busy(self.b))
             }
         }
         self.replaying = false
@@ -203,7 +216,7 @@ impl Lab {
             return
         }
         self.replaying = true
-        self.replay_from = g
+        self.replay_from = max(g, self.now.at + settle(self.now.tune) - self.punches[0])
         self.replay_b = false
         self.fired = 0
     }
@@ -213,7 +226,8 @@ impl Lab {
         if !self.replaying {
             return
         }
-        let round = self.take_len + 0.2
+        let last = self.punches[self.punches.len() - 1]
+        let round = max(self.take_len, last + settle(self.a)) + 0.1
         if g - self.replay_from > round {
             self.replay_from += round
             self.replay_b = !self.replay_b

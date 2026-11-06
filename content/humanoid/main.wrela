@@ -424,7 +424,7 @@ fn lab_aside(t: exchange::Tune, l: Lab, width: u32) -> vec3 {
     let side = -exchange::BLOW.z / exchange::BLOW.x
     let d = normalize(vec3(side, 0.0, 1.0))
     let right = vec3(d.z, 0.0, -d.x)
-    let far = if t.giant { 8.0 } else { 3.4 }
+    let far = if t.giant { 12.0 } else { 3.4 }
     right * far * l.zoom * 0.45 * (LAB_W + 20.0) / f32(width)
 }
 
@@ -438,6 +438,10 @@ fn lab_panel(s: mut State, time: f32, width: u32, height: u32) {
     let input = events()
     mut ui = s.ui
     mut l = s.lab
+    // (The lab runs on its own clock, slowed as its panel says.)
+    l.clock += clamp(time - l.last_time, 0.0, 0.1) * l.speed
+    l.last_time = time
+    let g = l.clock
     ui.begin(screen, input)
     var punch = false
     for e in input {
@@ -453,7 +457,7 @@ fn lab_panel(s: mut State, time: f32, width: u32, height: u32) {
     if ui.key(Key::H) {
         l.panel = !l.panel
     }
-    let r = Rect::new(screen.x - LAB_W - 10.0, 10.0, LAB_W, 500.0)
+    let r = Rect::new(screen.x - LAB_W - 10.0, 10.0, LAB_W, 560.0)
     if ui.pointer_pressed() && !(l.panel && r.contains(ui.pointer())) {
         punch = true
     }
@@ -480,7 +484,7 @@ fn lab_panel(s: mut State, time: f32, width: u32, height: u32) {
         ui.slider("Camera kick (m)", mut t.kick, lo: 0.0, hi: 0.2)
         ui.slider("Camera push in (m)", mut t.push, lo: 0.0, hi: 0.8)
         ui.slider("Blast ring size (0 = off)", mut t.blast, lo: 0.0, hi: 4.0)
-        ui.slider("Giant flinch", mut t.give, lo: 0.0, hi: 1.0)
+        ui.slider("Giant flinch", mut t.give, lo: 0.0, hi: 1.5)
         ui.toggle("Drawn on twos", mut t.twos)
         ui.begin_row()
         for k in 0..2 {
@@ -498,30 +502,32 @@ fn lab_panel(s: mut State, time: f32, width: u32, height: u32) {
         ui.end_row()
         if l.editing_b { l.b = t } else { l.a = t }
         ui.space(6.0)
+        ui.slider("Speed (1 = real time)", mut l.speed, lo: 0.1, hi: 1.0)
         ui.slider("Camera distance", mut l.zoom, lo: 0.6, hi: 1.6)
         ui.slider("Volume", mut l.volume, lo: 0.0, hi: 1.0)
         ui.space(6.0)
         ui.begin_row()
         if l.recording {
             if ui.button("Stop") {
-                l.stop(time)
+                l.stop(g)
             }
         } else if ui.button("Record") {
-            l.record(time)
+            l.record(g)
         }
         if l.replaying {
             if ui.button("Stop replay") {
-                l.stop(time)
+                l.stop(g)
             }
         } else if ui.button("Replay A then B") {
-            l.replay(time)
+            l.replay(g)
         }
         ui.end_row()
         let status = if l.recording {
-            f"Recording: {l.punches.len()} punch(es), {time - l.rec_from:.1} s"
+            f"Recording: {l.punches.len()} punch(es), {g - l.rec_from:.1} s"
         } else if l.replaying {
-            if l.now.b { "Replaying: this punch is B" } else {
-                "Replaying: this punch is A"
+            // (The sliders show the slot being edited, which may not be the one playing.)
+            if l.editing_b { "Replaying A, B in turn. Sliders: B" } else {
+                "Replaying A, B in turn. Sliders: A"
             }.to_string()
         } else {
             f"Take: {l.punches.len()} punch(es), {l.take_len:.1} s"
@@ -531,14 +537,14 @@ fn lab_panel(s: mut State, time: f32, width: u32, height: u32) {
     }
     if l.replaying {
         // (Big enough to read at a glance which slot is playing.)
-        ui.panel("", Anchor::TopLeft, width: 130.0, height: 44.0)
+        ui.panel("", Anchor::TopLeft, width: 170.0, height: 44.0)
         ui.label(if l.now.b { "Showing B" } else { "Showing A" })
         ui.end_panel()
     }
     if punch {
-        l.press(time)
+        l.press(g)
     }
-    l.tick(time)
+    l.tick(g)
     ui.end()
     s.renderer.upload(ui.draw)
 }
@@ -574,7 +580,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
 
     let dt = clamp(time - s.last, 1.0e-4, 0.1)
     let (pose, place) = if game { played(mut s, time) } else if SHOW == 29 {
-        (lab::striker_at(s.lab, time), identity())
+        (lab::striker_at(s.lab, s.lab.clock), identity())
     } else { (pose_at(time), identity()) }
     var bones = palette(HERO.rig, pose, place)
 
@@ -630,7 +636,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let shown = s.lab.shown()
     if SHOW == 29 {
         let at = exchange::place(shown)
-        var foe = palette(HERO.rig, lab::struck_at(s.lab, time), at)
+        var foe = palette(HERO.rig, lab::struck_at(s.lab, s.lab.clock), at)
         foe[63] = mat4(
             exchange::tint(shown),
             vec4(normalize((at * vec4(1.0, 0.0, 0.0, 0.0)).xyz), 1.0),
@@ -643,19 +649,18 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
     // followed where gameplay puts it, which is steady already.
     let (kick, push) = if SHOW == 28 { exchange::camera(time, exchange::TUNED) } else if SHOW ==
-        29 { lab::camera(s.lab, time) } else { (0.0, 0.0) }
+        29 { lab::camera(s.lab, s.lab.clock) } else { (0.0, 0.0) }
     if SHOW == 28 {
         kinetic = max(kinetic, exchange::flash(time, exchange::TUNED))
     }
     if SHOW == 29 {
-        kinetic = max(kinetic, lab::flash(s.lab, time))
+        kinetic = max(kinetic, lab::flash(s.lab, s.lab.clock))
     }
     let hips = if SHOW == 28 {
         (vec3(0.0, 0.0, 0.25) + exchange::PLACE[3].xyz) * 0.5 + exchange::BLOW * kick
     } else if SHOW == 29 {
-        // (The giant framed from the striker's side: the blow and the striker large enough to
-        // read, the giant's head left out.)
-        mix(vec3(0.0, 0.0, 0.25), exchange::place(shown)[3].xyz, if shown.giant { 0.35 } else {
+        // (The giant framed wide enough for his whole body, the striker nearer the middle.)
+        mix(vec3(0.0, 0.0, 0.25), exchange::place(shown)[3].xyz, if shown.giant { 0.45 } else {
             0.5
         }) + exchange::BLOW * kick + lab_aside(shown, s.lab, width)
     } else if SHOW == 26 { vec3(0.0, 0.0, 0.25) } else if SHOW == 19 {
@@ -676,7 +681,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
     // (The lab frames the fighter or the giant, as far as its panel says.)
     let (far, focus) = if SHOW != 29 { (FAR, FOCUS) } else if shown.giant {
-        (8.0 * s.lab.zoom, 2.4)
+        (12.0 * s.lab.zoom, 3.6)
     } else { (3.4 * s.lab.zoom, 1.05) }
     var shot = shot_at(
         time,
@@ -697,7 +702,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         shot.blast_dir = b1
     }
     if SHOW == 29 {
-        let (b0, b1) = lab::blast(s.lab, time)
+        let (b0, b1) = lab::blast(s.lab, s.lab.clock)
         shot.blast = b0
         shot.blast_dir = b1
         // The sounds: heard from the camera, the fist's whoosh as it goes and the hit as it lands
@@ -706,7 +711,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         let eye = at + normalize(vec3(side, 0.18, 1.0)) * (far - push)
         let fwd = normalize(vec2(at.x - eye.x, at.z - eye.z))
         let _ = s.cues.push(Cue::Listen { at: eye, forward: fwd })
-        let (swing, hit) = lab::sounds(mut s.lab, time)
+        let (swing, hit) = lab::sounds(mut s.lab, s.lab.clock)
         let v = s.lab.volume
         let fist = exchange::KNUCKLES
         if swing && v > 0.0 {
