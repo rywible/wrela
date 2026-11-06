@@ -6,25 +6,91 @@
 // a line field, the line's weight, the normal and the moment's energy.
 
 use look::{
-    GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, cells, hash2, luma, noise, noise3,
-    ray,
+    OVERCAST, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, cells, hash2, luma, fbm,
+    noise, ray,
 }
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
 use engine::ocean::{Waves, level_at, surface_at}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
+use yonder::falls
 use skiff::{dry, hull_off, paddle, skiff, skiff_material, skiff_normal}
 use engine::far::foot
-use engine::light::{Light, Lit, gloss, hazed, matte, world}
+use engine::light::{Light, Lit, gloss, hazed, matte, sun_disc, world}
+use engine::air::aerial_uvw
 use engine::light::sky as clear_sky
-use engine::sky::{Clouds, cloud_shadow, clouded_sky, sky_with_clouds}
-use std::gpu::{FragCoord, Rgba16Float, Sampler, Targets3, Texture, Texture3d}
+use engine::sky::{Clouds, cloud_shadow, sky_uv, stormy_air}
+use std::gpu::{FragCoord, Rgba16Float, Rgba8, Sampler, Targets3, Texture, Texture3d}
 use std::math::PI
 
 /// What the sky's light reads beside its textures: the light, and where the clouds are.
 pub struct Heaven: Copy {
-    light: Light,
-    clouds: Clouds,
+    pub(package) light: Light,
+    pub(package) clouds: Clouds,
 }
+
+/// The sky along `d` and its clouds from the dome (their cover in alpha), the sun's disc on it
+/// if `disc`. Under the overcast, the sky seen through the deck's thinner places is the deck's
+/// own dim light, not the open sky's glare, and the sun's disc is gone.
+fn storm_sky(
+    view: Texture<Rgba16Float>,
+    light: Light,
+    d: vec3,
+    dome: Texture<Rgba16Float>,
+    smp: Sampler,
+    disc: bool,
+) -> vec4 {
+    let c = dome.sample_level(smp, sky_uv(d))
+    let open = clear_sky(view, smp, light, d) + (if disc {
+        sun_disc(light, d) * (1.0 - OVERCAST)
+    } else { vec3(0.0) })
+    let behind = mix(open, vec3(luma(open)) * vec3(0.8, 0.85, 0.9) * STORM_BEHIND, OVERCAST)
+    vec4(behind * (1.0 - c.a) + c.rgb, c.a)
+}
+
+/// `sky` (`storm_sky`'s, along `d`), under the overcast gone low on the horizon, past the deck's
+/// reach, into the storm's own air: as bright as the deck a little over it all round (eight of
+/// its directions' mean, so no one cloud shows, and its grazing march's streaks don't), the
+/// deck's underside going on into it.
+fn into_the_air(
+    sky: vec4,
+    view: Texture<Rgba16Float>,
+    light: Light,
+    d: vec3,
+    dome: Texture<Rgba16Float>,
+    smp: Sampler,
+) -> vec4 {
+    if OVERCAST <= 0.0 || d.y > STORM_LOW {
+        return sky
+    }
+    var far = vec3(0.0)
+    for k in 0..8 {
+        let a = f32(k) * 0.785398
+        far += storm_sky(
+            view,
+            light,
+            normalize(vec3(cos(a), STORM_LOW * 1.4, sin(a))),
+            dome,
+            smp,
+            disc: false,
+        ).rgb
+    }
+    // (Lighter toward the horizon itself, where the eye looks out under the deck's edge into
+    // farther air: the band the cathedral and the skiff stand dark against.)
+    let lift = mix(STORM_HORIZON, 1.0, smoothstep(0.0, STORM_LOW, d.y))
+    let air = vec3(luma(far / 8.0)) * vec3(0.92, 0.96, 1.0) * lift
+    let deck_k = smoothstep(STORM_LOW * 0.35, STORM_LOW, d.y)
+    vec4(mix(air, sky.rgb, deck_k), mix(1.0, sky.a, deck_k))
+}
+
+/// The elevation (as a direction's y) the deck is sure to be under, from the eye: what's below
+/// it is the air the deck goes into.
+const STORM_LOW: f32 = 0.14
+
+/// How much lighter the air is at the horizon itself than under the deck.
+const STORM_HORIZON: f32 = 1.6
+
+/// How bright the air past the deck's reach is, against the open sky's there.
+const STORM_BEHIND: f32 = 0.2
 
 /// The sky along `d`, with its clouds (their cover in alpha); the clouds lost in the air low on
 /// the horizon, where they'd be sixty kilometres off and more (the cloud field's far repeats).
@@ -35,13 +101,28 @@ fn heaven(
     dome: Texture<Rgba16Float>,
     smp: Sampler,
 ) -> vec4 {
-    let cloudy = sky_with_clouds(view, light, d, dome, smp)
-    let lost = smoothstep(0.034, 0.058, d.y)
-    if lost >= 1.0 {
-        return cloudy
-    }
+    let cloudy = storm_sky(view, light, d, dome, smp, disc: true)
+    // (Under the overcast, the deck goes on down to the horizon: its far repeats are lost in
+    // its own air.)
+    let lost = mix(smoothstep(0.034, 0.058, d.y), 1.0, OVERCAST)
     let clear = clear_sky(view, smp, light, normalize(vec3(d.x, max(d.y, 0.0), d.z)))
-    vec4(mix(clear, cloudy.rgb, lost), cloudy.a * lost)
+    let open = vec4(mix(clear, cloudy.rgb, lost), cloudy.a * lost)
+    into_the_air(open, view, light, d, dome, smp)
+}
+
+/// `colour` at `world`, seen from `eye` through the air (`engine::light::hazed`'s), the storm's
+/// air under the overcast: the same air the clouds are seen through (`engine::sky::stormy_air`).
+pub(package) fn aired(
+    air: Texture3d<Rgba16Float>,
+    smp: Sampler,
+    light: Light,
+    colour: vec3,
+    world: vec3,
+    eye: vec3,
+) -> vec3 {
+    let v = world - eye
+    let a = stormy_air(air, smp, light.sun, normalize(v), length(v) * 0.001, OVERCAST)
+    colour * a.a + a.rgb
 }
 
 /// The sky as the water mirrors it along `d`: `heaven`'s, without the sun's disc (the sun's own
@@ -53,10 +134,12 @@ fn mirrored_sky(
     dome: Texture<Rgba16Float>,
     smp: Sampler,
 ) -> vec3 {
-    let cloudy = clouded_sky(view, light, d, dome, smp)
-    let lost = smoothstep(0.034, 0.058, d.y)
+    let cloudy = storm_sky(view, light, d, dome, smp, disc: false).rgb
+    // (Under the overcast, the deck goes on down to the horizon: its far repeats are lost in
+    // its own air.)
+    let lost = mix(smoothstep(0.034, 0.058, d.y), 1.0, OVERCAST)
     let clear = clear_sky(view, smp, light, normalize(vec3(d.x, max(d.y, 0.0), d.z)))
-    mix(clear, cloudy, lost)
+    into_the_air(vec4(mix(clear, cloudy, lost), 1.0), view, light, d, dome, smp).rgb
 }
 
 /// Where the ray from `o` along `d` meets the sea (`d` going down), or `far`. Near, found on the
@@ -88,8 +171,7 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
     while i < 32 && !under {
         let p = o + d * t
         let foot = t * 2.0 / (s.resolution.y * s.focal * slant)
-        let mid = tiles(lee(p - s.boat, s.boat_x, s.boat_z)).y
-        let f = p.y - level_at(waves, vec2(p.x, p.z), foot, mid)
+        let f = p.y - sea_level(s, waves, p, foot)
         if f < 0.0 {
             under = true
         } else {
@@ -105,8 +187,7 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
             let m = (lo + hi) * 0.5
             let p = o + d * m
             let foot = m * 2.0 / (s.resolution.y * s.focal * slant)
-            let mid = tiles(lee(p - s.boat, s.boat_x, s.boat_z)).y
-            let f = p.y - level_at(waves, vec2(p.x, p.z), foot, mid)
+            let f = p.y - sea_level(s, waves, p, foot)
             if f < 0.0 {
                 hi = m
             } else {
@@ -116,6 +197,19 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
         t = (lo + hi) * 0.5
     }
     min(mix(t, plane, level_k), far)
+}
+
+/// The sea's height under `p` (read as a pixel `foot` m across holds it), the waves a boat rides
+/// broken by the hull (`tiles`). Close along the hull it lies no higher than a hand under the
+/// gunwale: the skiff rides the swell (`sea::bob`), and the shorter waves it only rocks on would
+/// otherwise rise through its planks and drown its side.
+fn sea_level(s: Shot, waves: Waves, p: vec3, foot: f32) -> f32 {
+    let rel = p - s.boat
+    let mid = tiles(lee(rel, s.boat_x, s.boat_z)).y
+    let level = level_at(waves, vec2(p.x, p.z), foot, mid)
+    let e = length(vec2(dot(rel, s.boat_x) / 0.62, dot(rel, s.boat_z) / 2.2))
+    let near = 1.0 - smoothstep(1.0, 1.7, e)
+    mix(level, min(level, s.boat.y - 0.14), near)
 }
 
 fn march_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
@@ -154,30 +248,6 @@ fn mirror_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> vec2 {
         i += 1
     }
     vec2(hit, closest)
-}
-
-fn march_isle(o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
-    var t = lo
-    var hit = hi
-    var i = 0
-    while i < 320 && t < hi {
-        let h = isle(o + d * t).x
-        if h < t * 0.0001 {
-            hit = t
-            t = hi
-        } else {
-            t += h * 0.8
-        }
-        i += 1
-    }
-    // (Settled onto the surface: a hit left anywhere inside the march's last step bands a face
-    // seen edge on with the steps' contours.)
-    if hit < hi {
-        for _ in 0..3 {
-            hit += isle(o + d * hit).x
-        }
-    }
-    hit
 }
 
 /// The cathedral's lantern: six beams of its stained glass's colours thrown from the heart of it
@@ -236,34 +306,16 @@ fn beams(
                 (0.55 + 0.45 * smoothstep(len, len * 0.6, sc))
             let a = clamp(dens * 0.42 * s.lantern, 0.0, 0.7) * (1.0 - acc.a)
             let col = h.light.sun_colour * BEAM_TINT[k] * 0.26
-            let seen = mix(col, hazed(aerial, smp, h.light, col, q, s.eye), 0.5)
+            let seen = mix(col, aired(aerial, smp, h.light, col, q, s.eye), 0.5)
             acc += vec4(seen * a, a)
         }
     }
     acc
 }
 
-/// The isle met coarsely (for its reflection, where the sea blurs it): 90 steps, a loose hit.
-fn march_coarse(o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
-    var t = lo
-    var hit = hi
-    var i = 0
-    while i < 90 && t < hi {
-        let h = isle(o + d * t).x
-        if h < t * 0.002 {
-            hit = t
-            t = hi
-        } else {
-            t += h
-        }
-        i += 1
-    }
-    hit
-}
-
 /// Where a ray from `o` along `d` meets a sphere `b` (centre, radius): its near and far
 /// distances, or (far, far).
-fn sphere(o: vec3, d: vec3, b: vec4, far: f32) -> vec2 {
+pub(package) fn sphere(o: vec3, d: vec3, b: vec4, far: f32) -> vec2 {
     let oc = o - b.xyz
     let k = dot(oc, d)
     let c = dot(oc, oc) - b.w * b.w
@@ -273,34 +325,6 @@ fn sphere(o: vec3, d: vec3, b: vec4, far: f32) -> vec2 {
     }
     let q = sqrt(h)
     vec2(max(-k - q, 0.0), -k + q)
-}
-
-/// How much of the sun reaches `p` past the isle: a soft shadow marched toward it.
-/// (Its first step jittered by `jit` (0 to 1), a pixel's own: else the steps of neighbouring
-/// pixels fall together and a face the sun rakes is banded in a fan of stripes.)
-fn isle_shadow(p: vec3, l: vec3, start: f32, jit: f32) -> f32 {
-    var t = start * (1.0 + 2.0 * jit)
-    var lit = 1.0
-    var i = 0
-    while i < 72 && t < 5600.0 && lit > 0.02 {
-        let h = isle(p + l * t).x
-        lit = min(lit, 10.0 * h / t)
-        t += clamp(h, 1.5, 170.0)
-        i += 1
-    }
-    clamp(lit, 0.0, 1.0)
-}
-
-/// How much of the sky reaches `p` on the isle, facing `n`: five taps out along its normal.
-fn isle_ao(p: vec3, n: vec3) -> f32 {
-    var hidden = 0.0
-    var w = 1.0
-    for i in 1..6 {
-        let h = 5.6 * f32(i * i)
-        hidden += w * max(h - isle(p + n * h).x, 0.0) / h
-        w *= 0.6
-    }
-    clamp(1.0 - hidden * 0.55, 0.0, 1.0)
 }
 
 fn skiff_shadow(s: Shot, p: vec3, l: vec3) -> f32 {
@@ -328,7 +352,7 @@ fn skiff_ao(s: Shot, p: vec3, n: vec3) -> f32 {
 /// A solid surface's light, as the engine's world takes it (`engine::light::world`): the sun
 /// through `sun` of shadow, the sky's light over it (`ao` of it reaching), its reflection, and
 /// what it gives itself; seen from the eye through the air.
-fn lit_solid(
+pub(package) fn lit_solid(
     s: Shot,
     h: Heaven,
     view: Texture<Rgba16Float>,
@@ -354,7 +378,30 @@ fn lit_solid(
     // The sky's light on it: the sky toward its normal, lifted toward the zenith, and the sea's
     // light from below.
     // (The clear sky's, not the clouds': a cloud's patch in it would mottle a whole face.)
-    let skyward = clear_sky(view, smp, h.light, if cel { up } else { normalize(n + up * 0.6) })
+    let clear_light = clear_sky(view, smp, h.light, if cel { up } else { normalize(n + up * 0.6) })
+    // (Under the overcast, the light of the deck itself, as the sea's and the skiff's is: three
+    // of its directions round the face's, so no one cloud mottles it.)
+    let toward = if cel { up } else { normalize(n + up * 0.6) }
+    let across = normalize(cross(toward, vec3(0.0, 0.0, 1.0)) + vec3(1.0e-4))
+    let deck_light = (storm_sky(view, h.light, toward, dome, smp, disc: false).rgb +
+        storm_sky(
+            view,
+            h.light,
+            normalize(toward + across * 0.5 + up * 0.2),
+            dome,
+            smp,
+            disc: false,
+        ).rgb +
+        storm_sky(
+            view,
+            h.light,
+            normalize(toward - across * 0.5 + up * 0.2),
+            dome,
+            smp,
+            disc: false,
+        ).rgb) /
+        3.0
+    let skyward = mix(clear_light, deck_light, OVERCAST)
     // (The sea under the low sun is bright: it throws a warm light up under what hangs over it.)
     let under = if cel { band(-n.y, 0.35, 0.04) * 0.6 } else { max(-n.y, 0.0) }
     let below = h.light.sun_colour * vec3(0.085, 0.07, 0.055) * under
@@ -362,7 +409,8 @@ fn lit_solid(
     let open = if cel { 0.22 + 0.12 * band(n.y, 0.35, 0.05) } else { 0.2 + 0.25 * max(n.y, 0.0) }
     let sky = (skyward * PI * open + below) * (0.25 + 0.75 * ao * ao)
     let r = d - 2.0 * dot(d, n) * n
-    let reflected = clouded_sky(view, h.light, normalize(vec3(r.x, abs(r.y), r.z)), dome, smp) * ao
+    let mirrored = normalize(vec3(r.x, abs(r.y), r.z))
+    let reflected = storm_sky(view, h.light, mirrored, dome, smp, disc: false).rgb * ao
     let lit = Lit {
         albedo,
         n,
@@ -389,8 +437,43 @@ fn lit_solid(
             gloss(h.light, lit, normalize(s.eye - p)) +
             glow
     } else { world(h.light, lit, p, s.eye) + glow }
-    let aired = hazed(aerial, smp, h.light, raw, p, s.eye)
-    let behind = clear_sky(view, smp, h.light, normalize(vec3(d.x, max(d.y, 0.02), d.z)))
+    let aired = aired(aerial, smp, h.light, raw, p, s.eye)
+    let back = normalize(vec3(d.x, max(d.y, 0.02), d.z))
+    // (Under the overcast, the sky behind it is the deck's.)
+    let behind = mix(
+        clear_sky(view, smp, h.light, back),
+        storm_sky(view, h.light, back, dome, smp, disc: false).rgb,
+        OVERCAST,
+    )
+    if haze <= 1.0 {
+        return mix(raw, aired, haze)
+    }
+    mix(aired, behind, haze - 1.0)
+}
+
+/// `raw` (a surface's light at `p`, as `lit_solid` gives it with no `haze`) seen from the eye
+/// through the air, `lit_solid`'s way: all of it, and past that (`haze` over 1) on toward the
+/// sky's own colour behind. For light shaded further after `lit_solid`, so the air is laid
+/// over the shading, never darkened by it.
+pub(package) fn hazed_far(
+    s: Shot,
+    h: Heaven,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    smp: Sampler,
+    raw: vec3,
+    p: vec3,
+    d: vec3,
+    haze: f32,
+) -> vec3 {
+    let aired = aired(aerial, smp, h.light, raw, p, s.eye)
+    let back = normalize(vec3(d.x, max(d.y, 0.02), d.z))
+    let behind = mix(
+        clear_sky(view, smp, h.light, back),
+        storm_sky(view, h.light, back, dome, smp, disc: false).rgb,
+        OVERCAST,
+    )
     if haze <= 1.0 {
         return mix(raw, aired, haze)
     }
@@ -528,21 +611,45 @@ const SPARK_ROOM: f32 = 0.2
 const SPARK_PEAK: f32 = 60.0
 const SPARK_GLINT: f32 = 1.5
 
-/// The water the paddle has stirred at `xz` (`n` its normal there): rings spreading from where
-/// the blade went in, the pair of smooth swirls it leaves where it came out (the eddies off the
-/// blade's edges, drifting astern as the skiff draws away from them), and its splash as it bites.
-/// The normal as stirred, and the foam.
-fn stirred(s: Shot, xz: vec2, n: vec3) -> (vec3, f32) {
+/// Foam's lace at `w` (m, where the water rests): clots of froth and the bubbles round them,
+/// in drifts, warped and broken so it's never a net's mesh. In [0, 1].
+fn lace_at(w: vec2) -> f32 {
+    let warp = vec2(noise(w * 0.9 + vec2(2.1, 8.3)), noise(w * 0.9 + vec2(6.7, 3.9))) - vec2(0.5)
+    let c = cells(w * 9.0 + warp * 4.0)
+    // (A bubble's blot round each cell's point, sized by a noise, so they clot and scatter.)
+    let size = 0.08 + 0.35 * noise(w * 6.0 + vec2(5.0)) * noise(w * 1.7)
+    let blots = 1.0 - smoothstep(size * 0.4, size, c.x)
+    let drifts = smoothstep(0.4, 0.7, fbm(w * 0.6 + warp, 3))
+    blots * drifts
+}
+
+/// The water the paddle has stirred at `xz` (`n` its normal there, `rest` where its water rests):
+/// rings spreading from where the blade went in; a ring of broken white where it bit, opening
+/// and gone in half a second; the boil of churned water off the blade's back as it pulls; and
+/// where it came out, the pair of dimpled whirls it sheds (the eddies off the blade's edges, a
+/// thread of foam wound into each, left astern as the skiff draws away). Astern, the skiff's
+/// slick: the water its hull smoothed. The normal as stirred, and the foam.
+fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
     let bx = normalize(vec2(s.boat_x.x, s.boat_x.z))
     let bz = normalize(vec2(s.boat_z.x, s.boat_z.z))
     let rel = xz - vec2(s.boat.x, s.boat.z)
     let q = vec2(dot(rel, bx), dot(rel, bz))
-    if dot(q, q) > 64.0 {
+    let way = clamp(abs(s.speed) / 3.0, 0.0, 1.0)
+    let astern = q.y < -1.5 && q.y > -24.0 && abs(q.x) < 2.5
+    if dot(q, q) > 64.0 && !astern {
         return (n, 0.0)
     }
     var tilt = vec2(0.0)
     var calm = 0.0
     var foam = 0.0
+    // The slick: astern, a lane of smoother water as wide as the hull, widening and fading.
+    let behind = max(-q.y - 1.6, 0.0)
+    let lane = 0.45 + 0.06 * behind
+    calm = (1.0 - smoothstep(lane * 0.5, lane, abs(q.x))) *
+        smoothstep(0.0, 1.0, behind) *
+        exp(-behind / (5.0 + 10.0 * way)) *
+        smoothstep(0.0, 0.4, way) *
+        0.6
     // Ripples spreading from the hull as it rocks, three at a time, fading as they widen (read
     // round its waterline as a capsule), the more as it slaps down.
     let along = q.y - clamp(q.y, -1.7, 1.7)
@@ -558,10 +665,20 @@ fn stirred(s: Shot, xz: vec2, n: vec3) -> (vec3, f32) {
     tilt *= step(0.0, off_hull)
     let a = smoothstep(0.05, 0.45, abs(s.pull))
     let rate = 0.8 * abs(s.pull) + 0.04
+    let lace = lace_at(rest * 1.6)
     // (Nothing of the paddle's out past a few metres astern of the stroke.)
     let reach = abs(q.x - 0.9) < 3.5 && q.y < 1.5 && q.y > -4.2 - 4.0 * max(s.speed, 0.0)
+    if a > 0.0 && reach {
+        // The boil off the blade's back as it pulls: churned water heaped and broken white
+        // round where the shaft goes in, most just aft of it.
+        let (_, pb, sunk) = paddle(s)
+        let bq = (q - vec2(pb.x, pb.z + 0.12)) / vec2(0.22, 0.34)
+        let boil = (1.0 - smoothstep(0.35, 1.0, length(bq))) * sunk
+        foam = max(foam, boil * smoothstep(0.05, 0.4, lace + 0.5 * boil))
+        tilt += bq * (boil * 0.25 * sin(length(bq) * 9.0 - s.held * 14.0))
+    }
     let ph = fract(s.stroke)
-    for k in 0..(if a > 0.0 && reach { 3 } else { 0 }) {
+    for k in 0..(if a > 0.0 && reach { 4 } else { 0 }) {
         let fk = f32(k)
         // Where the blade went in, `age` s ago, left astern since.
         let age = (ph + fk) / rate
@@ -573,22 +690,35 @@ fn stirred(s: Shot, xz: vec2, n: vec3) -> (vec3, f32) {
         let x = r - (0.15 + 0.32 * age)
         let train = exp(-x * x / (0.008 + 0.012 * age)) * sin(x * 55.0)
         tilt += to / max(r, 1.0e-3) * (train * 0.32 * fade)
-        // The splash as it bites: white round the blade for the first moment, spreading.
-        let bite = smoothstep(0.4, 0.0, age) * (1.0 - smoothstep(0.1, 0.3 + 0.5 * age, r))
-        foam = max(foam, bite * a * smoothstep(0.2, 0.5, noise(xz * 14.0 + vec2(s.held * 9.0))))
-        // Where it came out: its two eddies, either side of the blade's path, the ripples
-        // smoothed out of them and a thin bright rim of churned water round each.
+        // Where it bit: a ring of broken white thrown out from the blade, opening and thinning
+        // to nothing in half a second.
+        let ring = 0.07 + 0.55 * age
+        let crown = exp(-pow(r - ring, 2.0) / (0.002 + 0.01 * age)) * smoothstep(0.5, 0.05, age)
+        foam = max(foam, crown * a * smoothstep(0.05, 0.4, lace + 0.3))
+        // Where it came out: its two whirls, either side of the blade's path, each a dimple the
+        // ripples are smoothed out of, a thread of foam wound into it, slowly unwinding.
         let out_age = (ph - 0.62 + fk) / rate
         if out_age > 0.0 {
             let exit = vec2(0.9, -1.15 - s.speed * out_age)
-            let wear = exp(-out_age / 2.8) * a
-            let rad = 0.14 + 0.06 * min(out_age, 2.0)
+            let wear = exp(-out_age / 4.0) * a
+            let rad = 0.16 + 0.06 * min(out_age, 3.0)
             for side in 0..2 {
-                let e = exit + vec2(0.15 * (f32(side) * 2.0 - 1.0), 0.0)
-                let dq = length(q - e)
-                calm = max(calm, (1.0 - smoothstep(rad * 0.6, rad, dq)) * wear)
-                let rim = exp(-pow(dq - rad, 2.0) / 0.0012)
-                foam = max(foam, rim * wear * 0.6 * smoothstep(0.3, 0.6, noise(xz * 24.0)))
+                let sg = f32(side) * 2.0 - 1.0
+                // (The outboard whirl the stronger, and neither round: each drawn out and
+                // wandering as the water carries it.)
+                let e = exit + vec2(0.16 * sg, 0.04 * sg)
+                let strength = if side == 1 { 1.0 } else { 0.55 }
+                let v = (q - e) * vec2(1.0, 0.75)
+                let dq = length(v) * (0.8 + 0.4 * noise(v * 9.0 + vec2(fk * 3.7 + sg)))
+                let inside = 1.0 - smoothstep(rad * 0.5, rad * 1.3, dq)
+                calm = max(calm, inside * wear * 0.8 * strength)
+                // (Its dimple: the water leaning in toward its eye.)
+                tilt -= v /
+                    max(dq, 1.0e-3) *
+                    (exp(-dq * dq / (rad * rad * 0.3)) * 0.35 * wear * strength)
+                // (Bubbles caught at its edge, in clots, not a ring.)
+                let edge = exp(-pow(dq - rad, 2.0) / (rad * rad * 0.2))
+                foam = max(foam, edge * wear * strength * 0.6 * smoothstep(0.25, 0.6, lace))
             }
         }
     }
@@ -599,6 +729,15 @@ fn stirred(s: Shot, xz: vec2, n: vec3) -> (vec3, f32) {
 
 /// The sea at `p`, seen along `d` from `t` away: its light, line field, weight, normal and energy.
 
+/// How much of the sky over the water at `p` the rock hides (0 to 1, cosine-weighted): as a
+/// disc 1.1 km across its broad middle, seen from under it.
+fn under_isle(p: vec3) -> f32 {
+    let v = ISLE + vec3(0.0, -450.0, 0.0) - p
+    let d2 = dot(v, v)
+    let r2 = 1100.0 * 1100.0
+    clamp(1.5 * r2 / (r2 + d2) * max(v.y, 0.0) / sqrt(d2), 0.0, 0.85)
+}
+
 fn sea_shade(
     s: Shot,
     h: Heaven,
@@ -608,6 +747,7 @@ fn sea_shade(
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     waves: Waves,
+    yon: Texture<Rgba16Float>,
     p: vec3,
     d: vec3,
     t: f32,
@@ -629,7 +769,7 @@ fn sea_shade(
     let dv = flat * (px_at / max(-d.y, 0.01))
     let (wave, n0, foam_k, squeezed, lost0, rest) = surface_at(waves, xz, du, dv, tiles(calm))
     // Where the paddle has been: its rings, its eddies and its splash.
-    let (n, splash) = stirred(s, xz, n0)
+    let (n, splash) = stirred(s, xz, rest, n0)
     // (Far off, the wind's lanes: broad patches of rougher and smoother water, as its gusts
     // leave them, foreshortened to long bands of brighter and duller sheen toward the horizon.)
     let lanes = noise(xz * vec2(0.004, 0.0012) + vec2(s.held * 0.003, 5.0))
@@ -671,18 +811,22 @@ fn sea_shade(
     }
     mirrored /= max(fresnel, 1.0e-6)
     fresnel /= seen
-    // The isle's reflection, far out on the water: where the mirrored ray meets the rock, a
-    // darker, bluer sky.
-    // The isle's reflection, far out on the water: the rock's warm dark under it, smeared down
-    // the swell in broken vertical strokes, as the waves under it each mirror a piece.
+    // The isle's reflection, far out on the water: the rock as its own pass met it (`yonder`),
+    // where the water's own mirrored ray looks (from so far, the eye's view of it serves), so
+    // the waves under it break it as they break the sky's.
     if t > 60.0 {
-        let r0 = vec3(d.x, -d.y, d.z)
-        let ib = sphere(p, r0, bounds(), 1.0e5)
-        if ib.x < ib.y {
-            let ti = march_coarse(p, r0 + vec3(0.0, 0.006, 0.0), ib.x, ib.y)
-            if ti < ib.y {
-                let broken = smoothstep(0.3, 0.7, noise(vec2(p.x * 0.02, p.z * 0.25)))
-                mirrored = mix(mirrored, mirrored * vec3(0.72, 0.6, 0.52), 0.35 + 0.45 * broken)
+        let r0 = normalize(vec3(r.x, max(r.y, 0.002), r.z))
+        let z = dot(r0, s.forward)
+        if z > 0.0 {
+            let uv = vec2(dot(r0, s.right), -dot(r0, s.up)) * (s.focal / z)
+            let at = (uv * s.resolution.y + s.resolution) * 0.5
+            // (Only where that lands on the screen, fading at its edges: past them the
+            // texture's edge would smear across the water.)
+            let inside = smoothstep(0.0, 8.0, min(min(at.x, at.y), 1.0e5)) *
+                smoothstep(0.0, 8.0, min(s.resolution.x - at.x, s.resolution.y - at.y))
+            if inside > 0.0 {
+                let far = yon.sample_level(smp, at / s.resolution) * inside
+                mirrored = mirrored * (1.0 - far.a) + far.rgb
             }
         }
     }
@@ -697,12 +841,21 @@ fn sea_shade(
             let q = p + vec3(0.0, 0.02, 0.0) + r * min(mr.x, 7.0)
             let qn = skiff_normal(s, q)
             let (albedo, _, _) = skiff_material(s, q, qn)
-            let shade = clouded_sky(view, h.light, vec3(y: 1.0), dome, smp) * PI * 0.35 +
+            let shade = storm_sky(view, h.light, vec3(y: 1.0), dome, smp, disc: false).rgb *
+                PI *
+                0.35 +
                 h.light.sun_colour * 0.12
             mirrored = mix(mirrored, albedo * shade, 0.6 * cover)
         }
     }
-    let spread = clouded_sky(view, h.light, normalize(r + vec3(0.0, 0.5, 0.0)), dome, smp)
+    let spread = storm_sky(
+        view,
+        h.light,
+        normalize(r + vec3(0.0, 0.5, 0.0)),
+        dome,
+        smp,
+        disc: false,
+    ).rgb
     let reflected = mix(mirrored, spread, 0.15 * detail)
     // The sun's glitter: its mean, the facets' mirror as the pixel holds them (spread most down
     // the view, where the footprint lost most), and that mean gathered into the points it is.
@@ -762,7 +915,11 @@ fn sea_shade(
     let glint = kept_ + carried * points * (1.0 + cut / max(luma(carried), 1.0e-4))
     // The light that comes back up out of the water: deep blue-green, brighter through the
     // crests lit from behind.
-    let sky_up = clouded_sky(view, h.light, vec3(y: 1.0), dome, smp) * PI
+    // (Under the rock, less of it: the rock's mass hides a great piece of the sky over the water
+    // there, a darker pool on the sea round its foot.)
+    let sky_up = storm_sky(view, h.light, vec3(y: 1.0), dome, smp, disc: false).rgb *
+        PI *
+        (1.0 - under_isle(p))
     let body = vec3(0.018, 0.068, 0.082) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
     let behind = pow(max(dot(normalize(vec3(-d.x, 0.0, -d.z)), -l) * 0.5 + 0.5, 0.0), 4.0)
     // The sun through the waves' crests: their thin tops, where the waves crowd and sharpen,
@@ -824,7 +981,7 @@ fn sea_shade(
     let bright = (0.4 + 0.6 * smoothstep(0.5, 1.4, mass)) * (0.7 + 0.5 * froth)
     // Under it and round it, the water's paler and greener, full of the bubbles the break drove
     // down, as the water under a whitecap is.
-    let bubbles = smoothstep(0.02, 0.5, foam_k)
+    let bubbles = smoothstep(mix(0.02, 0.2, OVERCAST), 0.5, foam_k)
     // Foam where the sea meets the skiff, lit as a white surface is.
     // The skiff's wake: two thin lines spreading from its stern as it drifts, and the stirred
     // water straight behind it.
@@ -834,7 +991,7 @@ fn sea_shade(
     // Under way, the wake runs longer and whiter, and the bow throws a wave off each side. The
     // wake lies along the way the skiff came: turning, an arc (its centre `bend` m to the side the
     // bow swings), read as how far back along it (`back`) and how far off it (`off`).
-    let way = clamp(abs(s.speed) / 1.6, 0.0, 1.0)
+    let way = clamp(abs(s.speed) / 3.0, 0.0, 1.0)
     let bend = s.speed / (if abs(s.turn) < 1.0e-4 { 1.0e-4 } else { s.turn })
     var back = -along
     var off = across
@@ -861,29 +1018,27 @@ fn sea_shade(
     )
     let arms = exp(-pow(abs(off) - behind_ * 0.36 - 0.4, 2.0) / (0.03 + behind_ * 0.02)) *
         smoothstep(0.0, 1.0, behind_) *
-        smoothstep(14.0 + 30.0 * way, 3.0, behind_) *
-        exp(-behind_ / (16.0 + 30.0 * way)) *
+        // (A rowing boat's arms are ripples, not foam: white only close astern, gone in a
+        // few metres, never soft blots out by the eye.)
+        smoothstep(7.0 + 6.0 * way, 1.0, behind_) *
+        0.6 *
         broken *
         wavelets
-    let trail = exp(-off * off / (0.4 + behind_ * 0.05)) *
+    // Straight astern, the churned water it leaves: lace on the water that rides with it (laid
+    // where it rests), in patches that thin as it widens and fades.
+    let trail = exp(-off * off / (0.25 + behind_ * 0.06)) *
         smoothstep(0.0, 0.8, behind_) *
-        smoothstep(14.0 + 22.0 * way, 2.0, behind_) *
-        smoothstep(0.45 - 0.15 * way, 0.7, noise(xz * 1.3 + vec2(s.held * 0.6, back * 0.4)))
+        exp(-behind_ / (3.0 + 9.0 * way)) *
+        smoothstep(0.15, 0.7, lace_at(rest * 1.6) * (0.5 + fbm(rest * 0.7, 2)))
     let from_bow = max(1.9 - along, 0.0)
     let bow_wave = exp(-pow(abs(across) - 0.12 - from_bow * 0.4, 2.0) / 0.012) *
         smoothstep(0.0, 0.3, from_bow) *
         smoothstep(4.5, 1.2, from_bow) *
         smoothstep(0.3, 0.55, noise(vec2(along * 3.0 - s.held * 4.0, across * 3.0))) *
         way
-    // Where the paddle bites: a swirl of foam round the blade, left in the water behind it.
-    let (_, pb, sunk) = paddle(s)
-    let blade_w = s.boat + s.boat_x * pb.x + s.boat_z * pb.z
-    let swirl = (1.0 - band(abs(length(xz - vec2(blade_w.x, blade_w.z)) - 0.16), 0.07, 0.04)) *
-        smoothstep(0.3, 0.6, noise(xz * 7.0 + vec2(s.held * 2.0))) *
-        sunk
     let wake = max(
-        max(arms, trail * 0.6) * step(0.0, back) * (0.85 * way),
-        max(bow_wave * 0.7, swirl * 0.8),
+        max(arms, trail) * step(0.0, back) * smoothstep(0.0, 0.5, way),
+        bow_wave * 0.7,
     )
     // Where the sea meets the hull: a lip of churned water along its waterline, out past the
     // gunwale's flare so the eye above sees it, wider and whiter as the skiff makes way or slaps
@@ -915,7 +1070,7 @@ fn sea_shade(
         PI
     let foam_light = mix(foam_lit, vec3(luma(foam_lit)) * vec3(1.0, 0.97, 0.94), 0.45) * 1.6
     c *= mix(0.45, 1.0, smoothstep(0.0, 0.3, max(wl, 0.0)))
-    c += body * (1.0 - fresnel) * 2.6 * bubbles * (1.0 - white)
+    c += body * (1.0 - fresnel) * mix(2.6, 0.9, OVERCAST) * bubbles * (1.0 - white)
     c = mix(c, foam_light * bright, white * 0.92)
     c = mix(c, foam_light, max(max(foam * 0.9, wake), splash))
     // The crests' ink strokes and pale lips, light: the ink sits on the water's form.
@@ -950,52 +1105,42 @@ fn sea_shade(
             c += h.light.sun_colour * BEAM_TINT[k] * 0.05 * pool * shimmer
         }
     }
-    let aired = hazed(aerial, smp, h.light, c, p, s.eye)
+    let aired = aired(aerial, smp, h.light, c, p, s.eye)
     // Far out, the sea and the sky meet in the air: no ruled edge where they do.
     let horizon_sky = heaven(view, h.light, normalize(vec3(d.x, 0.006, d.z)), dome, smp).rgb
     let hazy = mix(aired, horizon_sky, smoothstep(2500.0, 30000.0, t) * 0.85)
     (hazy, line, detail * 0.6 + foam, n, cut)
 }
 
-/// A drop of water at `p`, `r` m across, as the ray `o` + `d` t meets it before `hit`: drawn at
+/// A drop of water `r` m across, flying from `p0` to `p1` while the frame's shutter is open (so
+/// drawn as the short streak it sweeps), as the ray `o` + `d` t meets it before `hit`: drawn at
 /// least a pixel wide (a pixel `px_k` t m at t), as much fainter as it's smaller than that, in
 /// its light `lit`. Its light (premultiplied) and cover.
-fn drop(o: vec3, d: vec3, hit: f32, p: vec3, r: f32, px_k: f32, lit: vec3) -> vec4 {
+fn drop(o: vec3, d: vec3, hit: f32, p0: vec3, p1: vec3, r: f32, px_k: f32, lit: vec3) -> vec4 {
+    let e = p1 - p0
+    let w = o - p0
+    let b = dot(d, e)
+    let c = max(dot(e, e), 1.0e-8)
+    let u = clamp((dot(e, w) - b * dot(d, w)) / max(c - b * b, 1.0e-8), 0.0, 1.0)
+    let p = p0 + e * u
     let tc = dot(p - o, d)
     if tc <= 0.0 || tc >= hit {
         return vec4(0.0)
     }
     let dist = length(p - o - d * tc)
     let drawn = max(r, tc * px_k * 0.6)
+    // (A streak's light spread down its length: the longer, the fainter.)
+    let long = 1.0 + sqrt(c) / max(drawn * 2.0, 1.0e-4)
     let cover = (1.0 - smoothstep(drawn * 0.3, drawn * 1.1, dist)) *
-        min(r * r / (drawn * drawn) * 3.0, 1.0)
+        min(r * r / (drawn * drawn) * 3.0 / sqrt(long), 1.0)
     vec4(lit * cover, cover)
 }
 
-/// A puff of spray round `c`, `r` m across, `dense` thick at its heart, as the ray `o` + `d` t
-/// meets it before `hit`: how much of it the ray passes through, torn by a noise (`seed`) so
-/// it's never a ball.
-fn puff(o: vec3, d: vec3, hit: f32, c: vec3, r: f32, dense: f32, seed: f32) -> f32 {
-    let tc = dot(c - o, d)
-    if tc <= 0.0 {
-        return 0.0
-    }
-    let off = length(c - o - d * tc)
-    if off >= r {
-        return 0.0
-    }
-    let half = sqrt(r * r - off * off)
-    // (Cut where the ray meets what's behind it, the water.)
-    let through = clamp(min(tc + half, hit) - max(tc - half, 0.0), 0.0, 2.0 * half)
-    let at = o + d * tc
-    let torn = smoothstep(0.25, 0.75, noise3((at - c) * (7.0 / max(r, 0.05)) + vec3(seed)))
-    (1.0 - exp(-dense * through / r)) * torn
-}
-
-/// The paddle's spray, in front of what the ray met at `hit`: as the blade bites, a burst of
-/// spray and drops thrown up and out, falling back within half a second; as it swings forward
-/// through the air, the water running off it in drops. Lit as water drops are, by the low sun
-/// through them most when the eye looks toward it. Its light (premultiplied) and cover.
+/// The paddle's spray, in front of what the ray met at `hit`: as the blade bites, a crown of
+/// drops thrown up and out from it, falling back within half a second; as it swings forward
+/// through the air, the water running off it in drops. Each streaked by its flight through the
+/// frame. Lit as water drops are, by the sky's light, and by the sun through them when it's out
+/// and the eye looks toward it. Its light (premultiplied) and cover.
 fn spray(s: Shot, h: Heaven, o: vec3, d: vec3, hit: f32) -> vec4 {
     let a = smoothstep(0.05, 0.45, abs(s.pull))
     if a <= 0.0 {
@@ -1014,40 +1159,31 @@ fn spray(s: Shot, h: Heaven, o: vec3, d: vec3, hit: f32) -> vec4 {
     let level = s.boat.y - 0.2
     let px_k = 2.0 / (s.resolution.y * s.focal)
     let toward = pow(max(dot(d, h.light.sun), 0.0), 6.0)
-    let lit = h.light.sun_colour * (0.9 + 9.0 * toward) + vec3(0.45, 0.52, 0.66)
+    let lit = h.light.sun_colour * (0.9 + 9.0 * toward) + vec3(0.22, 0.25, 0.29)
+    // (The shutter: a 40th of a second.)
+    let open = 0.025
     var acc = vec4(0.0)
-    if age < 0.6 {
+    if age < 0.55 {
         let entry = s.boat + s.boat_x * 0.92 + s.boat_z * (-0.1 - s.speed * age)
         let base = vec3(entry.x, level, entry.z)
         let stroke_id = floor(s.stroke)
-        // The burst: a puff of fine spray thrown up where the blade went in, spreading, thinning
-        // and settling back.
-        let grow = 0.1 + 0.55 * age
-        let rise = 0.95 * age - 2.6 * age * age
-        let mist = puff(
-            o,
-            d,
-            hit,
-            base + up * max(rise, 0.0) + s.boat_x * (0.3 * age),
-            grow,
-            1.6,
-            stroke_id * 3.1,
-        ) *
-            exp(-age / 0.22) *
-            0.75
-        acc = vec4(lit * 0.8 * mist, mist)
-        for i in 0..22 {
+        for i in 0..28 {
             let fi = f32(i)
             let h1 = hash2(vec2(fi, stroke_id * 1.3))
             let h2 = hash2(vec2(fi + 7.0, stroke_id * 2.1))
             let h3 = hash2(vec2(fi + 13.0, stroke_id * 0.7))
-            // (Thrown outboard and back, most of them, as the blade's face throws them.)
-            let turn = (h1 - 0.5) * 2.4
-            let thrown = (s.boat_x * cos(turn) - s.boat_z * sin(turn) * 0.6) * (0.4 + 1.1 * h2) +
-                up * (0.9 + 1.9 * h3)
-            let p = base + thrown * age - up * (4.9 * age * age)
-            if p.y > level - 0.02 {
-                let dr = drop(o, d, hit, p, 0.008 + 0.016 * h2 * h2, px_k, lit)
+            // (Thrown up round the blade as a crown, more of them outboard and aft, the
+            // smallest highest and furthest.)
+            let turn = (h1 - 0.5) * 3.6
+            let fly = 0.25 + 0.9 * h2
+            let thrown = (s.boat_x * cos(turn) - s.boat_z * (sin(turn) * 0.7 + 0.3)) * fly +
+                up * (0.8 + 1.6 * h3 * (1.2 - h2 * 0.5))
+            let t0 = max(age - open, 0.0)
+            let p1 = base + thrown * age - up * (4.9 * age * age)
+            let p0 = base + thrown * t0 - up * (4.9 * t0 * t0)
+            if p1.y > level - 0.02 {
+                let r = 0.005 + 0.012 * (1.0 - h2) * (1.0 - h2)
+                let dr = drop(o, d, hit, p0, p1, r, px_k, lit)
                 acc = acc * (1.0 - dr.a) + dr
             }
         }
@@ -1057,109 +1193,31 @@ fn spray(s: Shot, h: Heaven, o: vec3, d: vec3, hit: f32) -> vec4 {
         let blade = s.boat + s.boat_x * b.x + s.boat_y * b.y + s.boat_z * b.z
         for j in 0..6 {
             let fall = fract(s.held * 2.7 + f32(j) * 0.17) * 0.32
-            let p = blade + s.boat_x * (0.05 * (f32(j) - 2.5)) - up * (4.9 * fall * fall + 0.18)
-            if p.y > level {
-                let dr = drop(o, d, hit, p, 0.009, px_k, lit)
+            let at = blade + s.boat_x * (0.05 * (f32(j) - 2.5)) - up * 0.18
+            let p1 = at - up * (4.9 * fall * fall)
+            let f0 = max(fall - open, 0.0)
+            let p0 = at - up * (4.9 * f0 * f0)
+            if p1.y > level {
+                let dr = drop(o, d, hit, p0, p1, 0.008, px_k, lit)
                 acc = acc * (1.0 - dr.a) + dr
             }
         }
     }
-    vec4(acc.rgb, min(acc.a, 1.0)) * a
-}
-
-/// How much of the falls a ray `o` + `d` t meets before `hit`, and their light (premultiplied).
-/// Each falls as water does: a sheet of strands, bright where they catch the light, dark between
-/// where the rock shows through, fraying at its edges, clumping as it drops, then gone to mist.
-fn falls(
-    s: Shot,
-    h: Heaven,
-    aerial: Texture3d<Rgba16Float>,
-    smp: Sampler,
-    o: vec3,
-    d: vec3,
-    hit: f32,
-) -> vec4 {
-    var acc = vec4(0.0)
-    let dd = vec2(d.x, d.z)
-    let len2 = max(dot(dd, dd), 1.0e-6)
-    let k = SCALE / 4.5
-    for i in 0..3 {
-        let f = FALLS[i]
-        let at = vec2(ISLE.x + f.x * SCALE, ISLE.z + f.y * SCALE)
-        let lip = ISLE.y + f.z * SCALE
-        let width = f.w * SCALE
-        let rel = vec2(o.x, o.z) - at
-        let tc = -dot(rel, dd) / len2
-        if tc > 0.0 && tc < hit {
-            let p = o + d * tc
-            let drop = (lip - p.y) / k
-            let across = length(vec2(p.x, p.z) - at) / k
-            let side = dot(vec2(p.x, p.z) - at, normalize(vec2(-dd.y, dd.x))) / k
-            // Its edges fray, wider as it falls.
-            let w = width /
-                k *
-                (0.38 + drop * 0.005) *
-                (0.92 + 0.16 * noise(vec2(drop * 0.012 - s.held * 0.3, f32(i) * 5.0)))
-            // The strands, running down as the water does.
-            let fi = f32(i) * 7.0
-            let strand = noise(vec2(side / (w * 0.22 + 0.5) + fi, drop * 0.006 - s.held * 2.4)) *
-                0.65 +
-                noise(vec2(side / (w * 0.08 + 0.3) + fi * 2.0, drop * 0.02 - s.held * 5.5)) * 0.35
-            // (Strands finer than a pixel averaged out: far off the sheet is one soft fall.)
-            let px_m = tc * 2.0 / (s.resolution.y * s.focal) / k
-            let sheet = mix(
-                0.5,
-                smoothstep(0.32, 0.62, strand),
-                1.0 - smoothstep(w * 0.2, w * 0.6, px_m),
-            )
-            // Lower down it clumps and breaks apart.
-            let clump = smoothstep(
-                0.2 + 0.45 * smoothstep(120.0, 480.0, drop),
-                0.95,
-                noise(vec2(side * 0.08 + fi, drop * 0.02 - s.held * 1.4)),
-            )
-            // (Softer at its edges, and thinning away down the cliff into its spray, not cut off.)
-            let body = smoothstep(w, w * 0.15, across) *
-                smoothstep(-15.0, 70.0, drop) *
-                smoothstep(620.0, 140.0, drop) *
-                step(1.0, f.w) *
-                mix(1.0, clump, 0.55 * smoothstep(60.0, 300.0, drop))
-            let mist = exp(-(across * across) / (w * w * 22.0)) *
-                smoothstep(220.0, 560.0, drop) *
-                smoothstep(1400.0, 750.0, drop) *
-                step(1.0, f.w) *
-                0.3 *
-                (0.55 + 0.45 * noise(vec2(side * 0.05, drop * 0.01 - s.held * 0.2)))
-            let a = clamp(body * (0.6 + 0.4 * sheet) + mist, 0.0, 0.92) * (1.0 - acc.a)
-            // Lit from behind and above: the strands' crowns warm with the low sun, the sheet
-            // between them cooler and darker, the mist a soft warm grey.
-            let warm = h.light.sun_colour * vec3(1.0, 0.86, 0.66)
-            let cool = vec3(0.16, 0.18, 0.22)
-            // (Backlit, its spray glows warm: the low sun through it.)
-            // (At its lip a smooth glassy sheet, dark as the cliff it leaves: it only whitens and
-            // glows as it breaks up falling, so its top is no bright mark of its own.)
-            let broken = smoothstep(20.0, 300.0, drop)
-            let water = cool * (0.15 + 0.55 * broken) + warm * (0.035 + 0.08 * sheet) * broken
-            let haze_ = cool * 1.1 + warm * 0.12
-            let lit = mix(water, haze_, clamp(mist / max(a + mist, 1.0e-3), 0.0, 1.0))
-            let col = hazed(aerial, smp, h.light, lit, p, s.eye)
-            acc += vec4(col * a, a)
-        }
-    }
-    acc
+    vec4(acc.rgb, min(acc.a, 1.0)) * (a * 0.7)
 }
 
 /// A flock: gulls nearer and farther, each a dark V beating its wings. `BIRDS` (where, the
 /// world's; and how far each drifts). (None so far that it's a pixel: a gull a pixel wide reads
-/// as a dead one on the screen, not a bird.)
+/// as a dead one on the screen, not a bird. And none seen against the far rock: there a gull a
+/// few hundred metres off reads at the rock's distance, a hundred metres wide, and shrinks it.)
 const BIRDS = [
     vec4(18.0, 19.0, 110.0, 1.0),
     vec4(23.0, 21.0, 116.0, 2.0),
     vec4(14.0, 17.5, 121.0, 3.0),
-    vec4(-59.0, 24.0, 258.0, 4.0),
-    vec4(-56.0, 25.0, 261.0, 5.0),
-    vec4(-62.0, 23.2, 264.0, 6.0),
-    vec4(-54.0, 23.5, 254.0, 7.0),
+    vec4(61.0, 31.0, 258.0, 4.0),
+    vec4(64.0, 32.0, 261.0, 5.0),
+    vec4(58.0, 30.2, 264.0, 6.0),
+    vec4(66.0, 30.5, 254.0, 7.0),
     vec4(26.0, 11.0, 70.0, 8.0),
 ]
 
@@ -1208,6 +1266,9 @@ fn sample(
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     waves: Waves,
+    yon_colour: Texture<Rgba16Float>,
+    yon_marks: Texture<Rgba16Float>,
+    yon_normal: Texture<Rgba8>,
     px: vec2,
 ) -> (vec3, vec4, vec4) {
     let h = Heaven { light, clouds }
@@ -1234,14 +1295,6 @@ fn sample(
             id = SKIFF
         }
     }
-    let is = sphere(o, d, bounds(), far)
-    if is.x < t {
-        let ti = march_isle(o, d, is.x, min(is.y, t))
-        if ti < min(is.y, t) {
-            t = ti
-            id = isle(o + d * ti).y
-        }
-    }
     var c = vec3(0.0)
     var line = 1.0
     var weight = 0.0
@@ -1255,7 +1308,20 @@ fn sample(
         weight = 0.0
         n = -d
     } else if id == SEA {
-        let (sc, sl, sw, sn, se) = sea_shade(s, h, view, aerial, dome, cloud, smp, waves, p, d, t)
+        let (sc, sl, sw, sn, se) = sea_shade(
+            s,
+            h,
+            view,
+            aerial,
+            dome,
+            cloud,
+            smp,
+            waves,
+            yon_colour,
+            p,
+            d,
+            t,
+        )
         c = sc
         line = sl
         weight = sw
@@ -1287,21 +1353,25 @@ fn sample(
         )
         // The player's skiff is lit as a character is, never lost in the shade: the bright sea's
         // light thrown up onto it, warm off the sun's path on the water, and a rim of the sun.
-        let sea_light = clouded_sky(
+        let sea_light = storm_sky(
             view,
             light,
             normalize(vec3(light.sun.x, 0.25, light.sun.z)),
             dome,
             smp,
-        )
+            disc: false,
+        ).rgb
         // (The CG looks light it as a hero is against the sun: less fill, so its shade side
         // holds its value against the bright sea, and a stronger rim; the cel look's both hard.)
         let cg = s.look > 0.5
         let cel = s.look > 1.5 && s.look < 2.5
         let toward = max(dot(n, normalize(vec3(light.sun.x, -0.4, light.sun.z))), 0.0)
+        // (Under the overcast, more of it: the deck's light all round is all it has.)
         let bounce = sea_light * PI * (if cg { 0.13 } else {
             0.22
-        }) * (0.4 + 0.6 * ao) * (0.5 + 0.5 * (if cel { band(toward, 0.3, 0.04) } else { toward }))
+        }) * mix(1.0, 2.2, OVERCAST) * (0.4 + 0.6 * ao) * (0.5 + 0.5 * (if cel {
+            band(toward, 0.3, 0.04)
+        } else { toward }))
         let edge_k = pow(1.0 - max(dot(n, -d), 0.0), 3.0) *
             max(dot(n, normalize(vec3(light.sun.x, 0.3, light.sun.z))), 0.0)
         let rim = light.sun_colour * vec3(1.0, 0.85, 0.6) * (if cel {
@@ -1311,128 +1381,32 @@ fn sample(
         })
         c += albedo * bounce + rim * sun
         // The waterline: the hull dark where the sea has wet it.
-        let at_hull = level_at(
-            waves,
-            vec2(p.x, p.z),
-            0.02,
-            tiles(lee(p - s.boat, s.boat_x, s.boat_z)).y,
-        )
+        let at_hull = sea_level(s, waves, p, 0.02)
         let wet = smoothstep(0.14, 0.0, p.y - at_hull)
         c *= 1.0 - 0.5 * wet
         line = seam
         weight = 0.8
         energy = s.slap * 0.35
-    } else {
-        // The rock's normal taken broad, so it models in planes, as hewn stone is drawn; the
-        // cathedral's finer.
-        // (Far off, the cathedral's too: an arcade or a tracery's ring finer than a pixel or two
-        // only beads in the low sun, a grid of gold specks, so its faces are lit as planes there.)
-        let broad = if id == ROCK { 0.0016 } else {
-            mix(0.0007, 0.0024, smoothstep(2000.0, 6000.0, t))
-        }
-        n = isle_normal(p, max(0.3, t * broad))
-        // (A pixel's footprint on the face, longer as the face turns from the eye.)
-        let (albedo, rough, metal, glow0, l) = isle_material(
-            p,
-            n,
-            id,
-            foot(t, s.resolution.y, s.focal, dot(n, d)),
-        )
-        // The gilding shines: it holds the low sun, as if lit from within.
-        // (Far off, a cross or a finial is a speck: held down, or it beads as a model's would.)
-        let far_ = 1.0 - 0.8 * smoothstep(2500.0, 7000.0, t)
-        let glow = if id == GILT {
-            glow0 +
-                light.sun_colour *
-                    vec3(1.0, 0.74, 0.4) *
-                    (0.7 + 2.4 * max(dot(n, light.sun), 0.0)) *
-                    far_
-        } else if id == GLASS { glow0 * (1.0 + 20.0 * s.lantern) } else { glow0 }
-        // (Its shadows likewise: none from a recess too small for a pixel to hold.)
-        let lift = max(2.0, t * 0.0012)
-        let sun = isle_shadow(p + n * lift, light.sun, lift, hash2(px * 1.37)) *
-            mix(1.0, cloud_shadow(clouds, cloud, smp, p), 0.35)
-        let ao = isle_ao(p, n)
-        // The rock and the cathedral on it in the same air: all the air their 8 km holds, and a
-        // little past it toward the sky's own colour, as a painter pushes back what's far; so the
-        // building sits on its rock, not over it, and both sit far off, not near and small.
-        // Its underside, hung in its own shade, given to the air: the lower, the more of the sky.
-        let below = clamp((ISLE.y - p.y) / (210.0 * SCALE), 0.0, 1.0)
-        let haze = 1.06 + 0.08 * pow(below, 1.6)
-        let gloss = if id == ROCK { 0.0 } else { 1.0 }
-        // (The rock lit by its planes more than its cracks: a crack's wall turned to the sun
-        // catches it softly, not as a seam of gold.)
-        let rn = if id == ROCK { isle_normal(p, t * 0.006) } else { n }
-        let ln = if id == ROCK { normalize(mix(n, rn, 0.85)) } else { n }
-        c = lit_solid(
-            s,
-            h,
-            view,
-            aerial,
-            dome,
-            smp,
-            p,
-            ln,
-            d,
-            albedo,
-            rough,
-            metal,
-            glow,
-            sun,
-            ao,
-            haze,
-            gloss,
-        )
-        // The underside hangs in its own shade, darker the lower: a mass over the sea, not a veil.
-        if id == ROCK {
-            c *= mix(1.0, 0.72, smoothstep(0.15, 0.9, below))
-        }
-        // The keep's foot darker where it meets the town's top terraces, and the town's walls
-        // under it darker still, in their own shade and the grime their rain runs down to: the
-        // building grows from its rock, not set on it.
-        if id == STONE {
-            c *= mix(0.6, 1.0, smoothstep(30.0, 170.0, p.y - (ISLE.y + 2.0 * SCALE)))
-        }
-        // The sun behind it catches every edge turned its way: a hot rim down the spires' and the
-        // rock's sun sides, against the light.
-        let side = normalize(vec3(light.sun.x, 0.15, light.sun.z))
-        // (The rock's rim off its broad planes, not every crack's: a light along its edges, not
-        // a sparkle.)
-        let cel = s.look > 1.5 && s.look < 2.5
-        let edge_soft = pow(1.0 - max(dot(rn, -d), 0.0), 3.0) * max(dot(rn, side), 0.0)
-        let edge_on = if cel { band(edge_soft, 0.15, 0.02) * 0.4 } else { edge_soft }
-        // (Far off, a rim along a spire finer than a pixel only beads: held down there.)
-        let hot = (if id == ROCK { 0.08 } else if id == GILT { 0.8 } else {
-            1.0
-        }) * (if id == ROCK { 1.0 } else { mix(1.0, 0.18, smoothstep(2500.0, 7000.0, t)) })
-        c += light.sun_colour * vec3(1.0, 0.78, 0.45) * hot * edge_on * mix(1.0, sun, 0.6)
-        // The rock's great planes modelled as a painter would against the light: those turned
-        // toward the sun's side warmed by it as it wraps round, those turned away left in a
-        // deeper, cooler shade, and the ledges' tops catching the sky. Fading as the air takes
-        // the underside.
-        if id == ROCK {
-            let wrap = if cel { band(dot(rn, side), -0.05, 0.03) * 0.5 } else {
-                pow(clamp(dot(rn, side) * 0.55 + 0.45, 0.0, 1.0), 2.5)
-            }
-            let ledge = smoothstep(0.2, 0.7, rn.y)
-            let fade = 1.0 - smoothstep(0.2, 0.8, below)
-            c += albedo *
-                light.sun_colour *
-                vec3(1.0, 0.8, 0.55) *
-                0.3 *
-                wrap *
-                mix(0.35, 1.0, sun) *
-                fade
-            c += albedo * vec3(0.5, 0.58, 0.75) * 0.12 * ledge * fade
-            c *= mix(1.0, mix(0.72, 1.0, wrap), fade)
-        }
-        line = l
-        weight = if id == ROCK { 0.55 } else { 0.5 }
-        // (The ink reads the rock by its planes too.)
-        n = ln
     }
-    // The falls, in front of what the ray met; the gulls in front of all.
-    let fall = falls(s, h, aerial, smp, o, d, t)
+    // The rock, the cathedral and their falls, met in a pass of their own (`yonder`), over what
+    // this ray met behind them: unless what it met is nearer.
+    let q = clamp(floor(px), vec2(0.0), s.resolution - vec2(1.0))
+    let fc = yon_colour.load(u32(q.x), u32(q.y))
+    if fc.a > 0.0 {
+        let fm = yon_marks.load(u32(q.x), u32(q.y))
+        if id == SKY || exp2(fm.x) < t {
+            c = c * (1.0 - fc.a) + fc.rgb
+            if fc.a > 0.5 {
+                t = exp2(fm.x)
+                id = fm.y
+                line = fm.z
+                weight = fm.w
+                n = yon_normal.load(u32(q.x), u32(q.y)).xyz * 2.0 - 1.0
+            }
+        }
+    }
+    // The falls, fresh each drawing, in front of what's behind them (the rock too).
+    let (fall, _) = falls(s, h, view, aerial, dome, smp, o, d, t)
     c = c * (1.0 - fall.a) + fall.rgb
     let thrown = spray(s, h, o, d, t)
     c = c * (1.0 - thrown.a) + thrown.rgb
@@ -1472,43 +1446,55 @@ pub fn paint(
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     waves: Waves,
+    yon_colour: Texture<Rgba16Float>,
+    yon_marks: Texture<Rgba16Float>,
+    yon_normal: Texture<Rgba8>,
 ) -> Targets3<vec4, vec4, vec4> {
     let s = shot
     let px = pixel.position.xy
-    // Where the ray passes near the rock or the skiff, what's finer than a pixel (the spires and
-    // their tracery, the rock's crags, the hull's edge) is met four times over and averaged, so
-    // it neither stairs nor crawls as the eye moves. Elsewhere, once. (Round the skiff the four
-    // fade to the one over its last metre, so no ring shows where they stop; and each weighed
-    // down as it's bright, so one spark of gilt in four doesn't flicker the whole pixel.)
+    // Where the ray passes near the skiff, what's finer than a pixel (the hull's edge, the
+    // paddle) is met four times over and averaged, so it neither stairs nor crawls as the eye
+    // moves. Elsewhere, once. (Round the skiff the four fade to the one over its last metre, so
+    // no ring shows where they stop; and each weighed down as it's bright, so one spark in four
+    // doesn't flicker the whole pixel.) The rock and the cathedral are met in their own pass
+    // (`yonder`), over many drawings.
     let d = ray(s, px)
-    let near_isle = sphere(s.eye, d, bounds(), 1.0e5)
     let to_boat = s.boat + s.boat_y * 0.3 - s.eye
     let pass = length(to_boat - d * dot(to_boat, d))
     let boat_k = if dot(to_boat, d) > 0.0 { smoothstep(3.4, 2.5, pass) } else { 0.0 }
-    let isle_k = if near_isle.x < near_isle.y { 1.0 } else { 0.0 }
-    let k0 = max(isle_k, boat_k)
     // (One call of `sample` in one loop, met once or four times: written twice, the shader
     // would be over what a browser compiles as it loads.)
     var c = vec3(0.0)
     var marks = vec4(0.0)
     var third = vec4(0.0)
-    var k = 0.0
     var sum = vec3(0.0)
     var weight = 0.0
     var count = 1
     var i = 0
     while i < count {
-        let off = if i == 0 { WITHIN[0] * k0 * s.fine } else { WITHIN[i] }
-        let (ck, mk, tk) = sample(s, light, clouds, view, aerial, dome, cloud, smp, waves, px + off)
+        let off = if i == 0 {
+            WITHIN[0] * (if s.fine > 0.5 { boat_k } else { 0.0 })
+        } else { WITHIN[i] }
+        let (ck, mk, tk) = sample(
+            s,
+            light,
+            clouds,
+            view,
+            aerial,
+            dome,
+            cloud,
+            smp,
+            waves,
+            yon_colour,
+            yon_marks,
+            yon_normal,
+            px + off,
+        )
         if i == 0 {
             c = ck
             marks = mk
             third = tk
-            // (The sea in front of the rock's bounds is the sea's alone: met once, as all the
-            // sea is.)
-            let sea_first = mk.y == SEA && exp2(mk.x) < near_isle.x
-            k = max(if sea_first { 0.0 } else { isle_k }, boat_k)
-            if k > 0.0 && s.fine > 0.5 {
+            if boat_k > 0.0 && s.fine > 0.5 {
                 count = 4
             }
         }
@@ -1518,7 +1504,7 @@ pub fn paint(
         i += 1
     }
     if count > 1 {
-        c = mix(c, sum / weight, k)
+        c = mix(c, sum / weight, boat_k)
     }
     Targets3 { first: vec4(c, 1.0), second: marks, third }
 }

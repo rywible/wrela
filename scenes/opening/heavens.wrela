@@ -5,10 +5,11 @@
 
 use engine::air::{Air, Tables, hazy, tables}
 use engine::light::{Light, SUN_TOP, sunlight}
-use engine::sky::{Clouds, Cumulus, Gap, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky}
+use engine::sky::{Clouds, Gap, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky}
 use engine::switches::Switches
 use std::gpu::{Address, Sampler, sampler}
 use std::math::PI
+use look::{BREAK, LIFT, OVERCAST, SUN, THIN}
 
 /// The engine's approved switches: the sky's march at full size.
 pub struct Approved {}
@@ -29,35 +30,49 @@ pub struct Heavens {
     cooked: u32,
 }
 
-/// The weather: a bank of great cumulus on the far horizon, the tallest towering behind the
-/// isle; a few fair-weather clouds; the sky clear toward the low sun; a slow drift.
+/// The weather: overcast (`OVERCAST`). A deck of heavy cloud over the whole sky, thicker and
+/// thinner in broad swells; no clear stretch toward the sun; a quick drift before the gale.
 fn weather() -> Weather {
     Weather {
-        clouds: Vec::from(
-            [
-                Cumulus { at: vec2(14000.0, 17500.0), wide: 7000.0, tall: 3200.0 },
-                Cumulus { at: vec2(-9800.0, 21500.0), wide: 8000.0, tall: 1900.0 },
-                Cumulus { at: vec2(26000.0, 22000.0), wide: 10000.0, tall: 600.0 },
-            ],
-        ),
+        clouds: Vec::new(),
         fair: 0.0,
-        gap: Gap { a: vec2(0.0, 0.0), b: vec2(9000.0, -9000.0), radius: 3000.0 },
-        wind: vec2(3.0, -1.5),
+        // (A break far off toward the sun: a lane across the view under it, `BREAK` m wide.)
+        gap: Gap {
+            a: normalize(vec2(SUN.x, SUN.z)) * 20000.0 + vec2(-SUN.z, SUN.x) * 9000.0,
+            b: normalize(vec2(SUN.x, SUN.z)) * 20000.0 - vec2(-SUN.z, SUN.x) * 9000.0,
+            radius: BREAK,
+        },
+        wind: vec2(9.0, -14.0),
+        overcast: OVERCAST,
+        thin: THIN,
     }
 }
+
+/// The share of the sun's light that comes through the overcast's deck.
+const UNDER_DECK: f32 = 0.1
 
 /// The heavens, the sun toward `sun`, seen from an eye `eye` m over the sea; uncooked.
 pub fn heavens(sun: vec3, eye: f32) -> Heavens {
     // The engine's hazy air, cleared to a sea day's: less haze, so a thing 3 km off keeps its
     // form and its shadows.
     let air = Air {
-        mie_scattering: 0.08,
+        mie_scattering: 0.12,
         mie_absorption: 0.01,
         ..hazy(normalize(sun), SUN_TOP, eye),
     }
     // A touch brighter than the engine's default exposure: a sea under an open sky.
-    let light = Light { exposure: 0.72, ..sunlight(air) }
-    let sky = new_sky::<Approved>()
+    // Under the overcast, what's below the deck has the sun's light only as far as it comes
+    // through it: a tenth, all round (the deck itself is lit from above it, `engine::sky`), and
+    // the rest of its light from the deck (`paint::storm_sky`). Exposed for that dimmer world.
+    let open = sunlight(air)
+    let light = Light {
+        exposure: (0.66 + 0.75 * OVERCAST) * mix(1.0, LIFT, OVERCAST),
+        sun_colour: open.sun_colour * mix(1.0, mix(UNDER_DECK, 0.3, THIN), OVERCAST),
+        ..open,
+    }
+    // (A storm's deck: `engine::sky::Clouds::gloom`.)
+    var sky = new_sky::<Approved>()
+    sky.gloom = OVERCAST
     let clouds = sky.clouds::<Approved>(
         light,
         vec3(0.0, eye, 0.0),

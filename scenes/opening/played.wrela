@@ -9,6 +9,7 @@ use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
 use paint::paint
+use yonder::{Yon, yonder}
 use ink::ink
 use row::{Rig, key, let_go, rest, step}
 use std::collections::swap
@@ -16,6 +17,10 @@ use std::input::Event
 use std::gpu::{
     ClipPosition, Rgba16Float, Rgba8, Texture, VertexIndex, begin_pass, begin_pass3, draw, texture,
 }
+
+/// How finely a live page meets the scene (`Shot::fine`): the rock and the cathedral four times
+/// over a pixel, the rest once.
+const LIVE_FINE: f32 = 0.3
 
 pub struct State {
     pub(package) heavens: Heavens,
@@ -26,6 +31,19 @@ pub struct State {
     pub(package) colour: Texture<Rgba16Float>,
     pub(package) marks: Texture<Rgba16Float>,
     pub(package) normal: Texture<Rgba8>,
+    /// The rock and the cathedral as their own pass met them over the drawings (`yonder`): this
+    /// drawing's (their light, what the ink reads, the normal), the last's beside it, and where
+    /// from and how many drawings they hold.
+    pub(package) yon_colour: Texture<Rgba16Float>,
+    pub(package) yon_marks: Texture<Rgba16Float>,
+    pub(package) yon_normal: Texture<Rgba8>,
+    pub(package) past_colour: Texture<Rgba16Float>,
+    pub(package) past_marks: Texture<Rgba16Float>,
+    pub(package) past_normal: Texture<Rgba8>,
+    pub(package) yon: Yon,
+    pub(package) yon_shot: Shot,
+    pub(package) yon_count: f32,
+    pub(package) yon_seq: u32,
     pub(package) width: u32,
     pub(package) height: u32,
     /// The skiff as the player rows it.
@@ -54,6 +72,16 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         colour: texture(width: width, height: height),
         marks: texture(width: width, height: height),
         normal: texture(width: width, height: height),
+        yon_colour: texture(width: width, height: height),
+        yon_marks: texture(width: width, height: height),
+        yon_normal: texture(width: width, height: height),
+        past_colour: texture(width: width, height: height),
+        past_marks: texture(width: width, height: height),
+        past_normal: texture(width: width, height: height),
+        yon: afresh(shot),
+        yon_shot: shot,
+        yon_count: 0.0,
+        yon_seq: 0,
         image: texture(width: 1, height: 1),
         image_size: (1, 1),
         spare: texture(width: 1, height: 1),
@@ -74,31 +102,95 @@ pub(package) fn cover(vertex: VertexIndex) -> ClipPosition {
     ClipPosition { position: vec4(x, y, 0.0, 1.0) }
 }
 
+/// A camera that has met nothing yet: the next drawing starts afresh.
+fn afresh(shot: Shot) -> Yon {
+    Yon {
+        eye: shot.eye,
+        forward: shot.forward,
+        right: shot.right,
+        up: shot.up,
+        focal: shot.focal,
+        resolution: shot.resolution,
+        held: 0.0,
+        jitter: vec2(0.0),
+    }
+}
+
+/// The `i`th of the Halton sequence in base `b`, in [0, 1).
+fn halton(i: u32, b: u32) -> f32 {
+    var f = 1.0
+    var r = 0.0
+    var n = i
+    while n > 0 {
+        f /= f32(b)
+        r += f * f32(n % b)
+        n /= b
+    }
+    r
+}
+
+/// The rock's pass made ready for a new drawing from `shot`: what the last met becomes what's
+/// before, the last drawing's camera where it's carried from, and this one's offset in the
+/// pixel the next of the sequence.
+fn next_yon(s: mut State, shot: Shot) {
+    swap(mut s.yon_colour, mut s.past_colour)
+    swap(mut s.yon_marks, mut s.past_marks)
+    swap(mut s.yon_normal, mut s.past_normal)
+    let n = s.yon_count
+    // (The sequence runs on past the most a pixel holds: held at its cap, the offset would stop
+    // on one place and the crawl come back.)
+    s.yon_seq += 1
+    let i = s.yon_seq % 16 + 1
+    s.yon = Yon {
+        held: n,
+        jitter: vec2(halton(i, 2), halton(i, 3)) - vec2(0.5),
+        ..afresh(s.yon_shot),
+    }
+    s.yon_count = min(n + 1.0, 64.0)
+    s.yon_shot = shot
+}
+
 /// The targets made again at a new size.
 pub(package) fn sized(s: mut State, width: u32, height: u32) {
     if width != s.width || height != s.height {
         s.colour = texture(width: width, height: height)
         s.marks = texture(width: width, height: height)
         s.normal = texture(width: width, height: height)
+        s.yon_colour = texture(width: width, height: height)
+        s.yon_marks = texture(width: width, height: height)
+        s.yon_normal = texture(width: width, height: height)
+        s.past_colour = texture(width: width, height: height)
+        s.past_marks = texture(width: width, height: height)
+        s.past_normal = texture(width: width, height: height)
+        s.yon_count = 0.0
         s.width = width
         s.height = height
     }
 }
 
 /// The scene stepped on to `time` and painted (the first pass) from view `view`, the camera swung
-/// `orbit` radians round the skiff from where the rowing puts it, met `fine`ly (`Shot::fine`): the
-/// shot it was painted from.
-pub(package) fn painted(s: mut State, time: f32, view: u32, orbit: f32, fine: f32) -> Shot {
+/// `orbit` radians round the skiff from where the rowing puts it and stood at `framing`
+/// (`Rig::framing`), met `fine`ly (`Shot::fine`): the shot it was painted from.
+pub(package) fn painted(
+    s: mut State,
+    time: f32,
+    view: u32,
+    orbit: f32,
+    framing: f32,
+    fine: f32,
+) -> Shot {
     step(mut s.rig, START + time)
-    let shot = prepared(mut s, time, view, orbit, fine)
+    let shot = prepared(mut s, time, view, orbit, framing, fine)
     paint_rows(mut s, shot, from: 0, to: s.height)
     shot
 }
 
-/// The shot at `time`, the sky and the sea stepped on to it.
-fn prepared(s: mut State, time: f32, view: u32, orbit: f32, fine: f32) -> Shot {
+/// The shot at `time`, the camera at `framing` (`Rig::framing`), the sky and the sea stepped on
+/// to it.
+fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: f32) -> Shot {
     var rig = s.rig
     rig.shown_look += orbit
+    rig.framing = framing
     let shot = Shot {
         style: STYLE,
         look: LOOK,
@@ -107,6 +199,7 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, fine: f32) -> Shot {
         ..shot_at(START + time, s.width, s.height, KINETIC, view, rig, s.ocean.swell),
     }
     s.heavens.step(shot.eye, shot.forward, START + time)
+    next_yon(mut s, shot)
     // The sea as it is at this drawing.
     s.ocean.step(held(START + time))
     shot
@@ -128,6 +221,28 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         s: s.ocean.s,
     }
     let width = s.width
+    let f = begin_pass3(mut s.yon_colour, mut s.yon_marks, mut s.yon_normal, keep: true)
+    f.scissor(0, from, width, to - from)
+    draw(
+        f,
+        cover,
+        yonder.bind(
+            shot: shot,
+            yon: s.yon,
+            light: hv.light,
+            clouds: hv.clouds,
+            view: hv.tables.view,
+            aerial: hv.tables.aerial,
+            dome: hv.sky.dome,
+            cloud: hv.sky.shadow,
+            smp: hv.linear,
+            past_colour: s.past_colour,
+            past_marks: s.past_marks,
+            past_normal: s.past_normal,
+        ),
+        vertices: 3,
+    )
+    f.end()
     let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, keep: true)
     p.scissor(0, from, width, to - from)
     draw(
@@ -143,6 +258,9 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
             cloud: hv.sky.shadow,
             smp: hv.linear,
             waves: waves,
+            yon_colour: s.yon_colour,
+            yon_marks: s.yon_marks,
+            yon_normal: s.yon_normal,
         ),
         vertices: 3,
     )
@@ -155,14 +273,23 @@ pub fn scene(width: u32, height: u32) -> State {
 }
 
 /// The scene stepped on to `time`, its drawings painted and inked into `image` at `width` by
-/// `height` (which may be smaller than the screen it's shown on), the camera swung `orbit` radians
+/// `height` (which may be smaller than the screen it's shown on), the camera at `framing`
+/// (`Rig::framing`: 0 the opening's shot, 1 the player's) and swung `orbit` radians
 /// round the skiff. Live, a page has a frame's time for everything it draws, so a drawing's work
 /// is spread over the frames before the next: the scene moves on its own drawings (`HELD` a
 /// second, `sea::held`), so between them nothing in it changes. A new drawing's paint goes in
 /// `bands` bands of rows, one a frame, the ink after the last; `image` holds the last drawing
 /// inked meanwhile. A new size drops the drawing under way and begins one at once. Whether
 /// `image` is a new drawing.
-pub fn play(s: mut State, time: f32, width: u32, height: u32, orbit: f32, bands: u32) -> bool {
+pub fn play(
+    s: mut State,
+    time: f32,
+    width: u32,
+    height: u32,
+    orbit: f32,
+    framing: f32,
+    bands: u32,
+) -> bool {
     step(mut s.rig, START + time)
     if width != s.width || height != s.height {
         sized(mut s, width, height)
@@ -175,7 +302,7 @@ pub fn play(s: mut State, time: f32, width: u32, height: u32, orbit: f32, bands:
             return false
         }
         s.drawn = drawing
-        s.shot = prepared(mut s, time, 0, orbit, fine: 0.0)
+        s.shot = prepared(mut s, time, 0, orbit, framing, fine: LIVE_FINE)
     }
     let shot = s.shot
     let n = max(bands, 1)
@@ -232,4 +359,22 @@ pub fn swung(s: State) -> f32 {
 /// How fast the skiff moves through the water (m/s): whether the player has rowed it yet.
 pub fn way(s: State) -> f32 {
     s.rig.speed
+}
+
+/// Where the skiff is (x, z, m) and its heading from the opening's (rad): what a save keeps.
+pub fn whereabouts(s: State) -> (vec2, f32) {
+    (s.rig.at, s.rig.steer)
+}
+
+/// The skiff put at `at` (x, z, m) and headed `steer` (rad), at rest, the camera behind it: a
+/// save taken up again.
+pub fn put(s: mut State, at: vec2, steer: f32) {
+    var r = rest()
+    r.at = at
+    r.steer = steer
+    r.look = steer
+    r.shown_at = at
+    r.shown_steer = steer
+    r.shown_look = steer
+    s.rig = r
 }

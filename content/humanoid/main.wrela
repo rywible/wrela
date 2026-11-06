@@ -19,20 +19,21 @@
 
 use body::{
     ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
-    ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_RAW, ACT_PUNCH, ACT_ROLL, GAITS, HERO, PUNCH,
-    IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
+    ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_CODE, ACCAD_M2_WALK_RAW, ACT_PUNCH, ACT_ROLL,
+    ACTS, ACTS_CODE, GAITS, GAITS_CODE, HERO, PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW,
+    T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
 }
 use engine::anime
 use engine::anime::{Anime, Drawer}
 use fists::{
-    ACT_CROSS, ACT_STEP_IN, ACT_STEP_LEFT, ACT_STEP_OUT, ACT_STEP_RIGHT, ACTS, FIGHT_GAITS, LOOKS,
+    ACT_CROSS, ACT_STEP_IN, ACT_STEP_LEFT, ACT_STEP_OUT, ACT_STEP_RIGHT, FIGHT_GAITS, LOOKS,
 }
 use engine::cleanup
 use engine::cleanup::Cleanup
 use engine::humanoid
 use engine::humanoid::{BodyVertex, Clip, Pose, blend, palette}
 use engine::playback
-use engine::playback::{Handling, Mover}
+use engine::playback::{Gaits, Handling, Move, Mover}
 use engine::review::review
 use engine::stride
 use ink::ink
@@ -49,6 +50,19 @@ use std::transform::identity
 /// turns, 6 the jog; and whether as its take has it (1), before its cleanup.
 pub const SHOW: u32 = 0
 pub const RAW: u32 = 0
+
+/// `--set CODE=1` plays the moves as they're written in Wrela (content/moves, fitted from their
+/// clips by the moves tool) instead of the clips themselves: Male 2's walk (`SHOW=8`), and every
+/// gait and one-off a game plays (`SHOW=11`).
+pub const CODE: u32 = 0
+
+/// The gaits and one-offs `SHOW=11` plays: the clips', or as `CODE` says, the code's. (Chosen as
+/// constants: chosen with an `if` where they're played, toolchain 0.24.0's build drew single
+/// frames with the body flipped, whichever was chosen.)
+@fuel(2 ** 40)
+const PLAYED_GAITS: Gaits = if CODE == 1 { GAITS_CODE.clone() } else { GAITS.clone() }
+@fuel(2 ** 40)
+const PLAYED_ACTS: [Move; 2] = if CODE == 1 { ACTS_CODE.clone() } else { ACTS.clone() }
 
 /// `SHOW=11` as a game without this layer's help would play it, for comparison: `--set CUT=1`
 /// cuts from move to move and lets the feet go where the moves put them.
@@ -211,7 +225,7 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
     }
     // (Each gaits const passed whole: an `if` choosing between consts would move one out.)
     let pose = if SHOW == 12 {
-        playback::step(mut s.mover, FIGHT_GAITS, ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
+        playback::step(mut s.mover, FIGHT_GAITS, fists::ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
     } else if SHOW == 13 {
         playback::step(
             mut s.mover,
@@ -239,7 +253,7 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
             dt,
         )
     } else {
-        playback::step(mut s.mover, GAITS, ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
+        playback::step(mut s.mover, PLAYED_GAITS, PLAYED_ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
     }
     s.last = time
     (pose, playback::placed(s.mover))
@@ -257,7 +271,13 @@ fn pose_at(time: f32) -> Pose {
         5 => if raw { TURNS_RAW.pose(time) } else { TURNS.pose(time) },
         6 => if raw { JOG_RAW.pose(time) } else { JOG.pose(time) },
         7 => if raw { ACCAD_M1_WALK_RAW.pose(time) } else { ACCAD_M1_WALK.pose(time) },
-        8 => if raw { ACCAD_M2_WALK_RAW.pose(time) } else { ACCAD_M2_WALK.pose(time) },
+        8 => if CODE == 1 {
+            ACCAD_M2_WALK_CODE.pose(time)
+        } else if raw {
+            ACCAD_M2_WALK_RAW.pose(time)
+        } else {
+            ACCAD_M2_WALK.pose(time)
+        },
         9 => if raw { ACCAD_M1_RUN_RAW.pose(time) } else { ACCAD_M1_RUN.pose(time) },
         10 => if raw { ACCAD_M2_RUN_RAW.pose(time) } else { ACCAD_M2_RUN.pose(time) },
         16 => kimodo::TIMED.pose(time % (kimodo::TIMED.length() + 0.4)),
@@ -339,7 +359,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             anime::drawn(
                 mut s.drawer,
                 s.mover,
-                ACTS,
+                fists::ACTS,
                 LOOKS,
                 HERO.rig,
                 s.mask,

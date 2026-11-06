@@ -1,0 +1,430 @@
+// Written by the moves tool (`wrela tool moves`, studio/moves): don't edit it by hand, change
+// the tool or what it fits and write it again. A cycle (engine::cycle): each bone's turn a
+// mean turn and a few harmonics of the phase.
+
+use engine::cycle::{Cycle, Swing, wave}
+use std::quat::Quat
+
+/// Standing idle: Quaternius's Idle_Loop (Universal Animation Library, CC0),
+/// retargeted and cleaned up (content/humanoid's `IDLE`), then fitted as a cycle by
+/// the moves tool.
+pub const IDLE: Cycle = Cycle {
+    period: 2.500000,
+    travel: vec3(0.000027, 0.000000, -0.000115),
+    hips: vec3(-0.0042, -0.0460, -0.0008),
+    sway: Vec::from(
+        [
+            wave(1, vec3(0.0043, -0.0003, 0.0000), vec3(0.0001, -0.0001, -0.0001)),
+            wave(2, vec3(-0.0002, 0.0046, 0.0009), vec3(-0.0002, 0.0002, 0.0007)),
+        ],
+    ),
+    bones: Vec::from(
+        [
+            Swing {
+                bone: "hips",
+                mean: Quat { v: vec4(-0.041127, -0.115915, -0.004804, 0.992396) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(2, vec3(-0.0116, 0.0000, 0.0000), vec3(-0.0088, 0.0000, 0.0000)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "spine",
+                mean: Quat { v: vec4(0.000000, 0.000000, 0.000000, 1.000000) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "chest",
+                mean: Quat { v: vec4(0.093321, 0.000113, 0.000253, 0.995636) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(2, vec3(-0.0015, 0.0000, 0.0000), vec3(-0.0176, 0.0000, 0.0000)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "upperChest",
+                mean: Quat { v: vec4(0.093321, 0.000321, 0.000247, 0.995636) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(2, vec3(-0.0015, 0.0000, 0.0000), vec3(-0.0176, 0.0000, 0.0000)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "neck",
+                mean: Quat { v: vec4(-0.093321, -0.000217, -0.000260, 0.995636) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(2, vec3(0.0015, 0.0000, 0.0000), vec3(0.0176, 0.0000, 0.0000)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "head",
+                mean: Quat { v: vec4(0.059463, 0.095568, 0.009540, 0.993600) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(1, vec3(-0.0012, 0.0000, 0.0000), vec3(0.0028, 0.0000, 0.0002)),
+                        wave(2, vec3(0.0355, 0.0000, 0.0003), vec3(-0.0047, -0.0001, 0.0034)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "leftUpperLeg",
+                mean: Quat { v: vec4(-0.160483, -0.002662, 0.122981, 0.979344) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(1, vec3(-0.0066, 0.0014, -0.0030), vec3(-0.0013, 0.0002, 0.0001)),
+                        wave(2, vec3(0.0317, -0.0038, -0.0055), vec3(0.0108, -0.0015, -0.0006)),
+                        wave(4, vec3(-0.0021, 0.0001, 0.0003), vec3(-0.0006, -0.0001, 0.0003)),
+                        wave(5, vec3(-0.0009, 0.0000, 0.0002), vec3(-0.0005, 0.0000, 0.0001)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "leftLowerLeg",
+                mean: Quat { v: vec4(0.199956, 0.110450, -0.022698, 0.973295) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(1, vec3(0.0103, 0.0002, -0.0001), vec3(0.0011, 0.0000, 0.0000)),
+                        wave(2, vec3(-0.0375, 0.0019, -0.0008), vec3(-0.0030, 0.0001, 0.0000)),
+                        wave(3, vec3(0.0023, 0.0000, 0.0000), vec3(0.0007, 0.0000, 0.0000)),
+                        wave(4, vec3(0.0016, 0.0001, 0.0000), vec3(0.0019, 0.0000, 0.0000)),
+                        wave(5, vec3(0.0018, 0.0000, 0.0000), vec3(0.0010, 0.0000, 0.0000)),
+                        wave(7, vec3(0.0009, 0.0000, 0.0000), vec3(0.0008, 0.0000, 0.0000)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "leftFoot",
+                mean: Quat { v: vec4(0.055207, -0.066116, -0.071499, 0.993715) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(1, vec3(-0.0042, 0.0002, 0.0052), vec3(-0.0005, 0.0000, 0.0001)),
+                        wave(2, vec3(0.0164, 0.0014, -0.0015), vec3(0.0010, -0.0006, 0.0000)),
+                        wave(3, vec3(-0.0011, -0.0002, 0.0002), vec3(-0.0003, 0.0000, 0.0000)),
+                        wave(4, vec3(-0.0007, 0.0000, 0.0000), vec3(-0.0009, -0.0002, 0.0001)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "leftToes",
+                mean: Quat { v: vec4(-0.035589, 0.000000, 0.000000, 0.999366) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightUpperLeg",
+                mean: Quat { v: vec4(0.073812, 0.005233, -0.147052, 0.986357) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(1, vec3(-0.0022, -0.0003, -0.0053), vec3(-0.0011, -0.0002, -0.0005)),
+                        wave(2, vec3(0.0284, 0.0075, 0.0164), vec3(0.0109, 0.0024, 0.0017)),
+                        wave(4, vec3(-0.0018, 0.0001, -0.0006), vec3(-0.0003, 0.0002, -0.0007)),
+                        wave(5, vec3(-0.0007, 0.0001, -0.0007), vec3(-0.0004, 0.0000, -0.0004)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "rightLowerLeg",
+                mean: Quat { v: vec4(0.151401, -0.353845, 0.057999, 0.921145) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(1, vec3(0.0019, 0.0001, 0.0000), vec3(0.0011, 0.0001, 0.0000)),
+                        wave(2, vec3(-0.0459, -0.0048, 0.0016), vec3(-0.0052, -0.0003, 0.0001)),
+                        wave(3, vec3(0.0021, -0.0001, 0.0001), vec3(0.0006, 0.0000, 0.0000)),
+                        wave(4, vec3(0.0016, -0.0004, 0.0001), vec3(0.0019, -0.0001, 0.0000)),
+                        wave(5, vec3(0.0020, 0.0000, 0.0000), vec3(0.0011, 0.0000, 0.0000)),
+                        wave(6, vec3(0.0008, -0.0001, 0.0000), vec3(0.0008, 0.0000, 0.0000)),
+                        wave(7, vec3(0.0010, 0.0000, 0.0000), vec3(0.0008, 0.0000, 0.0000)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "rightFoot",
+                mean: Quat { v: vec4(-0.064989, 0.126750, 0.115600, 0.983030) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(1, vec3(0.0024, -0.0001, 0.0033), vec3(-0.0005, 0.0001, 0.0000)),
+                        wave(2, vec3(0.0211, -0.0047, 0.0043), vec3(0.0021, 0.0000, 0.0007)),
+                        wave(4, vec3(-0.0007, 0.0001, -0.0001), vec3(-0.0009, 0.0003, -0.0001)),
+                        wave(5, vec3(-0.0009, 0.0002, -0.0002), vec3(-0.0005, 0.0001, -0.0001)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "rightToes",
+                mean: Quat { v: vec4(-0.035589, 0.000000, 0.000000, 0.999366) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftShoulder",
+                mean: Quat { v: vec4(-0.021440, -0.054809, -0.026432, 0.997917) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(2, vec3(0.0121, 0.0000, 0.0205), vec3(0.0009, 0.0000, 0.0016)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "leftUpperArm",
+                mean: Quat { v: vec4(-0.013470, 0.031659, -0.568327, 0.822083) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(2, vec3(-0.0279, 0.0406, -0.0106), vec3(-0.0022, 0.0032, -0.0008)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "leftLowerArm",
+                mean: Quat { v: vec4(0.020617, -0.234358, 0.001825, 0.971930) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(1, vec3(-0.0015, 0.0013, 0.0008), vec3(-0.0005, -0.0015, 0.0002)),
+                        wave(2, vec3(0.0394, -0.0340, -0.0218), vec3(0.0031, 0.0215, -0.0017)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "leftHand",
+                mean: Quat { v: vec4(0.004180, -0.078136, -0.003816, 0.996927) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightShoulder",
+                mean: Quat { v: vec4(-0.022064, -0.049275, 0.025606, 0.998213) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(2, vec3(0.0115, 0.0000, -0.0196), vec3(0.0009, 0.0000, -0.0015)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "rightUpperArm",
+                mean: Quat { v: vec4(-0.013361, -0.070027, 0.563670, 0.822918) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(2, vec3(-0.0159, -0.0222, -0.0116), vec3(-0.0120, -0.0167, -0.0087)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "rightLowerArm",
+                mean: Quat { v: vec4(0.143960, 0.339548, 0.057688, 0.927715) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::from(
+                    [
+                        wave(2, vec3(0.0159, 0.0000, 0.0143), vec3(0.0120, 0.0000, 0.0108)),
+                    ],
+                ),
+            },
+            Swing {
+                bone: "rightHand",
+                mean: Quat { v: vec4(-0.004192, 0.088666, 0.023488, 0.995776) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftThumbMetacarpal",
+                mean: Quat { v: vec4(0.065924, 0.029658, -0.057089, 0.995749) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftThumbProximal",
+                mean: Quat { v: vec4(0.124593, 0.181807, 0.014539, 0.975301) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftThumbDistal",
+                mean: Quat { v: vec4(0.336063, 0.599430, -0.000742, 0.726460) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftIndexProximal",
+                mean: Quat { v: vec4(0.028336, -0.033257, -0.645730, 0.762315) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftIndexIntermediate",
+                mean: Quat { v: vec4(0.000000, 0.000004, -0.623342, 0.781949) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftIndexDistal",
+                mean: Quat { v: vec4(0.000000, 0.000005, -0.623341, 0.781950) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftMiddleProximal",
+                mean: Quat { v: vec4(-0.001395, -0.032612, -0.646327, 0.762362) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftMiddleIntermediate",
+                mean: Quat { v: vec4(-0.027555, 0.000004, -0.622733, 0.781949) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftMiddleDistal",
+                mean: Quat { v: vec4(-0.028962, 0.000005, -0.622668, 0.781950) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftRingProximal",
+                mean: Quat { v: vec4(0.005931, -0.032771, -0.646310, 0.762348) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftRingIntermediate",
+                mean: Quat { v: vec4(-0.022176, 0.000004, -0.622947, 0.781949) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftRingDistal",
+                mean: Quat { v: vec4(-0.023506, 0.000005, -0.622898, 0.781950) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftLittleProximal",
+                mean: Quat { v: vec4(-0.016319, -0.104411, -0.680395, 0.725186) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftLittleIntermediate",
+                mean: Quat { v: vec4(-0.062294, -0.015573, -0.620366, 0.781680) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "leftLittleDistal",
+                mean: Quat { v: vec4(-0.042052, 0.000004, -0.621921, 0.781950) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightThumbMetacarpal",
+                mean: Quat { v: vec4(0.065923, -0.029658, 0.057089, 0.995749) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightThumbProximal",
+                mean: Quat { v: vec4(0.124593, -0.181807, -0.014539, 0.975301) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightThumbDistal",
+                mean: Quat { v: vec4(0.336063, -0.599430, 0.000742, 0.726461) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightIndexProximal",
+                mean: Quat { v: vec4(0.028336, 0.033258, 0.645730, 0.762315) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightIndexIntermediate",
+                mean: Quat { v: vec4(0.000000, -0.000004, 0.623341, 0.781950) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightIndexDistal",
+                mean: Quat { v: vec4(0.000000, -0.000004, 0.623341, 0.781950) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightMiddleProximal",
+                mean: Quat { v: vec4(-0.001394, 0.032612, 0.646327, 0.762362) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightMiddleIntermediate",
+                mean: Quat { v: vec4(-0.027554, -0.000005, 0.622732, 0.781950) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightMiddleDistal",
+                mean: Quat { v: vec4(-0.028961, -0.000004, 0.622669, 0.781949) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightRingProximal",
+                mean: Quat { v: vec4(0.005931, 0.032771, 0.646310, 0.762348) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightRingIntermediate",
+                mean: Quat { v: vec4(-0.022176, -0.000005, 0.622947, 0.781950) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightRingDistal",
+                mean: Quat { v: vec4(-0.023505, -0.000004, 0.622898, 0.781949) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightLittleProximal",
+                mean: Quat { v: vec4(-0.016319, 0.104411, 0.680395, 0.725186) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightLittleIntermediate",
+                mean: Quat { v: vec4(-0.062294, 0.015573, 0.620366, 0.781680) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+            Swing {
+                bone: "rightLittleDistal",
+                mean: Quat { v: vec4(-0.042052, -0.000005, 0.621922, 0.781949) },
+                bias: vec3(0.0000, 0.0000, 0.0000),
+                waves: Vec::new(),
+            },
+        ],
+    ),
+}

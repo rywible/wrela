@@ -1,0 +1,376 @@
+// A one-off move written as code: a strike, a roll, a walk's first steps. Where a cycle
+// (`engine::cycle`) is waves, a shot is keys: each bone's turn at a few moments, and a smooth
+// curve through them (Catmull-Rom on the turns, as `Clip::smooth_pose` draws between frames).
+// The moves tool (studio/moves) fits a clip with as few keys as keep every frame close, and
+// writes them as Wrela source: a key is a moment and a pose, so a move's timing is there to be
+// read and moved by hand (its windup, its snap, its hold).
+//
+// Like a cycle it doesn't depend on the rig it was fitted on: each bone's turn is the turn it makes
+// from a T-pose in the body's frame, its parent's taken off, and the hips' place is in the body's
+// frame over the rest hips' height, from the rest hips (`OneOff::clip`).
+
+use cycle::{PLACES, hips_height, n, rest_turns, rounded_to, v3}
+use humanoid::{BONES, Clip, NONE, Rig}
+use std::quat::Quat
+
+/// A bone's turn at a moment (s from the move's start).
+pub struct Turn: Copy {
+    pub at: f32,
+    pub q: Quat,
+}
+
+/// The hips' place at a moment (s): over the rest hips' height, from the rest hips.
+pub struct Place: Copy {
+    pub at: f32,
+    pub p: vec3,
+}
+
+/// A bone's keys: the VRM bone and its turns, in time order.
+pub struct Track: Clone {
+    pub bone: Text,
+    pub keys: Vec<Turn>,
+}
+
+/// A one-off move: how long it lasts (s), the hips' keys and each bone's.
+pub struct OneOff: Clone {
+    pub length: f32,
+    pub hips: Vec<Place>,
+    pub bones: Vec<Track>,
+}
+
+/// Key `t` of a turn (the written form): at `at` s, the quaternion `v`.
+pub fn turn(at: f32, v: vec4) -> Turn {
+    Turn { at, q: Quat { v } }
+}
+
+/// Key `t` of the hips (the written form).
+pub fn place(at: f32, p: vec3) -> Place {
+    Place { at, p }
+}
+
+/// Where `t` falls among keys at `ats` (ascending, at least one): the key it's after, and how far
+/// to the next (0 to 1).
+fn span_of(ats: [f32], t: f32) -> (u32, f32) {
+    let last = ats.len() - 1
+    if last == 0 || t <= ats[0] {
+        return (0, 0.0)
+    }
+    if t >= ats[last] {
+        return (last - 1, 1.0)
+    }
+    var lo = 0
+    var hi = last
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2
+        if ats[mid] <= t {
+            lo = mid
+        } else {
+            hi = mid
+        }
+    }
+    (lo, (t - ats[lo]) / (ats[lo + 1] - ats[lo]))
+}
+
+/// A cubic Hermite curve's weights at `f` for the values at either end and their slopes (scaled
+/// to the span).
+fn hermite(f: f32) -> vec4 {
+    let (f2, f3) = (f * f, f * f * f)
+    vec4(2.0 * f3 - 3.0 * f2 + 1.0, f3 - 2.0 * f2 + f, -2.0 * f3 + 3.0 * f2, f3 - f2)
+}
+
+/// The slope at key `i` of values `v` at `ats` (Catmull-Rom's, across its neighbours; one-sided at
+/// the ends), per second.
+fn slope4(ats: [f32], v: [vec4], i: u32) -> vec4 {
+    let last = ats.len() - 1
+    let (a, b) = (if i == 0 { 0 } else { i - 1 }, if i == last { last } else { i + 1 })
+    if b == a { vec4(0.0) } else { (v[b] - v[a]) / (ats[b] - ats[a]) }
+}
+
+/// A curve through values `v` at `ats` (each on the side of the one before), at `t`.
+fn curve4(ats: [f32], v: [vec4], t: f32) -> vec4 {
+    if ats.len() == 1 {
+        return v[0]
+    }
+    let (i, f) = span_of(ats, t)
+    let d = ats[i + 1] - ats[i]
+    let w = hermite(f)
+    v[i] * w.x + slope4(ats, v, i) * (w.y * d) + v[i + 1] * w.z + slope4(ats, v, i + 1) * (w.w * d)
+}
+
+/// The turns of `keys` as 4-vectors, each on the side of the one before (so the curve takes the
+/// short way between them).
+fn sided(keys: [Turn]) -> (Vec<f32>, Vec<vec4>) {
+    var ats: Vec<f32> = Vec::with_capacity(keys.len())
+    var vs: Vec<vec4> = Vec::with_capacity(keys.len())
+    for k in 0..keys.len() {
+        var v = keys[k].q.v
+        if k > 0 && dot(v, vs[k - 1]) < 0.0 {
+            v = -v
+        }
+        ats.push(keys[k].at)
+        vs.push(v)
+    }
+    (ats, vs)
+}
+
+impl Track {
+    /// Its turn at `t` (s).
+    pub fn at(self, t: f32) -> Quat {
+        let (ats, vs) = sided(self.keys)
+        Quat { v: normalize(curve4(ats, vs, t)) }
+    }
+}
+
+/// The hips' place at `t` (s) along `keys`.
+pub fn place_at(keys: [Place], t: f32) -> vec3 {
+    var ats: Vec<f32> = Vec::with_capacity(keys.len())
+    var vs: Vec<vec4> = Vec::with_capacity(keys.len())
+    for k in keys {
+        ats.push(k.at)
+        vs.push(vec4(k.p, 0.0))
+    }
+    curve4(ats, vs, t).xyz
+}
+
+impl OneOff {
+    /// The track of VRM bone `name`, or `None`.
+    pub fn track(self, name: str) -> Option<u32> {
+        for i in 0..self.bones.len() {
+            if self.bones[i].bone == name {
+                return Some(i)
+            }
+        }
+        None
+    }
+
+    /// The move played on `rig` as a one-off clip at `fps` frames a second: each bone's written
+    /// turn moved into the rig's own frames (a bone it doesn't write keeps its rest), the hips'
+    /// places scaled by the rig's hips' height.
+    pub fn clip(self, rig: Rig, fps: f32) -> Clip {
+        let nb = rig.bones.len()
+        let (own, up) = rest_turns(rig.clone())
+        let h = hips_height(rig.clone())
+        let base = rig.base.q.inverse()
+        var tracks: Vec<u32> = Vec::with_capacity(nb)
+        for b in 0..nb {
+            tracks.push(self.track(BONES[rig.bones[b].vrm]).unwrap_or(NONE))
+        }
+        let span = max(u32(round(self.length * fps)), 1)
+        let frames = span + 1
+        // Each track's keys once, on their sides.
+        var keyed: Vec<(Vec<f32>, Vec<vec4>)> = Vec::with_capacity(self.bones.len())
+        for t in self.bones {
+            keyed.push(sided(t.keys))
+        }
+        var turns: Vec<Quat> = Vec::with_capacity(frames * nb)
+        var hips: Vec<vec3> = Vec::with_capacity(frames)
+        for j in 0..frames {
+            let t = self.length * f32(j) / f32(span)
+            for b in 0..nb {
+                let s = tracks[b]
+                if s == NONE {
+                    turns.push(rig.bones[b].rest.q)
+                } else {
+                    let (ats, vs) = keyed[s].clone()
+                    let l = Quat { v: normalize(curve4(ats, vs, t)) }
+                    turns.push(up[b].inverse().mul(l).mul(own[b]))
+                }
+            }
+            hips.push(rig.bones[0].rest.t + base.rotate(place_at(self.hips, t) * h))
+        }
+        Clip {
+            fps: f32(span) / self.length,
+            frames,
+            bones: nb,
+            turns,
+            hips,
+            looped: false,
+            travel: vec3(0.0),
+            travel_local: vec3(0.0),
+        }
+    }
+}
+
+// ---- fitting: the tool's half -------------------------------------------------------------
+
+/// How closely a shot follows its clip: a bone's turn within `turn` (rad) at every frame, the
+/// hips' place within `place` (m).
+pub struct Keying: Copy {
+    pub turn: f32 = 0.0035,
+    pub place: f32 = 0.001,
+}
+
+/// The frames to key (ascending, the first and the last among them) so a curve through `v` at
+/// those frames (at `ats`) stays within `goal` of every frame: the worst frame keyed
+/// each time round. `turns` says whether `v` are turns (compared as turns) or places.
+fn keyed(ats: [f32], v: [vec4], goal: f32, turns: bool) -> Vec<u32> {
+    let nf = v.len()
+    var keys: Vec<u32> = Vec::from([0, nf - 1])
+    if nf <= 2 {
+        if nf == 1 {
+            return Vec::from([0])
+        }
+        return keys
+    }
+    loop {
+        var kat: Vec<f32> = Vec::with_capacity(keys.len())
+        var kv: Vec<vec4> = Vec::with_capacity(keys.len())
+        for k in keys {
+            kat.push(ats[k])
+            kv.push(v[k])
+        }
+        var worst = 0.0
+        var at = 0
+        for f in 0..nf {
+            let c = curve4(kat, kv, ats[f])
+            let e = if turns {
+                let q = Quat { v: normalize(c) }
+                let d = q.inverse().mul(Quat { v: v[f] }).v
+                2.0 * atan2(length(d.xyz), abs(d.w))
+            } else {
+                length(c - v[f])
+            }
+            if e > worst {
+                worst = e
+                at = f
+            }
+        }
+        if worst <= goal {
+            return keys
+        }
+        // Key the worst frame, in its place.
+        var i = 0
+        while keys[i] < at {
+            i += 1
+        }
+        keys.insert(i, at)
+    }
+    keys
+}
+
+/// A one-off clip on `rig` fitted as a shot, as closely as `keying` says.
+pub fn shot_of(clip: Clip, rig: Rig, keying: Keying) -> OneOff {
+    let nb = rig.bones.len()
+    let nf = clip.frames
+    let (own, up) = rest_turns(rig.clone())
+    let h = hips_height(rig.clone())
+    var ats: Vec<f32> = Vec::with_capacity(nf)
+    for f in 0..nf {
+        ats.push(f32(f) / clip.fps)
+    }
+    var bones: Vec<Track> = Vec::with_capacity(nb)
+    for b in 0..nb {
+        var vs: Vec<vec4> = Vec::with_capacity(nf)
+        for f in 0..nf {
+            var v = up[b].mul(clip.turns[f * nb + b]).mul(own[b].inverse()).v
+            if f > 0 && dot(v, vs[f - 1]) < 0.0 {
+                v = -v
+            }
+            vs.push(v)
+        }
+        var keys: Vec<Turn> = Vec::new()
+        for f in keyed(ats, vs, keying.turn, turns: true) {
+            keys.push(Turn { at: ats[f], q: Quat { v: vs[f] } })
+        }
+        bones.push(Track { bone: BONES[rig.bones[b].vrm], keys })
+    }
+    let rest = rig.bones[0].rest.t
+    var ps: Vec<vec4> = Vec::with_capacity(nf)
+    for f in 0..nf {
+        ps.push(vec4(rig.base.q.rotate(clip.hips[f] - rest) / h, 0.0))
+    }
+    var hips: Vec<Place> = Vec::new()
+    for f in keyed(ats, ps, keying.place / h, turns: false) {
+        hips.push(Place { at: ats[f], p: ps[f].xyz })
+    }
+    OneOff { length: f32(nf - 1) / clip.fps, hips, bones }
+}
+
+// ---- writing: the shot as source ----------------------------------------------------------
+
+/// The decimal places a key's quaternion is written to: 0.00001 turns it at most 0.002°.
+pub const TURN_PLACES: u32 = 5
+
+/// `s` as it's written: its numbers rounded, so what's measured of it is what's played.
+pub fn rounded(s: OneOff) -> OneOff {
+    var bones: Vec<Track> = Vec::with_capacity(s.bones.len())
+    for t in s.bones {
+        var keys: Vec<Turn> = Vec::with_capacity(t.keys.len())
+        for k in t.keys {
+            let q = k.q.v
+            let r = TURN_PLACES
+            keys.push(
+                Turn {
+                    at: rounded_to(k.at, 4),
+                    q: Quat {
+                        v: vec4(
+                            rounded_to(q.x, r),
+                            rounded_to(q.y, r),
+                            rounded_to(q.z, r),
+                            rounded_to(q.w, r),
+                        ),
+                    },
+                },
+            )
+        }
+        bones.push(Track { bone: t.bone, keys })
+    }
+    var hips: Vec<Place> = Vec::with_capacity(s.hips.len())
+    for k in s.hips {
+        let p = vec3(
+            rounded_to(k.p.x, PLACES),
+            rounded_to(k.p.y, PLACES),
+            rounded_to(k.p.z, PLACES),
+        )
+        hips.push(Place { at: rounded_to(k.at, 4), p })
+    }
+    OneOff { length: rounded_to(s.length, 4), hips, bones }
+}
+
+/// `s` (`rounded`) as a Wrela constant named `name`, after `doc` (its doc comment's lines,
+/// without `///`).
+pub fn source(s: OneOff, name: str, doc: [String]) -> String {
+    var out = String::new()
+    for line in doc {
+        if line.is_empty() {
+            out.push_str("///\n")
+        } else {
+            out.push_str(f"/// {line}\n")
+        }
+    }
+    out.push_str(f"pub const {name}: OneOff = OneOff {{\n")
+    out.push_str(f"    length: {n(s.length, 4)},\n")
+    out.push_str("    hips: Vec::from(\n        [\n")
+    for k in s.hips {
+        out.push_str(f"            place({n(k.at, 4)}, {v3(k.p, PLACES)}),\n")
+    }
+    out.push_str("        ],\n    ),\n    bones: Vec::from(\n        [\n")
+    let r = TURN_PLACES
+    for t in s.bones {
+        let i = "                "
+        out.push_str("            Track {\n")
+        out.push_str(f"{i}bone: \"{t.bone}\",\n")
+        out.push_str(f"{i}keys: Vec::from(\n{i}    [\n")
+        for k in t.keys {
+            let q = k.q.v
+            out.push_str(
+                f"{i}        turn({n(k.at, 4)}, vec4({n(q.x, r)}, {n(q.y, r)}, {n(q.z, r)}, {n(q.w, r)})),\n",
+            )
+        }
+        out.push_str(f"{i}    ],\n{i}),\n")
+        out.push_str("            },\n")
+    }
+    out.push_str("        ],\n    ),\n}\n")
+    out
+}
+
+@test
+fn a_curve_passes_through_its_keys() {
+    let ats = [0.0, 0.5, 1.0, 2.0]
+    let vs = [vec4(0.0), vec4(1.0, 0.0, 0.0, 0.0), vec4(1.0, 1.0, 0.0, 0.0), vec4(0.0)]
+    for i in 0..4 {
+        assert(length(curve4(ats, vs, ats[i]) - vs[i]) < 1.0e-5, "a key is where it's put")
+    }
+    let (i, f) = span_of(ats, 1.5)
+    assert(i == 2 && abs(f - 0.5) < 1.0e-6, "1.5 s is halfway from the third key")
+}
