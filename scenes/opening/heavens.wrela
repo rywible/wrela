@@ -9,7 +9,7 @@ use engine::sky::{Clouds, Gap, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky}
 use engine::switches::Switches
 use std::gpu::{Address, Sampler, sampler}
 use std::math::PI
-use look::{BREAK, LIFT, OVERCAST, SUN, THIN}
+use look::{BREAK, LIFT, OVERCAST, SUN, THIN, wind}
 
 /// The engine's approved switches: the sky's march at full size.
 pub struct Approved {}
@@ -42,7 +42,8 @@ fn weather() -> Weather {
             b: normalize(vec2(SUN.x, SUN.z)) * 20000.0 - vec2(-SUN.z, SUN.x) * 9000.0,
             radius: BREAK,
         },
-        wind: vec2(9.0, -14.0),
+        // (The deck goes with the sea's wind, faster up where it is.)
+        wind: wind() * 12.0,
         overcast: OVERCAST,
         thin: THIN,
     }

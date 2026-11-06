@@ -6,7 +6,7 @@
 // a line field, the line's weight, the normal and the moment's energy.
 
 use look::{
-    OVERCAST, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, cells, hash2, luma, fbm,
+    OVERCAST, STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, cells, hash2, luma, fbm,
     noise, ray,
 }
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
@@ -83,13 +83,10 @@ fn into_the_air(
 
 /// The elevation (as a direction's y) the deck is sure to be under, from the eye: what's below
 /// it is the air the deck goes into.
-const STORM_LOW: f32 = 0.14
 
 /// How much lighter the air is at the horizon itself than under the deck.
-const STORM_HORIZON: f32 = 1.6
 
 /// How bright the air past the deck's reach is, against the open sky's there.
-const STORM_BEHIND: f32 = 0.2
 
 /// The sky along `d`, with its clouds (their cover in alpha); the clouds lost in the air low on
 /// the horizon, where they'd be sixty kilometres off and more (the cloud field's far repeats).

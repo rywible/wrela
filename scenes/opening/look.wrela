@@ -1,7 +1,7 @@
 // What both passes read (`Shot`: the camera, the light, the skiff where the sea has it this
 // frame), the scene's layout and palette, and the noise they paint with.
 
-use sea::{HELD, bob, held}
+use sea::{HELD, SEA as WATER, bob, held}
 use engine::ocean::Swell
 use row::Rig
 
@@ -17,6 +17,18 @@ pub const OVERCAST: f32 = 1.0
 pub const LIFT: f32 = 1.45
 pub const BREAK: f32 = 0.0
 pub const THIN: f32 = 0.0
+/// Under the overcast, low on the horizon: the elevation (a direction's y) under which the deck
+/// goes into the storm's own air; how much lighter that air is at the horizon itself; and how
+/// bright the open sky behind the deck's thinner places is, against the open sky's own.
+pub const STORM_LOW: f32 = 0.14
+pub const STORM_HORIZON: f32 = 1.6
+pub const STORM_BEHIND: f32 = 0.2
+
+/// The way the wind blows (x, z, a unit vector): the sea's (`sea::SEA`), which the clouds, the
+/// rain and the scud go with.
+pub fn wind() -> vec2 {
+    WATER.wind
+}
 
 /// The palette, linear: the ink, the paper, the shadow's cool and the light's warmth.
 pub const INK = vec3(0.045, 0.035, 0.07)
