@@ -52,6 +52,10 @@ pub const LANTERN: f32 = 0.0
 /// (`--set FINE=0.3`, to see what the page gives up).
 pub const FINE: f32 = 1.0
 
+/// The skiff's hull: 0 the open rowing skiff it was, 1 a planing hull made for the sail (narrow,
+/// flat-bottomed and flared, its bow swept up and decked) (`--set PLANING=1`).
+pub const PLANING: f32 = 1.0
+
 /// Where the camera stands: 0 the opening's shot, 1 the player's, up behind the skiff
 /// (`Rig::framing`; `--set FRAMING=1`).
 pub const FRAMING: f32 = 0.0

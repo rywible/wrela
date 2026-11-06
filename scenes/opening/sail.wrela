@@ -37,8 +37,12 @@ pub struct Rig: Copy {
     pub gust: f32,
     /// The speed as the camera's caught up with it (m/s): how far it's fallen back.
     pub rush: f32,
-    /// How far the camera has swung (rad), following the steer.
+    /// A knock just felt (1, fading to 0 in under half a second): the boom slammed across.
+    pub jolt: f32,
+    /// How far the camera has swung (rad), following the steer; and which side of the wake it
+    /// rides, -1 port to 1 starboard (to windward, crossing over after a gybe).
     pub look: f32,
+    pub perch: f32,
     /// Where the camera stands, 0 for the opening's shot (low behind the skiff, the rock filling
     /// the sky) to 1 for the player's (up behind it, the skiff and the sea ahead); between, on
     /// its way from one to the other (`look::shot_at`).
@@ -62,6 +66,7 @@ pub struct Rig: Copy {
     pub shown_plane: f32,
     pub shown_rush: f32,
     pub shown_look: f32,
+    pub shown_perch: f32,
 }
 
 /// The skiff at rest, as the opening finds it: its sail let fly, flagging downwind.
@@ -79,7 +84,9 @@ pub fn rest() -> Rig {
         plane: 0.0,
         gust: 1.0,
         rush: 0.0,
+        jolt: 0.0,
         look: 0.0,
+        perch: 1.0,
         framing: 0.0,
         forward: false,
         back: false,
@@ -97,6 +104,7 @@ pub fn rest() -> Rig {
         shown_plane: 0.0,
         shown_rush: 0.0,
         shown_look: 0.0,
+        shown_perch: 1.0,
     }
 }
 
@@ -234,23 +242,37 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     let free = -off
     let k = smoothstep(0.0, 0.55, r.power)
     let target = mix(free, trimmed, k)
+    let was = r.boom
     var swing = target - r.boom
     // (Let fly, it swings the short way round, through the bow if that's shorter: it's free.)
     if k < 0.5 {
         swing -= 6.2831853 * floor((swing + 3.1415927) / 6.2831853)
     }
-    r.boom += swing * (1.0 - exp(-dt * (2.0 + 4.0 * k)))
+    // (Sheeted, a gybe hangs a moment as the wind gets behind the sail, then slams it across.)
+    let slam = smoothstep(1.2, 2.2, abs(swing)) * k
+    r.boom += swing * (1.0 - exp(-dt * (2.0 + 4.0 * k + 9.0 * slam)))
+    if was * r.boom < 0.0 && abs(was) > 0.3 && k > 0.5 {
+        // (It lands with a jolt: the skiff knocked over onto its new side.)
+        r.heel_rate += (if r.boom > 0.0 { 1.0 } else { -1.0 }) * 2.6
+        r.jolt = 1.0
+    }
+    r.jolt = max(r.jolt - dt * 2.5, 0.0)
+    // (And carries past where it'll sit, as a slammed boom does, and springs back.)
+    r.boom += (if r.boom > 0.0 { 1.0 } else { -1.0 }) * 0.35 * r.jolt * r.jolt * sin(r.jolt * 9.0)
     // Heeling: the sail's pull to leeward (more in a gust, less once it planes, the traveller's
     // weight out to windward taking most of it), and banked into its turns, carving. On a
     // spring, so a gust or a gybe sets it rocking.
     let pull = r.power * sin(abs(off)) * polar(off) * r.gust
-    let lean = side * 0.2 * pull * (1.0 - 0.5 * r.plane) + r.turn * clamp(r.speed, 0.0, 9.0) * 0.045
+    let lean = side * (0.3 * pull + 0.1 * r.power * r.gust) * (1.0 - 0.3 * r.plane) +
+        r.turn * clamp(r.speed, 0.0, 9.0) * 0.05
     r.heel_rate += ((lean - r.heel) * 22.0 - r.heel_rate * 5.0) * dt
     r.heel += r.heel_rate * dt
     // The camera: swung round after the bow, lagging it; falling back as it surges and catching
     // up as it settles.
     r.look += (r.steer - r.look) * (1.0 - exp(-dt * 1.4))
     r.rush += (r.speed - r.rush) * (1.0 - exp(-dt * 0.9))
+    let windward = if r.boom > 0.0 { -1.0 } else { 1.0 }
+    r.perch += (windward - r.perch) * (1.0 - exp(-dt * 0.7))
     // What the drawing holds, renewed as each drawing comes.
     let drawing = floor(time * HELD)
     if drawing != r.drawing {
@@ -265,6 +287,7 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
         r.shown_plane = r.plane
         r.shown_rush = r.rush
         r.shown_look = r.look
+        r.shown_perch = r.perch
     }
 }
 
@@ -281,6 +304,8 @@ pub struct Pose: Copy {
     pub aft_hand: vec3,
     pub fore_foot: vec3,
     pub aft_foot: vec3,
+    /// Where the rider looks: ahead over the bow, past the sail's luff.
+    pub gaze: vec3,
 }
 
 /// Where the mast stands (the skiff's frame), how far up it the boom is lashed, and the boom's
@@ -330,16 +355,19 @@ pub fn pose(r: Rig) -> Pose {
     // the sail's sheeted, the further.
     let mid = (fore_hand + aft_hand) * 0.5
     let away = normalize(vec3(-belly.x, 0.0, -belly.z) + vec3(0.0, 0.0, -0.35))
-    let reach = 0.42 + 0.2 * p
-    var neck = mid + away * reach + vec3(0.0, 0.1 - 0.12 * p, 0.0)
-    neck.x = clamp(neck.x, -0.75, 0.75)
+    let reach = 0.5 + 0.4 * p
+    // (Ducked under the boom as it slams across in a gybe.)
+    var neck = mid + away * reach + vec3(0.0, 0.08 - 0.22 * p - 0.4 * r.jolt, 0.0)
+    neck.x = clamp(neck.x, -0.95, 0.95)
     neck.z = clamp(neck.z, -1.3, 0.55)
-    var hips = neck + vec3(0.0, -0.58, 0.0) - away * (0.16 * p)
-    hips.y = min(hips.y, FOOT.y + 0.95)
+    var hips = neck + vec3(0.0, -0.56, 0.0) - away * (0.2 * p)
+    hips.y = min(hips.y, FOOT.y + 0.82 - 0.12 * p)
     let ahead = normalize(vec3(-away.z, 0.0, away.x))
     let fwd = if ahead.z > 0.0 { ahead } else { -ahead }
-    let stance = vec3(clamp(hips.x - away.x * 0.15, -0.38, 0.38), FOOT.y - 0.02, hips.z)
+    let stance = vec3(clamp(hips.x - away.x * 0.3, -0.4, 0.4), FOOT.y - 0.02, hips.z)
     let fore_foot = stance + fwd * 0.3 + vec3(0.0, 0.0, 0.0)
     let aft_foot = stance - fwd * 0.28
-    Pose { mast, boom, belly, hips, neck, fore_hand, aft_hand, fore_foot, aft_foot }
+    // (Looking ahead over the bow, a little across past the luff and into a turn.)
+    let gaze = normalize(vec3(0.0, 0.04, 1.0) + vec3(belly.x, 0.0, belly.z) * 0.35 + vec3(r.shown_turn * 0.8, 0.0, 0.0))
+    Pose { mast, boom, belly, hips, neck, fore_hand, aft_hand, fore_foot, aft_foot, gaze }
 }
