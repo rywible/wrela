@@ -131,6 +131,29 @@ pub struct Weather: Clone {
     pub veil: Gap = Gap { a: vec2(0.0, 0.0), b: vec2(0.0, 0.0), radius: 0.0 },
 }
 
+/// A region of the world with weather of its own: within `reach` (m) of `at` (the world's x,
+/// z, not the drifting field's), `clear` of the clouds pulled back (0 as the map has them, 1
+/// none), softly toward its edge. The clouds drift through it and thin as they go in: weather
+/// that belongs to a place, not to the sky over the eye.
+pub struct Region: Copy + GpuData {
+    pub at: vec2,
+    pub reach: f32,
+    pub clear: f32,
+}
+
+/// How much of the clouds `regions` (the first `count`) pull back at `xz` (the world's, m):
+/// the most any of them does there, each region's edge torn by the noise so it isn't a
+/// circle.
+pub fn cleared(regions: [Region], count: u32, xz: vec2) -> f32 {
+    var k = 0.0
+    for i in 0..count {
+        let r = regions[i]
+        let torn = (fbm2(xz / 6000.0 + vec2(3.0, 17.0), 3) - 0.5) * 0.5 * r.reach
+        k = max(k, r.clear * smoothstep(r.reach, r.reach * 0.45, length(xz - r.at) + torn))
+    }
+    k
+}
+
 /// What the dome's march and the clouds' shadows read: where the eye is, which of the dome's
 /// tiles the frame marches (`phase`: those whose number is it, modulo `PHASES`), toward the sun,
 /// how much of a texel the march replaces (`blend`: 1 on the first, less after), how far the
@@ -516,6 +539,8 @@ fn march(
     aerial: Texture3d<Rgba16Float>,
     rep: Sampler,
     s: Sampler,
+    regions: [Region],
+    region_count: u32,
 ) -> vec4 {
     let y = c.eye.y
     let enter = reach(y, dir.y, BASE)
@@ -591,7 +616,12 @@ fn march(
             let h = height_along(y, dir.y, t) - BASE
             let p = c.eye + dir * t
             let q = vec3(p.x - c.drift.x, h + BASE, p.z - c.drift.y)
-            let w = weather_at(weather, rep, q)
+            // Pulled back where a region's own weather clears them (`Region`): less of the map's
+            // cover, lower, and no storm's shade.
+            let kr = if region_count > 0 { cleared(regions, region_count, p.xz) } else { 0.0 }
+            let wm = weather_at(weather, rep, q)
+            let w = vec4(wm.r * (1.0 - kr), wm.g * mix(1.0, 0.6, kr), wm.b, wm.a)
+            let gl = c.gloom * (1.0 - kr)
             let dens = field_in(w, q, h, shape, detail, rep, detailed: true)
             if dens > 0.0 {
                 // Resolve the sunlit skin before the deep shadow. Equal 150 m intervals
@@ -606,7 +636,7 @@ fn march(
                     od += field(ql, ql.y - BASE, weather, shape, detail, rep, detailed: k < 2) *
                         step
                 }
-                od *= EXTINCTION
+                od *= EXTINCTION * (1.0 - kr)
                 // Scattering many times (Wrenninge's octaves): each fainter, less forward and
                 // reaching deeper; four, so a thick cloud's sunlit side reflects as a white
                 // surface would (an albedo of about 0.8).
@@ -629,14 +659,14 @@ fn march(
                 // Under a storm's deck: the column over the point darkens it, down to near black
                 // at the base of a deck kilometres thick.
                 let over = max(local_top - h, 0.0) *
-                    max(w.r, 0.7 * c.gloom * smoothstep(0.0, 0.3, w.r))
-                let shut = mix(1.0, exp(-over * 0.0016), c.gloom)
-                var dim = mix(1.0, 0.12 + 0.88 * hf * hf, c.gloom)
+                    max(w.r, 0.7 * gl * smoothstep(0.0, 0.3, w.r))
+                let shut = mix(1.0, exp(-over * 0.0016), gl)
+                var dim = mix(1.0, 0.12 + 0.88 * hf * hf, gl)
                 // Under a storm's deck, each billow's own relief: how much cloud is just over
                 // the point (a kilometre up, no farther). The deck's light comes down from above,
                 // so a pouch's thick core goes dark and its thin flanks and torn edges catch the
                 // light: rounded forms with lit rims, not one even shade.
-                if c.gloom > 0.0 {
+                if gl > 0.0 {
                     var od_up = 0.0
                     for k in 0..3 {
                         let rise = 70.0 * pow(3.0, f32(k))
@@ -645,7 +675,7 @@ fn march(
                             rise * 1.3
                     }
                     let lift = exp(-od_up * EXTINCTION * RELIEF)
-                    dim *= mix(1.0, 0.45 + 1.6 * lift, c.gloom)
+                    dim *= mix(1.0, 0.45 + 1.6 * lift, gl)
                 }
                 let source = sun_light * to_sun * shut + ambient * dim
                 let step_t = exp(-dens * EXTINCTION * dt)
@@ -720,6 +750,8 @@ pub fn march_dome(
     aerial: Texture3d<Rgba16Float>,
     rep: Sampler,
     s: Sampler,
+    regions: [Region],
+    region_count: u32,
     out: mut Slots<vec4>,
     id: GlobalId,
 ) {
@@ -759,6 +791,8 @@ pub fn march_dome(
         aerial,
         rep,
         s,
+        regions,
+        region_count,
     )
     out[id] = mix(old, new, vec4(c.blend))
 }
@@ -924,6 +958,9 @@ pub struct Sky {
     pub frames: u32,
     /// The storm's share, 0 by default (`Clouds::gloom`).
     pub gloom: f32,
+    /// The regions with weather of their own (`Region`, `set_regions`) and how many.
+    pub regions: GpuBuffer<Region>,
+    pub region_count: u32,
 }
 
 /// The clouds' textures, uncooked, for a program of switches `Q` (`Switches::HALVED`: the march
@@ -941,10 +978,18 @@ pub fn new_sky<Q: Switches>() -> Sky {
         marched: buffer(if Q::HALVED { PHASE_TEXELS / 4 } else { PHASE_TEXELS }),
         frames: 0,
         gloom: 0.0,
+        regions: buffer_of(Vec::<Region>::new(), at_least: 1),
+        region_count: 0,
     }
 }
 
 impl Sky {
+    /// The regions with weather of their own (`Region`): the clouds pulled back in them.
+    pub fn set_regions(mut self, regions: Vec<Region>) {
+        self.region_count = regions.len()
+        self.regions = buffer_of(regions, at_least: 1)
+    }
+
     /// The GPU bytes its textures take (half floats: the noises, the weather, the clouds'
     /// shadow and the dome).
     pub fn bytes(self) -> u64 {
@@ -1069,6 +1114,8 @@ impl Sky {
                 tables.aerial,
                 rep,
                 s,
+                regions: self.regions.span(start: 0, count: max(self.region_count, 1)),
+                region_count: self.region_count,
                 out: mut self.marched,
             ),
             over: PHASE_TEXELS / (scale * scale),

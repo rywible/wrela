@@ -8,7 +8,7 @@
 // dither is smoothed out, its far sunlit edges held under the air's light, and the far sea lost
 // into the same air, so there's no ruled line between them.
 
-use look::{OVERCAST, ROCK, SKY, STORM_LOW, Shot, hash2, luma, ray, wind}
+use look::{ROCK, SKY, STORM_LOW, Shot, hash2, luma, ray, wind}
 use engine::air::{ALTITUDE, BOTTOM}
 use engine::light::Light
 use engine::light::sky as clear_sky
@@ -151,7 +151,7 @@ fn scud(
     let beyond = fbm2_seen(w / 520.0 + ahead * (160.0 / 520.0) + vec2(4.0, 1.0), 5, foot / 520.0)
     let rim = smoothstep(0.0, 0.08, torn - beyond)
     let col = deck_light * (mix(0.5, 0.26, smoothstep(0.6, 0.85, torn)) + 0.35 * rim)
-    let ap = stormy_air(aerial, smp, light.sun, d, t * 0.001, OVERCAST)
+    let ap = stormy_air(aerial, smp, light.sun, d, t * 0.001, s.storm)
     vec4(col * ap.a + ap.rgb, cover * 0.8)
 }
 
@@ -232,7 +232,7 @@ pub fn weather(
     let px = pixel.position.xy
     let at = vec2u(u32(px.x), u32(px.y))
     var c = colour.load(x: at.x, y: at.y)
-    if OVERCAST <= 0.0 {
+    if s.storm <= 0.0 {
         return c
     }
     let m = marks.load(x: at.x, y: at.y)
@@ -241,7 +241,9 @@ pub fn weather(
     let px_angle = 2.0 / (s.resolution.y * s.focal)
     let air = horizon_air(view, light, dome, smp)
     let deck_light = luma(dome.sample_level(smp, sky_uv(vec3(0.0, 1.0, 0.0))).rgb) * vec3(0.95, 0.97, 1.0)
-    let b = strike(s)
+    // (The storm's own weather only as far as the storm is here: `Shot::storm`.)
+    var b = strike(s)
+    b.now *= s.storm
     // The deck lit from inside round a strike.
     if m.y == SKY && d.y > 0.0 && b.now > 0.0 {
         let hit = s.eye + d * reach(s.eye.y, d.y, DECK)
@@ -276,8 +278,10 @@ pub fn weather(
                 let o = vec2(cos(a), sin(a)) * vec2(1.0 / f32(SKY_W), 1.0 / f32(SKY_H)) * 14.0
                 round += dome.sample_level(smp, uv + o)
             }
+            // (Only a hole the deck closes round: in a wide clearing, the sky is the sky.)
             let behind = round.rgb / max(round.a, 1.0e-3) * HIGHER
-            c = vec4(mix(c.rgb, behind, hole * smoothstep(STORM_LOW, STORM_LOW * 2.0, d.y)), c.a)
+            let closed = smoothstep(4.0, 7.0, round.a)
+            c = vec4(mix(c.rgb, behind, hole * closed * smoothstep(STORM_LOW, STORM_LOW * 2.0, d.y)), c.a)
         }
     }
     // Low over the horizon, the far deck's sunlit edges held under the air's own light: no
@@ -293,14 +297,14 @@ pub fn weather(
     }
     // The scud, in front of what's behind it.
     let sc = scud(s, aerial, smp, light, deck_light, d, m.y, dist, px_angle)
-    c = vec4(c.rgb * (1.0 - sc.a) + sc.rgb * sc.a, c.a)
+    c = vec4(c.rgb * (1.0 - sc.a * s.storm) + sc.rgb * sc.a * s.storm, c.a)
     // The rain's curtains, between the eye and what it sees.
     // (Each pixel's samples at the same distances: shells, so neighbours agree.)
     let jitter = 0.5
     // (Darker than what's behind them: grey veils, taking the far air's light more than they
     // give back.)
     let r = rain(s, d, m.y, 6000.0, min(dist, 40000.0), jitter)
-    c = vec4(c.rgb * mix(RAIN_LIGHT, 1.0, r), c.a)
+    c = vec4(c.rgb * mix(1.0, mix(RAIN_LIGHT, 1.0, r), s.storm), c.a)
     // The bolt, and the flash on everything: the sea and the rock caught for an instant.
     let bolt_k = bolt(s, b, d, dist, px_angle)
     c = vec4(c.rgb + vec3(0.85, 0.88, 1.0) * air * FLASH * 6.0 * bolt_k + air * FLASH * 0.12 * b.now, c.a)

@@ -204,6 +204,7 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
         ..shot_at(START + time, s.width, s.height, KINETIC, view, rig, s.ocean.swell),
     }
     s.heavens.step(shot.eye, shot.forward, START + time)
+    let shot = Shot { storm: s.heavens.storm, ..shot }
     next_yon(mut s, shot)
     // The sea as it is at this drawing.
     s.ocean.step(held(START + time))
