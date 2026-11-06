@@ -268,7 +268,8 @@ pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
     let px_k = 2.0 / (s.resolution.y * s.focal)
     let air = vec3(SEA.wind.x, 0.0, SEA.wind.y) * SEA.speed - s.boat_z * s.speed
     let pull = up * -9.81 + air * 0.55
-    let open = 0.025
+    // (A short shutter: long streaks of one length read as dashes of type, not water.)
+    let open = 0.012
     for i in 0..DROPS {
         let fi = f32(i)
         let h1 = hash2(vec2(fi, 3.7))
@@ -291,7 +292,7 @@ pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
         let p0 = from + v0 * t0 + pull * (0.5 * t0 * t0)
         if p1.y > s.boat.y - 0.45 && h4 < thrown * 1.3 {
             let r = 0.005 + 0.012 * (1.0 - h2) * (1.0 - h2)
-            let dr = drop(o, d, hit, p0, p1, r, px_k, lit)
+            let dr = drop(o, d, hit, p0, p1, r, px_k, lit * (0.45 + 0.55 * h3)) * 0.75
             acc = acc * (1.0 - dr.a) + dr
         }
     }
