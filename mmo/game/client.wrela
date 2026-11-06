@@ -2043,8 +2043,7 @@ fn draw_fight(s: mut Client, middle: vec2, size: f32) {
         if let Some(a) = world.boss_attack() {
             let answer = if a.parried { "parry it" } else { "dodge it" }
             let tell = String::from(f"{a.name}: {answer}")
-            let at = place(middle, px, boss.x, boss.z) + vec2(-40.0, -2.0 * px)
-            let _ = s.list.text(s.fonts, Face::Sans, tell.as_str(), 18.0, at, TELL)
+            let _ = s.list.text(s.fonts, Face::Sans, tell.as_str(), 20.0, vec2(24.0, 180.0), TELL)
         }
     }
     // The room's word once it's settled; until then, this client's.
