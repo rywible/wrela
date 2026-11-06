@@ -827,7 +827,7 @@ fn sea_shade(
     // (Its colour the sun's as the frame draws its disc: burnt toward a warm white.)
     let sun_seen = mix(h.light.sun_colour, vec3(1.0, 0.84, 0.55) * luma(h.light.sun_colour), 0.55)
     // (Under the overcast's deck the sun's a glow, not a disc: no burning points of it.)
-    let mean = sun_seen * glitter(n, l, v, along, rough) * sun * 2.0 * mix(1.0, 0.08, OVERCAST)
+    let mean = sun_seen * glitter(n, l, v, along, rough) * sun * 2.0 * mix(1.0, 0.04, OVERCAST)
     let slant = max(-d.y, 0.003)
     let footprint_m2 = px_at * px_at / slant
     let peak = clamp(SPARK_GLINT / footprint_m2, 4.0, SPARK_PEAK)
@@ -843,8 +843,8 @@ fn sea_shade(
     let gather_raw = smoothstep(
         0.3,
         0.7,
-        noise(drift * vec2(2.6, 1.1) + vec2(4.0, 2.0)) * 0.4 + noise(drift * vec2(0.8, 3.1) + vec2(9.0)) * 0.35 +
-            noise(drift * 0.35 + vec2(2.0, 7.0)) * 0.25,
+        noise(drift * vec2(6.5, 2.8) + vec2(4.0, 2.0)) * 0.4 + noise(drift * vec2(2.0, 7.7) + vec2(9.0)) * 0.35 +
+            noise(drift * 0.9 + vec2(2.0, 7.0)) * 0.25,
     ) *
         2.2
     let gather = mix(gather_raw, 1.0, smoothstep(0.6, 3.0, length(dv)))
@@ -958,11 +958,14 @@ fn sea_shade(
         max(mix(dense * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.75 * age) * mix(1.0, smoothstep(0.3, 0.75, lace), age), web_k), dense * 0.35 * (1.0 - age)),
         mix(blown * 0.1, lines * 0.2 * (1.0 - smoothstep(0.975, 0.995, ridge)) * smoothstep(0.05, 0.5, blown + dense), web_k),
     ) *
-        0.95
+        (0.7 + 0.3 * lace)
     // (Lit as a mass of bubbles: its domes bright, its creases and thin film greyer, the older
     // the greyer.)
     let froth = mix(0.6, froth_h, web_k)
-    let bright = (0.5 + 0.5 * froth) * (0.75 + 0.25 * (1.0 - age)) * (0.75 + 0.25 * eroded)
+    // (And modelled as the wave it rides: brightest on the crest's top, greyer down its back, so a
+    // whitecap's a mass on the wave, not a sheet of paper laid on it.)
+    let bright = (0.35 + 0.65 * froth) * (0.75 + 0.25 * (1.0 - age)) * (0.75 + 0.25 * eroded) *
+        (0.65 + 0.35 * clamp(wave / CREST * 2.0 + 0.5, 0.0, 1.0))
     // Under it and round it, the water's paler and greener, full of the bubbles the break drove
     // down, as the water under a whitecap is.
     let bubbles = smoothstep(0.08, 0.6, foam_k) * (0.5 + 0.5 * lace)
