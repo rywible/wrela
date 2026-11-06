@@ -10,7 +10,7 @@
 
 use std::input::{Event, Key, PadAxis, PadButton}
 use sea::{HELD, SEA}
-use look::noise
+use wind::air_at
 use engine::ocean::Swell
 
 /// The skiff under the player's hands.
@@ -35,6 +35,8 @@ pub struct Rig: Copy {
     pub plane: f32,
     /// The wind's strength where it is, its gusts and lulls (1 its mean).
     pub gust: f32,
+    /// How far the wind's veered off its mean where it is (rad; `wind::Air::veer`).
+    pub veer: f32,
     /// The speed as the camera's caught up with it (m/s): how far it's fallen back.
     pub rush: f32,
     /// A knock just felt (1, fading to 0 in under half a second): the boom slammed across.
@@ -78,11 +80,12 @@ pub fn rest() -> Rig {
         turn: 0.0,
         trim: 0.0,
         power: 0.0,
-        boom: flagged(0.0),
+        boom: flagged(0.0, 0.0),
         heel: 0.0,
         heel_rate: 0.0,
         plane: 0.0,
         gust: 1.0,
+        veer: 0.0,
         rush: 0.0,
         jolt: 0.0,
         look: 0.0,
@@ -99,7 +102,7 @@ pub fn rest() -> Rig {
         shown_speed: 0.0,
         shown_turn: 0.0,
         shown_power: 0.0,
-        shown_boom: flagged(0.0),
+        shown_boom: flagged(0.0, 0.0),
         shown_heel: 0.0,
         shown_plane: 0.0,
         shown_rush: 0.0,
@@ -180,8 +183,8 @@ pub fn wind_off(yaw: f32) -> f32 {
 }
 
 /// The boom let fly at heading `steer`: streaming with the wind, as a flag does.
-fn flagged(steer: f32) -> f32 {
-    let b = wind_off(-0.22 + steer)
+fn flagged(steer: f32, veer: f32) -> f32 {
+    let b = wind_off(-0.22 + steer + veer)
     -b
 }
 
@@ -209,11 +212,11 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     }
     r.power += (r.trim - r.power) * (1.0 - exp(-dt * 3.0))
     // The wind where it is: gusts and lulls a few tens of metres across, blowing down on it.
-    let drift = SEA.wind * (time * SEA.speed * 0.012)
-    let g = noise(r.at * 0.012 - drift) * 0.65 + noise(r.at * 0.04 - drift * 3.1) * 0.35
-    r.gust = 0.78 + 0.5 * g
+    let air = air_at(r.at, time)
+    r.gust = air.gust
+    r.veer = air.veer
     let yaw = -0.22 + r.steer
-    let off = wind_off(yaw)
+    let off = wind_off(yaw + r.veer)
     let heading = vec2(sin(yaw), cos(yaw))
     // Its way: toward what the wind and the sheet give it; slow to gather from rest, then a
     // surge as it lifts onto the plane and the water lets go of it; braked when the sail's let
@@ -310,7 +313,7 @@ pub struct Pose: Copy {
 
 /// Where the mast stands (the skiff's frame), how far up it the boom is lashed, and the boom's
 /// length to the clew (m).
-pub const FOOT = vec3(0.0, -0.26, 0.95)
+pub const FOOT = vec3(0.0, 0.02, 0.95)
 pub const LASHED: f32 = 1.5
 pub const BOOM: f32 = 2.15
 
@@ -320,7 +323,7 @@ pub const BOW_OUT: f32 = 0.22
 /// The rig as `r`'s drawing holds it.
 pub fn pose(r: Rig) -> Pose {
     let yaw = -0.22 + r.shown_steer
-    let off = wind_off(yaw)
+    let off = wind_off(yaw + r.veer)
     let p = r.shown_power
     let phi = r.shown_boom
     let side = if phi >= 0.0 { 1.0 } else { -1.0 }
@@ -364,7 +367,7 @@ pub fn pose(r: Rig) -> Pose {
     hips.y = min(hips.y, FOOT.y + 0.82 - 0.12 * p)
     let ahead = normalize(vec3(-away.z, 0.0, away.x))
     let fwd = if ahead.z > 0.0 { ahead } else { -ahead }
-    let stance = vec3(clamp(hips.x - away.x * 0.3, -0.4, 0.4), FOOT.y - 0.02, hips.z)
+    let stance = vec3(clamp(hips.x - away.x * 0.3, -0.4, 0.4), FOOT.y, hips.z)
     let fore_foot = stance + fwd * 0.3 + vec3(0.0, 0.0, 0.0)
     let aft_foot = stance - fwd * 0.28
     // (Looking ahead over the bow, a little across past the luff and into a turn.)
