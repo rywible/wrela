@@ -1,0 +1,8 @@
+# The unarmed fight's sounds, and the sea and storm round it: a palette for engine::sound whose
+# numbers were fitted to generated references (docs/generated.jsonl), and a score that plays the
+# SHOW=28 exchange's cues on their samples, for the audio tool to render.
+[package]
+name = "fightsound"
+
+[dependencies]
+engine = { workspace = true }

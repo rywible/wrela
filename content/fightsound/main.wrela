@@ -1,0 +1,365 @@
+// The unarmed fight's sounds: a fist's blow, a blow with a blast behind it, a planted foot, the
+// cross's whoosh, and the open sea and the storm wind round the fight.
+//
+// Each sound's numbers were fitted to a reference a generative model made (Stable Audio 2.5;
+// each reference's line in docs/generated.jsonl names this file): the reference's level in
+// third-octave bands, over time, matched by engine::sound's own voices. No recording ships; these
+// numbers are the sounds.
+//
+// The audio tool renders one alone, or the whole exchange:
+//
+//     wrela tool audio -- content/fightsound wav out.wav --seconds 5.17
+//
+// `CUE` 0 the blow, 1 the blast's boom, 2 the planted foot, 3 the whoosh, 4 the sea alone, 5 the
+// wind alone, 6 the SHOW=28 exchange with the sea and wind under it (`BLAST` 1 with its blast),
+// after `PREROLL` seconds of the sea and wind alone.
+
+use engine::sound::{Babble, Breath, Cue, Mixer, Mode, Palette, Surface, Swish, mix, mixer}
+use std::audio::{QUANTUM, RingWriter, SAMPLE_RATE, play}
+use std::math::tanh
+
+pub const CUE: u32 = 6
+pub const BLAST: u32 = 1
+
+/// The palette's kinds.
+pub const BLOW: u32 = 0
+pub const BOOM: u32 = 1
+pub const PLANT: u32 = 2
+pub const SPATTER: u32 = 3
+pub const SWING: u32 = 0
+pub const CLOTH: u32 = 1
+pub const WAVE: u32 = 2
+pub const WHOOMP: u32 = 3
+pub const SWELL: u32 = 0
+pub const CHOP: u32 = 1
+pub const SPRAY: u32 = 2
+pub const DECK: u32 = 0
+
+/// How loud the sea and the wind sit under the fight, against the fitted references' level (set
+/// by meter: the bed about 35 dB under the blow's peak).
+pub const SEA: f32 = 2.0
+pub const WIND: f32 = 0.5
+
+/// The palette. Each sound was fitted to a reference (docs/generated.jsonl, by its file), then
+/// directed: the references came out of their model mixed for big speakers (all sub, a
+/// limiter's flat level), so where a fit copied that, the number was changed by hand to what a
+/// blow needs on any speaker, and the comment says which.
+pub const PALETTE: Palette = Palette {
+    surfaces: [
+        // A foot finding the wet deck again (stamp_0's fit, by hand a heel, a scuff and a slap
+        // of water at 4 kHz, 10 dB over the bed).
+        Surface {
+            knock_hz: 150.0,
+            knock_t60: 0.06,
+            knock: 5.0,
+            knock_drop: 1.6,
+            knock_glide: 0.01,
+            grit_hz: 2200.0,
+            grit_q: 0.7,
+            grit_t60: 0.07,
+            grit: 12.0,
+            tail_hz: 4000.0,
+            tail_q: 0.8,
+            tail_t60: 0.08,
+            tail: 12.0,
+        },
+        Surface {},
+        Surface {},
+        Surface {},
+        Surface {},
+        Surface {},
+        Surface {},
+        Surface {},
+    ],
+    waters: [
+        // The open sea round the skiff (sea3_0's bands and levels). Its waves are measured off
+        // sa1_0, a take with no limiter: one about every 3.3 s, each swelling in over about
+        // 0.35 s (the wash and foam; the swell's rumble over 0.8 s) to about 3.4 times the
+        // bed's median level, then falling away; by hand capped at about +6 dB (a critic heard
+        // full-height swells drown the fight), and the foam's spray carried up to 9 kHz. The
+        // slow wander under them is shallower now the waves carry the movement.
+        Babble { lo_hz: 35.0, hi_hz: 220.0, level: 1.59 * SEA, rate: 0.15, depth: 0.3, waves: 3.3, crest: 0.8, surge: 1.0 },
+        Babble { lo_hz: 220.0, hi_hz: 1600.0, level: 0.15 * SEA, rate: 0.25, depth: 0.4, waves: 3.3, crest: 0.4, surge: 1.0 },
+        Babble { lo_hz: 1500.0, hi_hz: 9000.0, level: 0.035 * SEA, rate: 0.4, depth: 0.5, waves: 3.3, crest: 0.35, surge: 1.5 },
+        Babble {},
+    ],
+    brushes: [Babble {}; 3],
+    impacts: [
+        // The blow. Fitted to pb2_0 (a take that fades on its own, no limiter): the knuckles'
+        // half-sine contact, the body's eight ringing modes found by modal analysis, the thump's
+        // drop and the slap. By hand (two blind critics heard a sine boom): the knock up to 80 Hz,
+        // 17 dB down and 120 ms, the 70 Hz mode moved to a 220 Hz flesh thud, the body's tail a
+        // loud 250 Hz thump over the hit-stop, and the slap moved down to 3 kHz and widened.
+        Surface {
+            knock_hz: 80.0,
+            knock_t60: 0.12,
+            knock: 1.2,
+            knock_drop: 1.093,
+            knock_glide: 0.0694,
+            grit_hz: 3000.0,
+            grit_q: 0.9,
+            grit_t60: 0.03,
+            grit: 21.38,
+            tail_hz: 250.0,
+            tail_q: 0.7,
+            tail_t60: 0.12,
+            tail: 10.0,
+            contact: 0.0084,
+            rough: 0.6374,
+            modes: [
+                Mode { hz: 220.0, t60: 0.09, level: 6.0 },
+                Mode { hz: 375.0, t60: 0.0101, level: 0.3923 },
+                Mode { hz: 585.9, t60: 0.0296, level: 0.4142 },
+                Mode { hz: 773.4, t60: 0.0523, level: 1.393 },
+                Mode { hz: 843.8, t60: 0.0101, level: 0.004 },
+                Mode { hz: 1312.0, t60: 0.1131, level: 5.491 },
+                Mode { hz: 1629.0, t60: 0.0873, level: 2.468 },
+                Mode { hz: 1781.0, t60: 0.0101, level: 0.004 },
+            ],
+        },
+        // The blast's thump. From heavy2_0's fit: the sub's drop from three times its pitch. By
+        // hand: its tone cut to 350 ms and driven (overtones a phone can play), a broad air burst
+        // at 1.8 kHz and a 500 Hz body within 0.3 s (the reference's level never fell). The
+        // whoosh `WHOOMP` sweeps its air down after it.
+        Surface {
+            knock_hz: 50.0,
+            knock_t60: 0.35,
+            knock: 3.0,
+            knock_drop: 3.0,
+            knock_glide: 0.03,
+            grit_hz: 1800.0,
+            grit_q: 0.4,
+            grit_t60: 0.3,
+            grit: 4.0,
+            tail_hz: 500.0,
+            tail_q: 0.6,
+            tail_t60: 0.25,
+            tail: 4.0,
+            drive: 0.8,
+        },
+        // The planted foot (stamp_0's fit: its knock's drop; by hand a scuff more than a thump,
+        // so it doesn't read as a first hit four frames early).
+        Surface {
+            knock_hz: 90.0,
+            knock_t60: 0.06,
+            knock: 1.0,
+            knock_drop: 2.0,
+            knock_glide: 0.01,
+            grit_hz: 2500.0,
+            grit_q: 0.7,
+            grit_t60: 0.05,
+            grit: 4.0,
+            tail: 0.0,
+        },
+        // The ink's spatter off the blast (by hand, from the boom's air burst): an air crack
+        // and a bright spray tail that lasts as long as the ink's arcs.
+        Surface {
+            knock: 0.0,
+            grit_hz: 6000.0,
+            grit_q: 0.5,
+            grit_t60: 0.3,
+            grit: 3.0,
+            tail_hz: 2200.0,
+            tail_q: 0.7,
+            tail_t60: 0.12,
+            tail: 3.0,
+        },
+    ],
+    whooshes: [
+        // The cross: air, not a tone. From whoosh5_0's fit, its broad layer's band; by hand,
+        // its glide turned to rise into the contact (from half its centre), louder and longer,
+        // and its tone layer dropped.
+        Swish { hz: 2500.0, q: 0.6, attack: 0.08, t60: 0.3, level: 12.0, sweep: 0.5, sweep_t: 0.1 },
+        // The cloth: the sleeve and the turning hips (by hand, from the whoosh's broad layer).
+        Swish { hz: 1200.0, q: 0.5, attack: 0.02, t60: 0.15, level: 1.5 },
+        // A wave breaking off the bow (by hand, from sea3_0's wash band): a slow swell of broad
+        // noise and its long hiss down.
+        Swish { hz: 700.0, q: 0.35, attack: 0.5, t60: 2.5, level: 0.35 },
+        // The blast's air (by hand): a broad whoomp whose band falls from 2 kHz to 500 Hz as the
+        // ink's ring spreads.
+        Swish { hz: 500.0, q: 0.5, attack: 0.005, t60: 0.4, level: 6.0, sweep: 4.0, sweep_t: 0.12 },
+    ],
+    // The storm wind (wind_0): the rush's corner and level fitted at a gust of 1. Its gusts are
+    // measured off ga1_0, a take with no limiter: about one every 4 s (0.26 turns a second),
+    // the level swinging by about 1.5 times its mean (the fullest stir).
+    wind: Breath { rush_hz: 317.0, rush: 1.06 * WIND, leaves_hz: 1400.0, leaves: 0.0, stir: 1.0, stir_hz: 0.26 },
+    near: 2.0,
+    gain: 0.17,
+}
+
+/// The exchange as the SHOW=28 clip shows it (60 frames a second): the striker's hips turn and
+/// his lead foot lands at frame 58, the fist leaves the guard at 56 and lands at 62, the
+/// hit-stop holds to 71, and the struck fighter's feet find the deck again at 84 and 97.
+pub const TURN: f32 = 55.0 / 60.0
+pub const LAUNCH: f32 = 55.5 / 60.0
+pub const PLANTED: f32 = 58.0 / 60.0
+pub const CONTACT: f32 = 62.0 / 60.0
+pub const STUMBLE: [f32; 2] = [84.0 / 60.0, 97.0 / 60.0]
+
+/// Where things are: the camera (the ears), the fist at contact, the striker's lead foot, the
+/// struck fighter's feet.
+pub const EARS = vec3(0.0, 1.5, -3.6)
+pub const FIST = vec3(0.25, 1.55, 0.0)
+pub const LEAD = vec3(-0.2, 0.0, 0.0)
+pub const STRUCK = vec3(0.6, 0.0, 0.1)
+
+/// A cue at a time: the score's one line.
+struct Line: Copy {
+    at: f32,
+    cue: Cue,
+}
+
+const LINES: u32 = 21
+
+/// How long the bed plays before the exchange's first frame (s), so the clip starts on a sea and
+/// a wind already blowing; the clip's soundtrack is cut from here.
+pub const PREROLL: f32 = 1.5
+
+/// The bed's flow, and the wind's gust, as the score sets them.
+fn bed(at: f32, flow: f32, gust: f32) -> [Line; 3] {
+    [
+        Line { at, cue: Cue::Water { slot: 0, at: vec3(0.0, -0.5, 4.0), kind: SWELL, flow } },
+        Line { at, cue: Cue::Water { slot: 1, at: vec3(0.0, -0.5, -2.5), kind: CHOP, flow } },
+        Line { at, cue: Cue::Wind { gust, toward: vec2(0.0, 1.0), leaves: 0.0 } },
+    ]
+}
+
+/// The exchange's cues, in time order from the clip's first frame: a wave breaking, the cloth
+/// and the whoosh as the cross leaves, the lead foot, the blow (and the blast's whoomp and
+/// spatter), the bed ducked 4 dB under the blow and let back over 0.3 s, the stumbling feet,
+/// and another wave.
+fn exchange() -> [Line; LINES] {
+    let duck = bed(CONTACT, flow: 0.63, gust: 0.8)
+    let half = bed(CONTACT + 0.2, flow: 0.8, gust: 0.85)
+    let back = bed(CONTACT + 0.4, flow: 1.0, gust: 0.9)
+    let blast = f32(BLAST)
+    let wave = |at: f32, seed: u32| -> Line {
+        Line { at, cue: Cue::Whoosh { at: vec3(0.0, -0.5, 5.0), kind: WAVE, amount: 0.3, seed } }
+    }
+    let lines = [
+        wave(0.1, 11),
+        Line {
+            at: TURN,
+            cue: Cue::Whoosh { at: LEAD + vec3(0.0, 1.0, 0.0), kind: CLOTH, amount: 0.8, seed: 9 },
+        },
+        Line { at: LAUNCH, cue: Cue::Whoosh { at: FIST, kind: SWING, amount: 1.0, seed: 3 } },
+        Line { at: PLANTED, cue: Cue::Impact { at: LEAD, kind: PLANT, strength: 0.8, seed: 4 } },
+        duck[0],
+        duck[1],
+        duck[2],
+        Line { at: CONTACT, cue: Cue::Impact { at: FIST, kind: BLOW, strength: 1.0, seed: 5 } },
+        Line { at: CONTACT, cue: Cue::Impact { at: FIST, kind: BOOM, strength: blast, seed: 6 } },
+        Line {
+            at: CONTACT,
+            cue: Cue::Impact {
+                at: FIST + vec3(0.6, 0.0, 0.0),
+                kind: SPATTER,
+                strength: 0.8 * blast,
+                seed: 10,
+            },
+        },
+        Line {
+            // (Without the blast, the listener's place again: a line that sounds nothing, so the
+            // score's lines stay in time order.)
+            at: CONTACT + 0.01,
+            cue: if BLAST == 1 {
+                Cue::Whoosh { at: FIST, kind: WHOOMP, amount: 1.0, seed: 13 }
+            } else {
+                Cue::Listen { at: EARS, forward: vec2(0.0, 1.0) }
+            },
+        },
+        half[0],
+        half[1],
+        half[2],
+        back[0],
+        back[1],
+        back[2],
+        Line { at: STUMBLE[0], cue: Cue::Step { at: STRUCK, surface: DECK, weight: 1.0, seed: 7 } },
+        Line {
+            at: STUMBLE[1],
+            cue: Cue::Step { at: STRUCK, surface: DECK, weight: 0.8, seed: 8 },
+        },
+        wave(2.4, 12),
+        Line { at: 1.0e9, cue: Cue::Listen { at: EARS, forward: vec2(0.0, 1.0) } },
+    ]
+    var out = lines
+    for i in 0..LINES {
+        out[i].at = lines[i].at + PREROLL
+    }
+    out
+}
+
+/// The soft limit's drive.
+const DRIVE: f32 = 1.8
+/// Its ceiling: 1 dB under full scale, for a lossy export.
+const CEILING: f32 = 0.89
+
+/// The voice: the mixer, and the score it plays, a line at a time on its sample.
+pub struct Score {
+    m: Mixer,
+    lines: [Line; LINES],
+    next: u32,
+    sample: u32,
+}
+
+@audio
+fn play_score(s: mut Score, left: mut [f32], right: mut [f32]) {
+    let now = f32(s.sample + QUANTUM) / f32(SAMPLE_RATE)
+    while s.next < LINES && s.lines[s.next].at < now {
+        s.m.cue(s.lines[s.next].cue)
+        s.next += 1
+    }
+    mix(mut s.m, mut left, mut right)
+    // A soft limit on the whole: quiet sounds lifted about 5 dB, peaks rounded under full scale.
+    for i in 0..left.len() {
+        left[i] = CEILING * tanh(DRIVE * left[i]) / tanh(DRIVE)
+        right[i] = CEILING * tanh(DRIVE * right[i]) / tanh(DRIVE)
+    }
+    s.sample += QUANTUM
+}
+
+pub struct Game {
+    cues: RingWriter<Cue>,
+}
+
+pub fn init() -> Game {
+    let (writer, m) = mixer(PALETTE, seed: 5)
+    var cues = take writer
+    let _ = cues.push(Cue::Listen { at: EARS, forward: vec2(0.0, 1.0) })
+    let at = vec3(0.0, 1.5, 0.0)
+    var lines = [Line { at: 1.0e9, cue: Cue::Listen { at: EARS, forward: vec2(0.0, 1.0) } }; LINES]
+    if CUE == 0 {
+        let _ = cues.push(Cue::Impact { at, kind: BLOW, strength: 1.0, seed: 1 })
+    } else if CUE == 1 {
+        let _ = cues.push(Cue::Impact { at, kind: BOOM, strength: 1.0, seed: 1 })
+    } else if CUE == 2 {
+        let _ = cues.push(Cue::Impact { at, kind: PLANT, strength: 1.0, seed: 1 })
+    } else if CUE == 3 {
+        let _ = cues.push(Cue::Whoosh { at, kind: SWING, amount: 1.0, seed: 1 })
+    }
+    if CUE == 4 || CUE == 6 {
+        sea(mut cues)
+    }
+    if CUE == 5 || CUE == 6 {
+        let _ = cues.push(Cue::Wind { gust: 0.9, toward: vec2(0.0, 1.0), leaves: 0.0 })
+    }
+    if CUE == 6 {
+        lines = exchange()
+    }
+    play(Score { m, lines, next: 0, sample: 0 }, play_score)
+    Game { cues }
+}
+
+/// The sea round the skiff: the long swell under it, the chop and the spray off it.
+fn sea(cues: mut RingWriter<Cue>) {
+    let _ = cues.push(Cue::Water { slot: 0, at: vec3(0.0, -0.5, 4.0), kind: SWELL, flow: 1.0 })
+    let _ = cues.push(Cue::Water { slot: 1, at: vec3(0.0, -0.5, -2.5), kind: CHOP, flow: 1.0 })
+    let _ = cues.push(Cue::Water { slot: 2, at: vec3(0.0, -0.5, -3.0), kind: SPRAY, flow: 1.0 })
+}
+
+pub fn frame(state: mut Game, time: f32, width: u32, height: u32) {}
+
+/// How many samples one call to the voice renders.
+pub fn quantum() -> u32 {
+    QUANTUM
+}

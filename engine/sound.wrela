@@ -22,7 +22,7 @@
 // that moves a source doesn't click.
 
 use std::audio::{QUANTUM, RingReader, RingWriter, SAMPLE_RATE, decay_rate, ring}
-use std::math::{PI, TAU, cos, exp, sin, tan}
+use std::math::{PI, TAU, cos, exp, log, sin, tan, tanh}
 
 /// The audio thread's rate.
 const RATE: f32 = f32(SAMPLE_RATE)
@@ -34,11 +34,13 @@ pub const SURFACES: u32 = 8
 pub const KINDS: u32 = 4
 pub const BRUSHES: u32 = 3
 pub const IMPACTS: u32 = 4
-pub const WHOOSHES: u32 = 2
+pub const WHOOSHES: u32 = 4
 pub const STEPS: u32 = 4
-pub const STRIKES: u32 = 4
+pub const STRIKES: u32 = 6
 pub const WATERS: u32 = 4
 pub const CUES: u32 = 64
+/// The resonant modes a struck body rings with.
+pub const MODES: u32 = 8
 
 /// How a step on a surface sounds: a knock (a decaying tone: the foot's weight on the ground)
 /// and grit (a burst of noise in a band: grass, leaf litter, gravel, a splash).
@@ -53,6 +55,33 @@ pub struct Surface: Copy {
     pub grit_q: f32 = 0.7,
     pub grit_t60: f32 = 0.12,
     pub grit: f32 = 0.0,
+    /// The knock's drop: it starts `knock_drop` times its frequency and falls to it, most of the
+    /// way in `knock_glide` seconds (a body struck: the thump's pitch falls as it settles).
+    pub knock_drop: f32 = 1.0,
+    pub knock_glide: f32 = 0.03,
+    /// A second band of noise, longer and lower than the grit (a blow's body and the air it
+    /// moves): its centre, its sharpness, its seconds to fall 60 dB, its level.
+    pub tail_hz: f32 = 300.0,
+    pub tail_q: f32 = 0.7,
+    pub tail_t60: f32 = 0.5,
+    pub tail: f32 = 0.0,
+    /// How hard the whole is driven into a soft clip (0 clean): a struck body's overtones, so a
+    /// low thump has partials a small speaker can play.
+    pub drive: f32 = 0.0,
+    /// The struck body's own modes (a face, a chest, a plank), each rung by the blow's force: a
+    /// half-sine pulse `contact` seconds long (a soft, long contact rings only the low modes),
+    /// `rough` of it noise (skin and cloth, not a clean pulse).
+    pub modes: [Mode; MODES] = [Mode {}; MODES],
+    pub contact: f32 = 0.003,
+    pub rough: f32 = 0.3,
+}
+
+/// A body's resonant mode: its frequency (Hz), its seconds to fall 60 dB, and its level (the
+/// peak it rings to after a unit blow).
+pub struct Mode: Copy {
+    pub hz: f32 = 0.0,
+    pub t60: f32 = 0.1,
+    pub level: f32 = 0.0,
 }
 
 /// How air moved past fast sounds (a blade's swing, a body gone at once): noise in a band
@@ -64,6 +93,10 @@ pub struct Swish: Copy {
     pub attack: f32 = 0.08,
     pub t60: f32 = 0.35,
     pub level: f32 = 0.0,
+    /// Its glide: the band starts `sweep` times its centre and slides to it, most of the way in
+    /// `sweep_t` seconds (a fist passing the ear: a whoosh's pitch rises or falls as it goes).
+    pub sweep: f32 = 1.0,
+    pub sweep_t: f32 = 0.1,
 }
 
 /// How water of a kind sounds from close by: noise in a band (`lo_hz` to `hi_hz`) at a level,
@@ -75,6 +108,12 @@ pub struct Babble: Copy {
     pub level: f32 = 0.0,
     pub rate: f32 = 2.0,
     pub depth: f32 = 0.5,
+    /// Waves: one about every `waves` seconds (0 none; each gap a third longer or shorter at
+    /// random), each swelling in over `crest` seconds and falling away over the rest of its gap,
+    /// to `surge` times the bed's level at its crest.
+    pub waves: f32 = 0.0,
+    pub crest: f32 = 1.0,
+    pub surge: f32 = 0.0,
 }
 
 /// How the wind sounds at a gust of 1: a rush of low noise (loudest in the open), and the
@@ -86,6 +125,10 @@ pub struct Breath: Copy {
     pub rush: f32 = 0.0,
     pub leaves_hz: f32 = 1400.0,
     pub leaves: f32 = 0.0,
+    /// The gusts: how far the air's own drift stirs the wind (a fraction), and about how many
+    /// times a second it turns.
+    pub stir: f32 = 0.22,
+    pub stir_hz: f32 = 0.35,
 }
 
 /// A world's sounds: its surfaces' steps, its water kinds', its brushes' (what a body moving
@@ -269,15 +312,43 @@ fn decay(t60: f32) -> f32 {
 struct Ringing: Copy {
     at: vec3,
     on: bool,
-    knock_cos: f32,
-    knock_sin: f32,
-    knock_re: f32,
-    knock_im: f32,
+    /// The knock: its phase and its step a sample (radians), the step it falls to and the share
+    /// of the difference left, and that share's fall a sample; its level and its fall.
+    knock_phase: f32,
+    knock_w: f32,
+    knock_w_to: f32,
+    knock_glide: f32,
+    knock_glide_fall: f32,
+    knock_level: f32,
     knock_decay: f32,
     grit: Band,
     grit_svf: Svf,
     grit_level: f32,
     grit_decay: f32,
+    tail: Band,
+    tail_svf: Svf,
+    tail_level: f32,
+    tail_decay: f32,
+    /// The grit's glide (a whoosh's): its centre and sharpness now and the centre it slides to,
+    /// and the share of the slide left, falling by `glide_fall` a quantum.
+    grit_hz: f32,
+    grit_q: f32,
+    grit_to: f32,
+    glide: f32,
+    glide_fall: f32,
+    drive: f32,
+    /// The modes: each one's two-pole coefficients and input gain, its last two outputs; the
+    /// blow's pulse: its length in samples and how far through it is, its scale and roughness.
+    mode_a1: [f32; MODES],
+    mode_a2: [f32; MODES],
+    mode_g: [f32; MODES],
+    mode_y1: [f32; MODES],
+    mode_y2: [f32; MODES],
+    modes: u32,
+    pulse_len: f32,
+    pulse_at: f32,
+    pulse_scale: f32,
+    rough: f32,
     /// The swell: 1 at the strike, falling by `fall` a sample; the envelopes are (1 − swell)
     /// times theirs.
     swell: f32,
@@ -289,15 +360,37 @@ fn ringing() -> Ringing {
     Ringing {
         at: vec3(0.0),
         on: false,
-        knock_cos: 1.0,
-        knock_sin: 0.0,
-        knock_re: 0.0,
-        knock_im: 0.0,
+        knock_phase: 0.0,
+        knock_w: 0.0,
+        knock_w_to: 0.0,
+        knock_glide: 0.0,
+        knock_glide_fall: 0.0,
+        knock_level: 0.0,
         knock_decay: 0.0,
         grit: Band {},
         grit_svf: Svf {},
         grit_level: 0.0,
         grit_decay: 0.0,
+        tail: Band {},
+        tail_svf: Svf {},
+        tail_level: 0.0,
+        tail_decay: 0.0,
+        grit_hz: 0.0,
+        grit_q: 0.0,
+        grit_to: 0.0,
+        glide: 0.0,
+        glide_fall: 0.0,
+        drive: 0.0,
+        mode_a1: [0.0; MODES],
+        mode_a2: [0.0; MODES],
+        mode_g: [0.0; MODES],
+        mode_y1: [0.0; MODES],
+        mode_y2: [0.0; MODES],
+        modes: 0,
+        pulse_len: 0.0,
+        pulse_at: 0.0,
+        pulse_scale: 0.0,
+        rough: 0.0,
         swell: 0.0,
         fall: SWELL,
         out: placed(),
@@ -317,14 +410,46 @@ impl Ringing {
         let w = TAU * s.knock_hz * pitch / RATE
         self.at = at
         self.on = true
-        self.knock_cos = cos(w)
-        self.knock_sin = sin(w)
-        self.knock_re = s.knock * level
-        self.knock_im = 0.0
+        self.knock_phase = 0.0
+        self.knock_w = w * s.knock_drop
+        self.knock_w_to = w
+        self.knock_glide = 1.0
+        self.knock_glide_fall = exp(-1.0 / (max(s.knock_glide, 1e-4) * RATE))
+        self.knock_level = s.knock * level
         self.knock_decay = decay(s.knock_t60)
         self.grit = band(s.grit_hz * pitch, s.grit_q)
         self.grit_level = s.grit * level
         self.grit_decay = decay(s.grit_t60)
+        self.tail = band(s.tail_hz * pitch, s.tail_q)
+        self.tail_level = s.tail * level
+        self.tail_decay = decay(s.tail_t60)
+        self.glide = 0.0
+        self.drive = s.drive
+        // The modes, in order, up to the first silent one.
+        self.modes = 0
+        for k in 0..MODES {
+            let m = s.modes[k]
+            if m.level <= 0.0 || self.modes != k {
+                continue
+            }
+            let w = TAU * min(m.hz * pitch, 0.45 * RATE) / RATE
+            let r = decay(m.t60)
+            self.mode_a1[k] = 2.0 * r * cos(w)
+            self.mode_a2[k] = r * r
+            // A unit impulse rings a two-pole to a peak of about g / sin(w).
+            self.mode_g[k] = m.level * level * sin(w)
+            self.mode_y1[k] = 0.0
+            self.mode_y2[k] = 0.0
+            self.modes = k + 1
+        }
+        // The pulse: a half sine whose samples sum to 1.
+        self.pulse_len = max(s.contact * RATE, 1.0)
+        self.pulse_at = 0.0
+        self.pulse_scale = PI / (2.0 * self.pulse_len)
+        self.rough = clamp(s.rough, 0.0, 1.0)
+        if self.modes == 0 {
+            self.pulse_at = self.pulse_len
+        }
         self.swell = 1.0
         self.fall = SWELL
     }
@@ -337,9 +462,17 @@ impl Ringing {
         let pitch = (1.0 + 0.41 * amount) * (1.0 + 0.08 * own.next())
         self.at = at
         self.on = true
-        self.knock_re = 0.0
-        self.knock_im = 0.0
-        self.grit = band(w.hz * pitch, w.q)
+        self.knock_level = 0.0
+        self.tail_level = 0.0
+        self.drive = 0.0
+        self.modes = 0
+        self.pulse_at = self.pulse_len
+        self.grit_to = w.hz * pitch
+        self.grit_hz = self.grit_to * w.sweep
+        self.grit_q = w.q
+        self.glide = if w.sweep == 1.0 { 0.0 } else { 1.0 }
+        self.glide_fall = exp(-f32(QUANTUM) / (max(w.sweep_t, 1e-3) * RATE))
+        self.grit = band(self.grit_hz, w.q)
         self.grit_level = w.level * (0.4 + 0.6 * amount) * (1.0 + 0.15 * own.next())
         self.grit_decay = decay(w.t60)
         self.swell = 1.0
@@ -348,15 +481,39 @@ impl Ringing {
 
     @audio
     fn sample(mut self, noise: mut Noise) -> f32 {
-        let re = (self.knock_re * self.knock_cos - self.knock_im * self.knock_sin) *
-            self.knock_decay
-        let im = (self.knock_re * self.knock_sin + self.knock_im * self.knock_cos) *
-            self.knock_decay
-        self.knock_re = re
-        self.knock_im = im
+        let knock = cos(self.knock_phase) * self.knock_level
+        self.knock_level *= self.knock_decay
+        self.knock_phase += self.knock_w_to + (self.knock_w - self.knock_w_to) * self.knock_glide
+        self.knock_phase = self.knock_phase % TAU
+        self.knock_glide *= self.knock_glide_fall
         let grit = self.grit_svf.pass(self.grit, noise.next()) * self.grit_level
         self.grit_level *= self.grit_decay
-        let y = (1.0 - self.swell) * (re + grit)
+        var tail = 0.0
+        if self.tail_level > 0.0 {
+            tail = self.tail_svf.pass(self.tail, noise.next()) * self.tail_level
+            self.tail_level *= self.tail_decay
+        }
+        var body = 0.0
+        if self.modes > 0 {
+            var x = 0.0
+            if self.pulse_at < self.pulse_len {
+                let shape = sin(PI * (self.pulse_at + 0.5) / self.pulse_len) * self.pulse_scale
+                x = shape * (1.0 - self.rough + self.rough * 1.7 * noise.next())
+                self.pulse_at += 1.0
+            }
+            for k in 0..self.modes {
+                let y = self.mode_a1[k] * self.mode_y1[k] -
+                    self.mode_a2[k] * self.mode_y2[k] +
+                    self.mode_g[k] * x
+                self.mode_y2[k] = self.mode_y1[k]
+                self.mode_y1[k] = y
+                body += y
+            }
+        }
+        var y = (1.0 - self.swell) * (knock + grit + tail) + body
+        if self.drive > 0.0 {
+            y = tanh(self.drive * y) / self.drive
+        }
         self.swell *= self.fall
         y
     }
@@ -364,7 +521,12 @@ impl Ringing {
     /// Whether it has died away: under -100 dB.
     @audio
     fn quiet(self) -> bool {
-        abs(self.knock_re) + abs(self.knock_im) + self.grit_level < 1e-5
+        var ringing = 0.0
+        for k in 0..self.modes {
+            ringing += abs(self.mode_y1[k]) + abs(self.mode_y2[k])
+        }
+        abs(self.knock_level) + self.grit_level + self.tail_level + ringing < 1e-5 &&
+            self.pulse_at >= self.pulse_len
     }
 }
 
@@ -378,6 +540,13 @@ struct Bed: Copy {
     swell: f32,
     swell_gain: f32,
     depth: f32,
+    /// The waves: the seconds between them, the crest's time and height; the time into this
+    /// wave and its length (s).
+    waves: f32,
+    crest: f32,
+    surge: f32,
+    into: f32,
+    length: f32,
     out: Placed,
 }
 
@@ -389,12 +558,26 @@ fn bed() -> Bed {
         swell: 0.0,
         swell_gain: 0.0,
         depth: 0.0,
+        waves: 0.0,
+        crest: 1.0,
+        surge: 0.0,
+        into: 0.0,
+        length: 1.0,
         out: placed(),
     }
 }
 
 impl Bed {
     /// Sets the band (`lo` to `hi` Hz) and the swells (`rate` a second, `depth` deep).
+    /// Sets the waves (`Babble`'s).
+    @audio
+    fn surf(mut self, waves: f32, crest: f32, surge: f32) {
+        self.waves = waves
+        self.crest = max(crest, 0.05)
+        self.surge = surge
+        self.length = max(waves, 0.1)
+    }
+
     @audio
     fn tune(mut self, lo: f32, hi: f32, rate: f32, depth: f32) {
         let centre = sqrt(lo * hi)
@@ -409,7 +592,20 @@ impl Bed {
     @audio
     fn sample(mut self, noise: mut Noise) -> f32 {
         self.swell += self.swell_a * (noise.next() - self.swell)
-        let s = clamp(1.0 + self.depth * self.swell * self.swell_gain, 0.0, 2.0)
+        var s = clamp(1.0 + self.depth * self.swell * self.swell_gain, 0.0, 2.0)
+        if self.waves > 0.0 {
+            // A wave: a smooth swell to its crest, then an exponential fall over its length.
+            let t = self.into
+            let w = if t < self.crest { 0.5 - 0.5 * cos(PI * t / self.crest) } else {
+                exp(-4.0 * (t - self.crest) / max(self.length - self.crest, 0.1))
+            }
+            s *= 1.0 + self.surge * w
+            self.into += 1.0 / RATE
+            if self.into >= self.length {
+                self.into = 0.0
+                self.length = self.waves * (1.0 + 0.33 * noise.next())
+            }
+        }
         self.svf.pass(self.band, noise.next()) * s
     }
 }
@@ -440,10 +636,9 @@ impl Drift {
     }
 }
 
-/// How long the felt gust takes to come to the cue's (s), and how far the air's own drift
-/// stirs it (a fraction) and the canopy's sway stirs each ear's (a fraction).
+/// How long the felt gust takes to come to the cue's (s), and how far the canopy's sway stirs
+/// each ear's (a fraction). How far the air's own drift stirs it is the palette's (`Breath`).
 const GUST_EASE: f32 = 0.5
-const STIRRED: f32 = 0.22
 const SWAYED: f32 = 0.25
 
 /// The share of each ear's rush and hush that is its own noise: the rest both ears hear alike.
@@ -474,10 +669,10 @@ struct Blowing: Copy {
     was: vec4,
 }
 
-fn blowing(seed: u32) -> Blowing {
+fn blowing(seed: u32, stir_hz: f32) -> Blowing {
     Blowing {
         felt: 0.0,
-        drift: drift(0.35),
+        drift: drift(stir_hz),
         sway: [drift(0.5); 2],
         shared: seeded(seed ^ 0x51ed),
         ears: [seeded(seed ^ 0x1eef), seeded(seed ^ 0x219b)],
@@ -503,7 +698,7 @@ impl Blowing {
     @audio
     fn begin(mut self, b: Breath, gust: f32, canopy: f32, side: f32, gain: f32) {
         self.felt += (1.0 - exp(-f32(QUANTUM) / (GUST_EASE * RATE))) * (gust - self.felt)
-        let v = max(self.felt * (1.0 + STIRRED * self.drift.next(mut self.shared)), 0.0)
+        let v = max(self.felt * (1.0 + b.stir * self.drift.next(mut self.shared)), 0.0)
         // The rush, higher in a stronger wind: 0.4 of its corner when still, 1.2 at a gust of 1.
         self.rush_band = band(b.rush_hz * (0.4 + 0.8 * v), 1.4)
         let rush = gain * b.rush * v * v * (1.0 - 0.7 * canopy)
@@ -578,6 +773,8 @@ pub struct Mixer {
     brushes: [Stream; BRUSHES],
     waters: [Stream; WATERS],
     noise: Noise,
+    /// The beds' own noise (water, brushes), so a strike's draws don't change how the sea goes.
+    bed_noise: Noise,
 }
 
 /// A mixer for a world that sounds as `palette` says, and the ring the program pushes its cues
@@ -604,15 +801,23 @@ pub fn mixer(palette: Palette, seed: u32 = 1) -> (RingWriter<Cue>, Mixer) {
             gust: 0.0,
             toward: vec2(1.0, 0.0),
             canopy: 0.0,
-            wind: blowing(seed),
+            wind: blowing(seed, stir_hz: palette.wind.stir_hz),
             brushes,
             waters: [quiet; WATERS],
             noise: seeded(seed),
+            bed_noise: seeded(seed ^ 0xbed5),
         },
     )
 }
 
 impl Mixer {
+    /// Hears `c` now, on the audio thread: for a voice that wraps the mixer and keeps its own
+    /// timeline (a score of cues at given samples), so a cue lands on its sample, not its frame.
+    @audio
+    pub fn cue(mut self, c: Cue) {
+        self.hear(c)
+    }
+
     @audio
     fn hear(mut self, c: Cue) {
         match c {
@@ -656,6 +861,7 @@ impl Mixer {
                     if w.kind != k || w.flow == 0.0 {
                         let b = self.palette.waters[k]
                         w.bed.tune(b.lo_hz, b.hi_hz, rate: b.rate, depth: b.depth)
+                        w.bed.surf(b.waves, crest: b.crest, surge: b.surge)
                     }
                     w.at = at
                     w.kind = k
@@ -697,11 +903,11 @@ pub fn mix(m: mut Mixer, left: mut [f32], right: mut [f32]) {
     }
     for s in 0..WATERS {
         let level = p.gain * p.waters[m.waters[s].kind].level * m.waters[s].flow
-        sound_stream(mut m.waters[s], ears, p.near, level, mut m.noise, mut left, mut right)
+        sound_stream(mut m.waters[s], ears, p.near, level, mut m.bed_noise, mut left, mut right)
     }
     for s in 0..BRUSHES {
         let level = p.gain * p.brushes[s].level * m.brushes[s].flow
-        sound_stream(mut m.brushes[s], ears, p.near, level, mut m.noise, mut left, mut right)
+        sound_stream(mut m.brushes[s], ears, p.near, level, mut m.bed_noise, mut left, mut right)
     }
     for i in 0..left.len() {
         left[i] = clamp(left[i], -1.0, 1.0)
@@ -722,6 +928,11 @@ fn sound_ringing(
 ) {
     if r.on {
         r.out.place(ears, r.at, p.near, p.gain)
+        if r.glide > 1e-3 {
+            // A whoosh's band slides a step a quantum, in octaves.
+            r.glide *= r.glide_fall
+            r.grit = band(r.grit_to * exp(r.glide * log(r.grit_hz / r.grit_to)), r.grit_q)
+        }
         for i in 0..left.len() {
             let y = r.sample(mut noise)
             r.out.add(y, i, mut left, mut right)
@@ -1011,4 +1222,154 @@ fn under_the_trees_the_wind_hushes_without_a_hiss() {
     // 4.5 kHz) had about 0.8 of them; a hush mostly under 2 kHz has under a tenth.
     let (_, highs, _) = wind_alone(gust: 1.4, leaves: 1.0, seconds: 2.0)
     assert(highs < 0.1, f"under the trees the wind's highs are {highs} of it")
+}
+
+/// A mixer with `p`, the listener 3 m back facing it, and one cue at the origin: over the
+/// `quanta` quanta after `skip` quanta, the left channel's energy (x) and its sample-to-sample
+/// differences' (z), as `render` measures them, each difference within the span.
+fn heard(p: Palette, c: Cue, skip: u32, quanta: u32) -> vec4 {
+    let (w, mx) = mixer(p)
+    var cues = take w
+    var m = take mx
+    cues.push(Cue::Listen { at: vec3(0.0, 0.0, -3.0), forward: vec2(0.0, 1.0) })
+    cues.push(c)
+    let _ = render(mut m, skip)
+    var l = [0.0; QUANTUM]
+    var r = [0.0; QUANTUM]
+    var e = vec4(0.0)
+    var last = 0.0
+    for q in 0..quanta {
+        mix(mut m, mut l, mut r)
+        for i in 0..QUANTUM {
+            if q + i > 0 {
+                e += vec4(l[i] * l[i], 0.0, (l[i] - last) * (l[i] - last), 0.0)
+            }
+            last = l[i]
+        }
+    }
+    e
+}
+
+/// The share of a sound's energy in its sample-to-sample differences: higher when it's higher.
+fn brightness(e: vec4) -> f32 {
+    e.z / max(e.x, 1e-20)
+}
+
+@test
+fn a_knock_that_drops_starts_higher_than_it_ends() {
+    var p = test_palette()
+    p.impacts[0] = Surface {
+        knock_hz: 50.0,
+        knock_t60: 0.6,
+        knock: 1.0,
+        knock_drop: 3.0,
+        knock_glide: 0.03,
+    }
+    let hit = Cue::Impact { at: vec3(0.0), kind: 0, strength: 1.0, seed: 1 }
+    // Its first 10 ms against 200 ms in.
+    let early = heard(p, hit, skip: 0, quanta: 4)
+    let late = heard(p, hit, skip: 75, quanta: 4)
+    assert(brightness(early) > 3.0 * brightness(late))
+}
+
+@test
+fn a_blows_tail_rings_on_after_its_grit() {
+    var p = test_palette()
+    let short = Surface { grit_hz: 2000.0, grit_t60: 0.03, grit: 0.5 }
+    p.impacts[0] = short
+    p.impacts[1] = Surface { tail_hz: 200.0, tail_t60: 0.5, tail: 0.5, ..short }
+    let at = |kind: u32| -> Cue { Cue::Impact { at: vec3(0.0), kind, strength: 1.0, seed: 1 } }
+    // 100 ms in, the grit alone is gone; the tail is still there.
+    assert(
+        db(heard(p, at(1), skip: 38, quanta: 8).x) -
+            db(heard(p, at(0), skip: 38, quanta: 8).x) > 30.0,
+    )
+}
+
+@test
+fn a_whoosh_that_sweeps_down_falls_in_pitch() {
+    var p = test_palette()
+    p.whooshes[0] = Swish {
+        hz: 300.0,
+        q: 2.0,
+        attack: 0.01,
+        t60: 0.6,
+        level: 1.0,
+        sweep: 6.0,
+        sweep_t: 0.05,
+    }
+    p.whooshes[1] = Swish { sweep: 1.0, ..p.whooshes[0] }
+    let at = |kind: u32| -> Cue { Cue::Whoosh { at: vec3(0.0), kind, amount: 1.0, seed: 3 } }
+    // Swept, it falls from brighter than it ends, against the unswept one.
+    let swept = brightness(heard(p, at(0), skip: 2, quanta: 6)) /
+        brightness(heard(p, at(0), skip: 94, quanta: 6))
+    let steady = brightness(heard(p, at(1), skip: 2, quanta: 6)) /
+        brightness(heard(p, at(1), skip: 94, quanta: 6))
+    assert(swept > 3.0 * steady, f"{swept} {steady}")
+}
+
+@test
+fn a_struck_body_rings_at_its_mode() {
+    var p = test_palette()
+    p.impacts[0] = Surface {
+        modes: [
+            Mode { hz: 300.0, t60: 0.3, level: 1.0 },
+            Mode {},
+            Mode {},
+            Mode {},
+            Mode {},
+            Mode {},
+            Mode {},
+            Mode {},
+        ],
+    }
+    p.impacts[1] = Surface {
+        modes: [
+            Mode { hz: 1200.0, t60: 0.3, level: 1.0 },
+            Mode {},
+            Mode {},
+            Mode {},
+            Mode {},
+            Mode {},
+            Mode {},
+            Mode {},
+        ],
+    }
+    let at = |kind: u32| -> Cue { Cue::Impact { at: vec3(0.0), kind, strength: 1.0, seed: 1 } }
+    // 50 ms in, each still rings, the higher one about 4² brighter (the differences of a tone
+    // grow as its frequency squared).
+    let low = heard(p, at(0), skip: 19, quanta: 8)
+    let high = heard(p, at(1), skip: 19, quanta: 8)
+    assert(low.x > 1e-5 && high.x > 1e-5)
+    let ratio = brightness(high) / brightness(low)
+    assert(ratio > 10.0 && ratio < 25.0, f"{ratio}")
+}
+
+@test
+fn a_bed_with_waves_swells_and_falls() {
+    var p = test_palette()
+    p.waters[0] = Babble {
+        lo_hz: 200.0,
+        hi_hz: 2000.0,
+        level: 0.3,
+        rate: 0.5,
+        depth: 0.0,
+        waves: 2.0,
+        crest: 0.5,
+        surge: 3.0,
+    }
+    let (w, mx) = mixer(p)
+    var cues = take w
+    var m = take mx
+    cues.push(Cue::Listen { at: vec3(0.0, 0.0, -3.0), forward: vec2(0.0, 1.0) })
+    cues.push(Cue::Water { slot: 0, at: vec3(0.0), kind: 0, flow: 1.0 })
+    // Its quietest and loudest tenths of a second over 4 s: at least 10 dB apart.
+    var lo = 1e9
+    var hi = 0.0
+    for _ in 0..40 {
+        let e = render(mut m, 38).x
+        lo = min(lo, e)
+        hi = max(hi, e)
+    }
+    assert(db(hi) - db(lo) > 10.0, f"{db(hi) - db(lo)}")
 }
