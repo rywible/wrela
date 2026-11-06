@@ -47,7 +47,7 @@ fn form(q: vec3) -> vec2 {
     let z = clamp(q.z / LONG, -1.0, 1.0)
     let y = q.y - sheer_at(z)
     if PLANING > 0.5 {
-        let taper = if z > 0.0 { 1.0 - pow(z, 1.35) } else { 1.0 - 0.3 * pow(-z, 3.0) }
+        let taper = if z > 0.0 { 1.0 - pow(z, 1.35) } else { 1.0 - 0.5 * pow(-z, 2.2) }
         let w = max(BEAM * 0.8 * taper, 0.02)
         let dk = max(
             DEEP *
