@@ -38,7 +38,7 @@ pub const DECK: u32 = 0
 /// How loud the sea and the wind sit under the fight, against the fitted references' level (set
 /// by meter: the bed about 35 dB under the blow's peak).
 pub const SEA: f32 = 2.0
-pub const WIND: f32 = 0.5
+pub const WIND: f32 = 0.8
 
 /// The palette. Each sound was fitted to a reference (docs/generated.jsonl, by its file), then
 /// directed: the references came out of their model mixed for big speakers (all sub, a
@@ -47,21 +47,21 @@ pub const WIND: f32 = 0.5
 pub const PALETTE: Palette = Palette {
     surfaces: [
         // A foot finding the wet deck again (stamp_0's fit, by hand a heel, a scuff and a slap
-        // of water at 4 kHz, under the blow).
+        // of water at 3 kHz, well under the blow).
         Surface {
             knock_hz: 150.0,
             knock_t60: 0.06,
             knock: 1.8,
             knock_drop: 1.6,
             knock_glide: 0.01,
-            grit_hz: 2200.0,
+            grit_hz: 1500.0,
             grit_q: 0.7,
             grit_t60: 0.07,
-            grit: 4.0,
-            tail_hz: 4000.0,
+            grit: 1.5,
+            tail_hz: 3000.0,
             tail_q: 0.6,
-            tail_t60: 0.15,
-            tail: 4.0,
+            tail_t60: 0.12,
+            tail: 2.5,
         },
         Surface {},
         Surface {},
@@ -80,7 +80,7 @@ pub const PALETTE: Palette = Palette {
         // slow wander under them is shallower now the waves carry the movement.
         Babble { lo_hz: 35.0, hi_hz: 220.0, level: 1.59 * SEA, rate: 0.15, depth: 0.15, waves: 3.3, crest: 0.8, surge: 0.6 },
         Babble { lo_hz: 220.0, hi_hz: 1600.0, level: 0.15 * SEA, rate: 0.25, depth: 0.2, waves: 3.3, crest: 0.4, surge: 0.6 },
-        Babble { lo_hz: 1500.0, hi_hz: 9000.0, level: 0.035 * SEA, rate: 0.4, depth: 0.5, waves: 3.3, crest: 0.35, surge: 1.5 },
+        Babble { lo_hz: 1500.0, hi_hz: 9000.0, level: 0.06 * SEA, rate: 0.4, depth: 0.5, waves: 3.3, crest: 0.35, surge: 1.5 },
         Babble {},
     ],
     brushes: [Babble {}; 3],
@@ -88,18 +88,18 @@ pub const PALETTE: Palette = Palette {
         // The blow. Fitted to pb2_0 (a take that fades on its own, no limiter): the knuckles'
         // half-sine contact, the body's eight ringing modes found by modal analysis, the thump's
         // drop and the slap. By hand (blind critics heard first a sine boom, then a slap): a
-        // 55 Hz sub dropping from 110 Hz over the hit-stop, a loud 150 Hz body thump, the 70 Hz
-        // mode moved to a 220 Hz flesh thud, and the slap moved down to 3 kHz, 6 dB down.
+        // short 55 Hz sub dropping from 110 Hz, a loud 150 Hz body thump, the 70 Hz mode moved
+        // to a 220 Hz flesh thud, and the slap moved down to a broad 1.5 kHz flesh-and-cloth smack.
         Surface {
             knock_hz: 55.0,
-            knock_t60: 0.18,
-            knock: 3.0,
+            knock_t60: 0.1,
+            knock: 2.0,
             knock_drop: 2.0,
             knock_glide: 0.0694,
-            grit_hz: 3000.0,
-            grit_q: 0.9,
-            grit_t60: 0.03,
-            grit: 11.0,
+            grit_hz: 1500.0,
+            grit_q: 0.6,
+            grit_t60: 0.05,
+            grit: 16.0,
             tail_hz: 150.0,
             tail_q: 0.7,
             tail_t60: 0.15,
@@ -181,9 +181,10 @@ pub const PALETTE: Palette = Palette {
     ],
     // The storm wind (wind_0): the rush's corner and level fitted at a gust of 1. Its gusts are
     // measured off ga1_0, a take with no limiter: about one every 4 s (0.26 turns a second),
-    // the level swinging by about 1.5 times its mean; by hand stirred about half as
-    // far, so a lull never silences it under the fight.
-    wind: Breath { rush_hz: 317.0, rush: 1.06 * WIND, leaves_hz: 1400.0, leaves: 0.0, stir: 0.45, stir_hz: 0.26 },
+    // the level swinging by about 1.5 times its mean; by hand stirred far less
+    // (the rush goes as the gust squared, so this is still about ±3 dB): critics heard the
+    // fight's 3.7 s fall in a lull and then a gust as a jump.
+    wind: Breath { rush_hz: 317.0, rush: 1.06 * WIND, leaves_hz: 1400.0, leaves: 0.0, stir: 0.2, stir_hz: 0.26 },
     near: 2.0,
     gain: 0.17,
 }
@@ -195,7 +196,7 @@ pub const TURN: f32 = 55.0 / 60.0
 pub const LAUNCH: f32 = 55.5 / 60.0
 pub const PLANTED: f32 = 58.0 / 60.0
 pub const CONTACT: f32 = 62.0 / 60.0
-pub const STUMBLE: [f32; 2] = [84.0 / 60.0 - 0.034, 97.0 / 60.0 - 0.034]
+pub const STUMBLE: [f32; 2] = [84.0 / 60.0, 97.0 / 60.0]
 
 /// Where things are: the camera (the ears), the fist at contact, the striker's lead foot, the
 /// struck fighter's feet.
@@ -210,7 +211,7 @@ struct Line: Copy {
     cue: Cue,
 }
 
-const LINES: u32 = 21
+const LINES: u32 = 24
 
 /// How long the bed plays before the exchange's first frame (s), so the clip starts on a sea and
 /// a wind already blowing; the clip's soundtrack is cut from here.
@@ -230,6 +231,7 @@ fn bed(at: f32, flow: f32, gust: f32) -> [Line; 3] {
 /// spatter), the bed ducked 7 dB under the blow and let back over 0.4 s, the stumbling feet,
 /// and another wave.
 fn exchange() -> [Line; LINES] {
+    let start = bed(-PREROLL, flow: 1.0, gust: 0.9)
     let duck = bed(CONTACT, flow: 0.45, gust: 0.7)
     let half = bed(CONTACT + 0.2, flow: 0.7, gust: 0.8)
     let back = bed(CONTACT + 0.4, flow: 1.0, gust: 0.9)
@@ -238,6 +240,9 @@ fn exchange() -> [Line; LINES] {
         Line { at, cue: Cue::Whoosh { at: vec3(0.0, -0.5, 5.0), kind: WAVE, amount: 0.3, seed } }
     }
     let lines = [
+        start[0],
+        start[1],
+        start[2],
         wave(0.1, 11),
         Line {
             at: TURN,
@@ -249,13 +254,17 @@ fn exchange() -> [Line; LINES] {
         duck[1],
         duck[2],
         Line { at: CONTACT, cue: Cue::Impact { at: FIST, kind: BLOW, strength: 1.0, seed: 5 } },
-        Line { at: CONTACT, cue: Cue::Impact { at: FIST, kind: BOOM, strength: blast, seed: 6 } },
+        Line {
+            // The blast lands just after the fist, so the fist is heard first.
+            at: CONTACT + 0.015,
+            cue: Cue::Impact { at: FIST, kind: BOOM, strength: 0.7 * blast, seed: 6 },
+        },
         Line {
             at: CONTACT,
             cue: Cue::Impact {
                 at: FIST + vec3(0.6, 0.0, 0.0),
                 kind: SPATTER,
-                strength: 0.8 * blast,
+                strength: 0.4 * blast,
                 seed: 10,
             },
         },
@@ -272,10 +281,10 @@ fn exchange() -> [Line; LINES] {
         half[0],
         half[1],
         half[2],
+        Line { at: STUMBLE[0], cue: Cue::Step { at: STRUCK, surface: DECK, weight: 1.0, seed: 7 } },
         back[0],
         back[1],
         back[2],
-        Line { at: STUMBLE[0], cue: Cue::Step { at: STRUCK, surface: DECK, weight: 1.0, seed: 7 } },
         Line {
             at: STUMBLE[1],
             cue: Cue::Step { at: STRUCK, surface: DECK, weight: 0.8, seed: 8 },
@@ -286,6 +295,17 @@ fn exchange() -> [Line; LINES] {
     var out = lines
     for i in 0..LINES {
         out[i].at = lines[i].at + PREROLL
+    }
+    // The score plays its lines in order, each when its time comes: sorted by time, so a line
+    // written out of order can't hold back the ones after it.
+    for i in 1..LINES {
+        var j = i
+        while j > 0 && out[j - 1].at > out[j].at {
+            let t = out[j - 1]
+            out[j - 1] = out[j]
+            out[j] = t
+            j -= 1
+        }
     }
     out
 }
