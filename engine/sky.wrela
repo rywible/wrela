@@ -464,7 +464,9 @@ fn field_in(
         let d = detail.sample_level(rep, q / DETAIL_SPAN)
         let fine = d.r * 0.625 + d.g * 0.25 + d.b * 0.125
         let wisp = mix(fine, 1.0 - fine, saturate(hf * 4.0))
-        s = saturate(above(s, from: wisp * mix(0.6, 0.5, w.a)))
+        // (A storm's deck, its map's alpha a little under 1, torn harder at its edges.)
+        let storm = saturate((1.0 - w.a) / 0.15)
+        s = saturate(above(s, from: wisp * mix(mix(0.6, 0.35, w.a), 0.5, storm)))
     }
     // Dense a little way in: a cloud's edge is sharp. (An overcast's deck thickens slowly into
     // its base, wisps and scud first: no hard floor for the march's steps to terrace.)
