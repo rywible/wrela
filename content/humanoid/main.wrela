@@ -18,8 +18,8 @@
 use body::{
     ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
     ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_CODE, ACCAD_M2_WALK_RAW, ACT_PUNCH, ACT_ROLL,
-    ACTS, GAITS, HERO, PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS, TURNS_RAW,
-    WALK, WALK_RAW,
+    ACTS, ACTS_CODE, GAITS, GAITS_CODE, HERO, PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW,
+    T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
 }
 use engine::cleanup
 use engine::cleanup::Cleanup
@@ -44,8 +44,9 @@ use std::transform::identity
 pub const SHOW: u32 = 0
 pub const RAW: u32 = 0
 
-/// `--set CODE=1` plays a move as it's written in Wrela (content/moves, fitted from its clip by
-/// the moves tool) instead of the clip itself: Male 2's walk (`SHOW=8`).
+/// `--set CODE=1` plays the moves as they're written in Wrela (content/moves, fitted from their
+/// clips by the moves tool) instead of the clips themselves: Male 2's walk (`SHOW=8`), and every
+/// gait and one-off a game plays (`SHOW=11`).
 pub const CODE: u32 = 0
 
 /// `SHOW=11` as a game without this layer's help would play it, for comparison: `--set CUT=1`
@@ -144,8 +145,8 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
     let (stick, act, upper) = script(s.last, time)
     let pose = playback::step(
         mut s.mover,
-        GAITS,
-        ACTS,
+        if CODE == 1 { GAITS_CODE } else { GAITS },
+        if CODE == 1 { ACTS_CODE } else { ACTS },
         HERO.rig,
         s.mask,
         stick,
