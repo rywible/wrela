@@ -32,7 +32,7 @@ pub struct Striker: Copy {
 /// What's struck: its effective mass (kg) and stiffness (N/m) where it's hit, its modes'
 /// frequencies (Hz) and how much each takes up of a blow (0 to 1; 0 none), its material's loss
 /// factor (the share of a cycle's energy it loses: flesh about 0.3, bone 0.05, stone 0.005),
-/// its bare skin and its cloth (0 to 1).
+/// its bare skin, its cloth and its surface's crack (0 to 1).
 pub struct Target: Copy {
     pub mass: f32 = 5.0,
     pub stiffness: f32 = 1.5e6,
@@ -41,6 +41,8 @@ pub struct Target: Copy {
     pub loss: f32 = 0.3,
     pub skin: f32 = 1.0,
     pub cloth: f32 = 0.0,
+    /// How much its surface cracks when struck (0 to 1): grains of stone, a bone's edge.
+    pub crack: f32 = 0.0,
 }
 
 /// A bare fist, the arm behind it.
@@ -58,9 +60,10 @@ pub const FACE = Target {
     stiffness: 1.5e6,
     hz: [120.0, 320.0, 650.0, 1100.0],
     share: [0.5, 1.0, 0.75, 0.35],
-    loss: 0.15,
+    loss: 0.1,
     skin: 1.0,
     cloth: 0.0,
+    crack: 0.15,
 }
 /// The ribs through a shirt: the chest's mass, a springy cage, the lungs' air behind it.
 pub const RIBS = Target {
@@ -68,7 +71,7 @@ pub const RIBS = Target {
     stiffness: 3.0e5,
     hz: [85.0, 140.0, 230.0, 400.0],
     share: [0.75, 0.6, 1.0, 0.6],
-    loss: 0.35,
+    loss: 0.22,
     skin: 0.3,
     cloth: 1.0,
 }
@@ -78,7 +81,7 @@ pub const BELLY = Target {
     stiffness: 1.0e5,
     hz: [60.0, 110.0, 180.0, 0.0],
     share: [1.0, 0.7, 0.4, 0.0],
-    loss: 0.6,
+    loss: 0.4,
     skin: 0.2,
     cloth: 1.0,
 }
@@ -88,21 +91,25 @@ pub const GUARD = Target {
     stiffness: 8.0e5,
     hz: [150.0, 400.0, 900.0, 0.0],
     share: [0.6, 1.0, 0.5, 0.0],
-    loss: 0.2,
+    loss: 0.15,
     skin: 0.8,
     cloth: 0.3,
+    crack: 0.3,
 }
 /// Carved stone the size of a man (the idol's hand): far heavier and stiffer than any limb, so
-/// the limb sets the contact, and it barely moves, so its modes take up little; but stone loses
-/// almost nothing, so what they take up rings on.
+/// the limb sets the contact, and it barely moves, so its modes take up little. Stone itself
+/// loses almost nothing, but a carved block sits on the rest of the idol, which drinks its
+/// ringing in a few hundred milliseconds (its loss is the joint's, not the stone's); its
+/// surface's grains crack.
 pub const STONE = Target {
     mass: 400.0,
     stiffness: 1.0e9,
-    hz: [210.0, 560.0, 1050.0, 1750.0],
-    share: [0.12, 0.1, 0.07, 0.05],
-    loss: 0.006,
+    hz: [210.0, 590.0, 1130.0, 1870.0],
+    share: [0.1, 0.14, 0.14, 0.1],
+    loss: 0.03,
     skin: 0.0,
     cloth: 0.0,
+    crack: 1.0,
 }
 
 /// The speed a blow's levels are set at (m/s: a fast fist).
@@ -111,7 +118,7 @@ const SPEED: f32 = 9.0
 /// blow's modes ring to about the levels the mixer's other impacts do).
 const RING: f32 = 8.0
 const SLAP: f32 = 3.0
-const THWAP: f32 = 2.0
+const THWAP: f32 = 3.0
 
 /// Two springs in series, or masses pressed together: their reduced value.
 fn reduced(a: f32, b: f32) -> f32 {
@@ -147,17 +154,20 @@ pub fn struck(by: Striker, on: Target, speed: f32) -> Surface {
     // The slap: air squeezed from between two skins, higher the faster it's pushed out, about
     // as long as three contacts. It takes bare skin on both sides; the patch sets how much air.
     let skin = by.skin * on.skin
+    // The crack: the struck surface's grains, a click as short as the contact, as loud as the
+    // blow's force (its impulse over its contact).
+    let crack = on.crack * j * contact(FIST, FACE, speed: SPEED) / t
     // The thwap: cloth caught between them, crushed and snapped taut, lower and duller than a
     // slap (the weave lets the air through slowly).
     let cloth = min(by.cloth + on.cloth, 1.0)
     Surface {
         knock: 0.0,
-        grit_hz: 2500.0 * sqrt(fast),
+        grit_hz: if crack > skin { 4000.0 } else { 2500.0 * sqrt(fast) },
         grit_q: 0.7,
         grit_t60: 3.0 * t + 0.01,
-        grit: SLAP * skin * by.patch * fast * fast,
+        grit: SLAP * max(skin * by.patch * fast * fast, crack),
         tail_hz: 1100.0 * sqrt(fast),
-        tail_q: 0.9,
+        tail_q: 1.4,
         tail_t60: 4.0 * t + 0.02,
         tail: THWAP * cloth * by.patch * fast * fast,
         modes,
@@ -188,7 +198,9 @@ fn a_harder_blow_rings_louder_and_slaps_brighter() {
 fn stone_rings_on_where_flesh_dies() {
     let flesh = struck(FIST, RIBS, speed: 9.0)
     let stone = struck(FIST, STONE, speed: 9.0)
-    assert(stone.modes[0].t60 > 10.0 * flesh.modes[0].t60)
+    // Each one's first mode: stone rings several times as long, and cracks where flesh slaps.
+    assert(stone.modes[0].t60 > 2.5 * flesh.modes[0].t60, f"{stone.modes[0].t60}")
+    assert(stone.grit_hz > flesh.grit_hz)
     // A fist on stone: the fist's own stiffness sets the contact.
     assert(stone.contact < contact(FIST, RIBS, speed: 9.0))
 }

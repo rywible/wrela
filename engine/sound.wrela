@@ -41,6 +41,8 @@ pub const WATERS: u32 = 4
 pub const CUES: u32 = 64
 /// The resonant modes a struck body rings with.
 pub const MODES: u32 = 8
+/// Below what a struck body barely moves the air (Hz).
+const RADIATES: f32 = 40.0
 
 /// How a step on a surface sounds: a knock (a decaying tone: the foot's weight on the ground)
 /// and grit (a burst of noise in a band: grass, leaf litter, gravel, a splash).
@@ -349,6 +351,11 @@ struct Ringing: Copy {
     pulse_at: f32,
     pulse_scale: f32,
     rough: f32,
+    /// The modes' sum, last in and out, through a DC blocker at `RADIATES` Hz (its pole): a body struck
+    /// moves the air, it can't push it away for good, so a long, soft blow's push isn't heard.
+    body_x1: f32,
+    body_y1: f32,
+    body_r: f32,
     /// The swell: 1 at the strike, falling by `fall` a sample; the envelopes are (1 − swell)
     /// times theirs.
     swell: f32,
@@ -391,6 +398,9 @@ fn ringing() -> Ringing {
         pulse_at: 0.0,
         pulse_scale: 0.0,
         rough: 0.0,
+        body_x1: 0.0,
+        body_y1: 0.0,
+        body_r: 0.0,
         swell: 0.0,
         fall: SWELL,
         out: placed(),
@@ -442,6 +452,9 @@ impl Ringing {
             self.mode_y2[k] = 0.0
             self.modes = k + 1
         }
+        self.body_x1 = 0.0
+        self.body_y1 = 0.0
+        self.body_r = exp(-TAU * RADIATES / RATE)
         // The pulse: a half sine whose samples sum to 1.
         self.pulse_len = max(s.contact * RATE, 1.0)
         self.pulse_at = 0.0
@@ -509,6 +522,10 @@ impl Ringing {
                 self.mode_y1[k] = y
                 body += y
             }
+            let b = body - self.body_x1 + self.body_r * self.body_y1
+            self.body_x1 = body
+            self.body_y1 = b
+            body = b
         }
         var y = (1.0 - self.swell) * (knock + grit + tail) + body
         if self.drive > 0.0 {
