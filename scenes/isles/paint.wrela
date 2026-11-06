@@ -14,7 +14,8 @@ use engine::light::Light
 use engine::ocean::Waves
 use engine::sky::{Clouds, cloud_shadow}
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Targets3, Texture, Texture3d}
-use isle::{Isle, march, march_mirrored, normal, occlusion, shadow}
+use isle::{BASALT, Isle, march, march_mirrored, normal, occlusion, shadow}
+use sea::{far_off, squall}
 
 /// What a pixel `px` meets along its ray, and its colour, its marks and its normal and energy (as
 /// `opening::paint` writes them for the ink).
@@ -65,13 +66,34 @@ fn sample<I: Isle>(
             id = isle.field(o + d * ti, ti * k).y
         }
     }
+    // Past it, on the horizon: the chart's other islands and the sea's rocks, as silhouettes.
+    var far_n = vec3(y: 1.0)
+    var far_a = vec3(0.0)
+    var is_far = false
+    if id == SKY || (id == SEA && t > 1200.0) {
+        let fh = far_off(o, d, t, k)
+        if fh.t < t {
+            t = fh.t
+            id = BASALT
+            is_far = true
+            far_n = fh.n
+            far_a = fh.albedo
+        }
+    }
     var c = vec3(0.0)
     var line = 1.0
     var weight = 0.0
     var n = vec3(y: 1.0)
     var energy = 0.0
     let p = o + d * t
-    if id == SKY {
+    if is_far {
+        // (Lit by the one sun and seen through the one air, as the near island is.)
+        let sun = cloud_shadow(clouds, cloud, smp, p)
+        c = lit_solid(s, h, view, aerial, dome, smp, p, far_n, d, far_a, 0.9, 0.0, vec3(0.0), sun, 1.0, 1.0, 0.0)
+        n = far_n
+        line = 1.0
+        weight = 0.3
+    } else if id == SKY {
         let sky = heaven(view, light, d, dome, smp)
         c = sky.rgb
         line = 0.45 - sky.a
@@ -192,6 +214,14 @@ fn sample<I: Isle>(
         )
         line = f.line
         weight = 0.5
+    }
+    // A squall far off, between the eye and what's behind it: its cloud and rain, lit as a grey
+    // mass in the one sun and air.
+    let sq = squall(o, d, t)
+    if sq.k > 0.0 {
+        let q = o + d * sq.t
+        let lit = lit_solid(s, h, view, aerial, dome, smp, q, sq.n, d, sq.albedo, 1.0, 0.0, vec3(0.0), 1.0, 1.0, 1.0, 0.0)
+        c = mix(c, lit, sq.k)
     }
     let thrown = spray(s, h, o, d, t)
     c = c * (1.0 - thrown.a) + thrown.rgb

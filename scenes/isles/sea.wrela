@@ -1,0 +1,422 @@
+// The open sea round an island: what stands on its horizon. Wherever the skiff is, something
+// does: the chart's other islands far off, past the reach of their own shaders, and the sea's
+// own rocks, stacks and skerries between them.
+//
+// Far off (past a couple of kilometres), an island is a few pixels to a few dozen high, and
+// all an eye takes from it is its outline, its light side and its dark, and its air. So each is
+// drawn as a silhouette: an outline across the line of sight (`outline`, in metres across and
+// up), stood at its place on the chart, sunk by the earth's curve, its faces turned as its
+// outline's slopes turn them, lit by the one sun and seen through the one air
+// (`opening::paint::lit_solid`, haze 1) as the near island is. None of them lights itself.
+//
+// The filler: one rock or none in each cell of a grid laid over the sea (a kilometre and more a
+// side), its kind and size from the cell's hash; walked cell by cell along the ray, so the
+// cost is the cells a ray crosses, never the sea's whole count.
+
+use opening::look::{hash2, noise}
+
+/// The earth's radius (m): what the curve sinks the far islands by.
+const EARTH: f32 = 6.371e6
+
+/// The kinds of outline.
+pub const MESA: u32 = 0
+pub const NEEDLE: u32 = 1
+pub const COIL: u32 = 2
+pub const FLOAT: u32 = 3
+pub const ARCH: u32 = 4
+pub const SKERRY: u32 = 5
+
+/// One island or rock as the horizon shows it: where it stands (the world's x, z), its kind,
+/// its half-width across and its height (m), how high its foot hangs over the sea (m, a
+/// floating rock's), its seed, and its stone's colour.
+pub struct Far: Copy {
+    pub at: vec2,
+    pub kind: u32,
+    pub half: f32,
+    pub tall: f32,
+    pub lift: f32,
+    pub seed: f32,
+    pub stone: vec3,
+}
+
+/// A chart's place at bearing `b` (rad, from +z toward +x, as the workbench's `BEARING`) and
+/// `km` out from the skiff's start.
+fn placed(b: f32, km: f32) -> vec2 {
+    vec2(sin(b), cos(b)) * km * 1000.0
+}
+
+/// The chart round the Still Ring: the islands a skiff off it sees on its horizon, each a few
+/// minutes' to an hour's row from the next.
+pub const CHARTED: u32 = 5
+
+pub fn charted(i: u32) -> Far {
+    let basalt = vec3(0.06, 0.062, 0.07)
+    if i == 0 {
+        // The beacon: a rock hung in the air, a cathedral on it, the region's one sure mark,
+        // the sky showing under it from twenty kilometres off.
+        Far {
+            at: placed(2.2, 9.0),
+            kind: FLOAT,
+            half: 650.0,
+            tall: 520.0,
+            lift: 300.0,
+            seed: 1.3,
+            stone: vec3(0.16, 0.15, 0.14),
+        }
+    } else if i == 1 {
+        // The Tally Stair: a stair coiling up into the sky on nothing, thinning as it climbs.
+        Far {
+            at: placed(3.55, 6.5),
+            kind: COIL,
+            half: 90.0,
+            tall: 900.0,
+            lift: 0.0,
+            seed: 4.1,
+            stone: vec3(0.13, 0.12, 0.11),
+        }
+    } else if i == 2 {
+        // A long table of an island, low, its cliffs a wall along the horizon.
+        Far {
+            at: placed(1.3, 5.5),
+            kind: MESA,
+            half: 1100.0,
+            tall: 85.0,
+            lift: 0.0,
+            seed: 7.7,
+            stone: basalt,
+        }
+    } else if i == 3 {
+        // A sea arch, the sky through it.
+        Far {
+            at: placed(4.3, 3.6),
+            kind: ARCH,
+            half: 240.0,
+            tall: 140.0,
+            lift: 0.0,
+            seed: 2.9,
+            stone: basalt * 1.2,
+        }
+    } else {
+        // A leaning needle, taller than anything near it.
+        Far {
+            at: placed(0.6, 4.2),
+            kind: NEEDLE,
+            half: 70.0,
+            tall: 260.0,
+            lift: 0.0,
+            seed: 5.5,
+            stone: basalt,
+        }
+    }
+}
+
+/// How far a point `u` m across and `y` m up (the sea's) is outside island `f`'s outline (m; < 0
+/// inside).
+fn outline(f: Far, u: f32, y: f32) -> f32 {
+    let w = f.half
+    let h = f.tall
+    let s = f.seed
+    if f.kind == MESA {
+        // A flat top in a few steps, cliffs either side, a little talus at their feet.
+        let rise = noise(vec2(u / w * 2.5 + s, 0.5))
+        let top = h * (0.7 + 0.3 * (floor(rise * 4.0) + smoothstep(0.8, 1.0, fract(rise * 4.0))) / 4.0)
+        let side = w * (1.0 - 0.06 * y / h) + w * 0.03 * (noise(vec2(y / 18.0 + s, 3.0)) - 0.5)
+        let talus = max(abs(u) - side - 25.0 * max(1.0 - y / 18.0, 0.0), y - 18.0)
+        return min(max(abs(u) - side, y - top), talus)
+    }
+    if f.kind == NEEDLE {
+        // Leaning seaward, fluted, its top snapped.
+        let v = u - y * 0.18
+        let half = w * pow(max(1.0 - y / h, 0.0), 0.7) + w * 0.12 * (noise(vec2(y / 12.0 + s, 1.0)) - 0.5)
+        return max(abs(v) - max(half, 0.0), max(y - h, -y - 5.0))
+    }
+    if f.kind == COIL {
+        // A knuckle of rock at the sea, and from it the stair: a ribbon swinging side to side as
+        // it coils, each turn a little narrower and thinner, to nothing at its top; a landing at
+        // each turn.
+        let foot = length(vec2(u / (w * 1.6), y / 60.0)) - 1.0
+        let up = clamp(y / h, 0.0, 1.0)
+        let phase = y / 75.0 + s
+        let swing = w * (1.0 - 0.45 * up) * sin(phase)
+        let thick = 22.0 * (1.0 - 0.7 * up) + 3.0
+        // (Seen side-on, a coil's run across is long where it crosses the eye and short where it
+        // turns: thicker at its turns.)
+        let turn = 1.0 + 1.2 * abs(sin(phase))
+        // (Both its flights: the near one swinging across, the far one swinging back behind it,
+        // so the coil reads as a coil, crossing itself at each half turn.)
+        let ribbon = max(min(abs(u - swing), abs(u + swing)) - thick * turn, max(y - h, 40.0 - y))
+        // The landings: where it turns, a shelter of stone on it.
+        let at_turn = 75.0 * (floor((y / 75.0 + s) / 3.1415927 + 0.5) * 3.1415927 + 1.5707963 - s)
+        let ty = at_turn
+        let tx = w * (1.0 - 0.45 * clamp(ty / h, 0.0, 1.0)) * sin(ty / 75.0 + s)
+        let landing = max(abs(u - tx) - 28.0 * (1.0 - 0.6 * clamp(ty / h, 0.0, 1.0)), abs(y - ty - 14.0) - 16.0)
+        let shelter = if ty < h * 0.9 && ty > 60.0 { landing } else { 1.0e4 }
+        return min(min(foot * 50.0, ribbon), shelter)
+    }
+    if f.kind == FLOAT {
+        // A mountain torn up by its roots and hung in the air: flat-topped, its underside drawn
+        // down to a point, its broken pieces hanging round it; on its top a cathedral, its nave,
+        // its two towers and its spire.
+        let b = f.lift
+        let k = clamp((y - b) / h, 0.0, 1.0)
+        let half = w * (0.04 + 0.96 * pow(k, 0.75)) + w * 0.06 * (noise(vec2(y / 30.0 + s, 2.0)) - 0.5)
+        let top = b + h * (0.97 + 0.03 * noise(vec2(u / 80.0, s)))
+        let rock = max(abs(u) - half, max(y - top, b - y))
+        let c = u + w * 0.05
+        let nave = max(abs(c) - w * 0.2, y - top - 70.0 - max(w * 0.2 - abs(c), 0.0) * 0.5)
+        let towers = max(abs(abs(c) - w * 0.2) - 16.0, y - top - 170.0)
+        let spire = max(abs(c) - 18.0 * (1.0 - clamp((y - top) / 290.0, 0.0, 1.0)) - 2.0, y - top - 290.0)
+        let church = max(min(nave, min(towers, spire)), top - 5.0 - y)
+        // Pieces of it hanging off it in the air.
+        var bits = 1.0e4
+        for i in 0..4 {
+            let fi = f32(i)
+            let bu = (hash2(vec2(fi, s)) - 0.5) * w * 2.8
+            let by = b + h * (hash2(vec2(fi, s + 3.0)) * 0.9 - 0.25)
+            let br = 25.0 + 45.0 * hash2(vec2(fi, s + 7.0))
+            let q = vec2(u - bu, y - by)
+            bits = min(bits, (abs(q.x) + abs(q.y) * 0.8) - br)
+        }
+        return min(min(rock, church), bits)
+    }
+    if f.kind == ARCH {
+        let side = w * (1.0 - 0.1 * y / h)
+        let top = h * (0.85 + 0.15 * noise(vec2(u / w * 2.0 + s, 0.0)))
+        let body = max(abs(u) - side, y - top)
+        let hole = 1.0 - length(vec2((u - w * 0.1) / (w * 0.42), y / (h * 0.62)))
+        return max(body, hole * min(w * 0.42, h * 0.62))
+    }
+    // A skerry: a low hump of rock, broken.
+    let r = length(vec2(u / w, y / h)) - 1.0 + 0.25 * (noise(vec2(u / 6.0 + s, y / 3.0)) - 0.5)
+    r * min(w, h)
+}
+
+/// What a ray meets of a far island or rock: how far along the ray (or `limit`), its normal and
+/// its colour.
+pub struct FarHit: Copy {
+    pub t: f32,
+    pub n: vec3,
+    pub albedo: vec3,
+}
+
+/// Ray `o`, `d` against island `f`, nearer than `best.t`; `k` a pixel's width per metre out.
+fn meet(f: Far, o: vec3, d: vec3, k: f32, best: FarHit) -> FarHit {
+    let hl = length(vec2(d.x, d.z))
+    if hl < 1.0e-4 {
+        return best
+    }
+    let dh = vec2(d.x, d.z) / hl
+    let v = f.at - vec2(o.x, o.z)
+    let along = dot(v, dh)
+    // (Its reach: as wide as it is, and its tower's or stair's lean.)
+    let reach = f.half * 1.7 + 20.0
+    if along <= reach || along / hl >= best.t {
+        return best
+    }
+    // Across: the pixel's offset from its middle, at its range.
+    let u = -(dh.x * v.y - dh.y * v.x)
+    if abs(u) > reach {
+        return best
+    }
+    // Up: the ray's height there over the sea, the earth's curve under it.
+    let y = o.y + d.y / hl * along + along * along / (2.0 * EARTH)
+    let e = outline(f, u, y)
+    if e > 0.0 {
+        return best
+    }
+    // Its faces as its outline turns them, round toward the eye: a face's light from its slopes.
+    let px = max(along * k * 2.0, 1.0)
+    let gu = outline(f, u + px, y) - outline(f, u - px, y)
+    let gy = outline(f, u, y + px) - outline(f, u, y - px)
+    let side = vec3(-dh.y, 0.0, dh.x)
+    let toward = -vec3(dh.x, 0.0, dh.y)
+    // (A cliff's columns turn it a little this way and that across its face.)
+    let flute = (noise(vec2(u / 14.0 + f.seed, 0.0)) - 0.5) * 0.9
+    let g = normalize(vec2(gu, gy) + vec2(1.0e-5, 0.0))
+    let n = normalize(side * (g.x + flute) * 0.9 + vec3(y: 1.0) * g.y * 0.9 + toward * 0.7)
+    // Its stone; and white at its foot where the sea breaks on it.
+    var a = f.stone * (0.8 + 0.4 * noise(vec2(u / 9.0 + f.seed, y / 30.0)))
+    let surf = smoothstep(1.4 + 1.2 * noise(vec2(u / 4.0, f.seed)), 0.2, y) * step(f.lift, 1.0)
+    a = mix(a, vec3(0.5, 0.52, 0.54), surf * 0.7)
+    FarHit { t: along / hl, n, albedo: a }
+}
+
+/// The sea's own rocks: in a grid of cells `CELL` m a side, one or none in each.
+const CELL: f32 = 700.0
+
+/// Cell `c`'s rock, if it has one (its `half` 0 if not).
+fn rock_in(c: vec2) -> Far {
+    let h = hash2(c * 0.913 + vec2(3.7))
+    let at = (c + vec2(0.25) + vec2(hash2(c + vec2(1.1)), hash2(c + vec2(7.3))) * 0.5) * CELL
+    // (None within a kilometre and a half of the skiff's start, nor in the sight line to the
+    // chart's islands: the filler never stands in front of what you are rowing to.)
+    let near_start = length(at) < 600.0
+    if h > 0.32 || near_start {
+        return Far { at, kind: SKERRY, half: 0.0, tall: 0.0, lift: 0.0, seed: 0.0, stone: vec3(0.0) }
+    }
+    let size = hash2(c + vec2(5.9))
+    let basalt = vec3(0.06, 0.062, 0.07)
+    if h < 0.2 {
+        Far {
+            at,
+            kind: SKERRY,
+            half: 12.0 + 45.0 * size,
+            tall: 4.0 + 10.0 * size,
+            lift: 0.0,
+            seed: h * 31.0,
+            stone: basalt,
+        }
+    } else {
+        Far {
+            at,
+            kind: NEEDLE,
+            half: 8.0 + 14.0 * size,
+            tall: 20.0 + 45.0 * size,
+            lift: 0.0,
+            seed: h * 17.0,
+            stone: basalt,
+        }
+    }
+}
+
+/// Whether a rock at `at` would stand in the sight line from the skiff's start to one of the
+/// chart's islands.
+fn in_sight_line(at: vec2) -> bool {
+    var hidden = false
+    for i in 0..CHARTED {
+        let f = charted(i)
+        let dir = normalize(f.at)
+        let along = dot(at, dir)
+        let off = abs(at.x * dir.y - at.y * dir.x)
+        if along > 0.0 && along < length(f.at) && off < f.half + 250.0 {
+            hidden = true
+        }
+    }
+    hidden
+}
+
+/// What ray `o`, `d` meets on the horizon nearer than `limit`: the chart's islands and the sea's
+/// rocks. `k` a pixel's width per metre out.
+pub fn far_off(o: vec3, d: vec3, limit: f32, k: f32) -> FarHit {
+    var best = FarHit { t: limit, n: vec3(y: 1.0), albedo: vec3(0.0) }
+    // (Nothing far off stands much over the horizon: a ray climbing past 3° misses it all.)
+    let hl = length(vec2(d.x, d.z))
+    if d.y / max(hl, 1.0e-4) > 0.25 {
+        return best
+    }
+    for i in 0..CHARTED {
+        best = meet(charted(i), o, d, k, best)
+    }
+    // The filler, cell by cell along the ray out to 14 km.
+    let dh = vec2(d.x, d.z) / max(hl, 1.0e-4)
+    let g0 = vec2(o.x, o.z) / CELL
+    var cell = floor(g0)
+    let step_x = if dh.x > 0.0 { 1.0 } else { -1.0 }
+    let step_z = if dh.y > 0.0 { 1.0 } else { -1.0 }
+    let inv = vec2(1.0 / max(abs(dh.x), 1.0e-5), 1.0 / max(abs(dh.y), 1.0e-5))
+    var next = vec2(
+        (if dh.x > 0.0 { cell.x + 1.0 - g0.x } else { g0.x - cell.x }) * inv.x,
+        (if dh.y > 0.0 { cell.y + 1.0 - g0.y } else { g0.y - cell.y }) * inv.y,
+    )
+    var walked = 0.0
+    var i = 0
+    while i < 30 && walked * CELL < 14000.0 && walked * CELL / max(hl, 1.0e-4) < best.t {
+        let r = rock_in(cell)
+        if r.half > 0.0 && !in_sight_line(r.at) {
+            best = meet(r, o, d, k, best)
+        }
+        if next.x < next.y {
+            walked = next.x
+            next.x += inv.x
+            cell.x += step_x
+        } else {
+            walked = next.y
+            next.y += inv.y
+            cell.y += step_z
+        }
+        i += 1
+    }
+    best
+}
+
+/// What a ray meets of a squall far off: how much it hides (0 to 1), its normal and colour,
+/// and how far along the ray it stands.
+pub struct Squall: Copy {
+    pub k: f32,
+    pub n: vec3,
+    pub albedo: vec3,
+    pub t: f32,
+}
+
+/// A rain squall far off on the chart: a heaped cloud low over the sea, and the rain hanging
+/// from its flat base in a slanted veil to the water. What ray `o`, `d` meets of it, if what's
+/// behind it is past it (`t`).
+pub fn squall(o: vec3, d: vec3, t: f32) -> Squall {
+    let none = Squall { k: 0.0, n: vec3(y: 1.0), albedo: vec3(0.0), t }
+    let at = placed(4.0, 6.5)
+    let w = 1100.0
+    let hl = length(vec2(d.x, d.z))
+    if hl < 1.0e-4 {
+        return none
+    }
+    let dh = vec2(d.x, d.z) / hl
+    let v = at - vec2(o.x, o.z)
+    let along = dot(v, dh)
+    let tt = along / hl
+    if along <= 0.0 || tt >= t {
+        return none
+    }
+    let u = -(dh.x * v.y - dh.y * v.x)
+    if abs(u) > w * 1.5 {
+        return none
+    }
+    let y = o.y + d.y / hl * along + along * along / (2.0 * EARTH)
+    let side = vec3(-dh.y, 0.0, dh.x)
+    let toward = -vec3(dh.x, 0.0, dh.y)
+    // The cloud: heaped of billows, each a ball, the middle ones the tallest; cut flat at its
+    // base. The billow the eye meets first is the one standing out nearest it.
+    let base = 560.0 + 40.0 * noise(vec2(u / 300.0, 1.0))
+    var best_z = -1.0
+    var nn = vec3(y: 1.0)
+    var cover = 0.0
+    // (Its edges torn soft, as a cloud's are: eaten into by the air at two sizes.)
+    let torn = (noise(vec2(u / 90.0, y / 90.0)) - 0.5) * 0.5 + (noise(vec2(u / 31.0 + 7.0, y / 31.0)) - 0.5) * 0.3
+    for i in 0..14 {
+        let fi = f32(i)
+        let mid = 1.0 - abs(fi / 13.0 - 0.5) * 2.0
+        let cx = (fi / 13.0 - 0.5) * 1.9 * w + (hash2(vec2(fi, 2.0)) - 0.5) * 260.0
+        let r = 150.0 + 170.0 * hash2(vec2(fi, 5.0)) + 230.0 * mid
+        let cy = base + r * 0.35 + 520.0 * mid * mid + 120.0 * hash2(vec2(fi, 8.0))
+        let q = vec2(u - cx, y - cy)
+        let lq = length(q)
+        let soft = 1.0 - lq / r + torn * 0.35
+        if soft > 0.0 {
+            let z = sqrt(max(r * r - lq * lq, 0.0))
+            cover = max(cover, smoothstep(0.0, 0.3, soft))
+            if z > best_z {
+                best_z = z
+                nn = normalize(side * q.x + vec3(y: 1.0) * q.y + toward * z)
+            }
+        }
+    }
+    let cloud = cover * smoothstep(base - 20.0, base + 25.0, y)
+    // The rain: from the cloud's base to the sea, narrower than the cloud, in slanted shafts,
+    // thinning at its edges.
+    let slant = u + y * 0.35
+    let shafts = 0.55 + 0.45 * noise(vec2(slant / 70.0, 2.0)) * noise(vec2(slant / 23.0, y / 400.0))
+    let veil = smoothstep(w * 1.0, w * 0.35, abs(u + 150.0)) *
+        smoothstep(base + 10.0, base - 80.0, y) *
+        (0.6 + 0.4 * smoothstep(0.0, 300.0, y)) *
+        shafts * 1.0
+    if cloud > veil {
+        // (Its base shadowed by the cloud over it.)
+        let under = smoothstep(base + 250.0, base, y)
+        return Squall { k: cloud * 0.92, n: nn, albedo: vec3(0.78, 0.78, 0.8) * (1.0 - 0.7 * under), t: tt }
+    }
+    Squall {
+        k: veil,
+        n: normalize(toward + vec3(y: 0.4)),
+        albedo: vec3(0.2, 0.21, 0.23),
+        t: tt,
+    }
+}
