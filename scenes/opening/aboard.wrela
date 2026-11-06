@@ -25,7 +25,7 @@ use skiff::vessel_shadow
 use std::gpu::{
     ClipPosition, DepthTexture, Flat, FragCoord, GpuBuffer, Rgba16Float, Rgba8, Sampler, Targets3,
     Texture, Texture3d, VertexIndex, begin_pass3, begin_pass3_with_depth, buffer, depth_texture,
-    discard, draw, texture, write,
+    Cull, discard, draw, texture, write,
 }
 use std::math::PI
 
@@ -251,9 +251,15 @@ pub fn bones(s: Shot) -> [mat4; 64] {
         // the forearm's way; the forearm's own +z, back along the upper arm. Straight, it faces
         // down.)
         let crook = (wrist - elbow) + pole * 0.05
-        let r_upper = aim(along, vec3(0.0, 0.0, 1.0), elbow - shoulder, crook)
+        // (Each bone along its own rest axis, a degree or two off straight out.)
+        let r_upper = aim(
+            normalize(mirrored(FORE, side) - mirrored(UPPER, side)),
+            vec3(0.0, 0.0, 1.0),
+            elbow - shoulder,
+            crook,
+        )
         let r_fore = aim(
-            along,
+            normalize(mirrored(HAND, side) - mirrored(FORE, side)),
             vec3(0.0, 0.0, 1.0),
             wrist - elbow,
             (shoulder - elbow) + pole * 0.05,
@@ -290,7 +296,8 @@ pub fn bones(s: Shot) -> [mat4; 64] {
         let foot = knee + normalize(ankle - knee) * l2
         let down = vec3(0.0, -1.0, 0.0)
         let r_thigh = aim(down, vec3(0.0, 0.0, 1.0), knee - hip, pole)
-        let r_calf = aim(down, vec3(0.0, 0.0, 1.0), foot - knee, pole)
+        // (The shin leans back a little at rest, its bone from knee to ankle.)
+        let r_calf = aim(normalize(FOOT - CALF), vec3(0.0, 0.0, 1.0), foot - knee, pole)
         // The foot flat on the deck, its toes turned out a little from where he faces.
         let toes = normalize(facing + left * side * 0.35)
         let r_foot = aim(vec3(0.0, 0.0, 1.0), up, toes, up)
@@ -383,7 +390,9 @@ pub fn hero_pixel<F: Parts<Cloth>>(
     let s = shot
     let t = length(v.world - s.eye)
     let behind = painted.load(u32(pixel.position.x), u32(pixel.position.y))
-    if exp2(behind.x) < t - 0.01 {
+    // (Compared as stored, in log2 of the distance at half precision: a step there is about
+    // 0.3% of it at the boat's range, so the margin is a little more than one.)
+    if behind.x < log2(t) - 0.006 {
         discard()
     }
     // His fields at this point of him at rest: his normal (their gradient) and what he's made of.
@@ -491,6 +500,8 @@ impl Aboard {
         let hb = hero()
         let hh = head()
         let hc = coat()
+        // (His faces wind the other way on screen here: `clip_of` keeps the camera's forward as
+        // +z, a mirror of the usual view, so it's the front-wound faces that face away.)
         draw(
             p,
             hero_vertex.bind(
@@ -512,6 +523,7 @@ impl Aboard {
             ),
             indices: self.body.quads.items(),
             indirect: self.body.draw.items(),
+            cull: Cull::Front,
         )
         draw(
             p,
@@ -534,6 +546,7 @@ impl Aboard {
             ),
             indices: self.head.quads.items(),
             indirect: self.head.draw.items(),
+            cull: Cull::Front,
         )
         draw(
             p,
@@ -556,6 +569,7 @@ impl Aboard {
             ),
             indices: self.coat.quads.items(),
             indirect: self.coat.draw.items(),
+            cull: Cull::Front,
         )
         p.end()
         let q = begin_pass3(mut colour, mut marks, mut normal, keep: true)

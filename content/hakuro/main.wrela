@@ -10,8 +10,8 @@ use engine::look::Mesh as Tolerance
 use engine::plain::{LIGHTS, coloured, skin_coloured, unlit_shadow, view}
 use engine::realize::{Mesh, Tally, realize_once}
 use std::gpu::{
-    Cull, GpuBuffer, Unorm8x4, begin_screen_pass_with_depth, buffer, comparison_sampler,
-    depth_texture, draw, read, write,
+    ComparisonSampler, Cull, DepthTexture, GpuBuffer, Unorm8x4, begin_screen_pass_with_depth,
+    buffer, comparison_sampler, depth_texture, draw, read, write,
 }
 use std::io::{Pending, print}
 use std::transform::{rotate_y, translate}
@@ -120,6 +120,8 @@ pub struct State {
     colours: [GpuBuffer<Unorm8x4>; 3],
     palettes: GpuBuffer<mat4>,
     tallies: Vec<Pending<Tally>>,
+    shadow: DepthTexture,
+    smp: ComparisonSampler,
 }
 
 pub fn init() -> State {
@@ -146,7 +148,14 @@ pub fn init() -> State {
     tallies.push(read(body.tally.items()))
     tallies.push(read(head_mesh.tally.items()))
     tallies.push(read(coat_mesh.tally.items()))
-    State { meshes: [body, head_mesh, coat_mesh], colours: [c0, c1, c2], palettes, tallies }
+    State {
+        meshes: [body, head_mesh, coat_mesh],
+        colours: [c0, c1, c2],
+        palettes,
+        tallies,
+        shadow: unlit_shadow(),
+        smp: comparison_sampler(),
+    }
 }
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
@@ -167,8 +176,6 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         4.0,
     )
     var depth = depth_texture(width: width, height: height)
-    let shadow = unlit_shadow()
-    let smp = comparison_sampler()
     let pass = begin_screen_pass_with_depth(mut depth, clear: vec4(0.85, 0.82, 0.76, 1.0))
     for k in 0..15 {
         let m = k / 5
@@ -181,7 +188,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                 first: (k % 5) * MAX_BONES,
                 view: v,
             ),
-            coloured.bind(view: v, lights: LIGHTS, shadow: shadow, shadow_sampler: smp),
+            coloured.bind(view: v, lights: LIGHTS, shadow: s.shadow, shadow_sampler: s.smp),
             indices: s.meshes[m].quads.items(),
             indirect: s.meshes[m].draw.items(),
             cull: Cull::Back,
