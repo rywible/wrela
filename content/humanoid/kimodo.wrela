@@ -1160,7 +1160,8 @@ pub fn fight_round(time: f32) -> humanoid::Pose {
         var p = q
         let hw = base.t + base.q.rotate(p.hips)
         let o = turn.rotate(hw - from)
-        p.hips = inv.t + inv.q.rotate(vec3(to.x + o.x, hw.y, to.z + o.z))
+        // (Its sink kept only in part, from the bounce's own height: the knees bend less.)
+        p.hips = inv.t + inv.q.rotate(vec3(to.x + o.x, to.y + (hw.y - from.y) * FT_SINK, to.z + o.z))
         p.turns[0] = base.q.inverse().mul(turn.mul(base.q.mul(p.turns[0])))
         p
     }
@@ -1237,6 +1238,8 @@ pub const FT_IN: f32 = 0.2
 pub const FT_OUT: f32 = 0.5
 /// How long before the cross ends it starts settling back into the bounce (s).
 pub const FT_EARLY: f32 = 0.15
+/// How much of the cross's own rise and fall its hips keep.
+pub const FT_SINK: f32 = 0.4
 
 /// The cross out of the bounce, measured frame by frame around the punch: hips', chest's and each
 /// foot's facing (degrees about up), the rear heel's height (cm) and the hips along the punch (cm).
@@ -1249,7 +1252,11 @@ fn kimodo_cross_form() {
     for f in 0..90 {
         let w = stride::worlds(rig, one_pose(fight_round(start + f32(f) / 60.0)), 0)
         let yaw = |q: Quat| -> f32 { facing(q) * 57.2958 }
-        std::io::print(f"KF {f} toesR {w[tr].t.x * 100.0:.1} {w[tr].t.y * 100.0:.1} {w[tr].t.z * 100.0:.1} hips {yaw(w[hp].q):.0} chest {yaw(w[ch].q):.0} footL {yaw(w[fl].q):.0} footR {yaw(w[fr].q):.0} heelR {(w[fr].t.y - w[tr].t.y) * 100.0:.1} heelL {(w[fl].t.y - w[tl].t.y) * 100.0:.1} hipsY {w[hp].t.y * 100.0:.1} hipsXZ {w[hp].t.x * 100.0:.1} {w[hp].t.z * 100.0:.1} fist {w[rh].t.x * 100.0:.0} {w[rh].t.z * 100.0:.0} feetXZ {w[fl].t.x * 100.0:.0} {w[fl].t.z * 100.0:.0} {w[fr].t.x * 100.0:.0} {w[fr].t.z * 100.0:.0}")
+        let knee = |side: Text| -> f32 {
+            let (u, l, a) = (w[rig.find(f"{side}UpperLeg".as_str())].t, w[rig.find(f"{side}LowerLeg".as_str())].t, w[rig.find(f"{side}Foot".as_str())].t)
+            180.0 - acos(clamp(dot(normalize(u - l), normalize(a - l)), -1.0, 1.0)) * 57.2958
+        }
+        std::io::print(f"KF {f} kneeL {knee("left"):.0} kneeR {knee("right"):.0} toesR {w[tr].t.x * 100.0:.1} {w[tr].t.y * 100.0:.1} {w[tr].t.z * 100.0:.1} hips {yaw(w[hp].q):.0} chest {yaw(w[ch].q):.0} footL {yaw(w[fl].q):.0} footR {yaw(w[fr].q):.0} heelR {(w[fr].t.y - w[tr].t.y) * 100.0:.1} heelL {(w[fl].t.y - w[tl].t.y) * 100.0:.1} hipsY {w[hp].t.y * 100.0:.1} hipsXZ {w[hp].t.x * 100.0:.1} {w[hp].t.z * 100.0:.1} fist {w[rh].t.x * 100.0:.0} {w[rh].t.z * 100.0:.0} feetXZ {w[fl].t.x * 100.0:.0} {w[fl].t.z * 100.0:.0} {w[fr].t.x * 100.0:.0} {w[fr].t.z * 100.0:.0}")
     }
 }
 
