@@ -202,7 +202,7 @@ pub fn basalt(p: vec3, n: vec3, s: f32, foot: f32) -> vec3 {
     let guano = smoothstep(0.72, 0.9, noise(vec2((p.x + p.z) * 0.08, p.y * 0.015))) *
         smoothstep(8.0, 18.0, p.y) *
         smoothstep(0.5, -0.1, n.y)
-    a = mix(a, vec3(0.55, 0.54, 0.5), guano * 0.5)
+    a = mix(a, vec3(0.55, 0.54, 0.5), guano * 0.15)
     // The splash zone: wet and darker, a few metres up.
     a *= mix(0.55, 1.0, smoothstep(0.5, 4.0, p.y))
     a
