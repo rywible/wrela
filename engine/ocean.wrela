@@ -38,7 +38,7 @@ const G: f32 = 9.81
 
 /// How far past its breaking a crest's water goes white through, in its Jacobian's
 /// deviations: a breaking crest's froth is white at once, its foam greying only as it fades.
-const WHITENS: f32 = 0.6
+const WHITENS: f32 = 0.45
 
 /// How far a wind's crests lean down it, per metre they stand over the level (times the
 /// sea's chop).
@@ -578,8 +578,8 @@ impl Ocean {
         let d = breaking(sea)
         Ocean {
             sea,
-            big: tile(sea, 0, d + 0.3),
-            mid: tile(sea, 1, d + 1.0),
+            big: tile(sea, 0, d + 0.1),
+            mid: tile(sea, 1, d + 0.6),
             fine: tile(sea, 2, 0.0),
             ripple: tile(sea, 3, 0.0),
             scratch: Scratch {

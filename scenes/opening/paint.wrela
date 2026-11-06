@@ -11,6 +11,7 @@ use look::{
     noise, ray,
 }
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
+use wind::air_at
 use engine::ocean::{Waves, level_at, shape_at, surface_at, whitecaps}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use yonder::falls
@@ -738,7 +739,11 @@ fn sea_shade(
     // ocean BRDF of Bruneton, Neyret and Holzschuch, 2010).
     // (The capillaries' own tilts blur the glitter, but hardly the sky the waves a pixel holds
     // mirror: their faces still split into the bright low sky's and the dark deck's.)
-    let slope = sqrt(max(lost.y - waves.sea.unseen * 0.75, 0.0))
+    // A gust's patch, running down the wind over the water (the same gusts the sail feels,
+    // `wind::air_at`): its ripples steeper, so it mirrors more of the dark deck and less of the
+    // bright low sky, a darker roughened stretch, and its crests break whiter.
+    let gusting = clamp((air_at(xz, s.held).gust - 0.78) * 2.0, 0.0, 1.0)
+    let slope = sqrt(max(lost.y - waves.sea.unseen * 0.75, 0.0)) * (0.55 + 1.0 * gusting)
     let rise = asin(clamp(r.y, 0.0, 1.0))
     let across = normalize(vec2(r.x, r.z) + vec2(1.0e-6, 0.0))
     var mirrored = vec3(0.0)
@@ -891,7 +896,9 @@ fn sea_shade(
         clamp(wave / CREST * 2.5, 0.0, 1.0) *
         (1.0 - smoothstep(0.12, 0.45, -d.y)) *
         pow(clamp(0.5 - 0.5 * dot(lf, n), 0.0, 1.0), 3.0)
-    var c = (body + through + glow) * (1.0 - fresnel) + reflected * fresnel + glint
+    // (A gust's cat's paw lies darker, a lull's glassier water paler: the low sky's mirror broken
+    // or whole.)
+    var c = (body + through + glow) * (1.0 - fresnel) + reflected * fresnel * (1.15 - 0.35 * gusting) + glint
     // The white horses and the foam they leave, as film and game oceans draw them now (density
     // and age: Crest's, Houdini's ocean shader's): `foam_k`, how dense the foam is there (fresh
     // and whole where a crest breaks now, thinning as it fades), and its age read back from
@@ -924,7 +931,7 @@ fn sea_shade(
     let torn = shape_at(waves, rest - wind * DRIFT, du * 6.0 + wind * 0.5, dv * 6.0, tiles(calm)).w
     let upwind = shape_at(waves, rest - wind * (DRIFT * 4.0), du * 12.0 + wind * 3.0, dv * 12.0, tiles(calm)).w
     let blown = clamp(max(torn, upwind * 0.9) * 2.0, 0.0, 1.0)
-    let dense = clamp(foam_k * 1.15, 0.0, 1.0)
+    let dense = clamp(foam_k * (0.6 + 1.1 * gusting), 0.0, 1.0)
     let age = smoothstep(0.15, 2.0, -log(max(dense, 1.0e-3)))
     // (Between: the cells' walls, a lace round the holes the bubbles left as they burst.)
     // (Never a net's even mesh: its walls thick and thin, broken where the lace is thin.)
@@ -932,8 +939,8 @@ fn sea_shade(
     let walls = (1.0 - smoothstep(0.0, 0.35 + 0.5 * lace, gap)) * (0.25 + 0.3 * lace) + lace * 0.4
     let froth_h = mix(mix(billow, walls, smoothstep(0.05, 0.45, age)), streak, smoothstep(0.3, 0.8, age))
     let web_k = clamp(1.0 - px_m * 2.0, 0.0, 1.0)
-    let feather = 0.15 + 0.35 * age + 0.3 * (1.0 - web_k)
-    let eroded = clamp((dense - (1.0 - froth_h)) / feather + dense * dense, 0.0, 1.0)
+    let feather = 0.25 + 0.25 * age + 0.3 * (1.0 - web_k)
+    let eroded = clamp((dense - (1.0 - froth_h)) / feather + dense * dense * 0.5, 0.0, 1.0)
     let lines = smoothstep(0.93 - blown * 0.06, 0.97 - blown * 0.04, ridge) * (0.4 + 0.6 * lace)
     // (Under the lace, the thin film of old foam: a grey marbling, the water showing through.)
     let white = max(
