@@ -164,12 +164,13 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
     // never hops back and forth between it and the trough behind; once under, halved onto it.
     // The footprint along the ray, foreshortened, picks the mips: a crest a pixel can't hold
     // isn't marched into speckle.)
+    // (From as high as the highest crest stands, so a near crest's top is never stepped past.)
     let slant = max(-d.y, 0.02)
-    var t = max((o.y - 1.6) / -d.y, 0.0)
+    var t = max((o.y - CREST) / -d.y, 0.0)
     var before = t
     var under = false
     var i = 0
-    while i < 32 && !under {
+    while i < 48 && !under {
         let p = o + d * t
         let foot = t * 2.0 / (s.resolution.y * s.focal * slant)
         let f = p.y - sea_level(s, waves, p, foot)
@@ -657,11 +658,15 @@ const SPARK_GLINT: f32 = 1.5
 /// water).
 const THROUGH_SKY: f32 = 0.3
 
+/// How high over the sea's level its highest crests stand (m): its significant height's
+/// worth (a gale's sea over its swell).
+const CREST: f32 = 7.0
+
 /// How far down the wind of a breaking crest its spindrift's blown (m).
 const DRIFT: f32 = 2.5
 
 /// How thick the spray over the water is (1/m), per share of the sea white (`whitecaps`).
-const SPRAY: f32 = 0.014
+const SPRAY: f32 = 0.018
 
 /// The sea at `p`, seen along `d` from `t` away: its light, line field, weight, normal and energy.
 
@@ -838,7 +843,7 @@ fn sea_shade(
     // The light that comes back up out of the water: deep blue-green, brighter through the
     // crests lit from behind.
     let sky_up = storm_sky(view, h.light, vec3(y: 1.0), dome, smp, disc: false).rgb * PI
-    let body = vec3(0.018, 0.068, 0.082) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
+    let body = vec3(0.028, 0.07, 0.072) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
     let behind = pow(max(dot(normalize(vec3(-d.x, 0.0, -d.z)), -l) * 0.5 + 0.5, 0.0), 4.0)
     // The sun through the waves' crests: their thin tops, where the waves crowd and sharpen,
     // glowing green on the faces turned to the eye, most when the eye looks toward the sun
@@ -872,7 +877,15 @@ fn sea_shade(
     let warp = vec2(noise(wq * 0.5 + vec2(2.1, 8.3)), noise(wq * 0.5 + vec2(6.7, 3.9))) - vec2(0.5)
     let c1 = cells(wq + warp * 2.2 + vec2(0.3, 5.1))
     let c2 = cells(wa * vec2(1.6, 5.2) + warp * 3.0 + vec2(8.2, 1.7))
-    let streak = noise(vec2(wa.x * 0.07, wa.y * 0.9 + warp.x * 1.5)) * 0.7 + noise(wa * vec2(0.3, 3.5)) * 0.3
+    // (Ridged: thin lines a metre or so apart, wandering, each running some metres down the
+    // wind.)
+    let streak = 1.0 -
+        abs(noise(vec2(wa.x * 0.07, wa.y * 0.9 + warp.x * 1.5)) * 1.4 + noise(wa * vec2(0.3, 3.5)) * 0.6 - 1.0)
+    // The foam upwind, read blurred, a few metres back and further: what the wind has drawn out
+    // down to here (the streaks), and the fresh breaks' torn spray (the spindrift, below).
+    let torn = shape_at(waves, rest - wind * DRIFT, du * 6.0 + wind * 0.5, dv * 6.0, tiles(calm)).w
+    let upwind = shape_at(waves, rest - wind * (DRIFT * 4.0), du * 12.0 + wind * 3.0, dv * 12.0, tiles(calm)).w
+    let blown = clamp(max(torn, upwind * 0.8) * 1.5, 0.0, 1.0)
     let raft = (1.0 - smoothstep(0.0, 0.25 + 0.5 * lace, c1.y - c1.x)) * 0.45 +
         (1.0 - smoothstep(0.0, 0.3, c2.y - c2.x)) * 0.2 +
         lace * 0.35
@@ -882,7 +895,9 @@ fn sea_shade(
     let web_k = clamp(1.0 - px_m * 2.0, 0.0, 1.0)
     let edge = 0.04 + 0.25 * (1.0 - web_k)
     let drawn = smoothstep(1.0 - share - edge, 1.0 - share + edge, pattern)
-    let white = mix(share, drawn, web_k) * 0.95
+    // (The streaks, laid where the foam upwind was blown: thin, greyer, never a sheet.)
+    let lines = smoothstep(1.0 - blown * 0.35 - edge, 1.0 - blown * 0.35 + edge, streak)
+    let white = max(mix(share, drawn, web_k), mix(blown * 0.25, lines * 0.6, web_k)) * 0.95
     // (Its thick froth bright, its thin film greyer, the water showing through it.)
     let froth = mix(0.5, noise(wa * vec2(8.0, 12.0) + vec2(2.0)), web_k)
     let bright = (0.45 + 0.55 * smoothstep(0.3, 0.9, share)) * (0.75 + 0.5 * froth)
@@ -907,7 +922,6 @@ fn sea_shade(
     c = mix(c, foam_light * bright, white * 0.92)
     // Spindrift: the spray the wind tears off a crest as it breaks, a thin white veil blown a few
     // metres down the wind of it, in streaks (the fresh foam upwind, read blurred).
-    let torn = shape_at(waves, rest - wind * DRIFT, du * 6.0 + wind * 0.5, dv * 6.0, tiles(calm)).w
     let veil = smoothstep(0.3, 0.9, torn) *
         smoothstep(0.35, 0.75, noise(vec2(wa.x * 0.25 - s.held * 2.0, wa.y * 2.2))) *
         smoothstep(0.03, 0.1, whitecaps(SEA_STATE)) *
