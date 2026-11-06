@@ -22,7 +22,7 @@
 // that moves a source doesn't click.
 
 use std::audio::{QUANTUM, RingReader, RingWriter, SAMPLE_RATE, decay_rate, ring}
-use std::math::{PI, TAU, cos, exp, log, sin, tan}
+use std::math::{PI, TAU, cos, exp, log, sin, tan, tanh}
 
 /// The audio thread's rate.
 const RATE: f32 = f32(SAMPLE_RATE)
@@ -63,6 +63,9 @@ pub struct Surface: Copy {
     pub tail_q: f32 = 0.7,
     pub tail_t60: f32 = 0.5,
     pub tail: f32 = 0.0,
+    /// How hard the whole is driven into a soft clip (0 clean): a struck body's overtones, so a
+    /// low thump has partials a small speaker can play.
+    pub drive: f32 = 0.0,
 }
 
 /// How air moved past fast sounds (a blade's swing, a body gone at once): noise in a band
@@ -307,6 +310,7 @@ struct Ringing: Copy {
     grit_to: f32,
     glide: f32,
     glide_fall: f32,
+    drive: f32,
     /// The swell: 1 at the strike, falling by `fall` a sample; the envelopes are (1 − swell)
     /// times theirs.
     swell: f32,
@@ -338,6 +342,7 @@ fn ringing() -> Ringing {
         grit_to: 0.0,
         glide: 0.0,
         glide_fall: 0.0,
+        drive: 0.0,
         swell: 0.0,
         fall: SWELL,
         out: placed(),
@@ -371,6 +376,7 @@ impl Ringing {
         self.tail_level = s.tail * level
         self.tail_decay = decay(s.tail_t60)
         self.glide = 0.0
+        self.drive = s.drive
         self.swell = 1.0
         self.fall = SWELL
     }
@@ -385,6 +391,7 @@ impl Ringing {
         self.on = true
         self.knock_level = 0.0
         self.tail_level = 0.0
+        self.drive = 0.0
         self.grit_to = w.hz * pitch
         self.grit_hz = self.grit_to * w.sweep
         self.grit_q = w.q
@@ -411,7 +418,10 @@ impl Ringing {
             tail = self.tail_svf.pass(self.tail, noise.next()) * self.tail_level
             self.tail_level *= self.tail_decay
         }
-        let y = (1.0 - self.swell) * (knock + grit + tail)
+        var y = (1.0 - self.swell) * (knock + grit + tail)
+        if self.drive > 0.0 {
+            y = tanh(self.drive * y) / self.drive
+        }
         self.swell *= self.fall
         y
     }
@@ -633,6 +643,8 @@ pub struct Mixer {
     brushes: [Stream; BRUSHES],
     waters: [Stream; WATERS],
     noise: Noise,
+    /// The beds' own noise (water, brushes), so a strike's draws don't change how the sea goes.
+    bed_noise: Noise,
 }
 
 /// A mixer for a world that sounds as `palette` says, and the ring the program pushes its cues
@@ -663,6 +675,7 @@ pub fn mixer(palette: Palette, seed: u32 = 1) -> (RingWriter<Cue>, Mixer) {
             brushes,
             waters: [quiet; WATERS],
             noise: seeded(seed),
+            bed_noise: seeded(seed ^ 0xbed5),
         },
     )
 }
@@ -759,11 +772,11 @@ pub fn mix(m: mut Mixer, left: mut [f32], right: mut [f32]) {
     }
     for s in 0..WATERS {
         let level = p.gain * p.waters[m.waters[s].kind].level * m.waters[s].flow
-        sound_stream(mut m.waters[s], ears, p.near, level, mut m.noise, mut left, mut right)
+        sound_stream(mut m.waters[s], ears, p.near, level, mut m.bed_noise, mut left, mut right)
     }
     for s in 0..BRUSHES {
         let level = p.gain * p.brushes[s].level * m.brushes[s].flow
-        sound_stream(mut m.brushes[s], ears, p.near, level, mut m.noise, mut left, mut right)
+        sound_stream(mut m.brushes[s], ears, p.near, level, mut m.bed_noise, mut left, mut right)
     }
     for i in 0..left.len() {
         left[i] = clamp(left[i], -1.0, 1.0)

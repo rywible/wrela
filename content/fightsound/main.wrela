@@ -29,6 +29,7 @@ pub const SPATTER: u32 = 3
 pub const SWING: u32 = 0
 pub const CLOTH: u32 = 1
 pub const WAVE: u32 = 2
+pub const WHOOMP: u32 = 3
 pub const SWELL: u32 = 0
 pub const CHOP: u32 = 1
 pub const SPRAY: u32 = 2
@@ -45,21 +46,21 @@ pub const WIND: f32 = 0.5
 /// blow needs on any speaker, and the comment says which.
 pub const PALETTE: Palette = Palette {
     surfaces: [
-        // A foot finding the deck again (stamp_0's fit, by hand a heel's thud and its grit
-        // darker, so it sits under the blow).
+        // A foot finding the wet deck again (stamp_0's fit, by hand a heel, a scuff and a slap
+        // of water, under the blow).
         Surface {
-            knock_hz: 90.0,
-            knock_t60: 0.1,
-            knock: 1.2,
+            knock_hz: 110.0,
+            knock_t60: 0.06,
+            knock: 0.6,
             knock_drop: 1.6,
             knock_glide: 0.01,
-            grit_hz: 1500.0,
-            grit_q: 0.8,
-            grit_t60: 0.04,
-            grit: 1.0,
-            tail_hz: 300.0,
+            grit_hz: 2200.0,
+            grit_q: 0.7,
+            grit_t60: 0.07,
+            grit: 2.5,
+            tail_hz: 900.0,
             tail_q: 1.0,
-            tail_t60: 0.08,
+            tail_t60: 0.05,
             tail: 2.0,
         },
         Surface {},
@@ -82,32 +83,34 @@ pub const PALETTE: Palette = Palette {
     ],
     brushes: [Babble {}; 3],
     impacts: [
-        // The blow. From punch2_0's fit: the thump's drop and the slap's band. By hand: the
-        // slap 17 dB up and cut to 30 ms (the crack that carries on a phone), a body of meat
-        // round 500 Hz rung for 0.2 s over the hit-stop, the sub cut to 0.22 s and raised to
-        // 85 Hz.
+        // The blow. From punch2_0's fit: the thump's drop and the slap. By hand: the slap 22 dB
+        // up, 30 ms long and up at 4.5 kHz (the crack that carries on a phone), a body of meat
+        // round 500 Hz rung for 0.2 s over the hit-stop, the sub a 120 ms kick at 60 Hz, and
+        // the whole driven a little, for overtones.
         Surface {
-            knock_hz: 85.0,
-            knock_t60: 0.22,
-            knock: 2.2,
+            knock_hz: 60.0,
+            knock_t60: 0.12,
+            knock: 3.2,
             knock_drop: 2.2,
             knock_glide: 0.012,
-            grit_hz: 2600.0,
-            grit_q: 0.8,
+            grit_hz: 4500.0,
+            grit_q: 0.6,
             grit_t60: 0.03,
-            grit: 14.0,
+            grit: 24.0,
             tail_hz: 500.0,
             tail_q: 0.6,
             tail_t60: 0.2,
-            tail: 12.0,
+            tail: 16.0,
+            drive: 0.3,
         },
-        // The blast's whoomp. From heavy2_0's fit: the sub's drop from three times its pitch.
-        // By hand: a broad air burst at 1.8 kHz for the shock front, a 500 Hz body, all within
-        // 0.4 s (the reference's level never fell).
+        // The blast's thump. From heavy2_0's fit: the sub's drop from three times its pitch. By
+        // hand: its tone cut to 120 ms and driven (overtones a phone can play), a broad air burst
+        // at 1.8 kHz and a 500 Hz body within 0.3 s (the reference's level never fell). The
+        // whoosh `WHOOMP` sweeps its air down after it.
         Surface {
             knock_hz: 50.0,
-            knock_t60: 0.4,
-            knock: 2.0,
+            knock_t60: 0.12,
+            knock: 3.0,
             knock_drop: 3.0,
             knock_glide: 0.03,
             grit_hz: 1800.0,
@@ -118,23 +121,21 @@ pub const PALETTE: Palette = Palette {
             tail_q: 0.6,
             tail_t60: 0.25,
             tail: 4.0,
+            drive: 0.8,
         },
-        // The planted foot (stamp_0's fit: its body round 440 Hz; by hand, its grit and knock
-        // shortened).
+        // The planted foot (stamp_0's fit: its knock's drop; by hand a scuff more than a thump,
+        // so it doesn't read as a first hit four frames early).
         Surface {
-            knock_hz: 55.0,
-            knock_t60: 0.15,
-            knock: 0.8,
-            knock_drop: 2.97,
-            knock_glide: 0.023,
-            grit_hz: 3000.0,
-            grit_q: 0.8,
-            grit_t60: 0.04,
-            grit: 3.0,
-            tail_hz: 438.0,
-            tail_q: 1.63,
-            tail_t60: 0.12,
-            tail: 5.16,
+            knock_hz: 90.0,
+            knock_t60: 0.06,
+            knock: 0.3,
+            knock_drop: 2.0,
+            knock_glide: 0.01,
+            grit_hz: 2500.0,
+            grit_q: 0.7,
+            grit_t60: 0.05,
+            grit: 2.0,
+            tail: 0.0,
         },
         // The ink's spatter off the blast (by hand, from the boom's air burst): an air crack
         // and a bright spray tail that lasts as long as the ink's arcs.
@@ -159,8 +160,10 @@ pub const PALETTE: Palette = Palette {
         Swish { hz: 1200.0, q: 0.5, attack: 0.02, t60: 0.15, level: 1.5 },
         // A wave breaking off the bow (by hand, from sea3_0's wash band): a slow swell of broad
         // noise and its long hiss down.
-        Swish { hz: 700.0, q: 0.35, attack: 0.5, t60: 2.5, level: 1.2 },
-        Swish {},
+        Swish { hz: 700.0, q: 0.35, attack: 0.5, t60: 2.5, level: 2.5 },
+        // The blast's air (by hand): a broad whoomp whose band falls from 2 kHz to 500 Hz as the
+        // ink's ring spreads.
+        Swish { hz: 500.0, q: 0.5, attack: 0.005, t60: 0.4, level: 8.0, sweep: 4.0, sweep_t: 0.12 },
     ],
     // The storm wind (wind_0): the rush's corner and level fitted at a gust of 1; the score
     // gusts it.
@@ -240,6 +243,11 @@ fn exchange() -> [Line; LINES] {
                 seed: 10,
             },
         },
+        Line {
+            // (Without the blast, never.)
+            at: CONTACT + 0.01 + (1.0 - blast) * 1.0e9,
+            cue: Cue::Whoosh { at: FIST, kind: WHOOMP, amount: 1.0, seed: 13 },
+        },
         half[0],
         half[1],
         half[2],
@@ -252,7 +260,6 @@ fn exchange() -> [Line; LINES] {
             cue: Cue::Step { at: STRUCK, surface: DECK, weight: 0.45, seed: 8 },
         },
         wave(2.4, 12),
-        Line { at: 1.0e9, cue: Cue::Listen { at: EARS, forward: vec2(0.0, 1.0) } },
         Line { at: 1.0e9, cue: Cue::Listen { at: EARS, forward: vec2(0.0, 1.0) } },
     ]
     var out = lines
