@@ -973,11 +973,16 @@ fn sea_shade(
     let coarse = noise(wa * vec2(0.12, 0.4) + vec2(5.0, 3.0)) * 0.6 + noise(wa * vec2(0.4, 1.1) + vec2(1.0, 8.0)) * 0.4
     let far_white = clamp((dense - (1.0 - coarse) * 0.8) / 0.3, 0.0, 1.0) * (0.6 + 0.4 * coarse)
     let froth = mix(coarse, froth_h, web_k)
+    // (A gale's wind rows: long streaks of old foam drawn down the wind across the whole sea, tens
+    // of metres apart, gathered where the surface currents meet; faint, broken, wandering.)
+    let rows = smoothstep(0.88, 0.97, 1.0 - abs(noise(vec2(wa.x * 0.003, wa.y * 0.1) + warp * 0.08) * 2.0 - 1.0)) *
+        smoothstep(0.45, 0.7, noise(vec2(wa.x * 0.06, wa.y * 0.4)) * 0.6 + lace * 0.4) *
+        smoothstep(0.03, 0.1, whitecaps(SEA_STATE)) * 0.35
     // (Never one smooth white even where it's densest: a fresh cap's a heap of bubble domes, its
     // creases thinner, the water glinting through.)
     let heaped = 0.55 + 0.45 * smoothstep(0.15, 0.85, froth)
     // (Under the lace, the thin film of old foam: a grey marbling, the water showing through.)
-    let white = max(
+    let foamed = max(
         max(mix(far_white * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.6 * age) * mix(1.0, smoothstep(0.3, 0.75, lace), age), web_k), far_white * 0.35 * (1.0 - age)),
         mix(blown * 0.1, lines * 0.4 * (1.0 - smoothstep(0.975, 0.995, ridge)) * mix(0.35, 1.0, smoothstep(0.05, 0.5, blown + dense)), web_k),
     ) *
@@ -985,6 +990,7 @@ fn sea_shade(
         heaped *
         // (Thinning to its edge, the water seen through it, never a cut-out block on the sea.)
         smoothstep(0.1, 0.4, dense + tail + (lace - 0.5) * 0.6)
+    let white = max(foamed, rows)
     // (Lit as a mass of bubbles: its domes bright, its creases and thin film greyer, the older
     // the greyer.)
     // (And modelled as the wave it rides: brightest on the crest's top, greyer down its back, so a
