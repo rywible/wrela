@@ -36,7 +36,15 @@ const PASSES: u32 = 8
 /// Gravity (m/s²).
 const G: f32 = 9.81
 
-/// How long a broken crest's foam takes to fade to a third (s).
+/// How many steps the sea's settled over before its first (`Ocean::step`).
+const WARM: u32 = 12
+
+/// How fast the wind blows the foam over the water, as a share of its speed (some
+/// hundredths: the surface's own drift), drawing it out down the wind into streaks.
+const BLOWN: f32 = 0.035
+
+/// How long a broken crest's foam takes to fade to a third (s), in a sea with no whitecaps to
+/// speak of; a rougher sea's lasts longer (`foam_fade`).
 const FOAM_FADE: f32 = 6.0
 
 /// What sea it is: the wind that raises it and the swell come from far off.
@@ -129,6 +137,46 @@ pub fn wind_alpha(sea: SeaState) -> f32 {
 /// the eye reads as how rough the sea is, and it's the fit's, not the height's.
 pub fn tail_alpha(sea: SeaState) -> f32 {
     0.076 * pow(G * sea.fetch / (sea.speed * sea.speed), -0.22)
+}
+
+/// The share of the sea's face white with breaking crests and their foam, from its wind (Monahan
+/// and O'Muircheartaigh 1980: W = 3.84 × 10⁻⁶ U¹⁰^3.41): a few thousandths in a moderate
+/// breeze, near a tenth in a gale, a quarter in a storm.
+pub fn whitecaps(sea: SeaState) -> f32 {
+    min(3.84e-6 * pow(sea.speed, 3.41), 0.3)
+}
+
+/// How many of its Jacobian's deviations under 1 the crests of the waves a boat rides break
+/// at: as many as leave half the whitecaps' share (`whitecaps`) breaking afresh (the rest is
+/// the foam they leave, fading), the Jacobian taken as normal (its tail's share past d
+/// deviations, ½ erfc(d/√2), inverted by Abramowitz and Stegun's 26.2.23).
+pub fn breaking(sea: SeaState) -> f32 {
+    let p = clamp(whitecaps(sea) / 2.0, 1.0e-5, 0.4)
+    let t = sqrt(-2.0 * log(p))
+    t - (2.515517 + 0.802853 * t + 0.010328 * t * t) /
+        (1.0 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t)
+}
+
+/// The mean square slope of the sea's face, both slopes summed, from its wind (Cox and Munk 1954,
+/// clean water: 0.003 + 5.12 × 10⁻³ U): what the sun's glitter spreads by, the capillaries
+/// shorter than a tile holds included.
+pub fn capillary(sea: SeaState) -> f32 {
+    0.003 + 5.12e-3 * sea.speed
+}
+
+/// The slope variance the four tiles hold, summed.
+fn held_slopes(sea: SeaState) -> f32 {
+    var sum = 0.0
+    for i in 0..TILES {
+        sum += slope_variance(sea, band(i))
+    }
+    sum
+}
+
+/// How long a broken crest's foam takes to fade to a third (s): longer as the sea's rougher (a
+/// gale's lies in streaks long after its crest broke).
+pub fn foam_fade(sea: SeaState) -> f32 {
+    FOAM_FADE * (1.0 + 30.0 * whitecaps(sea))
 }
 
 /// The sea's directional spectrum at wavenumber `k` (rad/m, on x and z): its height's variance
@@ -309,7 +357,7 @@ fn butterfly(
 
 /// A tile's fields from the inverse FFT (`heights`, `slopes`), as the surface reads them. Into
 /// `shape`: its displacement (x, height, z; the crests leaned by `chop`) and its foam, the last
-/// frame's (`before`) faded over `dt` s, and fresh where a crest breaks: where the water is
+/// frame's (`before`) faded over `dt` s (to a third in `fade` s), and fresh where a crest breaks: where the water is
 /// squeezed toward folding over, its Jacobian under `breaks` (white a deviation, `spread`, past
 /// it). Into `tilt`: its slopes and
 /// stretches (∂h/∂x, ∂h/∂z, ∂Dx/∂x, ∂Dz/∂z, leaned as the crests are).
@@ -317,6 +365,8 @@ fn butterfly(
 fn settle(
     chop: f32,
     dt: f32,
+    fade: f32,
+    drift: vec2,
     breaks: f32,
     spread: f32,
     heights: Texture<Rgba32Float>,
@@ -335,9 +385,18 @@ fn settle(
     let dzz = sq.w * chop
     let dxz = hq.w * chop
     let squeezed = (1.0 + dxx) * (1.0 + dzz) - dxz * dxz
-    let old = before.load(x: id.x, y: id.y).w
+    // (The foam carried on from upwind, `drift` texels this step along x and z: from the
+    // texels behind on either axis, as far as it moved.)
+    let back_x = u32((i32(id.x) - i32(sign(drift.x)) + i32(SIDE)) % i32(SIDE))
+    let back_z = u32((i32(id.y) - i32(sign(drift.y)) + i32(SIDE)) % i32(SIDE))
+    let here = before.load(x: id.x, y: id.y).w
+    let ax = min(abs(drift.x), 1.0)
+    let az = min(abs(drift.y), 1.0)
+    let old = here * (1.0 - ax) * (1.0 - az) + before.load(x: back_x, y: id.y).w * ax * (1.0 - az) +
+        before.load(x: id.x, y: back_z).w * az * (1.0 - ax) +
+        before.load(x: back_x, y: back_z).w * ax * az
     let broke = clamp((breaks - squeezed) / spread, 0.0, 1.0)
-    let foam = max(old * exp(-dt / FOAM_FADE), broke)
+    let foam = max(old * exp(-dt / fade), broke)
     shape.store(id, vec4(hq.x * chop, hq.y, hq.z * chop, foam))
     tilt.store(id, vec4(sq.x, sq.y, dxx, dzz))
 }
@@ -428,6 +487,8 @@ fn run(sea: SeaState, t: f32, dt: f32, tile: mut Tile, f: mut Scratch, s: Sample
         settle.bind(
             sea.chop,
             dt,
+            foam_fade(sea),
+            sea.wind * (BLOWN * sea.speed * dt * f32(SIDE) / tile.band.side),
             tile.breaks,
             tile.spread,
             heights: f.a,
@@ -451,6 +512,9 @@ pub struct Sea: Copy + GpuData {
     pub octave: f32,
     pub finest: f32,
     pub chop: f32,
+    /// The slope variance, along each slope, of the waves shorter than the ripples' shortest (the
+    /// capillaries the wind raises, which roughen every footprint).
+    pub unseen: f32,
 }
 
 /// The ocean as a shader reads it: `Sea`, and each tile's surface (`*_shape`: displacement x,
@@ -483,16 +547,23 @@ pub struct Ocean {
     mips: Sampler,
     pub swell: Swell,
     last: f32,
+    /// The tiles' slope variance, all four summed.
+    held: f32,
 }
 
 impl Ocean {
     /// The ocean of `sea`, the CPU summing its `kept` loudest long waves, the mid tile's as
     /// `mid` of them as the drawing shows them by a hull.
     pub fn new(sea: SeaState, kept: u32, mid: f32) -> Ocean {
+        // The crests break as often as the wind makes them (`breaking`): the waves a boat
+        // rides, and the longest a little rarer (their texels too coarse for a white horse's
+        // shape); the short waves and the ripples never (theirs would be speckle: a white
+        // horse is metres across, the shading draws its froth).
+        let d = breaking(sea)
         Ocean {
             sea,
-            big: tile(sea, 0, 3.2),
-            mid: tile(sea, 1, 2.2),
+            big: tile(sea, 0, d + 1.0),
+            mid: tile(sea, 1, d),
             fine: tile(sea, 2, 0.0),
             ripple: tile(sea, 3, 0.0),
             scratch: Scratch {
@@ -505,15 +576,32 @@ impl Ocean {
             mips: sampler(address: Address::Repeat),
             swell: Swell::new(sea, kept, mid),
             last: -1.0,
+            held: held_slopes(sea),
         }
     }
 
     /// The sea at time `t` (s): each tile summed and settled. The foam fades by the time since
-    /// the last (none the first time, nor when time runs back).
+    /// the last, and when time runs back or this is the first, the sea is settled over the
+    /// half minute before `t` first (`WARM` steps), so its foam is as a sea's that's been
+    /// blowing a while, not bare.
     pub fn step(mut self, t: f32) {
-        let dt = if self.last < 0.0 { 0.0 } else { clamp(t - self.last, 0.0, 0.25) }
+        if self.last < 0.0 || t < self.last {
+            label("ocean warming")
+            let span = foam_fade(self.sea) * 2.0
+            for k in 0..WARM {
+                let at = t - span * f32(WARM - k) / f32(WARM)
+                self.all(at, if k == 0 { 0.0 } else { span / f32(WARM) })
+            }
+            self.last = t - span / f32(WARM)
+        }
+        let dt = clamp(t - self.last, 0.0, 0.25)
         self.last = t
         label("ocean")
+        self.all(t, dt)
+    }
+
+    /// Each tile at `t`, `dt` s after the last.
+    fn all(mut self, t: f32, dt: f32) {
         run(self.sea, t, dt, mut self.big, mut self.scratch, self.mips)
         run(self.sea, t, dt, mut self.mid, mut self.scratch, self.mips)
         run(self.sea, t, dt, mut self.fine, mut self.scratch, self.mips)
@@ -527,6 +615,7 @@ impl Ocean {
             octave: tail_alpha(self.sea) * 0.5 * log(2.0),
             finest: band(TILES - 1).hi,
             chop: self.sea.chop,
+            unseen: max(capillary(self.sea) - self.held, 0.0) * 0.5,
         }
     }
 
@@ -592,7 +681,7 @@ pub fn level_at(o: Waves, p: vec2, foot: f32, mid: f32) -> f32 {
 /// The ocean's surface at `p` (x, z on the level) as a footprint `du`, `dv` (m) holds it, each
 /// tile weighted by `w`: its height; its normal; its foam; how squeezed it is (1 flat, under 1
 /// where crests crowd, under 0 where they'd fold); the slope variance the footprint lost, from
-/// the octaves of waves too short for it, in the slope along each of its sides (`du`'s, `dv`'s);
+/// the octaves of waves too short for it and the capillaries shorter than any tile (`Sea::unseen`), in the slope along each of its sides (`du`'s, `dv`'s);
 /// and the lattice point its water rests at (to lay patterns on, which ride with it).
 pub fn surface_at(
     o: Waves,
@@ -619,7 +708,7 @@ pub fn surface_at(
     let past_u = max(log2(finest * length(du) * STEADY / PI), 0.0)
     let past_v = max(log2(finest * length(dv) * STEADY / PI), 0.0)
     let lost = vec2(past_u * 0.75 + past_v * 0.25, past_v * 0.75 + past_u * 0.25) *
-        (o.sea.octave * 0.5)
+        (o.sea.octave * 0.5) + vec2(o.sea.unseen)
     (d.y, n, d.w, sx * sz, lost, q)
 }
 
@@ -778,4 +867,19 @@ fn the_loudest_waves_hold_most_of_the_height() {
     let sw = Swell::new(gentle(), 512, 1.0)
     print(f"{sw.modes.len()} waves hold {sw.held * 100.0} % of the long tiles' variance")
     assert(sw.held > 0.6, f"{sw.held}")
+}
+
+/// The crests break as often as the wind whitens a sea: rarely in a moderate breeze, a tenth of
+/// the sea white in a gale, its breaking crests some deviations under the Jacobian's mean
+/// (the normal tail's share inverted to within a hundredth of a deviation).
+@test
+fn the_crests_break_as_the_wind_whitens_the_sea() {
+    var gale = gentle()
+    gale.speed = 19.0
+    print(f"whitecaps: breeze {whitecaps(gentle()) * 100.0} %, gale {whitecaps(gale) * 100.0} %")
+    print(f"breaking at {breaking(gentle())} and {breaking(gale)} deviations")
+    assert(whitecaps(gentle()) < 0.003 && whitecaps(gale) > 0.07, "coverage")
+    // (Half a gale's 8.8 %: 4.4 % past 1.71 deviations.)
+    assert(abs(breaking(gale) - 1.71) < 0.02, f"{breaking(gale)}")
+    assert(breaking(gentle()) > 3.0, f"{breaking(gentle())}")
 }

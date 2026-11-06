@@ -11,7 +11,7 @@ use look::{
     noise, ray,
 }
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
-use engine::ocean::{Waves, level_at, surface_at}
+use engine::ocean::{Waves, level_at, shape_at, surface_at, whitecaps}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use skiff::{dry, hull_off, paddle, skiff, skiff_material, skiff_normal}
 use engine::far::foot
@@ -652,6 +652,16 @@ const SPARK_ROOM: f32 = 0.2
 const SPARK_PEAK: f32 = 60.0
 const SPARK_GLINT: f32 = 1.5
 
+/// How much of the sky's light comes through a crest's thin top (against the light on the
+/// water).
+const THROUGH_SKY: f32 = 0.3
+
+/// How far down the wind of a breaking crest its spindrift's blown (m).
+const DRIFT: f32 = 2.5
+
+/// How thick the spray over the water is (1/m), per share of the sea white (`whitecaps`).
+const SPRAY: f32 = 0.014
+
 /// Foam's lace at `w` (m, where the water rests): clots of froth and the bubbles round them,
 /// in drifts, warped and broken so it's never a net's mesh. In [0, 1].
 fn lace_at(w: vec2) -> f32 {
@@ -950,61 +960,50 @@ fn sea_shade(
     // and low across the water (from high over it, it sees the deep water's own dark instead).
     let crest = smoothstep(0.02, 0.5, 1.0 - squeezed)
     let facing = clamp(0.5 + dot(vec2(n.x, n.z), -flat) * 5.0, 0.0, 1.0)
+    // (Under an overcast, the whole bright sky low behind the crest shines through it, a grey
+    // green, not the sun alone.)
     let through = vec3(0.016, 0.056, 0.066) *
-        h.light.sun_colour *
-        sun *
-        (0.12 + behind) *
+        (h.light.sun_colour * sun * (0.12 + behind) + sky_up * THROUGH_SKY) *
         (0.12 + 2.2 * crest) *
         facing *
         clamp(1.0 - t / 700.0, 0.0, 1.0) *
         (1.0 - smoothstep(0.25, 0.75, -d.y))
     var c = (body + through) * (1.0 - fresnel) + reflected * fresnel + glint
-    // The white horses: foam where a crest broke (`foam_k`, left by the ocean where its water was
-    // squeezed till it folded, fading over a few seconds), torn into lace that rides with the
-    // water (laid on where its water rests, `rest`), lace that a pixel too wide to hold reads as
-    // its mean.
-    // (Its lace streaked down the wind, as the wind draws foam out.)
+    // The white horses and the foam they leave: `foam_k`, the share of the water white there
+    // (left by the ocean where a crest broke, fresh and thick where it breaks now, thinning
+    // over the seconds after), drawn as that share of a froth's pattern laid where the water
+    // rests (`rest`, so it rides with it) and gone where the pattern's thinner than the share
+    // is thick: thick fresh froth in blots, then torn rafts with holes, then the streaks a gale
+    // draws its old foam out into, down the wind. A pixel too wide to hold the pattern reads
+    // the share itself, so far off the sea's as grey with foam as it is, not bare.
     let wa = vec2(dot(rest, wind), dot(rest, vec2(-wind.y, wind.x)))
     let lace = noise(wa * vec2(0.6, 3.2) + vec2(3.0, 9.0)) * 0.5 +
         noise(wa * vec2(4.0, 9.0) + vec2(7.0, 1.0)) * 0.32 +
         noise(wa * vec2(13.0, 24.0)) * 0.18
-    // Within it, the foam's a raft of bubbles: walls of froth round holes of thinner foam and
-    // clear water, two sizes of them, streaked down the wind; and over them the lace's clots.
-    // How much froth there is at a point (`mass`) is how fresh the foam is there times how thick
-    // the raft is: fresh, thick walls round thin, see-through cells; fading, only the walls'
-    // threads; then specks. Where a pixel's too wide to hold the raft, its mean.
-    // (The raft's walls wander and thicken and thin as the water's eddies have drawn them, never
-    // a net's ruled mesh.)
-    // (Three sizes of cell, each drawn out down the wind into streaks, so its holes are slots
-    // and tears, not a net's even mesh; how big they run wandering across the raft.)
+    // (The froth's cells, two sizes, drawn out down the wind into slots and tears, their walls
+    // wandering as the water's eddies drew them; and the streaks, long and thin down the wind,
+    // a few metres apart.)
     let wq = wa * vec2(0.55, 2.0)
     let warp = vec2(noise(wq * 0.5 + vec2(2.1, 8.3)), noise(wq * 0.5 + vec2(6.7, 3.9))) - vec2(0.5)
     let c1 = cells(wq + warp * 2.2 + vec2(0.3, 5.1))
     let c2 = cells(wa * vec2(1.6, 5.2) + warp * 3.0 + vec2(8.2, 1.7))
-    let c3 = cells(wa * vec2(5.0, 13.0) + warp * 4.0 + vec2(1.4, 6.6))
-    let web_k = clamp(1.0 - px_m * 3.0, 0.0, 1.0)
-    let walls = 0.12 + 0.7 * lace * lace
-    let raft = (1.0 - smoothstep(0.0, walls, c1.y - c1.x)) * 0.35 +
-        (1.0 - smoothstep(0.0, walls * 0.9, c2.y - c2.x)) * 0.25 +
-        (1.0 - smoothstep(0.0, 0.3, c3.y - c3.x)) * 0.12 +
-        lace * 0.28
-    let thick = mix(0.48, raft, web_k)
-    // (Where it's freshest, at the breaking crest itself, it's a thicker mass of froth, its holes
-    // fewer.)
-    let mass = sqrt(foam_k) * (0.35 + 1.25 * thick) + pow(foam_k, 4.0) * 0.5
-    // (Its outer edge feathered and torn, never a cut-out's.)
-    let rim = smoothstep(0.04, 0.3, foam_k + (lace - 0.5) * 0.35)
-    let white = smoothstep(0.38, 0.95, mass) * rim
+    let streak = noise(vec2(wa.x * 0.07, wa.y * 0.9 + warp.x * 1.5)) * 0.7 + noise(wa * vec2(0.3, 3.5)) * 0.3
+    let raft = (1.0 - smoothstep(0.0, 0.25 + 0.5 * lace, c1.y - c1.x)) * 0.45 +
+        (1.0 - smoothstep(0.0, 0.3, c2.y - c2.x)) * 0.2 +
+        lace * 0.35
+    // (Fresh, the froth's own rafts; old and thin, the streaks.)
+    let share = clamp(foam_k * 1.4, 0.0, 1.0)
+    let pattern = mix(streak, raft, smoothstep(0.1, 0.6, share))
+    let web_k = clamp(1.0 - px_m * 2.0, 0.0, 1.0)
+    let edge = 0.04 + 0.25 * (1.0 - web_k)
+    let drawn = smoothstep(1.0 - share - edge, 1.0 - share + edge, pattern)
+    let white = mix(share, drawn, web_k) * 0.95
     // (Its thick froth bright, its thin film greyer, the water showing through it.)
-    let froth = mix(
-        0.5,
-        noise(wa * vec2(30.0, 45.0)) * 0.6 + noise(wa * vec2(8.0, 12.0) + vec2(2.0)) * 0.4,
-        clamp(1.0 - px_m * 8.0, 0.0, 1.0),
-    )
-    let bright = (0.4 + 0.6 * smoothstep(0.5, 1.4, mass)) * (0.7 + 0.5 * froth)
+    let froth = mix(0.5, noise(wa * vec2(8.0, 12.0) + vec2(2.0)), web_k)
+    let bright = (0.45 + 0.55 * smoothstep(0.3, 0.9, share)) * (0.75 + 0.5 * froth)
     // Under it and round it, the water's paler and greener, full of the bubbles the break drove
     // down, as the water under a whitecap is.
-    let bubbles = smoothstep(mix(0.02, 0.2, OVERCAST), 0.5, foam_k)
+    let bubbles = smoothstep(0.02, 0.4, foam_k)
     // Foam where the sea meets the skiff, lit as a white surface is.
     // The skiff's wake: two thin lines spreading from its stern as it drifts, and the stirred
     // water straight behind it.
@@ -1095,6 +1094,14 @@ fn sea_shade(
     c *= mix(0.45, 1.0, smoothstep(0.0, 0.3, max(wl, 0.0)))
     c += body * (1.0 - fresnel) * mix(2.6, 0.9, OVERCAST) * bubbles * (1.0 - white)
     c = mix(c, foam_light * bright, white * 0.92)
+    // Spindrift: the spray the wind tears off a crest as it breaks, a thin white veil blown a few
+    // metres down the wind of it, in streaks (the fresh foam upwind, read blurred).
+    let torn = shape_at(waves, rest - wind * DRIFT, du * 6.0 + wind * 0.5, dv * 6.0, tiles(calm)).w
+    let veil = smoothstep(0.3, 0.9, torn) *
+        smoothstep(0.35, 0.75, noise(vec2(wa.x * 0.25 - s.held * 2.0, wa.y * 2.2))) *
+        smoothstep(0.03, 0.1, whitecaps(SEA_STATE)) *
+        0.5
+    c = mix(c, foam_light * 0.85, veil)
     c = mix(c, foam_light, max(max(foam * 0.9, wake), splash))
     // The crests' ink strokes and pale lips, light: the ink sits on the water's form.
     let footprint = t * 2.0 / (s.resolution.y * s.focal)
@@ -1129,9 +1136,12 @@ fn sea_shade(
         }
     }
     let aired = aired(aerial, smp, h.light, c, p, s.eye)
-    // Far out, the sea and the sky meet in the air: no ruled edge where they do.
+    // Far out, the sea and the sky meet in the air: no ruled edge where they do. Low over the
+    // water, the air's thick with the spray the wind tears off the crests (the rougher the sea,
+    // the thicker: some kilometres' sight in a gale), lit as the air at the horizon is.
     let horizon_sky = heaven(view, h.light, normalize(vec3(d.x, 0.006, d.z)), dome, smp).rgb
-    let hazy = mix(aired, horizon_sky, smoothstep(2500.0, 30000.0, t) * 0.85)
+    let spray = 1.0 - exp(-t * SPRAY * whitecaps(SEA_STATE))
+    let hazy = mix(aired, horizon_sky, max(spray, smoothstep(2500.0, 30000.0, t) * 0.85))
     (hazy, line, detail * 0.6 + foam, n, cut)
 }
 
