@@ -34,7 +34,7 @@ pub fn tailored(p: vec3) -> f32 {
     // The armholes (as the paint cuts them): a lip on the jacket's side, a hollow on the arm's.
     let e = (p.y - 1.40) / 0.10
     let f = (p.z + 0.04) / 0.08
-    let hole = 0.16 + 0.07 * min(e * e + f * f, 3.0)
+    let hole = 0.16 + 0.045 * min(e * e + f * f, 4.0)
     let past = abs(p.x) - hole
     let shoulders = ramp(p.y, lo: 1.26, hi: 1.30) * (1.0 - ramp(hole, lo: 0.30, hi: 0.34))
     out += shoulders * (0.004 * bump(past, c: -0.006, w: 0.009) - 0.0015 * bump(past, c: 0.005, w: 0.006))
