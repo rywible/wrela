@@ -97,7 +97,8 @@ pub fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
         // glowing bar.)
         (0.35 + 0.65 * noise(rest * 0.6)) *
         (1.0 - 0.6 * run) *
-        0.6
+        // (Faint: smooth enough to mirror the sky, a lane astern read as a beam of light.)
+        0.15
     let along = q.y - clamp(q.y, -1.7, 1.7)
     let out = vec2(q.x, along)
     let off_hull = length(out) - 0.5
@@ -112,14 +113,15 @@ pub fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
     // Where the bow's spray falls back, either side and a little aft of it: a scatter of white
     // that's left astern as it runs.
     let fall = vec2(abs(q.x) - 1.1 - 0.5 * run, q.y - 0.2 + 1.2 * run)
-    let splash = exp(-dot(fall, fall) / (0.35 + 0.6 * run)) *
+    // (Small and torn: soft and broad, it lay on the water as white tubes.)
+    let splash = exp(-dot(fall, fall) / (0.12 + 0.2 * run)) *
         smoothstep(
-            0.35,
-            0.75,
+            0.5,
+            0.8,
             lace_at(rest * 1.9) + 0.25 * noise(rest * 3.0 + vec2(s.held * 2.0)),
         ) *
         run *
-        0.8
+        0.45
     let world_tilt = bx * tilt.x + bz * tilt.y
     // (The water the hull heaps up turned to face the light as its slopes do.)
     let at3 = vec3(xz.x, s.boat.y, xz.y)

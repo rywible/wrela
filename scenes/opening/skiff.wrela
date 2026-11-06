@@ -185,7 +185,7 @@ fn cut(u: f32, v: f32) -> (f32, f32, f32, f32) {
         let a = vec2(u, v - 0.3)
         let r = length(a)
         let th = atan2(a.x, a.y)
-        let low = 1.15
+        let low = 1.05
         let tn = clamp(th / low, 0.0, 1.0)
         let reach = mix(4.0, 2.7, tn) * (1.0 - 0.4 * pow(sin(3.1415927 * tn), 1.5))
         let edge = max(max(-th, th - low) * max(r, 0.2) * 0.9, r - reach)
@@ -223,8 +223,8 @@ fn spars(s: Shot, q: vec3) -> f32 {
     if SAIL == 2 {
         // The claw's lower spar, bowed a little, and the mast standing on as its upper one.
         let root = FOOT + s.mast * 0.3
-        let tip = FOOT + s.mast * 1.4 + s.boom * 2.47
-        let bend = (root + tip) * 0.5 - s.mast * 0.12
+        let tip = FOOT + s.mast * 1.75 + s.boom * 2.4
+        let bend = (root + tip) * 0.5 - s.mast * 0.15
         d = min(d, min(sd_capsule(q, root, bend, 0.03), sd_capsule(q, bend, tip, 0.026)))
         d = min(d, sd_capsule(q, FOOT + s.mast * HEAD, FOOT + s.mast * 4.35, 0.026))
     }
@@ -515,7 +515,7 @@ fn sail_kind(uv: vec2, stain: f32) -> vec3 {
         var c = mix(vec3(0.42, 0.34, 0.2), vec3(0.6, 0.5, 0.32), stain)
         c *= 0.86 + 0.18 * weave
         // (Bound round its curved edge with dark cord.)
-        c = mix(c, vec3(0.12, 0.08, 0.05), 1.0 - smoothstep(-0.06, -0.03, edge))
+        c = mix(c, vec3(0.12, 0.08, 0.05), smoothstep(-0.06, -0.03, edge))
         return c
     }
     var c = mix(vec3(0.34, 0.05, 0.035), vec3(0.46, 0.08, 0.05), stain)
