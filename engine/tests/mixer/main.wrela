@@ -70,6 +70,8 @@ const PALETTE: Palette = Palette {
     whooshes: [
         Swish { hz: 700.0, attack: 0.16, t60: 60.0, level: 0.04 },
         Swish { hz: 1800.0, q: 0.6, attack: 0.03, t60: 60.0, level: 0.03 },
+        Swish {},
+        Swish {},
     ],
     wind: Breath { rush: 0.05, leaves: 0.035 },
 }
