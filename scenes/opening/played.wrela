@@ -17,6 +17,10 @@ use std::gpu::{
     ClipPosition, Rgba16Float, Rgba8, Texture, VertexIndex, begin_pass, begin_pass3, draw, texture,
 }
 
+/// How finely a live page meets the scene (`Shot::fine`): the rock and the cathedral four times
+/// over a pixel, the rest once.
+const LIVE_FINE: f32 = 0.3
+
 pub struct State {
     pub(package) heavens: Heavens,
     /// The open sea, summed each drawing.
@@ -86,19 +90,28 @@ pub(package) fn sized(s: mut State, width: u32, height: u32) {
 }
 
 /// The scene stepped on to `time` and painted (the first pass) from view `view`, the camera swung
-/// `orbit` radians round the skiff from where the rowing puts it, met `fine`ly (`Shot::fine`): the
-/// shot it was painted from.
-pub(package) fn painted(s: mut State, time: f32, view: u32, orbit: f32, fine: f32) -> Shot {
+/// `orbit` radians round the skiff from where the rowing puts it and stood at `framing`
+/// (`Rig::framing`), met `fine`ly (`Shot::fine`): the shot it was painted from.
+pub(package) fn painted(
+    s: mut State,
+    time: f32,
+    view: u32,
+    orbit: f32,
+    framing: f32,
+    fine: f32,
+) -> Shot {
     step(mut s.rig, START + time)
-    let shot = prepared(mut s, time, view, orbit, fine)
+    let shot = prepared(mut s, time, view, orbit, framing, fine)
     paint_rows(mut s, shot, from: 0, to: s.height)
     shot
 }
 
-/// The shot at `time`, the sky and the sea stepped on to it.
-fn prepared(s: mut State, time: f32, view: u32, orbit: f32, fine: f32) -> Shot {
+/// The shot at `time`, the camera at `framing` (`Rig::framing`), the sky and the sea stepped on
+/// to it.
+fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: f32) -> Shot {
     var rig = s.rig
     rig.shown_look += orbit
+    rig.framing = framing
     let shot = Shot {
         style: STYLE,
         look: LOOK,
@@ -155,14 +168,23 @@ pub fn scene(width: u32, height: u32) -> State {
 }
 
 /// The scene stepped on to `time`, its drawings painted and inked into `image` at `width` by
-/// `height` (which may be smaller than the screen it's shown on), the camera swung `orbit` radians
+/// `height` (which may be smaller than the screen it's shown on), the camera at `framing`
+/// (`Rig::framing`: 0 the opening's shot, 1 the player's) and swung `orbit` radians
 /// round the skiff. Live, a page has a frame's time for everything it draws, so a drawing's work
 /// is spread over the frames before the next: the scene moves on its own drawings (`HELD` a
 /// second, `sea::held`), so between them nothing in it changes. A new drawing's paint goes in
 /// `bands` bands of rows, one a frame, the ink after the last; `image` holds the last drawing
 /// inked meanwhile. A new size drops the drawing under way and begins one at once. Whether
 /// `image` is a new drawing.
-pub fn play(s: mut State, time: f32, width: u32, height: u32, orbit: f32, bands: u32) -> bool {
+pub fn play(
+    s: mut State,
+    time: f32,
+    width: u32,
+    height: u32,
+    orbit: f32,
+    framing: f32,
+    bands: u32,
+) -> bool {
     step(mut s.rig, START + time)
     if width != s.width || height != s.height {
         sized(mut s, width, height)
@@ -175,7 +197,7 @@ pub fn play(s: mut State, time: f32, width: u32, height: u32, orbit: f32, bands:
             return false
         }
         s.drawn = drawing
-        s.shot = prepared(mut s, time, 0, orbit, fine: 0.0)
+        s.shot = prepared(mut s, time, 0, orbit, framing, fine: LIVE_FINE)
     }
     let shot = s.shot
     let n = max(bands, 1)
@@ -232,4 +254,22 @@ pub fn swung(s: State) -> f32 {
 /// How fast the skiff moves through the water (m/s): whether the player has rowed it yet.
 pub fn way(s: State) -> f32 {
     s.rig.speed
+}
+
+/// Where the skiff is (x, z, m) and its heading from the opening's (rad): what a save keeps.
+pub fn whereabouts(s: State) -> (vec2, f32) {
+    (s.rig.at, s.rig.steer)
+}
+
+/// The skiff put at `at` (x, z, m) and headed `steer` (rad), at rest, the camera behind it: a
+/// save taken up again.
+pub fn put(s: mut State, at: vec2, steer: f32) {
+    var r = rest()
+    r.at = at
+    r.steer = steer
+    r.look = steer
+    r.shown_at = at
+    r.shown_steer = steer
+    r.shown_look = steer
+    s.rig = r
 }
