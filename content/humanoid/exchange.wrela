@@ -110,7 +110,7 @@ pub const X_EARLY: f32 = 0.068
 /// back into him, his chest and head rocked back by up to `X_RECOIL` (radians).
 pub const X_GRIND: f32 = 0.0
 pub const X_PIN: f32 = 0.05
-pub const X_RECOIL: f32 = 0.12
+pub const X_RECOIL: f32 = 0.2
 /// How fast the jolt rises and dies (s on his clock), and how long his fist takes to leave what
 /// it struck for its own path.
 pub const X_RECOIL_LIFE: f32 = 0.08
@@ -572,6 +572,47 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
         let stopped = if past > 0.0 { own - BLOW * past } else { own }
         let want = if wall < t.hold { on } else { stopped }
         arm_to(rig, mut w, 1, mix(own, want, k))
+    }
+    stride::store(rig, w, mut c, 0)
+    c.pose(0.0)
+}
+
+/// How near the struck one's hands may come to the striker's forearm and fist (m, from the
+/// wrist's bone): a glove's half-width and a forearm's.
+pub const X_CLEAR: f32 = 0.13
+
+/// The struck one (`foe`, stood at `at`) with his hands kept off the striker's punching forearm
+/// and fist (`striker`, in the world): a hand that would be in it is moved out of it, the
+/// shortest way, its arm reaching there.
+pub fn clear_of(foe: Pose, at: mat4, striker: Pose) -> Pose {
+    borrow rig = HERO.rig
+    let ws = stride::worlds(rig, one_pose(striker), 0)
+    let a = ws[rig.find("rightLowerArm")].t
+    let wrist = ws[rig.find("rightHand")].t
+    let b = wrist + normalize(wrist - a) * 0.09
+    let f = at[2].xyz
+    let k = length(f)
+    let yaw = yaw_q(atan2(f.x, f.z))
+    let o = at[3].xyz
+    let c0 = one_pose(foe)
+    var c = c0.clone()
+    var w = stride::worlds(rig, c0, 0)
+    var moved = false
+    for side in 0..2 {
+        let hand = rig.find(if side == 0 { "leftHand" } else { "rightHand" })
+        let p = o + yaw.rotate(w[hand].t) * k
+        let ab = b - a
+        let q = a + ab * clamp(dot(p - a, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
+        let d = length(p - q)
+        if d < X_CLEAR {
+            let away = if d > 1.0e-4 { (p - q) / d } else { vec3(0.0, 1.0, 0.0) }
+            let want = q + away * X_CLEAR
+            arm_to(rig, mut w, u32(side), yaw.inverse().rotate(want - o) / k)
+            moved = true
+        }
+    }
+    if !moved {
+        return foe
     }
     stride::store(rig, w, mut c, 0)
     c.pose(0.0)

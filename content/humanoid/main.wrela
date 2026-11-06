@@ -636,7 +636,11 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if SHOW == 28 {
         var foe = palette(
             HERO.rig,
-            exchange::struck(exchange::played_at(time, exchange::TUNED), exchange::TUNED),
+            exchange::clear_of(
+                exchange::struck(exchange::played_at(time, exchange::TUNED), exchange::TUNED),
+                exchange::PLACE,
+                pose,
+            ),
             exchange::PLACE,
         )
         foe[63] = mat4(
@@ -650,7 +654,10 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let shown = s.lab.shown()
     if SHOW == 29 {
         let at = exchange::place(shown)
-        var foe = palette(HERO.rig, lab::struck_at(s.lab, s.lab.clock), at)
+        // (His hands kept out of the punching arm; the giant's are far above it.)
+        let struck = lab::struck_at(s.lab, s.lab.clock)
+        let struck = if shown.giant { struck } else { exchange::clear_of(struck, at, pose) }
+        var foe = palette(HERO.rig, struck, at)
         foe[63] = mat4(
             exchange::tint(shown),
             vec4(normalize((at * vec4(1.0, 0.0, 0.0, 0.0)).xyz), 1.0),
