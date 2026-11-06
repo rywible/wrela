@@ -29,7 +29,7 @@ pub const X_PUSH_LIFE: f32 = 0.45
 pub const X_DEPTH: f32 = 0.02
 /// How far into the reaction (from its own impact frame) the struck drawing is (s): the one
 /// that's held through the hit-stop, already knocked back.
-pub const X_INTO: f32 = 0.05
+pub const X_INTO: f32 = 0.1
 /// How long the reaction takes to give way to his guard again (s).
 pub const X_BACK: f32 = 0.4
 /// His bounce's phase against the striker's (s).
@@ -148,10 +148,16 @@ pub fn foe(p: f32) -> Pose {
 
 /// The camera at clock `time`: its kick along the blow (m), and how far it's pushed in (m).
 pub fn camera(time: f32) -> (f32, f32) {
-    // (On twos, the camera's drawn on twos too: one cadence for the whole frame.)
-    let t = if X_TWOS == 1 { floor((time - hit_at()) * 12.0 + 1.0e-4) / 12.0 } else {
-        time - hit_at()
+    let h = hit_at()
+    // (On twos it steps with the bodies' drawings, held through the hit-stop: one cadence for
+    // the whole frame.)
+    let at = if X_TWOS == 1 {
+        played_at(time) - h + (if time >= h + X_HOLD { X_HOLD } else { 0.0 })
+    } else {
+        time - h
     }
+    // (Dead still through the impact frame; it moves as the colour comes back.)
+    let t = at - X_FLASH
     if t < 0.0 {
         return (0.0, 0.0)
     }

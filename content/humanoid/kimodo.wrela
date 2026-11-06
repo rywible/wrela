@@ -101,7 +101,7 @@ fn wound(time: f32) -> f32 {
 /// a squeezed one pops).
 pub const K_SNAP: f32 = 0.11
 pub const K_HOLD: f32 = 0.06
-pub const K_PULL: f32 = 0.6
+pub const K_PULL: f32 = 0.45
 
 /// When the timed pick's snap lands, and when it's home (s from the strike's start).
 fn k_hit() -> f32 {
