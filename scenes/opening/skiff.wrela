@@ -4,7 +4,7 @@
 
 use look::{Shot, fbm, hash2, noise}
 use sail::{BOOM, BOW_OUT, FOOT, LASHED}
-use main::PLANING
+use main::{PLANING, SAIL}
 use hero::{Joints, hero, hero_material}
 
 fn sd_box(p: vec3, b: vec3) -> f32 {
@@ -129,19 +129,15 @@ fn cloth(s: Shot, q: vec3) -> (f32, vec2) {
     // (Its face is the mast's and boom's own, the same through a gybe: the belly passes through
     // flat and pops full on the other side, never flips.)
     let w = dot(r, normalize(cross(s.mast, s.boom)))
-    let x = clamp(u / BOOM, 0.0, 1.0)
-    let low = 0.22 + (LASHED - 0.22) * pow(x, 2.6)
-    // (Its leech frayed, the cloth's edge worn ragged where it's flogged for years.)
-    let high = HEAD - (HEAD - LASHED) * pow(x, 1.5) - 0.045 * x * x * noise(vec2(v * 9.0, 3.0)) * noise(vec2(v * 31.0, 7.0))
-    let edge = max(max(low - v, v - high) * 0.55, max(-u, u - BOOM))
-    let up = clamp((v - 0.2) / HEAD, 0.0, 1.0)
+    let (edge, x, up, panel) = cut(u, v)
     // The cloth as a membrane held at its luff and its clew (`sail::Motion`): its belly, deepest
     // a third of the way up, flat along the boom and toward the head, as a cut sail's is; its
     // leech twisting off to leeward toward the head; the bubble its luff backs into, a third
     // back; its leech's flutter; and flogging, folds running from luff to leech.
     let c = s.cloth
     let lee = c.x / (abs(c.x) + 0.03)
-    let belly = c.x * (0.55 + 1.6 * up * (1.0 - up)) * 4.0 * x * (1.0 - x) * (1.0 + 0.8 * x)
+    let deep = if SAIL == 3 { 1.35 } else { 1.0 }
+    let belly = c.x * deep * panel * (0.55 + 1.6 * up * (1.0 - up)) * 4.0 * x * (1.0 - x) * (1.0 + 0.8 * x)
     let twist = c.y * lee * x * x * up * 1.6
     let bubble = -c.z * lee * 6.75 * x * (1.0 - x) * (1.0 - x) * (0.4 + up)
     let flutter = s.quiver.x * x * x * x * sin(3.1415927 * up) * 4.0
@@ -151,11 +147,57 @@ fn cloth(s: Shot, q: vec3) -> (f32, vec2) {
         x *
         sin(u * 4.0 + v * 1.1 - s.held * 26.0) +
         smoothstep(0.3, 1.0, loose) * 0.06 * x * sin(u * 11.0 - v * 2.5 - s.held * 47.0)
-    let off = w - belly - twist - bubble - flutter - shiver
+    // (Held between the wishbone's arms where it passes them: deeper there, the boom showed
+    // through it as a slit.)
+    let shape = belly + twist + bubble + flutter + shiver
+    let cap = BOW_OUT * sin(3.1415927 * x) * 0.8
+    let at_boom = smoothstep(0.45, 0.0, abs(v - LASHED))
+    let off = w - mix(shape, clamp(shape, -cap, cap), at_boom)
     // (Its flogging folds steepen the field: march it more carefully the looser it flies, or
     // the rays step through the cloth and it reads torn.)
-    let face = abs(off) * 0.85 / (1.0 + 1.6 * loose) - 0.011
+    // (A junk's bamboo battens stand proud of its cloth.)
+    let ribs = if SAIL == 1 { 0.014 * (1.0 - smoothstep(0.0, 0.06, abs(fract(up * 6.0 + 0.5) - 0.5) / 6.0 * 3.6)) } else { 0.0 }
+    let face = abs(off) * 0.85 / (1.0 + 1.6 * loose) - 0.011 - ribs
     (length(max(vec2(face, edge), vec2(0.0))) + min(max(face, edge), 0.0), vec2(u, v))
+}
+
+/// The sail's cut (`main::SAIL`) at `u` along the boom and `v` up the mast (m): how far outside
+/// it (roughly, m), how far across it from luff to leech (0 to 1), how far up it (0 to 1), and how
+/// full its cloth may belly there (1, or less where a junk's battens hold it between its
+/// panels).
+fn cut(u: f32, v: f32) -> (f32, f32, f32, f32) {
+    if SAIL == 1 {
+        // A junk's lug sail: a peaked yard over it, a boom batten under, its leech fanned out
+        // between them, six panels each bellying between bamboo battens.
+        let xu = clamp(u / BOOM, 0.0, 1.15)
+        let v0 = 0.5 + 0.3 * xu
+        let v1 = 2.9 + 1.25 * xu
+        let sv = clamp((v - v0) / (v1 - v0), 0.0, 1.0)
+        let reach = BOOM * (1.0 + 0.1 * sin(3.1415927 * sv))
+        let edge = max(max(v0 - v, v - v1) * 0.55, max(-u, u - reach))
+        let x = clamp(u / reach, 0.0, 1.0)
+        let panel = 0.35 + 0.65 * pow(max(sin(3.1415927 * fract(sv * 6.0)), 0.0), 0.6)
+        return (edge, x, sv, panel)
+    }
+    if SAIL == 2 {
+        // A crab-claw: two spars from a point low on the mast, the mast itself and one swept out
+        // aft, the cloth between them cut away in a deep curve between their tips.
+        let a = vec2(u, v - 0.3)
+        let r = length(a)
+        let th = atan2(a.x, a.y)
+        let low = 1.15
+        let tn = clamp(th / low, 0.0, 1.0)
+        let reach = mix(4.0, 2.7, tn) * (1.0 - 0.4 * pow(sin(3.1415927 * tn), 1.5))
+        let edge = max(max(-th, th - low) * max(r, 0.2) * 0.9, r - reach)
+        return (edge, tn, clamp(r / reach, 0.0, 1.0), 1.0)
+    }
+    let x = clamp(u / BOOM, 0.0, 1.0)
+    let low = 0.22 + (LASHED - 0.22) * pow(x, 2.6)
+    // (Its leech frayed, the cloth's edge worn ragged where it's flogged for years.)
+    let fray = if SAIL == 3 { 0.0 } else { 0.045 * x * x * noise(vec2(v * 9.0, 3.0)) * noise(vec2(v * 31.0, 7.0)) }
+    let high = HEAD - (HEAD - LASHED) * pow(x, 1.5) - fray
+    let edge = max(max(low - v, v - high) * 0.55, max(-u, u - BOOM))
+    (edge, x, clamp((v - 0.2) / HEAD, 0.0, 1.0), 1.0)
 }
 
 /// The spars: the mast, and the wishbone's two arms bowed round the sail from the mast to the
@@ -171,7 +213,32 @@ fn spars(s: Shot, q: vec3) -> f32 {
     let uc = clamp(u, 0.0, BOOM)
     let bow = BOW_OUT * sin(3.14159 * uc / BOOM) + 0.015
     let arm = length(vec3(u - uc, dot(r, s.mast), abs(dot(r, s.belly)) - bow)) - 0.032
-    min(mast, arm)
+    var d = min(mast, arm)
+    if SAIL == 1 {
+        // The junk's yard, peaked up aft over the sail, and its boom batten along the foot.
+        let yard = sd_capsule(q, FOOT + s.mast * 2.85 - s.boom * 0.08, FOOT + s.mast * 4.2 + s.boom * BOOM, 0.028)
+        let foot_b = sd_capsule(q, FOOT + s.mast * 0.5, FOOT + s.mast * 0.8 + s.boom * BOOM, 0.022)
+        d = min(d, min(yard, foot_b))
+    }
+    if SAIL == 2 {
+        // The claw's lower spar, bowed a little, and the mast standing on as its upper one.
+        let root = FOOT + s.mast * 0.3
+        let tip = FOOT + s.mast * 1.4 + s.boom * 2.47
+        let bend = (root + tip) * 0.5 - s.mast * 0.12
+        d = min(d, min(sd_capsule(q, root, bend, 0.03), sd_capsule(q, bend, tip, 0.026)))
+        d = min(d, sd_capsule(q, FOOT + s.mast * HEAD, FOOT + s.mast * 4.35, 0.026))
+    }
+    if SAIL == 3 {
+        // A long pennant streaming from the masthead down the wind, rippling.
+        let top = FOOT + s.mast * (HEAD + 0.1)
+        let down = normalize(vec3(s.boom.x, 0.0, s.boom.z) * 0.85 + vec3(s.belly.x, 0.0, s.belly.z) * 0.3)
+        let side = normalize(cross(vec3(y: 1.0), down))
+        let t = clamp(dot(q - top, down) / 1.7, 0.0, 1.0)
+        let line = top + down * (t * 1.7) - vec3(y: 0.12 * t * t) +
+            side * (0.13 * t * sin(t * 9.0 - s.held * 15.0)) + vec3(y: 0.06 * t * sin(t * 7.0 - s.held * 11.0))
+        d = min(d, length(q - line) - 0.03 * (1.0 - 0.6 * t))
+    }
+    d
 }
 
 /// The hero's joints and the wind on its coat, from the rig's pose.
@@ -293,6 +360,9 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
     if k.y < 0.006 && k.y <= min(k.z, k.w) {
         let (_, uv) = cloth(s, q)
         let stain = noise(uv * vec2(3.0, 2.0)) * 0.6 + noise(uv * vec2(11.0, 7.0)) * 0.4
+        if SAIL != 0 {
+            return (sail_kind(uv, stain), 0.8, sin(uv.y * 5.2 - uv.x * 0.6) + 1.2)
+        }
         // (Tanned canvas, as a working sail's is: oiled and weathered, darker toward the foot
         // where the spray reaches it.)
         var c = mix(vec3(0.44, 0.38, 0.29), vec3(0.62, 0.55, 0.42), stain)
@@ -343,7 +413,10 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
         let worn = smoothstep(0.35, 0.65, noise(vec2(along_m * 3.0, off_m * 40.0 + q.x * 5.0)))
         let spar = mix(vec3(0.06, 0.045, 0.035), vec3(0.2, 0.17, 0.13), worn * 0.8) *
             (0.85 + 0.3 * noise(vec2(along_m * 30.0, q.x * 50.0)))
-        let c = mix(spar, vec3(0.36, 0.3, 0.2) * (0.75 + 0.35 * strand), rope)
+        var c = mix(spar, vec3(0.36, 0.3, 0.2) * (0.75 + 0.35 * strand), rope)
+        if SAIL == 3 && along_m > HEAD - 0.2 && off_m > 0.05 {
+            c = vec3(0.5, 0.07, 0.04)
+        }
         return (c, mix(0.6, 0.9, rope), 1.0 - 0.9 * rope * (1.0 - strand))
     }
     // The hero.
@@ -373,7 +446,7 @@ fn patch(uv: vec2, at: vec2, half: vec2, turn: f32) -> (f32, f32) {
 fn old_wood(q: vec3, y: f32, outside: f32, inside: f32, grain: f32, fine: f32) -> (vec3, f32, f32) {
     let lap = floor(y / 0.075)
     let tone = hash2(vec2(lap, 7.0))
-    var wood = mix(vec3(0.17, 0.14, 0.11), vec3(0.3, 0.26, 0.21), tone * 0.5 + grain * 0.5)
+    var wood = mix(vec3(0.27, 0.24, 0.2), vec3(0.43, 0.39, 0.33), tone * 0.5 + grain * 0.5)
     wood *= 0.85 + 0.3 * fine
     // (The paint, worn through to the wood where hands and the sea rub it most: at the rail, the
     // bow, each lap's edge.)
@@ -381,7 +454,7 @@ fn old_wood(q: vec3, y: f32, outside: f32, inside: f32, grain: f32, fine: f32) -
         0.2 * smoothstep(-0.06, 0.0, y) + 0.15 * smoothstep(1.2, 2.0, q.z) +
         0.15 * smoothstep(0.75, 1.0, fract(y / 0.075))
     let painted = 1.0 - smoothstep(0.62, 0.7, wear)
-    let faded = mix(vec3(0.24, 0.06, 0.04), vec3(0.3, 0.17, 0.13), smoothstep(-0.25, 0.0, y))
+    let faded = mix(vec3(0.36, 0.1, 0.07), vec3(0.45, 0.26, 0.2), smoothstep(-0.25, 0.0, y))
     var c = mix(wood, faded * (0.85 + 0.25 * grain), painted)
     let ochre = smoothstep(-0.245, -0.235, y) * smoothstep(-0.205, -0.215, y)
     c = mix(c, vec3(0.42, 0.31, 0.13) * (0.8 + 0.3 * grain), ochre * painted)
@@ -402,7 +475,7 @@ fn old_wood(q: vec3, y: f32, outside: f32, inside: f32, grain: f32, fine: f32) -
     let board = floor(q.x / 0.085 + 0.5)
     let bt = hash2(vec2(board, 11.0))
     let dg = noise(vec2(q.z * 2.0 + bt * 9.0, q.x * 70.0))
-    var deck = mix(vec3(0.2, 0.18, 0.15), vec3(0.36, 0.33, 0.28), bt * 0.5 + dg * 0.5) * (0.85 + 0.3 * fine)
+    var deck = mix(vec3(0.3, 0.28, 0.24), vec3(0.5, 0.47, 0.41), bt * 0.5 + dg * 0.5) * (0.85 + 0.3 * fine)
     let edge = abs(fract(q.x / 0.085 + 0.5) - 0.5) * 0.085
     let gap = 1.0 - smoothstep(0.003, 0.007, edge)
     deck = mix(deck, vec3(0.03, 0.025, 0.02), gap * 0.9)
@@ -419,4 +492,35 @@ fn old_wood(q: vec3, y: f32, outside: f32, inside: f32, grain: f32, fine: f32) -
     let seam_side = 1.0 - 2.2 * (1.0 - smoothstep(0.0, 0.08, fract(y / 0.075)))
     let seam_deck = 1.0 - 2.0 * max(gap, butt_l)
     (c, rough, mix(seam_side * outside + (1.0 - outside), seam_deck, inside))
+}
+
+/// The other sails' cloth at `uv` (along the boom, up the mast, m), `stain` its mottling: the
+/// junk's tanbark panels, each its own shade, between dark bamboo battens; the claw's woven
+/// matting bound at its edge; the bold madder triangle with a cream band.
+fn sail_kind(uv: vec2, stain: f32) -> vec3 {
+    let (edge, x, up, _) = cut(uv.x, uv.y)
+    if SAIL == 1 {
+        let band = floor(up * 6.0)
+        let tone = hash2(vec2(band, 21.0))
+        var c = mix(vec3(0.28, 0.09, 0.05), vec3(0.46, 0.19, 0.1), tone * 0.5 + stain * 0.5)
+        c *= 0.85 + 0.2 * smoothstep(0.0, 0.6, up)
+        let rib = 1.0 - smoothstep(0.0, 0.05, abs(fract(up * 6.0 + 0.5) - 0.5) / 6.0 * 3.6)
+        c = mix(c, vec3(0.15, 0.11, 0.06), rib * 0.9)
+        return c
+    }
+    if SAIL == 2 {
+        let a = vec2(uv.x, uv.y - 0.3)
+        let r = length(a)
+        let weave = abs(step(0.5, fract(r * 8.0)) - step(0.5, fract(x * 16.0)))
+        var c = mix(vec3(0.42, 0.34, 0.2), vec3(0.6, 0.5, 0.32), stain)
+        c *= 0.86 + 0.18 * weave
+        // (Bound round its curved edge with dark cord.)
+        c = mix(c, vec3(0.12, 0.08, 0.05), 1.0 - smoothstep(-0.06, -0.03, edge))
+        return c
+    }
+    var c = mix(vec3(0.34, 0.05, 0.035), vec3(0.46, 0.08, 0.05), stain)
+    let band = smoothstep(2.2, 2.23, uv.y) * (1.0 - smoothstep(2.55, 2.58, uv.y))
+    c = mix(c, vec3(0.78, 0.7, 0.55), band)
+    c = mix(c, vec3(0.08, 0.05, 0.04), 1.0 - smoothstep(0.05, 0.08, uv.x))
+    c
 }

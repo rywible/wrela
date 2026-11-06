@@ -56,6 +56,12 @@ pub const FINE: f32 = 1.0
 /// flat-bottomed and flared, its bow swept up and decked) (`--set PLANING=1`).
 pub const PLANING: f32 = 1.0
 
+/// The skiff's sail: 0 the windsurfer's battened triangle, weathered and patched; 1 a junk's
+/// lug sail of tanbark cloth between bamboo battens; 2 a crab-claw of woven matting between two
+/// spars; 3 the triangle again in bold madder with a pennant streaming off its head
+/// (`--set SAIL=1`).
+pub const SAIL: u32 = 0
+
 /// Where the camera stands: 0 the opening's shot, 1 the player's, up behind the skiff
 /// (`Rig::framing`; `--set FRAMING=1`).
 pub const FRAMING: f32 = 0.0

@@ -16,7 +16,7 @@ use engine::ocean::{Waves, level_at, shape_at, surface_at, whitecaps}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use yonder::falls
 use skiff::{dry, skiff, skiff_material, skiff_normal}
-use wake::{lifted, marks, spray, stirred}
+use wake::{flotsam, lifted, marks, spray, stirred}
 use engine::far::foot
 use engine::light::{Light, Lit, gloss, hazed, matte, sun_disc, world}
 use engine::air::aerial_uvw
@@ -1037,6 +1037,11 @@ fn sea_shade(
         0.28
     c = mix(c, foam_light * 0.75, veil)
     c = mix(c, foam_light, max(max(foam * 0.9, wake), splash))
+    // What drifts on the water near the skiff, sliding by as it goes (`wake::flotsam`).
+    let (drift_c, drift_k) = flotsam(rest, t)
+    if drift_k > 0.0 {
+        c = mix(c, drift_c * foam_lit * (1.0 / 0.92), drift_k)
+    }
     // The crests' ink strokes and pale lips, light: the ink sits on the water's form.
     let footprint = t * 2.0 / (s.resolution.y * s.focal)
     let crest_ink = if LOOK > 2.5 { vec2(0.0) } else {
