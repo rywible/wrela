@@ -1,15 +1,14 @@
-// The weather over the opening, laid on the painted scene before the ink (`weather`): the
-// storm's deck seen from under it at the pixel's own size, its rolls and thinner reaches going
-// away to the horizon in perspective, into the far air; rain hanging from it in curtains to the
-// sea; ragged scud driven under it; all of it moving on the wind (`look::wind`) and turning as
-// the weather turns.
+// The weather over the opening, laid on the painted scene before the ink (`weather`): ragged
+// scud driven low under the storm's deck, rain hanging from it in curtains to the sea far off,
+// now and then lightning; all of it moving on the sea's wind (`look::wind`), sorted against
+// what each pixel met (paint's marks: how far, what), and the sky's own light tidied where it
+// meets the horizon and the sea.
 //
-// The dome (`engine::sky`) holds the deck's light, marched in 3D but a texel to two or three of
-// the screen's pixels, and grazing near the horizon. Here the deck's base is met per pixel, as a
-// plane over the curved sea, and the dome's light is given the detail it can't hold: what's
-// finer than a pixel faded to its mean (`fbm2_seen`), so nothing crawls.
+// The deck itself is the engine's (`engine::sky`), marched in 3D into its dome; here its march's
+// dither is smoothed out, its far sunlit edges held under the air's light, and the far sea lost
+// into the same air, so there's no ruled line between them.
 
-use look::{ISLE, OVERCAST, ROCK, SKY, STORM_LOW, SUN, Shot, hash2, luma, ray, wind}
+use look::{OVERCAST, ROCK, SKY, STORM_LOW, Shot, hash2, luma, ray, wind}
 use engine::air::{ALTITUDE, BOTTOM}
 use engine::light::Light
 use engine::light::sky as clear_sky
@@ -32,20 +31,8 @@ fn reach(y: f32, dy: f32, z: f32) -> f32 {
     -b + sqrt(max(b * b - c, 0.0))
 }
 
-/// The elevation (a direction's y) the dome's own deck is read at, at the lowest: under it the
-/// dome's grazing march is streaked and its far field repeats, so the deck's light is taken
-/// here and carried on to the horizon through the air.
-const READ_LOW: f32 = 0.11
-
-/// How far the storm's air goes before it's taken half the deck's light (m), past where the
-/// dome is read.
-const FAR_AIR: f32 = 26000.0
-
-/// The deck's light along `d` and the storm air's light low on the horizon round the eye.
-struct Deck {
-    colour: vec3,
-    air: vec3,
-}
+/// The elevation (a direction's y) the deck's light is read at for the air under it.
+const AIR_AT: f32 = 0.11
 
 /// The air low on the horizon, all round: the deck's light a little over it, eight of its
 /// directions' mean (no one cloud in it), lighter where the eye looks out under the deck's
@@ -54,205 +41,11 @@ fn horizon_air(view: Texture<Rgba16Float>, light: Light, dome: Texture<Rgba16Flo
     var far = vec3(0.0)
     for k in 0..8 {
         let a = f32(k) * 0.785398
-        let dir = normalize(vec3(cos(a), READ_LOW, sin(a)))
+        let dir = normalize(vec3(cos(a), AIR_AT, sin(a)))
         let c = dome.sample_level(smp, sky_uv(dir))
         far += c.rgb + luma(clear_sky(view, smp, light, dir)) * 0.2 * (1.0 - c.a)
     }
     vec3(luma(far / 8.0)) * vec3(0.93, 0.965, 1.0)
-}
-
-/// Round pouches at `p` (one a unit cell, about): a soft bump at each cell's point, summed, so
-/// they run into each other in creases rather than meeting in a cell's straight walls.
-fn pouches(p: vec2) -> f32 {
-    let i = floor(p)
-    var sum = 0.0
-    for y in 0..3 {
-        for x in 0..3 {
-            let c = i + vec2(f32(x) - 1.0, f32(y) - 1.0)
-            let at = c + vec2(hash2(c), hash2(c + vec2(19.1, 7.3))) * 0.8 + vec2(0.1)
-            let size = 0.32 + 0.22 * hash2(c + vec2(3.7, 41.0))
-            let r = length(p - at) / size
-            sum += exp(-r * r)
-        }
-    }
-    min(sum, 1.4)
-}
-
-/// How the hanging surface is lit where the ray along `d` meets it, `t` along: lit where it
-/// faces the light coming in under the deck (the far air, brightest toward the sun), a little
-/// dark where it faces away; darker high up in it, between the pouches, where it's thickest.
-fn surface(
-    s: Shot,
-    d: vec3,
-    t: f32,
-    drift: vec2,
-    across: vec2,
-    along: vec2,
-    turn: f32,
-    deep: f32,
-    px_angle: f32,
-) -> f32 {
-    let q = s.eye.xz + d.xz * t - drift
-    let foot = t * px_angle / max(d.y, 0.02)
-    let eps = max(foot, 30.0)
-    let h0 = hanging(q, across, along, turn, foot, deep)
-    let hx = hanging(q + vec2(eps, 0.0), across, along, turn, foot, deep)
-    let hz = hanging(q + vec2(0.0, eps), across, along, turn, foot, deep)
-    // (The surface's normal, facing down: its slopes, metres a metre.)
-    let n = normalize(vec3(-(hx - h0) / eps, -1.0, -(hz - h0) / eps))
-    let sun_flat = normalize(SUN.xz)
-    let from_light = normalize(vec3(sun_flat.x, -0.55, sun_flat.y))
-    let facing = dot(n, from_light)
-    // (Soft: a cloud's surface scatters, it doesn't shine; the light's side at most a fifth
-    // brighter. Higher up in it, its crevices between the hanging masses, darker.)
-    (0.92 + 0.22 * smoothstep(-0.3, 0.8, facing)) * mix(1.0, 0.72, smoothstep(250.0, HANG, h0))
-}
-
-/// How deep the deck's base hangs at the most (m).
-const HANG: f32 = 870.0
-
-/// How far the deck's base hangs at `q` (field frame; m, down from its mean): rolls laid
-/// across the wind (`across`, `along`), pouches sagging from them, both flattened to nothing as
-/// the pixel's footprint (`foot`, m) outgrows them.
-fn hanging(q: vec2, across: vec2, along: vec2, turn: f32, foot: f32, deep: f32) -> f32 {
-    let w = vec2(dot(q, across), dot(q, along))
-    let warp = vec2(fbm2(w / 9000.0 + vec2(3.1, turn), 3), fbm2(w / 9000.0 + vec2(turn, 8.7), 3)) -
-        vec2(0.5)
-    // Great masses kilometres across, rolls in them, lumps on those: each layer gone as the
-    // footprint outgrows it.
-    let mass = fbm2(w / 9000.0 + warp * 0.8 + vec2(5.0, 1.0), 2)
-    let roll = fbm2_seen(vec2(w.x / 3600.0, w.y / 2000.0) + warp * 1.8 + vec2(0.0, turn), 4, foot / 2000.0)
-    let lump = fbm2_seen(w / 480.0 + warp * 4.0 + vec2(turn * 3.0, 2.0), 3, foot / 480.0)
-    // Pouches only where the deck's heaviest, in patches.
-    let pouch = pouches(w / 760.0 + warp * 2.5 + vec2(turn * 2.0, 0.0)) *
-        (1.0 - smoothstep(90.0, 300.0, foot)) * smoothstep(0.52, 0.68, mass)
-    (mass * 260.0 + roll * 300.0 + lump * 110.0 + pouch * 200.0) * deep
-}
-
-/// The deck's mean light at `READ_LOW`, all round: eight of its directions'.
-fn deck_mean(view: Texture<Rgba16Float>, light: Light, dome: Texture<Rgba16Float>, smp: Sampler) -> vec3 {
-    var sum = vec3(0.0)
-    for k in 0..8 {
-        let a = f32(k) * 0.785398
-        let dir = normalize(vec3(cos(a), READ_LOW * 1.8, sin(a)))
-        let c = dome.sample_level(smp, sky_uv(dir))
-        sum += c.rgb + luma(clear_sky(view, smp, light, dir)) * 0.2 * (1.0 - c.a)
-    }
-    sum / 8.0
-}
-
-/// The deck's base as the pixel sees it along `d` (going up), from `eye`: the dome's light
-/// there, given its rolls and thinner reaches at the pixel's size (`px_angle`, radians a pixel),
-/// and carried off into the air toward the horizon.
-fn deck(
-    s: Shot,
-    view: Texture<Rgba16Float>,
-    light: Light,
-    dome: Texture<Rgba16Float>,
-    smp: Sampler,
-    drift: vec2,
-    air: vec3,
-    mean: vec3,
-    d: vec3,
-    px_angle: f32,
-) -> vec3 {
-    let t = reach(s.eye.y, d.y, DECK)
-    // The dome's light high up; lower, where its grazing march's tiles differ (read on down
-    // to the horizon they'd stand as bars), the deck's mean light at `READ_LOW` all round,
-    // a little lighter toward the sun: the form below is all this pass's own.
-    let c = dome.sample_level(smp, sky_uv(d))
-    let behind = vec3(luma(clear_sky(view, smp, light, d))) * vec3(0.8, 0.85, 0.9) * 0.2
-    let high = c.rgb + behind * (1.0 - c.a)
-    let toward = max(dot(normalize(d.xz), normalize(SUN.xz)), 0.0)
-    let low = mean * (0.92 + 0.22 * toward * toward)
-    var lit = mix(low, high, smoothstep(READ_LOW, READ_LOW * 2.6, d.y))
-    // The base's own form, in the field's frame (it drifts with the deck): a hanging surface,
-    // great rolls laid across the wind and pouches sagging from them, lit from the side the
-    // light comes in under the deck (the far air, brightest toward the sun), shadowed on the
-    // other; the pixel's footprint on the base (stretched as it's seen edge on) flattening what
-    // it can't hold, so nothing crawls.
-    let along = wind()
-    let across = vec2(-along.y, along.x)
-    let turn = s.time * 0.004
-    // Where the ray meets the hanging surface: marched down through the depth it hangs
-    // (`HANG`), from where the ray comes under its lowest to its top, so a pouch in front hides
-    // what's behind it, then pinned between the last step outside and the first in.
-    // (Low over the horizon, where the march's steps grow long, the surface flattens.)
-    let deep = smoothstep(0.035, 0.1, d.y)
-    let t_lo = reach(s.eye.y, d.y, DECK - HANG * deep)
-    let foot0 = t * px_angle / max(d.y, 0.02)
-    var hit = t
-    // (And the nearest the ray came to a pouch in front before it met one: a cloud's edge is
-    // soft, so one it passed within a few pixels of still veils what's behind it.)
-    var near_t = t
-    var near_w = 0.0
-    if foot0 < 900.0 && d.y > 0.03 {
-        var a = t_lo
-        var found = false
-        let n = 24
-        for i in 0..n {
-            let b = mix(t_lo, t, f32(i + 1) / f32(n))
-            let p = s.eye + d * b
-            let foot = b * px_angle / max(d.y, 0.02)
-            let h = hanging(p.xz - drift, across, along, turn, foot, deep)
-            if !found && p.y >= DECK - h {
-                // (Between `a`, outside, and `b`, in.)
-                var lo = a
-                var hi = b
-                for _ in 0..5 {
-                    let m = 0.5 * (lo + hi)
-                    let pm = s.eye + d * m
-                    let hm = hanging(pm.xz - drift, across, along, turn, foot, deep)
-                    if pm.y >= DECK - hm { hi = m } else { lo = m }
-                }
-                hit = hi
-                found = true
-            }
-            if !found {
-                a = b
-                let soft = max(b * px_angle * 3.0, 30.0)
-                let wk = 1.0 - smoothstep(0.0, soft, DECK - h - p.y)
-                if wk > near_w {
-                    near_w = wk
-                    near_t = b
-                }
-            }
-        }
-    }
-    let shade = mix(
-        surface(s, d, hit, drift, across, along, turn, deep, px_angle),
-        surface(s, d, near_t, drift, across, along, turn, deep, px_angle),
-        near_w * 0.85,
-    )
-    let h0 = hanging(s.eye.xz + d.xz * hit - drift, across, along, turn, hit * px_angle / max(d.y, 0.02), deep)
-    // Darker over the rain.
-    let wet = smoothstep(0.52, 0.78, rain_cell(s, s.eye.xz + d.xz * t))
-    let held = smoothstep(0.0, 0.05, d.y) * OVERCAST
-    lit *= mix(1.0, shade * (1.0 - 0.35 * wet), held)
-    // Behind the cathedral the deck's thinner, a reach of it sheared out along the rolls,
-    // across the wind: the light it lets through pale and a little warm, what the spires stand
-    // dark against.
-    let behind_at = s.eye + s.glow * reach(s.eye.y, s.glow.y, DECK)
-    let here = s.eye + d * t
-    let off = here.xz - behind_at.xz
-    let across_w = vec2(-wind().y, wind().x)
-    let e = vec2(dot(off, across_w) / 9000.0, dot(off, wind()) / 3200.0)
-    let torn = fbm2(here.xz / 2600.0 + vec2(17.0, s.time * 0.01), 3)
-    let thin = exp(-dot(e, e)) * smoothstep(0.3, 0.65, torn) * held
-    // One gradient over it all: darkest overhead and off to the sides, opening toward the
-    // rock and down toward the horizon.
-    let toward_rock = max(dot(normalize(d.xz), normalize(s.glow.xz)), 0.0)
-    let open = mix(0.86, 1.16, smoothstep(0.5, 0.0, d.y) * 0.6 + toward_rock * toward_rock * 0.4)
-    // Lifted overall (a storm's base is dark, not black: lit by the miles of air round it),
-    // its lit reaches a little warm, its cores a little green-grey.
-    let tone = shade * (1.0 - 0.35 * wet)
-    let tint = mix(vec3(0.94, 1.0, 1.0), vec3(1.04, 1.0, 0.95), smoothstep(0.85, 1.12, tone))
-    lit = lit * 1.18 * open * mix(vec3(1.0), tint, held) + mean * 0.08 * held
-    lit *= vec3(1.0) + thin * vec3(0.32, 0.29, 0.24)
-    // Off toward the horizon, into the storm's air: what's past where the dome was read.
-    let t_read = reach(s.eye.y, READ_LOW, DECK)
-    let gone = 1.0 - exp(-max(t - t_read, 0.0) / FAR_AIR)
-    mix(lit, air, gone)
 }
 
 /// The rain under the deck where it's heaviest, from `t0` to `t1` along `d` from the eye: its
@@ -353,7 +146,7 @@ fn scud(
     // thins away from the eye, catching the deck's light (the torn field a little farther off
     // along the ray: where that's clearer, this is an upper edge).
     let ahead = vec2(dot(d.xz, across), dot(d.xz, along)) / max(length(d.xz), 1.0e-4)
-    let beyond = fbm2_seen(vec2(w.x / 420.0, w.y / 700.0) + ahead * (160.0 / 520.0) + vec2(4.0, 1.0), 5, foot / 520.0)
+    let beyond = fbm2_seen(w / 520.0 + ahead * (160.0 / 520.0) + vec2(4.0, 1.0), 5, foot / 520.0)
     let rim = smoothstep(0.0, 0.08, torn - beyond)
     let col = deck_light * (mix(0.5, 0.26, smoothstep(0.6, 0.85, torn)) + 0.35 * rim)
     let ap = stormy_air(aerial, smp, light.sun, d, t * 0.001, OVERCAST)
@@ -443,23 +236,12 @@ pub fn weather(
     let px_angle = 2.0 / (s.resolution.y * s.focal)
     let air = horizon_air(view, light, dome, smp)
     let deck_light = luma(dome.sample_level(smp, sky_uv(vec3(0.0, 1.0, 0.0))).rgb) * vec3(0.95, 0.97, 1.0)
-    let mean = deck_mean(view, light, dome, smp)
     let b = strike(s)
-    // The sky: the deck met here at the pixel's size, down to the horizon.
-    if DRAWN_DECK && m.y == SKY && d.y > 0.0 {
-        let base = deck(s, view, light, dome, smp, clouds.drift, air, mean, d, px_angle)
-        // Just over the horizon the far air itself, lighter where the eye looks out under the
-        // deck's edge; a silver of the sun's light far off toward it.
-        let low = exp(-d.y / 0.028)
-        let toward = pow(max(dot(normalize(d.xz), normalize(SUN.xz)), 0.0), 6.0)
-        let strip = exp(-d.y / 0.008)
-        let horizon = air * (1.0 + 0.1 * low) * mix(vec3(1.0), vec3(1.1, 1.06, 0.98), strip) +
-            light.sun_colour * vec3(1.0, 0.92, 0.8) * (0.05 * toward * strip)
-        c = vec4(mix(base, horizon, low), c.a)
-        // The deck lit from inside round the strike.
+    // The deck lit from inside round a strike.
+    if m.y == SKY && d.y > 0.0 && b.now > 0.0 {
         let hit = s.eye + d * reach(s.eye.y, d.y, DECK)
         let r = length(hit.xz - b.at.xz)
-        c = vec4(c.rgb + mean * FLASH * 1.6 * b.now * exp(-(r / 5000.0) * (r / 5000.0)), c.a)
+        c = vec4(c.rgb + air * FLASH * 1.6 * b.now * exp(-(r / 5000.0) * (r / 5000.0)), c.a)
     }
     // The dome's march's dither smoothed out of the sky: its texel and its four neighbours'
     // mean in place of its texel alone.
@@ -498,12 +280,9 @@ pub fn weather(
     c = vec4(c.rgb * mix(RAIN_LIGHT, 1.0, r), c.a)
     // The bolt, and the flash on everything: the sea and the rock caught for an instant.
     let bolt_k = bolt(s, b, d, dist, px_angle)
-    c = vec4(c.rgb + vec3(0.85, 0.88, 1.0) * mean * FLASH * 6.0 * bolt_k + mean * FLASH * 0.12 * b.now, c.a)
+    c = vec4(c.rgb + vec3(0.85, 0.88, 1.0) * air * FLASH * 6.0 * bolt_k + air * FLASH * 0.12 * b.now, c.a)
     c
 }
 
-/// Whether the deck's base is drawn here per pixel (`deck`), or left as the dome holds it.
-const DRAWN_DECK: bool = false
-
-/// How bright lightning is, against the deck's mean light.
+/// How bright lightning is, against the air's light under the deck.
 const FLASH: f32 = 1.0
