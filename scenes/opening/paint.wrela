@@ -11,7 +11,7 @@ use look::{
     noise, ray,
 }
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
-use wind::air_at
+use wind::{air_over, gale}
 use engine::ocean::{Waves, level_at, shape_at, surface_at, whitecaps}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use yonder::falls
@@ -740,9 +740,9 @@ fn sea_shade(
     // (The capillaries' own tilts blur the glitter, but hardly the sky the waves a pixel holds
     // mirror: their faces still split into the bright low sky's and the dark deck's.)
     // A gust's patch, running down the wind over the water (the same gusts the sail feels,
-    // `wind::air_at`): its ripples steeper, so it mirrors more of the dark deck and less of the
+    // `wind::air_over`): its ripples steeper, so it mirrors more of the dark deck and less of the
     // bright low sky, a darker roughened stretch, and its crests break whiter.
-    let gusting = clamp((air_at(xz, s.held).gust - 0.78) * 2.0, 0.0, 1.0)
+    let gusting = clamp((air_over(xz, s.held, gale()).gust - 0.78) * 2.0, 0.0, 1.0)
     let slope = sqrt(max(lost.y - waves.sea.unseen * 0.75, 0.0)) * (0.55 + 1.0 * gusting)
     let rise = asin(clamp(r.y, 0.0, 1.0))
     let across = normalize(vec2(r.x, r.z) + vec2(1.0e-6, 0.0))
