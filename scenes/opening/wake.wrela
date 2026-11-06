@@ -327,7 +327,8 @@ pub fn spindrift(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
         // (Faded in and out at the box's walls so none blinks into being.)
         let fade = (1.0 - smoothstep(0.3, 0.5, abs(wrapped.x) / DRIFT_BOX)) *
             (1.0 - smoothstep(0.3, 0.5, abs(wrapped.z) / DRIFT_BOX)) *
-            pow(sin(3.14159 * fract(s.held * 0.9 + seed.y * 7.0)), 2.0)
+            pow(sin(3.14159 * fract(s.held * 0.9 + seed.y * 7.0)), 2.0) *
+            smoothstep(5.0, 9.0, length(at - s.eye))
         let p0 = at - by * DRIFT_SHUTTER
         let dr = drop(o, d, hit, p0, at, 0.004, px_k, lit * 0.8)
         acc = acc * (1.0 - dr.a * fade) + dr * fade
