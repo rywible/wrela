@@ -12,7 +12,8 @@ use look::{
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
 use engine::ocean::{Waves, level_at, surface_at}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
-use skiff::{dry, hull_off, paddle, skiff, skiff_material, skiff_normal}
+use skiff::{dry, skiff, skiff_material, skiff_normal}
+use wake::{marks, spray, stirred}
 use engine::far::foot
 use engine::light::{Light, Lit, gloss, hazed, matte, sun_disc, world}
 use engine::air::aerial_uvw
@@ -651,122 +652,6 @@ const SPARK_ROOM: f32 = 0.2
 const SPARK_PEAK: f32 = 60.0
 const SPARK_GLINT: f32 = 1.5
 
-/// Foam's lace at `w` (m, where the water rests): clots of froth and the bubbles round them,
-/// in drifts, warped and broken so it's never a net's mesh. In [0, 1].
-fn lace_at(w: vec2) -> f32 {
-    let warp = vec2(noise(w * 0.9 + vec2(2.1, 8.3)), noise(w * 0.9 + vec2(6.7, 3.9))) - vec2(0.5)
-    let c = cells(w * 9.0 + warp * 4.0)
-    // (A bubble's blot round each cell's point, sized by a noise, so they clot and scatter.)
-    let size = 0.08 + 0.35 * noise(w * 6.0 + vec2(5.0)) * noise(w * 1.7)
-    let blots = 1.0 - smoothstep(size * 0.4, size, c.x)
-    let drifts = smoothstep(0.4, 0.7, fbm(w * 0.6 + warp, 3))
-    blots * drifts
-}
-
-/// The water the paddle has stirred at `xz` (`n` its normal there, `rest` where its water rests):
-/// rings spreading from where the blade went in; a ring of broken white where it bit, opening
-/// and gone in half a second; the boil of churned water off the blade's back as it pulls; and
-/// where it came out, the pair of dimpled whirls it sheds (the eddies off the blade's edges, a
-/// thread of foam wound into each, left astern as the skiff draws away). Astern, the skiff's
-/// slick: the water its hull smoothed. The normal as stirred, and the foam.
-fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
-    let bx = normalize(vec2(s.boat_x.x, s.boat_x.z))
-    let bz = normalize(vec2(s.boat_z.x, s.boat_z.z))
-    let rel = xz - vec2(s.boat.x, s.boat.z)
-    let q = vec2(dot(rel, bx), dot(rel, bz))
-    let way = clamp(abs(s.speed) / 3.0, 0.0, 1.0)
-    let astern = q.y < -1.5 && q.y > -24.0 && abs(q.x) < 2.5
-    if dot(q, q) > 64.0 && !astern {
-        return (n, 0.0)
-    }
-    var tilt = vec2(0.0)
-    var calm = 0.0
-    var foam = 0.0
-    // The slick: astern, a lane of smoother water as wide as the hull, widening and fading.
-    let behind = max(-q.y - 1.6, 0.0)
-    let lane = 0.45 + 0.06 * behind
-    calm = (1.0 - smoothstep(lane * 0.5, lane, abs(q.x))) *
-        smoothstep(0.0, 1.0, behind) *
-        exp(-behind / (5.0 + 10.0 * way)) *
-        smoothstep(0.0, 0.4, way) *
-        0.6
-    // Ripples spreading from the hull as it rocks, three at a time, fading as they widen (read
-    // round its waterline as a capsule), the more as it slaps down.
-    let along = q.y - clamp(q.y, -1.7, 1.7)
-    let out = vec2(q.x, along)
-    let off_hull = length(out) - 0.5
-    let away = out / max(length(out), 1.0e-3)
-    for k in 0..3 {
-        let r_k = 0.1 + fract(s.held * 0.3 + f32(k) / 3.0) * 2.6
-        let x = off_hull - r_k
-        let train = exp(-x * x / 0.003) * sin(x * 80.0)
-        tilt += away * (train * (0.05 + 0.1 * s.slap) * smoothstep(2.7, 0.3, r_k))
-    }
-    tilt *= step(0.0, off_hull)
-    let a = smoothstep(0.05, 0.45, abs(s.pull))
-    let rate = 0.8 * abs(s.pull) + 0.04
-    let lace = lace_at(rest * 1.6)
-    // (Nothing of the paddle's out past a few metres astern of the stroke.)
-    let reach = abs(q.x - 0.9) < 3.5 && q.y < 1.5 && q.y > -4.2 - 4.0 * max(s.speed, 0.0)
-    if a > 0.0 && reach {
-        // The boil off the blade's back as it pulls: churned water heaped and broken white
-        // round where the shaft goes in, most just aft of it.
-        let (_, pb, sunk) = paddle(s)
-        let bq = (q - vec2(pb.x, pb.z + 0.12)) / vec2(0.22, 0.34)
-        let boil = (1.0 - smoothstep(0.35, 1.0, length(bq))) * sunk
-        foam = max(foam, boil * smoothstep(0.05, 0.4, lace + 0.5 * boil))
-        tilt += bq * (boil * 0.25 * sin(length(bq) * 9.0 - s.held * 14.0))
-    }
-    let ph = fract(s.stroke)
-    for k in 0..(if a > 0.0 && reach { 4 } else { 0 }) {
-        let fk = f32(k)
-        // Where the blade went in, `age` s ago, left astern since.
-        let age = (ph + fk) / rate
-        let entry = vec2(0.9, -0.1 - s.speed * age)
-        let to = q - entry
-        let r = length(to)
-        let fade = exp(-age / 1.3) * a
-        // A short train of ripples round the ring's front, spreading at a ripple's pace.
-        let x = r - (0.15 + 0.32 * age)
-        let train = exp(-x * x / (0.008 + 0.012 * age)) * sin(x * 55.0)
-        tilt += to / max(r, 1.0e-3) * (train * 0.32 * fade)
-        // Where it bit: a ring of broken white thrown out from the blade, opening and thinning
-        // to nothing in half a second.
-        let ring = 0.07 + 0.55 * age
-        let crown = exp(-pow(r - ring, 2.0) / (0.002 + 0.01 * age)) * smoothstep(0.5, 0.05, age)
-        foam = max(foam, crown * a * smoothstep(0.05, 0.4, lace + 0.3))
-        // Where it came out: its two whirls, either side of the blade's path, each a dimple the
-        // ripples are smoothed out of, a thread of foam wound into it, slowly unwinding.
-        let out_age = (ph - 0.62 + fk) / rate
-        if out_age > 0.0 {
-            let exit = vec2(0.9, -1.15 - s.speed * out_age)
-            let wear = exp(-out_age / 4.0) * a
-            let rad = 0.16 + 0.06 * min(out_age, 3.0)
-            for side in 0..2 {
-                let sg = f32(side) * 2.0 - 1.0
-                // (The outboard whirl the stronger, and neither round: each drawn out and
-                // wandering as the water carries it.)
-                let e = exit + vec2(0.16 * sg, 0.04 * sg)
-                let strength = if side == 1 { 1.0 } else { 0.55 }
-                let v = (q - e) * vec2(1.0, 0.75)
-                let dq = length(v) * (0.8 + 0.4 * noise(v * 9.0 + vec2(fk * 3.7 + sg)))
-                let inside = 1.0 - smoothstep(rad * 0.5, rad * 1.3, dq)
-                calm = max(calm, inside * wear * 0.8 * strength)
-                // (Its dimple: the water leaning in toward its eye.)
-                tilt -= v /
-                    max(dq, 1.0e-3) *
-                    (exp(-dq * dq / (rad * rad * 0.3)) * 0.35 * wear * strength)
-                // (Bubbles caught at its edge, in clots, not a ring.)
-                let edge = exp(-pow(dq - rad, 2.0) / (rad * rad * 0.2))
-                foam = max(foam, edge * wear * strength * 0.6 * smoothstep(0.25, 0.6, lace))
-            }
-        }
-    }
-    let world_tilt = bx * tilt.x + bz * tilt.y
-    let m = normalize(n + vec3(world_tilt.x, 0.0, world_tilt.y))
-    (normalize(mix(m, vec3(y: 1.0), calm * 0.85)), foam)
-}
-
 /// The sea at `p`, seen along `d` from `t` away: its light, line field, weight, normal and energy.
 
 fn sea_shade(
@@ -798,7 +683,7 @@ fn sea_shade(
     let du = normalize(vec2(s.right.x, s.right.z)) * px_at
     let dv = flat * (px_at / max(-d.y, 0.01))
     let (wave, n0, foam_k, squeezed, lost0, rest) = surface_at(waves, xz, du, dv, tiles(calm))
-    // Where the paddle has been: its rings, its eddies and its splash.
+    // Where the skiff has been: its slick, its ripples, its spray falling back.
     let (n, splash) = stirred(s, xz, rest, n0)
     // (Far off, the wind's lanes: broad patches of rougher and smoother water, as its gusts
     // leave them, foreshortened to long bands of brighter and duller sheen toward the horizon.)
@@ -1004,82 +889,8 @@ fn sea_shade(
     // Under it and round it, the water's paler and greener, full of the bubbles the break drove
     // down, as the water under a whitecap is.
     let bubbles = smoothstep(mix(0.02, 0.2, OVERCAST), 0.5, foam_k)
-    // Foam where the sea meets the skiff, lit as a white surface is.
-    // The skiff's wake: two thin lines spreading from its stern as it drifts, and the stirred
-    // water straight behind it.
-    let rel = p - s.boat
-    let along = dot(rel, s.boat_z)
-    let across = dot(rel, s.boat_x)
-    // Under way, the wake runs longer and whiter, and the bow throws a wave off each side. The
-    // wake lies along the way the skiff came: turning, an arc (its centre `bend` m to the side the
-    // bow swings), read as how far back along it (`back`) and how far off it (`off`).
-    let way = clamp(abs(s.speed) / 3.0, 0.0, 1.0)
-    let bend = s.speed / (if abs(s.turn) < 1.0e-4 { 1.0e-4 } else { s.turn })
-    var back = -along
-    var off = across
-    if abs(bend) < 400.0 && abs(bend) > 3.0 {
-        let u = vec2(across - bend, along)
-        let b = vec2(-sign(bend), 0.0)
-        let phi = sign(bend) * atan2(b.x * u.y - b.y * u.x, dot(b, u))
-        back = abs(bend) * phi
-        off = length(u) - abs(bend)
-    }
-    let behind_ = max(back - 2.0, 0.0)
-    // Its arms broken into foam as they spread: patches, dashes, thinning and fading.
-    let broken = smoothstep(
-        0.3 - 0.1 * way,
-        0.62,
-        noise(vec2(behind_ * 0.8 - s.held * 1.5, off * 2.0)) * 0.6 +
-            noise(vec2(behind_ * 2.7, off * 6.0 + s.held)) * 0.4,
-    )
-    // (Each arm a train of short wavelets slanting off it, as a wake's are, never one ruled line.)
-    let wavelets = smoothstep(
-        0.1,
-        0.9,
-        0.5 + 0.5 * sin(behind_ * 5.0 + abs(off) * 3.0 - s.held * 4.0),
-    )
-    let arms = exp(-pow(abs(off) - behind_ * 0.36 - 0.4, 2.0) / (0.03 + behind_ * 0.02)) *
-        smoothstep(0.0, 1.0, behind_) *
-        // (A rowing boat's arms are ripples, not foam: white only close astern, gone in a
-        // few metres, never soft blots out by the eye.)
-        smoothstep(7.0 + 6.0 * way, 1.0, behind_) *
-        0.6 *
-        broken *
-        wavelets
-    // Straight astern, the churned water it leaves: lace on the water that rides with it (laid
-    // where it rests), in patches that thin as it widens and fades.
-    let trail = exp(-off * off / (0.25 + behind_ * 0.06)) *
-        smoothstep(0.0, 0.8, behind_) *
-        exp(-behind_ / (3.0 + 9.0 * way)) *
-        smoothstep(0.15, 0.7, lace_at(rest * 1.6) * (0.5 + fbm(rest * 0.7, 2)))
-    let from_bow = max(1.9 - along, 0.0)
-    let bow_wave = exp(-pow(abs(across) - 0.12 - from_bow * 0.4, 2.0) / 0.012) *
-        smoothstep(0.0, 0.3, from_bow) *
-        smoothstep(4.5, 1.2, from_bow) *
-        smoothstep(0.3, 0.55, noise(vec2(along * 3.0 - s.held * 4.0, across * 3.0))) *
-        way
-    let wake = max(
-        max(arms, trail) * step(0.0, back) * smoothstep(0.0, 0.5, way),
-        bow_wave * 0.7,
-    )
-    // Where the sea meets the hull: a lip of churned water along its waterline, out past the
-    // gunwale's flare so the eye above sees it, wider and whiter as the skiff makes way or slaps
-    // down; and the water darker close in, in the hull's shade and its reflection.
-    let wl = hull_off(s, p)
-    let fore = clamp(dot(p - s.boat, s.boat_z) / 2.2, 0.0, 1.0)
-    let lip_w = (0.05 + 0.1 * way + 0.12 * s.slap + 0.2 * fore * fore * (0.3 + way)) *
-        (0.55 + 0.9 * noise(xz * 2.2 + vec2(s.held * 0.4, 0.0)))
-    let ragged = wl + 0.06 * (noise(xz * 5.0 + vec2(s.held * 0.7)) - 0.5)
-    let lip = (1.0 - smoothstep(lip_w * 0.35, lip_w, ragged)) *
-        step(-0.05, wl) *
-        smoothstep(
-            0.42 - 0.2 * fore,
-            0.68,
-            noise(xz * 9.0 + vec2(s.held * 2.0, -s.held * 1.5)) * 0.55 +
-                noise(xz * 26.0 + vec2(-s.held, s.held * 0.8)) * 0.3 +
-                noise(xz * 60.0) * 0.15,
-        )
-    let foam = lip * (0.6 + 0.4 * max(way, s.slap))
+    // The skiff's wake, and the lip of broken water along its waterline (`wake`).
+    let (wake, foam, wl) = marks(s, p, xz, rest)
     // (Foam's a froth of bubbles: lit by the sun on it, and through it from behind when the eye
     // looks toward the sun, as a cloud's edge is; warm, not the sky's lilac.)
     // (And whiter than the light on it, as a froth's many bubbles scatter every colour alike: it
@@ -1132,100 +943,6 @@ fn sea_shade(
     let horizon_sky = heaven(view, h.light, normalize(vec3(d.x, 0.006, d.z)), dome, smp).rgb
     let hazy = mix(aired, horizon_sky, smoothstep(2500.0, 30000.0, t) * 0.85)
     (hazy, line, detail * 0.6 + foam, n, cut)
-}
-
-/// A drop of water `r` m across, flying from `p0` to `p1` while the frame's shutter is open (so
-/// drawn as the short streak it sweeps), as the ray `o` + `d` t meets it before `hit`: drawn at
-/// least a pixel wide (a pixel `px_k` t m at t), as much fainter as it's smaller than that, in
-/// its light `lit`. Its light (premultiplied) and cover.
-fn drop(o: vec3, d: vec3, hit: f32, p0: vec3, p1: vec3, r: f32, px_k: f32, lit: vec3) -> vec4 {
-    let e = p1 - p0
-    let w = o - p0
-    let b = dot(d, e)
-    let c = max(dot(e, e), 1.0e-8)
-    let u = clamp((dot(e, w) - b * dot(d, w)) / max(c - b * b, 1.0e-8), 0.0, 1.0)
-    let p = p0 + e * u
-    let tc = dot(p - o, d)
-    if tc <= 0.0 || tc >= hit {
-        return vec4(0.0)
-    }
-    let dist = length(p - o - d * tc)
-    let drawn = max(r, tc * px_k * 0.6)
-    // (A streak's light spread down its length: the longer, the fainter.)
-    let long = 1.0 + sqrt(c) / max(drawn * 2.0, 1.0e-4)
-    let cover = (1.0 - smoothstep(drawn * 0.3, drawn * 1.1, dist)) *
-        min(r * r / (drawn * drawn) * 3.0 / sqrt(long), 1.0)
-    vec4(lit * cover, cover)
-}
-
-/// The paddle's spray, in front of what the ray met at `hit`: as the blade bites, a crown of
-/// drops thrown up and out from it, falling back within half a second; as it swings forward
-/// through the air, the water running off it in drops. Each streaked by its flight through the
-/// frame. Lit as water drops are, by the sky's light, and by the sun through them when it's out
-/// and the eye looks toward it. Its light (premultiplied) and cover.
-fn spray(s: Shot, h: Heaven, o: vec3, d: vec3, hit: f32) -> vec4 {
-    let a = smoothstep(0.05, 0.45, abs(s.pull))
-    if a <= 0.0 {
-        return vec4(0.0)
-    }
-    // (Only for rays that pass near the paddle's side of the skiff.)
-    let side = s.boat + s.boat_x * 0.9 - s.boat_z * 0.6 - o
-    let tc = dot(side, d)
-    if tc <= 0.0 || length(side - d * tc) > 2.5 {
-        return vec4(0.0)
-    }
-    let rate = 0.8 * abs(s.pull) + 0.04
-    let ph = fract(s.stroke)
-    let age = ph / rate
-    let up = vec3(y: 1.0)
-    let level = s.boat.y - 0.2
-    let px_k = 2.0 / (s.resolution.y * s.focal)
-    let toward = pow(max(dot(d, h.light.sun), 0.0), 6.0)
-    let lit = h.light.sun_colour * (0.9 + 9.0 * toward) + vec3(0.22, 0.25, 0.29)
-    // (The shutter: a 40th of a second.)
-    let open = 0.025
-    var acc = vec4(0.0)
-    if age < 0.55 {
-        let entry = s.boat + s.boat_x * 0.92 + s.boat_z * (-0.1 - s.speed * age)
-        let base = vec3(entry.x, level, entry.z)
-        let stroke_id = floor(s.stroke)
-        for i in 0..28 {
-            let fi = f32(i)
-            let h1 = hash2(vec2(fi, stroke_id * 1.3))
-            let h2 = hash2(vec2(fi + 7.0, stroke_id * 2.1))
-            let h3 = hash2(vec2(fi + 13.0, stroke_id * 0.7))
-            // (Thrown up round the blade as a crown, more of them outboard and aft, the
-            // smallest highest and furthest.)
-            let turn = (h1 - 0.5) * 3.6
-            let fly = 0.25 + 0.9 * h2
-            let thrown = (s.boat_x * cos(turn) - s.boat_z * (sin(turn) * 0.7 + 0.3)) * fly +
-                up * (0.8 + 1.6 * h3 * (1.2 - h2 * 0.5))
-            let t0 = max(age - open, 0.0)
-            let p1 = base + thrown * age - up * (4.9 * age * age)
-            let p0 = base + thrown * t0 - up * (4.9 * t0 * t0)
-            if p1.y > level - 0.02 {
-                let r = 0.005 + 0.012 * (1.0 - h2) * (1.0 - h2)
-                let dr = drop(o, d, hit, p0, p1, r, px_k, lit)
-                acc = acc * (1.0 - dr.a) + dr
-            }
-        }
-    }
-    if ph > 0.62 {
-        let (_, b, _) = paddle(s)
-        let blade = s.boat + s.boat_x * b.x + s.boat_y * b.y + s.boat_z * b.z
-        for j in 0..6 {
-            let fall = fract(s.held * 2.7 + f32(j) * 0.17) * 0.32
-            let at = blade + s.boat_x * (0.05 * (f32(j) - 2.5)) - up * 0.18
-            let p1 = at - up * (4.9 * fall * fall)
-            let f0 = max(fall - open, 0.0)
-            let p0 = at - up * (4.9 * f0 * f0)
-            if p1.y > level {
-                let dr = drop(o, d, hit, p0, p1, 0.008, px_k, lit)
-                acc = acc * (1.0 - dr.a) + dr
-            }
-        }
-    }
-    vec4(acc.rgb, min(acc.a, 1.0)) * (a * 0.7)
 }
 
 /// How much of the falls a ray `o` + `d` t meets before `hit`, and their light (premultiplied).
@@ -1382,7 +1099,7 @@ fn sample(
         t = ts
         id = SEA
     }
-    let bs = sphere(o, d, vec4(s.boat + s.boat_y * 0.3, 3.2), far)
+    let bs = sphere(o, d, vec4(s.boat + s.boat_y * 1.5, 3.6), far)
     // The sea inside the skiff isn't there: the ray goes on to the hull.
     if id == SEA && dry(s, o + d * t) {
         t = far
@@ -1594,7 +1311,11 @@ fn sample(
     // The falls, in front of what the ray met; the gulls in front of all.
     let fall = falls(s, h, aerial, smp, o, d, t)
     c = c * (1.0 - fall.a) + fall.rgb
-    let thrown = spray(s, h, o, d, t)
+    // (Its drops lit by the deck's light from above, and the sun through them toward it.)
+    let toward = pow(max(dot(d, light.sun), 0.0), 6.0)
+    let drops_lit = light.sun_colour * (0.9 + 9.0 * toward) +
+        vec3(0.22, 0.25, 0.29) * mix(1.0, 1.6, OVERCAST)
+    let thrown = spray(s, drops_lit, o, d, t)
     c = c * (1.0 - thrown.a) + thrown.rgb
     if s.lantern > 0.5 {
         let beam = beams(s, h, aerial, smp, o, d, t)
@@ -1642,9 +1363,9 @@ pub fn paint(
     // down as it's bright, so one spark of gilt in four doesn't flicker the whole pixel.)
     let d = ray(s, px)
     let near_isle = sphere(s.eye, d, bounds(), 1.0e5)
-    let to_boat = s.boat + s.boat_y * 0.3 - s.eye
+    let to_boat = s.boat + s.boat_y * 1.5 - s.eye
     let pass = length(to_boat - d * dot(to_boat, d))
-    let boat_k = if dot(to_boat, d) > 0.0 { smoothstep(3.4, 2.5, pass) } else { 0.0 }
+    let boat_k = if dot(to_boat, d) > 0.0 { smoothstep(3.8, 2.9, pass) } else { 0.0 }
     let isle_k = if near_isle.x < near_isle.y { 1.0 } else { 0.0 }
     let k0 = max(isle_k, boat_k)
     // (One call of `sample` in one loop, met once or four times: written twice, the shader

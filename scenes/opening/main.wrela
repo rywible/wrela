@@ -12,14 +12,14 @@
 //
 // The sea is an open ocean's (`engine::ocean`): its waves summed on the GPU each drawing, the
 // skiff riding the longest of them as the CPU sums them. The water and the skiff move at
-// `HELD` drawings a second. The player rows the skiff (`row`): W paddles, S backs water, A and
-// D steer, and the camera swings round after it.
+// `HELD` drawings a second. The player sails the skiff (`sail`): W sheets in, S lets the sail
+// fly, A and D steer, and the camera swings round after it.
 
 use heavens::heavens
 use look::SUN
 use ink::ink
 use played::{State, cover, painted, sized, targets}
-use row::key
+use sail::key
 use std::input::events
 use std::gpu::{begin_screen_pass, draw}
 
@@ -62,7 +62,7 @@ pub fn init() -> State {
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     sized(mut s, width, height)
-    // The player's keys: W paddles, S backs water, A and D steer.
+    // The player's keys: W sheets in, S lets the sail fly, A and D steer.
     for e in events() {
         key(mut s.rig, e)
     }

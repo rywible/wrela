@@ -1,0 +1,24 @@
+// Keys for looking at the sailing in clips (`wrela script scenes/opening clips::NAME`, played with
+// `wrela-host --input`): frames at the host's rate.
+
+use std::input::{Key, Script}
+
+/// Sheeted in from rest and held, a turn up onto a reach, eased, a long turn away down through a
+/// gybe, then the sail let fly.
+pub const SAIL: Script = Script::frames()
+    .key_down(12, Key::W)
+    .key_up(180, Key::W)
+    .key_down(200, Key::D)
+    .key_up(260, Key::D)
+    .key_down(300, Key::W)
+    .key_up(380, Key::W)
+    .key_down(420, Key::A)
+    .key_up(540, Key::A)
+    .key_down(600, Key::S)
+    .key_up(680, Key::S)
+
+/// Sheeted in from the first frame and held: for stills under way.
+pub const RUN: Script = Script::frames()
+    .key_down(1, Key::W)
+    .key_down(1, Key::D)
+    .key_up(50, Key::D)

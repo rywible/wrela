@@ -3,7 +3,7 @@
 
 use sea::{HELD, bob, held}
 use engine::ocean::Swell
-use row::Rig
+use sail::{Rig, Pose, pose}
 
 /// Where the rock floats (the world's, m: its plateau's centre), and the sun.
 pub const ISLE = vec3(-1890.0, 1806.0, 7560.0)
@@ -62,12 +62,23 @@ pub struct Shot: Copy + GpuData {
     /// How much of the drawing is laid over the render, 0 (the physical render alone, to judge it
     /// by) to 1: the value bands, the hatching, the ink.
     pub style: f32,
-    /// The skiff's way (m/s) and turning (rad/s), how hard it's paddled (-1 to 1) and the
-    /// stroke's phase (strokes).
+    /// The skiff's way (m/s) and turning (rad/s), how hard its sail's sheeted (0 to 1), how far
+    /// onto the plane it is (0 to 1) and the wind's gust there (1 its mean).
     pub speed: f32,
     pub turn: f32,
-    pub pull: f32,
-    pub stroke: f32,
+    pub power: f32,
+    pub plane: f32,
+    pub gust: f32,
+    /// The rig and the traveller in the skiff's frame (`sail::Pose`).
+    pub mast: vec3,
+    pub boom: vec3,
+    pub belly: vec3,
+    pub hips: vec3,
+    pub neck: vec3,
+    pub fore_hand: vec3,
+    pub aft_hand: vec3,
+    pub fore_foot: vec3,
+    pub aft_foot: vec3,
     /// Which shading language draws it all: 0 the drawn look (ink and hatching over the render),
     /// 1 painted CG, 2 cel and ink, 3 clean CG.
     pub look: f32,
@@ -104,7 +115,19 @@ pub fn shot_at(
     swell: Swell,
 ) -> Shot {
     let t = held(time)
-    let (boat, bx, by, bz) = bob(t, r.shown_at, r.shown_steer, swell)
+    let (afloat, bx0, by0, bz0) = bob(t, r.shown_at, r.shown_steer, swell)
+    // Heeled by the sail's pull and its turns (starboard down as `heel` is positive), its bow
+    // lifted as it climbs onto the plane and settling as it skims, a little higher in the water.
+    let hl = r.shown_heel
+    let bx1 = bx0 * cos(hl) - by0 * sin(hl)
+    let by1 = by0 * cos(hl) + bx0 * sin(hl)
+    let pl = r.shown_plane
+    let pitch = 0.07 * pl * (1.0 - pl) * 4.0 * smoothstep(0.5, 4.0, r.shown_speed) + 0.02 * pl
+    let bz = bz0 * cos(pitch) + by1 * sin(pitch)
+    let by = by1 * cos(pitch) - bz0 * sin(pitch)
+    let bx = bx1
+    let boat = afloat + vec3(y: 0.05 * pl)
+    let g = pose(r)
     // The bounce: how sharply the skiff's fall was stopped over the last drawings.
     let dt = 1.0 / HELD
     let (b1, _, _, _) = bob(t - dt, r.shown_at, r.shown_steer, swell)
@@ -117,16 +140,20 @@ pub fn shot_at(
     // The player's camera: up behind the skiff along the way it's looking, the skiff low in the
     // frame and the sea ahead of it, wider, so the water is seen going by.
     let heading = vec2(sin(-0.22 + r.shown_look), cos(-0.22 + r.shown_look))
+    // (Under way it falls back as the skiff surges and catches up as it settles, lower and wider
+    // the faster it runs.)
+    let run = smoothstep(2.0, 10.0, r.shown_rush)
+    let back = PLAY_BACK + clamp(r.shown_speed - r.shown_rush, -1.0, 3.0) * 0.9
     let high = vec3(
-        r.shown_at.x - heading.x * PLAY_BACK,
-        PLAY_UP + boat.y * 0.4,
-        r.shown_at.y - heading.y * PLAY_BACK,
+        r.shown_at.x - heading.x * back,
+        PLAY_UP - 0.5 * run + boat.y * 0.4,
+        r.shown_at.y - heading.y * back,
     )
     let ahead_of = vec3(r.shown_at.x + heading.x * 32.0, 0.0, r.shown_at.y + heading.y * 32.0)
     let k = smoothstep(0.0, 1.0, clamp(r.framing, 0.0, 1.0))
     let eye = mix(low, high, k)
     let at = eye + normalize(mix(rock, normalize(ahead_of - high), k)) * 1000.0
-    let near = mix(3.7, PLAY_FOCAL, k)
+    let near = mix(3.7, PLAY_FOCAL - 0.35 * run, k)
     // The other views, for looking closer: the rock from 1.1 km, the skiff from beside it, the
     // cathedral from 900 m, the low sun raking across it from the left, the sea from 30 m over
     // it, looking down its sun path, and the sun from the skiff's own eye.
@@ -139,12 +166,25 @@ pub fn shot_at(
     } else if view == 5 {
         (eye, eye + vec3(SUN.x, 0.03, SUN.z) * 1000.0, 2.4)
     } else if view == 2 {
-        (vec3(4.5, 2.2, -3.0), vec3(0.0, 0.0, 0.5), 1.5)
+        // (Beside the skiff wherever it's sailed: off its starboard quarter, abeam if `VIEW`
+        // 6, off its port bow if 7.)
+        let near = vec3(r.shown_at.x, boat.y, r.shown_at.y)
+        (near + bx * 4.5 + vec3(y: 2.0) - bz * 3.0, near + vec3(y: 1.4) + bz * 0.5, 1.5)
+    } else if view == 6 {
+        let near = vec3(r.shown_at.x, boat.y, r.shown_at.y)
+        (near + bx * 7.5 + vec3(y: 1.6), near + vec3(y: 1.6), 1.4)
+    } else if view == 7 {
+        let near = vec3(r.shown_at.x, boat.y, r.shown_at.y)
+        (near - bx * 5.0 + vec3(y: 1.5) + bz * 5.0, near + vec3(y: 1.5), 1.4)
     } else {
         (eye, at, near)
     }
     let forward = normalize(at - eye)
-    let right = normalize(cross(vec3(y: 1.0), forward))
+    let level = normalize(cross(vec3(y: 1.0), forward))
+    // (The player's camera leans a little with the skiff's heel.)
+    let roll = if view == 0 { -r.shown_heel * 0.3 * k } else { 0.0 }
+    let flat_up = cross(forward, level)
+    let right = level * cos(roll) + flat_up * sin(roll)
     let up = cross(forward, right)
     Shot {
         resolution: vec2(f32(width), f32(height)),
@@ -166,8 +206,18 @@ pub fn shot_at(
         style: 1.0,
         speed: r.shown_speed,
         turn: r.shown_turn,
-        pull: r.shown_pull,
-        stroke: r.shown_stroke,
+        power: r.shown_power,
+        plane: r.shown_plane,
+        gust: r.gust,
+        mast: g.mast,
+        boom: g.boom,
+        belly: g.belly,
+        hips: g.hips,
+        neck: g.neck,
+        fore_hand: g.fore_hand,
+        aft_hand: g.aft_hand,
+        fore_foot: g.fore_foot,
+        aft_foot: g.aft_foot,
         look: 0.0,
         lantern: 0.0,
         fine: 1.0,

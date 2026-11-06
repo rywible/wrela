@@ -1,0 +1,345 @@
+// Sailing the skiff: the keys the player sails it by, and how the boat answers them on the sea's
+// wind (`sea::SEA`). It's a small sail skiff with a free rig, as a windsurfer's is: a mast on a
+// swivel, a wishbone boom the traveller holds standing, leaning out against the sail's pull.
+// Sheeted in, it gathers way, slowly at first, then lifts onto the plane and runs; it's quickest
+// with the wind on its quarter, slow straight downwind, and stalls heading into it. It surfs down
+// the swell's faces, heels to a gust, banks into its turns, and its boom swings across when it
+// gybes. The camera rides behind it, falling back as it surges and widening as it runs. Not a
+// simulator: what it should feel like, not what it would cost to learn. What a frame draws is
+// the rig as it stood at the last drawing (`HELD` a second).
+
+use std::input::{Event, Key, PadAxis, PadButton}
+use sea::{HELD, SEA}
+use look::noise
+use engine::ocean::Swell
+
+/// The skiff under the player's hands.
+pub struct Rig: Copy {
+    /// Where it is (x, z, m) and how far it's been steered from its first heading (rad).
+    pub at: vec2,
+    pub steer: f32,
+    /// Its way through the water (m/s, forward positive) and its turning (rad/s).
+    pub speed: f32,
+    pub turn: f32,
+    /// How hard the sail is sheeted in, 0 (let fly, the sail flagging in the wind) to 1 (sheeted
+    /// hard, the traveller leaning right out): what the keys ask for, and that eased.
+    pub trim: f32,
+    pub power: f32,
+    /// The boom's angle off the centreline aft (rad, positive to starboard): where the wind and
+    /// the sheet hold it, swinging across as it gybes.
+    pub boom: f32,
+    /// How far it heels (rad, positive starboard side down), and how fast.
+    pub heel: f32,
+    heel_rate: f32,
+    /// How far onto the plane it is, 0 (pushing its bow wave) to 1 (skimming).
+    pub plane: f32,
+    /// The wind's strength where it is, its gusts and lulls (1 its mean).
+    pub gust: f32,
+    /// The speed as the camera's caught up with it (m/s): how far it's fallen back.
+    pub rush: f32,
+    /// How far the camera has swung (rad), following the steer.
+    pub look: f32,
+    /// Where the camera stands, 0 for the opening's shot (low behind the skiff, the rock filling
+    /// the sky) to 1 for the player's (up behind it, the skiff and the sea ahead); between, on
+    /// its way from one to the other (`look::shot_at`).
+    pub framing: f32,
+    /// The keys held.
+    forward: bool,
+    back: bool,
+    left: bool,
+    right: bool,
+    /// The time it was last stepped to, and the drawing it last held.
+    time: f32,
+    drawing: f32,
+    /// The rig as the last drawing holds it: what a frame draws.
+    pub shown_at: vec2,
+    pub shown_steer: f32,
+    pub shown_speed: f32,
+    pub shown_turn: f32,
+    pub shown_power: f32,
+    pub shown_boom: f32,
+    pub shown_heel: f32,
+    pub shown_plane: f32,
+    pub shown_rush: f32,
+    pub shown_look: f32,
+}
+
+/// The skiff at rest, as the opening finds it: its sail let fly, flagging downwind.
+pub fn rest() -> Rig {
+    Rig {
+        at: vec2(0.0),
+        steer: 0.0,
+        speed: 0.0,
+        turn: 0.0,
+        trim: 0.0,
+        power: 0.0,
+        boom: flagged(0.0),
+        heel: 0.0,
+        heel_rate: 0.0,
+        plane: 0.0,
+        gust: 1.0,
+        rush: 0.0,
+        look: 0.0,
+        framing: 0.0,
+        forward: false,
+        back: false,
+        left: false,
+        right: false,
+        time: -1.0,
+        drawing: -1.0,
+        shown_at: vec2(0.0),
+        shown_steer: 0.0,
+        shown_speed: 0.0,
+        shown_turn: 0.0,
+        shown_power: 0.0,
+        shown_boom: flagged(0.0),
+        shown_heel: 0.0,
+        shown_plane: 0.0,
+        shown_rush: 0.0,
+        shown_look: 0.0,
+    }
+}
+
+/// The rig after input event `e`: W or Up sheets in (held, harder), S or Down lets the sail fly,
+/// A and D (or Left and Right) steer; on a pad, the left stick or the D-pad the same way.
+pub fn key(r: mut Rig, e: Event) {
+    match e {
+        Event::KeyDown { key, .. } => hold(mut r, key, down: true),
+        Event::KeyUp { key, .. } => hold(mut r, key, down: false),
+        Event::PadButton { button, pressed, .. } => {
+            if button == PadButton::Up { r.forward = pressed }
+            if button == PadButton::Down { r.back = pressed }
+            if button == PadButton::Left { r.left = pressed }
+            if button == PadButton::Right { r.right = pressed }
+        },
+        // (The stick past a third of its throw holds the way it leans; back in the middle, lets
+        // go. Up is negative.)
+        Event::PadAxis { axis: PadAxis::LeftY, value, .. } => {
+            r.forward = value < -STICK
+            r.back = value > STICK
+        },
+        Event::PadAxis { axis: PadAxis::LeftX, value, .. } => {
+            r.left = value < -STICK
+            r.right = value > STICK
+        },
+        _ => {},
+    }
+}
+
+/// How far the stick leans before it holds a way.
+const STICK: f32 = 0.35
+
+/// Every key let go: the hands keep the sail as it's trimmed.
+pub fn let_go(r: mut Rig) {
+    r.forward = false
+    r.back = false
+    r.left = false
+    r.right = false
+}
+
+fn hold(r: mut Rig, key: Key, down: bool) {
+    match key {
+        Key::W => r.forward = down,
+        Key::Up => r.forward = down,
+        Key::S => r.back = down,
+        Key::Down => r.back = down,
+        Key::A => r.left = down,
+        Key::Left => r.left = down,
+        Key::D => r.right = down,
+        Key::Right => r.right = down,
+        _ => {},
+    }
+}
+
+/// Its best speed through the water, with the wind on its quarter and the sail sheeted hard
+/// (m/s), before the gusts; the trim it keeps sailing at once W is let go; and how fast it turns
+/// under way (rad/s).
+const RUN: f32 = 10.5
+const CRUISE: f32 = 0.6
+const TURN_RATE: f32 = 0.62
+
+/// The wind's heading (where it blows to) in the skiff's frame at heading `yaw`: (across, along).
+fn wind_in(yaw: f32) -> vec2 {
+    let w = SEA.wind
+    vec2(w.x * cos(yaw) - w.y * sin(yaw), w.x * sin(yaw) + w.y * cos(yaw))
+}
+
+/// Where the wind comes from, off the bow (rad, -π to π, positive from starboard), at heading
+/// `yaw`.
+pub fn wind_off(yaw: f32) -> f32 {
+    let w = wind_in(yaw)
+    atan2(-w.x, -w.y)
+}
+
+/// The boom let fly at heading `steer`: streaming with the wind, as a flag does.
+fn flagged(steer: f32) -> f32 {
+    let b = wind_off(-0.22 + steer)
+    -b
+}
+
+/// How fast it sails (of `RUN`) with the wind `off` the bow (rad): nothing heading into it, more
+/// as it bears away, best on a broad reach, a little less straight downwind.
+fn polar(off: f32) -> f32 {
+    let a = abs(off)
+    smoothstep(0.55, 1.25, a) * (0.72 + 0.3 * exp(-(a - 2.05) * (a - 2.05) / 0.45))
+}
+
+/// The rig stepped on to `time` (s), on the sea's long waves (`swell`).
+pub fn step(r: mut Rig, time: f32, swell: Swell) {
+    if r.time < 0.0 {
+        r.time = time
+    }
+    let dt = clamp(time - r.time, 0.0, 0.1)
+    r.time = time
+    // The sheet: W draws it in (held, harder), let go it eases to a cruising trim, S lets it fly.
+    if r.forward {
+        r.trim = min(r.trim + dt * 1.6, 1.0)
+    } else if r.back {
+        r.trim = max(r.trim - dt * 1.4, 0.0)
+    } else if r.trim > CRUISE {
+        r.trim = max(r.trim - dt * 0.35, CRUISE)
+    }
+    r.power += (r.trim - r.power) * (1.0 - exp(-dt * 3.0))
+    // The wind where it is: gusts and lulls a few tens of metres across, blowing down on it.
+    let drift = SEA.wind * (time * SEA.speed * 0.012)
+    let g = noise(r.at * 0.012 - drift) * 0.65 + noise(r.at * 0.04 - drift * 3.1) * 0.35
+    r.gust = 0.78 + 0.5 * g
+    let yaw = -0.22 + r.steer
+    let off = wind_off(yaw)
+    let heading = vec2(sin(yaw), cos(yaw))
+    // Its way: toward what the wind and the sheet give it; slow to gather from rest, then a
+    // surge as it lifts onto the plane and the water lets go of it; braked when the sail's let
+    // fly. Down a swell's face it surfs, up the back it slows.
+    let want = RUN * polar(off) * r.power * r.gust
+    let rate = if want > r.speed { mix(0.3, 0.9, r.plane) } else { mix(0.3, 0.55, 1.0 - r.power) }
+    r.speed += (want - r.speed) * rate * dt
+    let bow = swell.height(r.at + heading * 1.6, time)
+    let stern = swell.height(r.at - heading * 1.6, time)
+    r.speed -= 9.81 * (bow - stern) / 3.2 * 0.5 * dt
+    // (A hard turn bleeds its way.)
+    r.speed -= abs(r.turn) * max(r.speed, 0.0) * 0.18 * dt
+    r.speed = max(r.speed, -0.5)
+    let planing = smoothstep(3.6, 6.0, r.speed)
+    r.plane += (planing - r.plane) * (1.0 - exp(-dt * (if planing > r.plane { 1.6 } else { 3.0 })))
+    // Steering: a little even at rest (the rig swung to turn it), more as it carves under way.
+    let wheel = (if r.right { 1.0 } else { 0.0 }) - (if r.left { 1.0 } else { 0.0 })
+    let grip = 0.4 + 0.6 * smoothstep(0.0, 5.0, r.speed)
+    r.turn += (wheel * TURN_RATE * grip - r.turn) * (1.0 - exp(-dt * 2.6))
+    r.steer += r.turn * dt
+    r.at += heading * r.speed * dt
+    // The boom: let fly, it streams with the wind; sheeted, held at the angle the wind wants on
+    // the side away from it. When the wind crosses the stern, it swings across: a gybe.
+    let side = if off > 0.0 { -1.0 } else { 1.0 }
+    let trimmed = side * clamp((abs(off) - 0.45) * 0.62, 0.12, 1.42)
+    let free = -off
+    let k = smoothstep(0.0, 0.55, r.power)
+    let target = mix(free, trimmed, k)
+    var swing = target - r.boom
+    // (Let fly, it swings the short way round, through the bow if that's shorter: it's free.)
+    if k < 0.5 {
+        swing -= 6.2831853 * floor((swing + 3.1415927) / 6.2831853)
+    }
+    r.boom += swing * (1.0 - exp(-dt * (2.0 + 4.0 * k)))
+    // Heeling: the sail's pull to leeward (more in a gust, less once it planes, the traveller's
+    // weight out to windward taking most of it), and banked into its turns, carving. On a
+    // spring, so a gust or a gybe sets it rocking.
+    let pull = r.power * sin(abs(off)) * polar(off) * r.gust
+    let lean = side * 0.2 * pull * (1.0 - 0.5 * r.plane) + r.turn * clamp(r.speed, 0.0, 9.0) * 0.045
+    r.heel_rate += ((lean - r.heel) * 22.0 - r.heel_rate * 5.0) * dt
+    r.heel += r.heel_rate * dt
+    // The camera: swung round after the bow, lagging it; falling back as it surges and catching
+    // up as it settles.
+    r.look += (r.steer - r.look) * (1.0 - exp(-dt * 1.4))
+    r.rush += (r.speed - r.rush) * (1.0 - exp(-dt * 0.9))
+    // What the drawing holds, renewed as each drawing comes.
+    let drawing = floor(time * HELD)
+    if drawing != r.drawing {
+        r.drawing = drawing
+        r.shown_at = r.at
+        r.shown_steer = r.steer
+        r.shown_speed = r.speed
+        r.shown_turn = r.turn
+        r.shown_power = r.power
+        r.shown_boom = r.boom
+        r.shown_heel = r.heel
+        r.shown_plane = r.plane
+        r.shown_rush = r.rush
+        r.shown_look = r.look
+    }
+}
+
+/// The rig and the traveller as a drawing holds them, in the skiff's frame (across, up, along):
+/// the mast's heading up from its foot, the boom's aft from where it's lashed to it, the sail's
+/// belly (the way it's blown out), and the traveller's hips, neck, hands and feet.
+pub struct Pose: Copy {
+    pub mast: vec3,
+    pub boom: vec3,
+    pub belly: vec3,
+    pub hips: vec3,
+    pub neck: vec3,
+    pub fore_hand: vec3,
+    pub aft_hand: vec3,
+    pub fore_foot: vec3,
+    pub aft_foot: vec3,
+}
+
+/// Where the mast stands (the skiff's frame), how far up it the boom is lashed, and the boom's
+/// length to the clew (m).
+pub const FOOT = vec3(0.0, -0.26, 0.95)
+pub const LASHED: f32 = 1.5
+pub const BOOM: f32 = 2.15
+
+/// How far either arm of the wishbone bows out from the sail, at its middle (m).
+pub const BOW_OUT: f32 = 0.22
+
+/// The rig as `r`'s drawing holds it.
+pub fn pose(r: Rig) -> Pose {
+    let yaw = -0.22 + r.shown_steer
+    let off = wind_off(yaw)
+    let p = r.shown_power
+    let phi = r.shown_boom
+    let side = if phi >= 0.0 { 1.0 } else { -1.0 }
+    let wind = -side
+    let a = min(abs(phi), 3.0)
+    // The mast leans to windward as the traveller hangs on it, the more as the sail's squared
+    // off (so the sail's over the boat, not out over the sea); and raked forward to bear away,
+    // aft to head up.
+    let up_into = r.shown_turn * (if off > 0.0 { 1.0 } else { -1.0 })
+    let rake = clamp(-up_into / TURN_RATE, -1.0, 1.0) * 0.16 + 0.05
+    let tilt = (0.1 + 0.32 * smoothstep(0.6, 1.5, a)) * smoothstep(0.1, 0.6, p)
+    let mast = normalize(vec3(wind * sin(tilt), cos(tilt) * cos(rake), sin(rake)))
+    let b0 = vec3(side * sin(a), 0.0, -cos(a))
+    let boom = normalize(b0 - mast * dot(b0, mast))
+    var belly = normalize(cross(mast, boom))
+    let from = vec3(sin(off), 0.0, cos(off))
+    if dot(belly, from) > 0.0 {
+        belly = -belly
+    }
+    // The hands on the wishbone's windward arm, the fore one near the mast; let fly, the fore
+    // hand on the mast itself and the aft one on the boom near it, the rig held upright.
+    let lash = FOOT + mast * LASHED
+    let arm = BOW_OUT * 0.95
+    let held = smoothstep(0.08, 0.5, p)
+    let fore_sail = lash + boom * 0.4 - belly * arm * 0.6
+    let aft_sail = lash + boom * 1.0 - belly * arm
+    let fore_free = FOOT + mast * 1.3 - belly * 0.06
+    let aft_free = lash + boom * 0.35 - belly * arm * 0.5
+    let fore_hand = mix(fore_free, fore_sail, held)
+    let aft_hand = mix(aft_free, aft_sail, held)
+    // The traveller hangs back from the hands, out to windward, arms near straight: the harder
+    // the sail's sheeted, the further.
+    let mid = (fore_hand + aft_hand) * 0.5
+    let away = normalize(vec3(-belly.x, 0.0, -belly.z) + vec3(0.0, 0.0, -0.35))
+    let reach = 0.42 + 0.2 * p
+    var neck = mid + away * reach + vec3(0.0, 0.1 - 0.12 * p, 0.0)
+    neck.x = clamp(neck.x, -0.75, 0.75)
+    neck.z = clamp(neck.z, -1.3, 0.55)
+    var hips = neck + vec3(0.0, -0.58, 0.0) - away * (0.16 * p)
+    hips.y = min(hips.y, FOOT.y + 0.95)
+    let ahead = normalize(vec3(-away.z, 0.0, away.x))
+    let fwd = if ahead.z > 0.0 { ahead } else { -ahead }
+    let stance = vec3(clamp(hips.x - away.x * 0.15, -0.38, 0.38), FOOT.y - 0.02, hips.z)
+    let fore_foot = stance + fwd * 0.3 + vec3(0.0, 0.0, 0.0)
+    let aft_foot = stance - fwd * 0.28
+    Pose { mast, boom, belly, hips, neck, fore_hand, aft_hand, fore_foot, aft_foot }
+}
