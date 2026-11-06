@@ -178,7 +178,7 @@ fn cut(u: f32, v: f32) -> (f32, f32, f32, f32) {
         let v0 = 0.5 + 0.3 * xu
         let v1 = 2.9 + 1.25 * xu
         let sv = clamp((v - v0) / (v1 - v0), 0.0, 1.0)
-        let lead = 0.32 - 0.1 * sv
+        let lead = 0.16 - 0.06 * sv
         let rib = 1.0 - smoothstep(0.012, 0.03, abs(fract(sv * 6.0 + 0.5) - 0.5) / 6.0 * (v1 - v0))
         let inner = step(0.05, sv) * step(sv, 0.95)
         let reach = BOOM * (1.0 + 0.1 * sin(3.1415927 * sv)) + 0.1 * rib * inner
