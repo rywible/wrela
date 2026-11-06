@@ -18,15 +18,15 @@
 use body::{
     ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
     ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_CODE, ACCAD_M2_WALK_RAW, ACT_PUNCH, ACT_ROLL,
-    ACTS, GAITS, HERO, PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS, TURNS_RAW,
-    WALK, WALK_RAW,
+    ACTS, ACTS_CODE, GAITS, GAITS_CODE, HERO, PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW,
+    T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
 }
 use engine::cleanup
 use engine::cleanup::Cleanup
 use engine::humanoid
 use engine::humanoid::{BodyVertex, Clip, Pose, blend, palette}
 use engine::playback
-use engine::playback::{Handling, Mover}
+use engine::playback::{Gaits, Handling, Move, Mover}
 use engine::review::review
 use engine::stride
 use ink::ink
@@ -44,9 +44,18 @@ use std::transform::identity
 pub const SHOW: u32 = 0
 pub const RAW: u32 = 0
 
-/// `--set CODE=1` plays a move as it's written in Wrela (content/moves, fitted from its clip by
-/// the moves tool) instead of the clip itself: Male 2's walk (`SHOW=8`).
+/// `--set CODE=1` plays the moves as they're written in Wrela (content/moves, fitted from their
+/// clips by the moves tool) instead of the clips themselves: Male 2's walk (`SHOW=8`), and every
+/// gait and one-off a game plays (`SHOW=11`).
 pub const CODE: u32 = 0
+
+/// The gaits and one-offs `SHOW=11` plays: the clips', or as `CODE` says, the code's. (Chosen as
+/// constants: chosen with an `if` where they're played, toolchain 0.24.0's build drew single
+/// frames with the body flipped, whichever was chosen.)
+@fuel(2 ** 40)
+const PLAYED_GAITS: Gaits = if CODE == 1 { GAITS_CODE.clone() } else { GAITS.clone() }
+@fuel(2 ** 40)
+const PLAYED_ACTS: [Move; 2] = if CODE == 1 { ACTS_CODE.clone() } else { ACTS.clone() }
 
 /// `SHOW=11` as a game without this layer's help would play it, for comparison: `--set CUT=1`
 /// cuts from move to move and lets the feet go where the moves put them.
@@ -144,8 +153,8 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
     let (stick, act, upper) = script(s.last, time)
     let pose = playback::step(
         mut s.mover,
-        GAITS,
-        ACTS,
+        PLAYED_GAITS,
+        PLAYED_ACTS,
         HERO.rig,
         s.mask,
         stick,

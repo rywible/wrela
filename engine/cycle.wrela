@@ -97,7 +97,7 @@ pub fn apart(a: Quat, b: Quat) -> f32 {
 
 /// Each rig bone's turn at rest in the body's frame, and its parent's (the rig's base for the
 /// hips).
-fn rest_turns(rig: Rig) -> (Vec<Quat>, Vec<Quat>) {
+pub fn rest_turns(rig: Rig) -> (Vec<Quat>, Vec<Quat>) {
     let rw = rig.rest_world()
     var own: Vec<Quat> = Vec::with_capacity(rw.len())
     var up: Vec<Quat> = Vec::with_capacity(rw.len())
@@ -110,7 +110,7 @@ fn rest_turns(rig: Rig) -> (Vec<Quat>, Vec<Quat>) {
 }
 
 /// The rest hips' height over the body's floor (m), which a cycle's places are over.
-fn hips_height(rig: Rig) -> f32 {
+pub fn hips_height(rig: Rig) -> f32 {
     rig.rest_world()[0].t.y
 }
 
@@ -327,7 +327,7 @@ pub fn wave(k: u32, cos: vec3, sin: vec3) -> Harmonic {
 }
 
 /// `x` to `places` decimal places, as it's written (`-0` written `0`).
-fn rounded_to(x: f32, places: u32) -> f32 {
+pub fn rounded_to(x: f32, places: u32) -> f32 {
     let k = pow(10.0, f32(places))
     let r = round(x * k) / k
     if r == 0.0 { 0.0 } else { r }
@@ -379,12 +379,18 @@ pub fn rounded(c: Cycle) -> Cycle {
     }
 }
 
-fn n(x: f32, places: u32) -> String {
+pub fn n(x: f32, places: u32) -> String {
     let r = rounded_to(x, places)
-    if places == 4 { f"{r:.4}" } else { f"{r:.6}" }
+    if places == 4 {
+        f"{r:.4}"
+    } else if places == 5 {
+        f"{r:.5}"
+    } else {
+        f"{r:.6}"
+    }
 }
 
-fn v3(v: vec3, places: u32) -> String {
+pub fn v3(v: vec3, places: u32) -> String {
     f"vec3({n(v.x, places)}, {n(v.y, places)}, {n(v.z, places)})"
 }
 
