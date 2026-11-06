@@ -948,9 +948,9 @@ fn sea_shade(
     let blown = clamp(max(torn, upwind * 0.9) * 2.0, 0.0, 1.0)
     // (Each break's foam trails down the wind behind it, in streaks: the foam a few metres upwind,
     // drawn out to here, so a whitecap's a head with a torn tail, not an oval.)
-    let tail = torn * smoothstep(0.35, 0.75, streak + lace * 0.3) * 0.7
+    let tail = max(torn, upwind * 0.8) * smoothstep(0.35, 0.75, streak + lace * 0.3) * 0.6
     let dense = clamp(max(foam_k, tail) * (0.75 + 0.6 * gusting), 0.0, 1.0)
-    let age = smoothstep(0.1, 1.4, -log(max(dense, 1.0e-3)))
+    let age = smoothstep(0.05, 0.8, -log(max(dense, 1.0e-3)))
     // (Between: the cells' walls, a lace round the holes the bubbles left as they burst.)
     // (Never a net's even mesh: its walls thick and thin, broken where the lace is thin.)
     let gap = min(c1.y - c1.x, (c2.y - c2.x) * 1.6 + 0.15 * (1.0 - lace))
@@ -959,7 +959,7 @@ fn sea_shade(
     let web_k = clamp(1.0 - px_m * 2.0, 0.0, 1.0)
     let feather = 0.18 + 0.3 * age + 0.3 * (1.0 - web_k)
     let eroded = clamp((dense - (1.0 - froth_h)) / feather + dense * dense * 0.2, 0.0, 1.0)
-    let lines = smoothstep(0.93 - blown * 0.06, 0.97 - blown * 0.04, ridge) * (0.4 + 0.6 * lace)
+    let lines = smoothstep(0.9 - blown * 0.06, 0.96 - blown * 0.04, ridge) * (0.4 + 0.6 * lace)
     // (Too far for its froth, a whitecap still breaks up: torn by a coarser pattern a pixel there
     // can hold, metres across, not a smooth lens of white.)
     let coarse = noise(wa * vec2(0.12, 0.4) + vec2(5.0, 3.0)) * 0.6 + noise(wa * vec2(0.4, 1.1) + vec2(1.0, 8.0)) * 0.4
@@ -970,8 +970,8 @@ fn sea_shade(
     let heaped = 0.55 + 0.45 * smoothstep(0.15, 0.85, froth)
     // (Under the lace, the thin film of old foam: a grey marbling, the water showing through.)
     let white = max(
-        max(mix(far_white * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.75 * age) * mix(1.0, smoothstep(0.3, 0.75, lace), age), web_k), far_white * 0.35 * (1.0 - age)),
-        mix(blown * 0.1, lines * 0.2 * (1.0 - smoothstep(0.975, 0.995, ridge)) * smoothstep(0.05, 0.5, blown + dense), web_k),
+        max(mix(far_white * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.6 * age) * mix(1.0, smoothstep(0.3, 0.75, lace), age), web_k), far_white * 0.35 * (1.0 - age)),
+        mix(blown * 0.1, lines * 0.4 * (1.0 - smoothstep(0.975, 0.995, ridge)) * mix(0.35, 1.0, smoothstep(0.05, 0.5, blown + dense)), web_k),
     ) *
         (0.7 + 0.3 * lace) *
         heaped *
