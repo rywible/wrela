@@ -170,11 +170,15 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32, f32) {
     let from_b = max(back + bow_at(s) - 0.6, 0.0)
     let arm_w = 0.006 + from_b * 0.004
     let arm_d = abs(off) - crest_out(s, from_b + 0.6)
-    let arm_fade = exp(-from_b / (3.0 + 4.0 * way + 7.0 * run))
+    let arm_fade = exp(-from_b / (2.5 + 3.0 * way + 5.0 * run))
     let arms = exp(-arm_d * arm_d / arm_w) *
         smoothstep(1.0, 2.5, from_b) *
-        smoothstep(0.75 - 0.35 * arm_fade, 0.95 - 0.2 * arm_fade, clots + 0.3 * arm_fade) *
-        (0.5 + 0.4 * run)
+        // (Dashes, never one unbroken line: a crisp thread of white across the sea read as a
+        // crack in the frame.)
+        smoothstep(0.55, 0.85, clots + 0.15 * arm_fade) *
+        smoothstep(0.35, 0.6, noise(rest * 0.9 + vec2(3.0, 11.0))) *
+        arm_fade *
+        (0.45 + 0.3 * run)
     // Straight astern, the churned water it leaves: as wide as the transom where it's left, a
     // mass of froth close astern with the dark sea showing through, then tearing into streaks
     // and clots that thin, widen and fade; running, longer and whiter.
