@@ -47,21 +47,21 @@ pub const WIND: f32 = 0.5
 pub const PALETTE: Palette = Palette {
     surfaces: [
         // A foot finding the wet deck again (stamp_0's fit, by hand a heel, a scuff and a slap
-        // of water at 4 kHz, 10 dB over the bed).
+        // of water at 4 kHz, under the blow).
         Surface {
             knock_hz: 150.0,
             knock_t60: 0.06,
-            knock: 5.0,
+            knock: 1.8,
             knock_drop: 1.6,
             knock_glide: 0.01,
             grit_hz: 2200.0,
             grit_q: 0.7,
             grit_t60: 0.07,
-            grit: 12.0,
+            grit: 4.0,
             tail_hz: 4000.0,
-            tail_q: 0.8,
-            tail_t60: 0.08,
-            tail: 12.0,
+            tail_q: 0.6,
+            tail_t60: 0.15,
+            tail: 4.0,
         },
         Surface {},
         Surface {},
@@ -75,11 +75,11 @@ pub const PALETTE: Palette = Palette {
         // The open sea round the skiff (sea3_0's bands and levels). Its waves are measured off
         // sa1_0, a take with no limiter: one about every 3.3 s, each swelling in over about
         // 0.35 s (the wash and foam; the swell's rumble over 0.8 s) to about 3.4 times the
-        // bed's median level, then falling away; by hand capped at about +6 dB (a critic heard
-        // full-height swells drown the fight), and the foam's spray carried up to 9 kHz. The
+        // bed's median level, then falling away; by hand capped at about +4 dB with the slow wander
+        // (critics heard full-height swells drown the fight), and the foam's spray carried up to 9 kHz. The
         // slow wander under them is shallower now the waves carry the movement.
-        Babble { lo_hz: 35.0, hi_hz: 220.0, level: 1.59 * SEA, rate: 0.15, depth: 0.3, waves: 3.3, crest: 0.8, surge: 1.0 },
-        Babble { lo_hz: 220.0, hi_hz: 1600.0, level: 0.15 * SEA, rate: 0.25, depth: 0.4, waves: 3.3, crest: 0.4, surge: 1.0 },
+        Babble { lo_hz: 35.0, hi_hz: 220.0, level: 1.59 * SEA, rate: 0.15, depth: 0.15, waves: 3.3, crest: 0.8, surge: 0.6 },
+        Babble { lo_hz: 220.0, hi_hz: 1600.0, level: 0.15 * SEA, rate: 0.25, depth: 0.2, waves: 3.3, crest: 0.4, surge: 0.6 },
         Babble { lo_hz: 1500.0, hi_hz: 9000.0, level: 0.035 * SEA, rate: 0.4, depth: 0.5, waves: 3.3, crest: 0.35, surge: 1.5 },
         Babble {},
     ],
@@ -87,27 +87,27 @@ pub const PALETTE: Palette = Palette {
     impacts: [
         // The blow. Fitted to pb2_0 (a take that fades on its own, no limiter): the knuckles'
         // half-sine contact, the body's eight ringing modes found by modal analysis, the thump's
-        // drop and the slap. By hand (two blind critics heard a sine boom): the knock up to 80 Hz,
-        // 17 dB down and 120 ms, the 70 Hz mode moved to a 220 Hz flesh thud, the body's tail a
-        // loud 250 Hz thump over the hit-stop, and the slap moved down to 3 kHz and widened.
+        // drop and the slap. By hand (blind critics heard first a sine boom, then a slap): a
+        // 55 Hz sub dropping from 110 Hz over the hit-stop, a loud 150 Hz body thump, the 70 Hz
+        // mode moved to a 220 Hz flesh thud, and the slap moved down to 3 kHz, 6 dB down.
         Surface {
-            knock_hz: 80.0,
-            knock_t60: 0.12,
-            knock: 1.2,
-            knock_drop: 1.093,
+            knock_hz: 55.0,
+            knock_t60: 0.18,
+            knock: 3.0,
+            knock_drop: 2.0,
             knock_glide: 0.0694,
             grit_hz: 3000.0,
             grit_q: 0.9,
             grit_t60: 0.03,
-            grit: 21.38,
-            tail_hz: 250.0,
+            grit: 11.0,
+            tail_hz: 150.0,
             tail_q: 0.7,
-            tail_t60: 0.12,
-            tail: 10.0,
+            tail_t60: 0.15,
+            tail: 25.0,
             contact: 0.0084,
             rough: 0.6374,
             modes: [
-                Mode { hz: 220.0, t60: 0.09, level: 6.0 },
+                Mode { hz: 220.0, t60: 0.09, level: 10.0 },
                 Mode { hz: 375.0, t60: 0.0101, level: 0.3923 },
                 Mode { hz: 585.9, t60: 0.0296, level: 0.4142 },
                 Mode { hz: 773.4, t60: 0.0523, level: 1.393 },
@@ -142,7 +142,7 @@ pub const PALETTE: Palette = Palette {
         Surface {
             knock_hz: 90.0,
             knock_t60: 0.06,
-            knock: 1.0,
+            knock: 2.0,
             knock_drop: 2.0,
             knock_glide: 0.01,
             grit_hz: 2500.0,
@@ -181,8 +181,9 @@ pub const PALETTE: Palette = Palette {
     ],
     // The storm wind (wind_0): the rush's corner and level fitted at a gust of 1. Its gusts are
     // measured off ga1_0, a take with no limiter: about one every 4 s (0.26 turns a second),
-    // the level swinging by about 1.5 times its mean (the fullest stir).
-    wind: Breath { rush_hz: 317.0, rush: 1.06 * WIND, leaves_hz: 1400.0, leaves: 0.0, stir: 1.0, stir_hz: 0.26 },
+    // the level swinging by about 1.5 times its mean; by hand stirred about half as
+    // far, so a lull never silences it under the fight.
+    wind: Breath { rush_hz: 317.0, rush: 1.06 * WIND, leaves_hz: 1400.0, leaves: 0.0, stir: 0.45, stir_hz: 0.26 },
     near: 2.0,
     gain: 0.17,
 }
@@ -194,7 +195,7 @@ pub const TURN: f32 = 55.0 / 60.0
 pub const LAUNCH: f32 = 55.5 / 60.0
 pub const PLANTED: f32 = 58.0 / 60.0
 pub const CONTACT: f32 = 62.0 / 60.0
-pub const STUMBLE: [f32; 2] = [84.0 / 60.0, 97.0 / 60.0]
+pub const STUMBLE: [f32; 2] = [84.0 / 60.0 - 0.034, 97.0 / 60.0 - 0.034]
 
 /// Where things are: the camera (the ears), the fist at contact, the striker's lead foot, the
 /// struck fighter's feet.
@@ -219,18 +220,18 @@ pub const PREROLL: f32 = 1.5
 fn bed(at: f32, flow: f32, gust: f32) -> [Line; 3] {
     [
         Line { at, cue: Cue::Water { slot: 0, at: vec3(0.0, -0.5, 4.0), kind: SWELL, flow } },
-        Line { at, cue: Cue::Water { slot: 1, at: vec3(0.0, -0.5, -2.5), kind: CHOP, flow } },
+        Line { at, cue: Cue::Water { slot: 1, at: vec3(-2.0, -0.5, -2.5), kind: CHOP, flow } },
         Line { at, cue: Cue::Wind { gust, toward: vec2(0.0, 1.0), leaves: 0.0 } },
     ]
 }
 
 /// The exchange's cues, in time order from the clip's first frame: a wave breaking, the cloth
 /// and the whoosh as the cross leaves, the lead foot, the blow (and the blast's whoomp and
-/// spatter), the bed ducked 4 dB under the blow and let back over 0.3 s, the stumbling feet,
+/// spatter), the bed ducked 7 dB under the blow and let back over 0.4 s, the stumbling feet,
 /// and another wave.
 fn exchange() -> [Line; LINES] {
-    let duck = bed(CONTACT, flow: 0.63, gust: 0.8)
-    let half = bed(CONTACT + 0.2, flow: 0.8, gust: 0.85)
+    let duck = bed(CONTACT, flow: 0.45, gust: 0.7)
+    let half = bed(CONTACT + 0.2, flow: 0.7, gust: 0.8)
     let back = bed(CONTACT + 0.4, flow: 1.0, gust: 0.9)
     let blast = f32(BLAST)
     let wave = |at: f32, seed: u32| -> Line {
@@ -353,8 +354,8 @@ pub fn init() -> Game {
 /// The sea round the skiff: the long swell under it, the chop and the spray off it.
 fn sea(cues: mut RingWriter<Cue>) {
     let _ = cues.push(Cue::Water { slot: 0, at: vec3(0.0, -0.5, 4.0), kind: SWELL, flow: 1.0 })
-    let _ = cues.push(Cue::Water { slot: 1, at: vec3(0.0, -0.5, -2.5), kind: CHOP, flow: 1.0 })
-    let _ = cues.push(Cue::Water { slot: 2, at: vec3(0.0, -0.5, -3.0), kind: SPRAY, flow: 1.0 })
+    let _ = cues.push(Cue::Water { slot: 1, at: vec3(-2.0, -0.5, -2.5), kind: CHOP, flow: 1.0 })
+    let _ = cues.push(Cue::Water { slot: 2, at: vec3(2.0, -0.5, -3.0), kind: SPRAY, flow: 1.0 })
 }
 
 pub fn frame(state: mut Game, time: f32, width: u32, height: u32) {}
