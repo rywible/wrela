@@ -8,6 +8,7 @@
 // (This file is written by a script from the measured pieces; the shapes, the paint and the
 // skeleton are its template's.)
 
+use detail::Detail
 use engine::creature::{Bone, Creature, Skeleton, creature, hard, smooth}
 use engine::character::Shaded
 use shapes::{
@@ -569,6 +570,7 @@ pub fn hero() -> Creature<Cloth> {
             seam: smooth(0.030),
             mirror: true,
         )
+        .then(Detail {})
         .join(
             "collar",
             b("spine 3"),
