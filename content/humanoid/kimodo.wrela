@@ -150,10 +150,10 @@ pub const COCK: f32 = 0.0
 /// at full reach), an overshoot, then the take's own recovery; all drawn on twos (`A_DRAW`
 /// drawings a second), the contact landing on a drawing of its own.
 pub const A_LOAD: f32 = 0.16
-pub const A_TELL: f32 = 0.05
+pub const A_TELL: f32 = 0.03
 pub const A_SNAP: f32 = 0.1
 pub const A_STOP: f32 = 0.07
-pub const A_FOLLOW: f32 = 0.07
+pub const A_FOLLOW: f32 = 0.05
 pub const A_DRAW: f32 = 0.0
 
 /// How far the anime layer winds the trunk in the tell (of `COIL`) and whips it through past
@@ -212,13 +212,12 @@ fn a_beat(time: f32) -> (f32, f32, f32) {
             if i == 1 {
                 x = smoothstep(0.0, 1.0, x)
             } else if i == 6 {
-                // (Home leaves the hit at once and eases into the guard.)
-                x = 1.0 - (1.0 - x) * (1.0 - x)
+                // (Home picks up from the hold's drift and eases into the guard: no jump in speed
+                // as the fist starts back.)
+                x = smoothstep(0.0, 1.0, x)
             } else if i == 3 {
                 // (The snap's in-betweens spread along the take's own strike: quick through the
                 // turn, slow over the arm's last reach, so no drawing jumps the whole arm.)
-                x = 1.0 - (1.0 - x) * (1.0 - x)
-            } else if i == 5 {
                 x = 1.0 - (1.0 - x) * (1.0 - x)
             }
             return (mix(src[i - 1], src[i], x), mix(coil[i - 1], coil[i], x), mix(push[i - 1], push[i], x))
@@ -1133,7 +1132,10 @@ pub fn fight_length() -> f32 {
 /// and how far it pivots then: its heel swung out about the ball, and lifted.
 pub const PIV_HIP: f32 = 1.2
 pub const PIV_YAW: f32 = 0.85
-pub const PIV_HEEL: f32 = 0.6
+pub const PIV_HEEL: f32 = 0.55
+/// How far ahead of the hips the rear foot pivots, and how its turn is spread (s).
+pub const PIV_LEAD: f32 = 0.13
+pub const PIV_SPREAD: f32 = 0.025
 
 /// The fight idle bouncing, then the Kimodo cross fired out of it and settling back into it
 /// (`SHOW=26`): the cross stood where the bounce stands.
@@ -1169,15 +1171,27 @@ pub fn fight_round(time: f32) -> humanoid::Pose {
     let feet = [wb[fl].t, wb[fr].t]
     let foot_q = [wb[fl].q, wb[fr].q]
     let thrown = placed(TIMED.pose(STILL + min(v, a_end() + STILL * 0.9)))
-    var c = one_pose(thrown)
+    let back = a_end() - FT_EARLY
+    // (Blended out of the bounce first and planted after, so his feet stay put as it gives way.)
+    var c = one_pose(if v < back { humanoid::blend(bounce, thrown, smoothstep(0.0, FT_IN, v), n) } else { thrown })
     var w = stride::worlds(HERO.rig, c, 0)
     // The rear foot turned with the hips: as they come round, its heel lifts and swings out
     // about the ball of the foot, which stays where it stood ("squash the bug"); as they come
     // back, it settles flat again. The lead foot stays put and takes the weight.
-    let hp = HERO.rig.find("hips")
-    let w0 = stride::worlds(HERO.rig, one_pose(placed(c0)), 0)
-    let dy = facing(w[hp].q) - facing(w0[hp].q)
-    let s = smoothstep(0.0, PIV_HIP, atan2(sin(dy), cos(dy)))
+    // (The foot leads the hips a touch and takes a few frames over it: it starts the chain.)
+    let hips0 = facing(base.q.mul(c0.turns[0]))
+    // (It turns back no sooner than the hips do, so the legs don't sag under the held fist.)
+    var lead = 0.0
+    var now = 0.0
+    for k in 0..5 {
+        for j in 0..2 {
+            let at = min(v + f32(1 - j) * PIV_LEAD + (f32(k) - 2.0) * PIV_SPREAD, a_end() + STILL * 0.9)
+            let dy = facing(base.q.mul(TIMED.pose(STILL + max(at, 0.0)).turns[0])) - hips0
+            let x = smoothstep(0.0, PIV_HIP, atan2(sin(dy), cos(dy))) / 5.0
+            if j == 0 { lead += x } else { now += x }
+        }
+    }
+    let s = max(lead, now)
     let tr = HERO.rig.find("rightToes")
     let ball = wb[tr].t
     let up = vec3(0.0, 1.0, 0.0)
@@ -1191,9 +1205,8 @@ pub fn fight_round(time: f32) -> humanoid::Pose {
     stride::set_turn(HERO.rig, mut w, tr, yaw.mul(wb[tr].q))
     stride::store(HERO.rig, w, mut c, 0)
     let held = c.pose(0.0)
-    let back = a_end() - FT_EARLY
     if v < back {
-        return humanoid::blend(bounce, held, smoothstep(0.0, FT_IN, v), n)
+        return held
     }
     // (The bounce picked up where the cross left it, its feet where his are.)
     let again = FIGHT_IDLE_M.pose((v - back) % FIGHT_IDLE_M.length())
