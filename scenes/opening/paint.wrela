@@ -916,7 +916,7 @@ fn sea_shade(
     // (`rest`), so it rides with it. A pixel too wide to hold the froth reads the density
     // itself, so far off the sea's as grey with foam as it is, not bare.
     let wa = vec2(dot(rest, wind), dot(rest, vec2(-wind.y, wind.x)))
-    let lace = noise(wa * vec2(0.6, 3.2) + vec2(3.0, 9.0)) * 0.5 +
+    let lace = noise(wa * vec2(1.0, 2.4) + vec2(3.0, 9.0)) * 0.5 +
         noise(wa * vec2(4.0, 9.0) + vec2(7.0, 1.0)) * 0.32 +
         noise(wa * vec2(13.0, 24.0)) * 0.18
     let wq = wa * vec2(0.55, 2.0)
@@ -953,15 +953,23 @@ fn sea_shade(
     let feather = 0.18 + 0.3 * age + 0.3 * (1.0 - web_k)
     let eroded = clamp((dense - (1.0 - froth_h)) / feather + dense * dense * 0.2, 0.0, 1.0)
     let lines = smoothstep(0.93 - blown * 0.06, 0.97 - blown * 0.04, ridge) * (0.4 + 0.6 * lace)
+    // (Too far for its froth, a whitecap still breaks up: torn by a coarser pattern a pixel there
+    // can hold, metres across, not a smooth lens of white.)
+    let coarse = noise(wa * vec2(0.12, 0.4) + vec2(5.0, 3.0)) * 0.6 + noise(wa * vec2(0.4, 1.1) + vec2(1.0, 8.0)) * 0.4
+    let far_white = clamp((dense - (1.0 - coarse) * 0.8) / 0.3, 0.0, 1.0) * (0.6 + 0.4 * coarse)
+    let froth = mix(coarse, froth_h, web_k)
+    // (Never one smooth white even where it's densest: a fresh cap's a heap of bubble domes, its
+    // creases thinner, the water glinting through.)
+    let heaped = 0.55 + 0.45 * smoothstep(0.15, 0.85, froth)
     // (Under the lace, the thin film of old foam: a grey marbling, the water showing through.)
     let white = max(
-        max(mix(dense * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.75 * age) * mix(1.0, smoothstep(0.3, 0.75, lace), age), web_k), dense * 0.35 * (1.0 - age)),
+        max(mix(far_white * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.75 * age) * mix(1.0, smoothstep(0.3, 0.75, lace), age), web_k), far_white * 0.35 * (1.0 - age)),
         mix(blown * 0.1, lines * 0.2 * (1.0 - smoothstep(0.975, 0.995, ridge)) * smoothstep(0.05, 0.5, blown + dense), web_k),
     ) *
-        (0.7 + 0.3 * lace)
+        (0.7 + 0.3 * lace) *
+        heaped
     // (Lit as a mass of bubbles: its domes bright, its creases and thin film greyer, the older
     // the greyer.)
-    let froth = mix(0.6, froth_h, web_k)
     // (And modelled as the wave it rides: brightest on the crest's top, greyer down its back, so a
     // whitecap's a mass on the wave, not a sheet of paper laid on it.)
     let bright = (0.35 + 0.65 * froth) * (0.75 + 0.25 * (1.0 - age)) * (0.75 + 0.25 * eroded) *
