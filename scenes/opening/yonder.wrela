@@ -35,6 +35,32 @@ pub struct Yon: Copy + GpuData {
 /// The most drawings a pixel holds: a new one weighs at least one part in so many.
 const HOLD: f32 = 12.0
 
+/// `t` read at `at` (px) through a Catmull-Rom filter, from nine texels in five bilinear reads
+/// (Jimenez's): what's carried from drawing to drawing is read again each time, and bilinear
+/// reads would blur it a little more each one, the rock going soft as the skiff rocks.
+/// (Never below zero: the filter's lobes can undershoot at a hard edge.)
+fn sharp(t: Texture<Rgba16Float>, smp: Sampler, at: vec2, size: vec2) -> vec4 {
+    let pos = at - vec2(0.5)
+    let c = floor(pos) + vec2(0.5)
+    let f = pos - floor(pos)
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f))
+    let w1 = vec2(1.0) + f * f * (-2.5 + 1.5 * f)
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f))
+    let w3 = f * f * (-0.5 + 0.5 * f)
+    let w12 = w1 + w2
+    let o12 = w2 / w12
+    let p0 = (c - vec2(1.0)) / size
+    let p3 = (c + vec2(2.0)) / size
+    let p12 = (c + o12) / size
+    var r = t.sample_level(smp, vec2(p12.x, p0.y)) * (w12.x * w0.y)
+    r += t.sample_level(smp, vec2(p0.x, p12.y)) * (w0.x * w12.y)
+    r += t.sample_level(smp, p12) * (w12.x * w12.y)
+    r += t.sample_level(smp, vec2(p3.x, p12.y)) * (w3.x * w12.y)
+    r += t.sample_level(smp, vec2(p12.x, p3.y)) * (w12.x * w3.y)
+    let wsum = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y
+    max(r / wsum, vec4(0.0))
+}
+
 /// Where from the world point `w` the camera of `y` saw (px), and whether it saw it at all.
 fn was_at(y: Yon, w: vec3) -> vec3 {
     let v = w - y.eye
@@ -317,7 +343,7 @@ pub fn yonder(
         let was = was_at(yon, w)
         if was.z > 0.0 {
             let uv = was.xy / yon.resolution
-            let before = past_colour.sample_level(smp, uv)
+            let before = sharp(past_colour, smp, was.xy, yon.resolution)
             let k = 1.0 / min(yon.held + 1.0, HOLD)
             now = mix(before, now, k)
             let q = clamp(floor(was.xy), vec2(0.0), yon.resolution - vec2(1.0))
