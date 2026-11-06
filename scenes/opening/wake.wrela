@@ -311,7 +311,7 @@ pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
 
 
 /// What drifts on the sea at `rest` (where its water rests, so it rides the waves), seen from `t`
-/// m: rafts of torn kelp, a driftwood log or plank, a tangle of weed, scattered a few to every
+/// m: tangles of dark weed, scattered a few to every
 /// hundred metres square; near the skiff they slide by and show how fast it's going. Its albedo,
 /// and how much of the water it covers.
 pub fn flotsam(rest: vec2, t: f32) -> (vec3, f32) {
@@ -330,26 +330,8 @@ pub fn flotsam(rest: vec2, t: f32) -> (vec3, f32) {
     let q = vec2(dot(d, ax), dot(d, vec2(-ax.y, ax.x)))
     // (Gone before a pixel's wider than it is: far off it'd only speckle.)
     let fade = 1.0 - smoothstep(70.0, 160.0, t)
-    if h < 0.13 {
-        // A raft of kelp: a ragged dark clump, its fronds trailing.
-        let r = 0.4 + 0.8 * h2
-        let ragged = length(q * vec2(0.7, 1.0)) - r * (0.7 + 0.6 * noise(q * 2.3 + vec2(h3 * 30.0)))
-        let fronds = smoothstep(0.55, 0.75, noise(vec2(q.x * 1.2, q.y * 9.0) + vec2(h2 * 40.0))) *
-            smoothstep(r * 2.2, r, length(q))
-        let cover = max(1.0 - smoothstep(-0.05, 0.05, ragged), fronds * 0.8)
-        let tone = mix(vec3(0.1, 0.1, 0.04), vec3(0.24, 0.2, 0.09), noise(q * 4.0 + vec2(h3 * 9.0)))
-        return (tone, cover * fade)
-    }
-    if h < 0.22 {
-        // A driftwood log, silvered, its ends broken.
-        let long = 0.8 + 1.4 * h3
-        let w = 0.07 + 0.08 * h2
-        let e = vec2(max(abs(q.x) - long, 0.0), q.y)
-        let jag = 0.03 * noise(vec2(q.x * 8.0, h * 50.0))
-        let cover = 1.0 - smoothstep(w - 0.01 - jag, w + 0.01 - jag, length(e))
-        let tone = mix(vec3(0.2, 0.18, 0.15), vec3(0.4, 0.37, 0.32), noise(vec2(q.x * 3.0, q.y * 40.0)))
-        return (tone, cover * fade)
-    }
+    // (Only weed: a kelp raft read as an olive smear on the water, a driftwood log as a white
+    // crack across it.)
     // A loose tangle of weed: dark strands drifting in a wisp.
     let strands = smoothstep(0.6, 0.8, noise(vec2(q.x * 1.5, q.y * 6.0) + vec2(h2 * 70.0))) *
         smoothstep(2.5, 0.8, length(q * vec2(0.6, 1.2)))
