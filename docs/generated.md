@@ -1,6 +1,6 @@
 # Generated material
 
-*What generative models made for wrela, where it came from and what it fed. The rule is in [citations.md](citations.md): models make targets and sources, and only wrela code ships.*
+*What generative models made for wrela, where it came from and what it fed. The rule is in [citations.md](citations.md): models make targets and sources, and only wrela code ships. How to prompt them so the output coheres is in [prompt-bible.md](prompt-bible.md).*
 
 ## The log
 
