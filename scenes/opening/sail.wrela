@@ -253,10 +253,12 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     r.boom += swing * (1.0 - exp(-dt * (2.0 + 4.0 * k + 9.0 * slam)))
     if was * r.boom < 0.0 && abs(was) > 0.3 && k > 0.5 {
         // (It lands with a jolt: the skiff knocked over onto its new side.)
-        r.heel_rate += (if r.boom > 0.0 { 1.0 } else { -1.0 }) * 1.6
+        r.heel_rate += (if r.boom > 0.0 { 1.0 } else { -1.0 }) * 2.6
         r.jolt = 1.0
     }
     r.jolt = max(r.jolt - dt * 2.5, 0.0)
+    // (And carries past where it'll sit, as a slammed boom does, and springs back.)
+    r.boom += (if r.boom > 0.0 { 1.0 } else { -1.0 }) * 0.35 * r.jolt * r.jolt * sin(r.jolt * 9.0)
     // Heeling: the sail's pull to leeward (more in a gust, less once it planes, the traveller's
     // weight out to windward taking most of it), and banked into its turns, carving. On a
     // spring, so a gust or a gybe sets it rocking.

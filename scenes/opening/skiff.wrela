@@ -216,7 +216,7 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
     let grain = noise(vec2(q.z * 3.0, q.y * 40.0 + q.x * 6.0))
     let fine = noise(vec2(q.z * 14.0, q.y * 160.0 + q.x * 20.0))
     // Outside, varnished planks of a warm wood, each its own tone; under the gunwale a strake
-    // lacquered a near-black green over a gilt line; below the water's reach, a dark red-brown.
+    // lacquered the sail's madder over a gilt line; below the water's reach, a dark red-brown.
     let plank = floor((q.y * 46.0 + q.z * 1.5) / 6.2831853)
     let tone = hash2(vec2(plank, 3.0))
     var a = mix(vec3(0.36, 0.17, 0.07), vec3(0.55, 0.3, 0.13), tone * 0.6 + grain * 0.4)
@@ -228,7 +228,7 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
     let strake = smoothstep(-0.12, -0.105, y) * outside
     let cream = smoothstep(-0.15, -0.14, y) * (1.0 - smoothstep(-0.125, -0.115, y)) * outside
     let bottom = (1.0 - smoothstep(-0.34, -0.32, y)) * outside
-    a = mix(a, vec3(0.025, 0.07, 0.065) * (0.85 + 0.3 * grain), strake)
+    a = mix(a, vec3(0.3, 0.045, 0.03) * (0.85 + 0.3 * grain), strake)
     a = mix(a, vec3(0.75, 0.52, 0.18), cream)
     a = mix(a, vec3(0.2, 0.06, 0.04), bottom * 0.8)
     // Inside, the wood paler and worn, the floorboards darker between the thwarts.
@@ -280,7 +280,7 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
         let h = dot(q - s.hips, lean)
         let fold = noise(vec2((q.x + q.z) * 9.0, h * 1.8)) * 0.8 +
             noise(vec2(q.x * 20.0, h * 4.0)) * 0.2
-        var cloak = mix(vec3(0.2, 0.04, 0.035), vec3(0.42, 0.08, 0.05), fold)
+        var cloak = mix(vec3(0.32, 0.05, 0.04), vec3(0.62, 0.1, 0.06), fold)
         let hem = smoothstep(-0.22, -0.2, h) * (1.0 - smoothstep(-0.16, -0.14, h))
         cloak = mix(cloak, vec3(0.62, 0.42, 0.14) * (0.85 + 0.3 * fold), hem)
         let legs = 1.0 - smoothstep(-0.27, -0.23, h)

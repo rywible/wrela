@@ -59,6 +59,8 @@ pub struct Shot: Copy + GpuData {
     pub kinetic: f32,
     /// How hard the skiff just met the water (0 to 1): its bounce, felt as fraying ink at the hull.
     pub slap: f32,
+    /// The boom's slam across in a gybe, just felt (1) and fading.
+    pub jolt: f32,
     /// How much of the drawing is laid over the render, 0 (the physical render alone, to judge it
     /// by) to 1: the value bands, the hatching, the ink.
     pub style: f32,
@@ -147,7 +149,7 @@ pub fn shot_at(
     // the faster it runs.)
     let run = smoothstep(2.0, 10.0, r.shown_rush)
     let surge = clamp(r.shown_speed - r.shown_rush, -1.0, 3.0)
-    let back = PLAY_BACK - 0.8 * run + surge * 0.8
+    let back = PLAY_BACK - 0.5 * run + max(surge, 0.0) * 0.8 + min(surge, 0.0) * 0.25
     let beside = vec2(heading.y, -heading.x) * (PLAY_SIDE * r.shown_perch)
     let high = vec3(
         r.shown_at.x - heading.x * back + beside.x,
@@ -162,7 +164,7 @@ pub fn shot_at(
     let k = smoothstep(0.0, 1.0, clamp(r.framing, 0.0, 1.0))
     // (Running, the camera shakes a little with the hull's chatter over the chop, and with a
     // knock as the boom slams across or the bow slaps down.)
-    let chatter = 0.025 * run + 0.12 * r.jolt
+    let chatter = 0.025 * run + 0.3 * r.jolt
     let shake = vec3(
         noise(vec2(t * 13.0, 1.0)) - 0.5,
         noise(vec2(t * 17.0, 4.0)) - 0.5,
@@ -221,6 +223,7 @@ pub fn shot_at(
         boat_z: bz,
         kinetic,
         slap: clamp((lift - 2.0) / 1.4, 0.0, 1.0),
+        jolt: r.jolt,
         style: 1.0,
         speed: r.shown_speed,
         turn: r.shown_turn,

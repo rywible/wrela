@@ -200,7 +200,7 @@ const FLIGHT: f32 = 0.8
 /// (premultiplied) and cover.
 pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
     let run = running(s)
-    let thrown = max(run, s.slap * smoothstep(0.5, 2.0, s.speed))
+    let thrown = max(max(run, s.slap * smoothstep(0.5, 2.0, s.speed)), s.jolt)
     if thrown <= 0.0 {
         return vec4(0.0)
     }
@@ -240,15 +240,15 @@ pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
                         noise(flow * vec2(2.3, 2.9) + vec2(4.0)) * 0.45
                     let up_k = clamp(b / max(crest, 0.02), 0.0, 1.2)
                     // (Glassy and whole near the hull, streaked higher, in drops at its crest.)
-                    let torn = smoothstep(0.05 + 0.45 * up_k, 0.3 + 0.45 * up_k, streaks)
-                    let edge = 1.0 - smoothstep(0.75, 1.05, up_k + 0.25 * (streaks - 0.5))
-                    let ends = smoothstep(0.0, 0.12, x) * smoothstep(1.0, 0.6, x)
+                    let torn = smoothstep(0.2 + 0.4 * up_k, 0.55 + 0.4 * up_k, streaks)
+                    let edge = 1.0 - smoothstep(0.45, 1.0, up_k + 0.3 * (streaks - 0.5))
+                    let ends = smoothstep(0.0, 0.25, x) * smoothstep(1.0, 0.45, x)
                     let cover = torn *
                         edge *
                         ends *
-                        smoothstep(-0.04, 0.3, b) *
+                        smoothstep(-0.05, 0.35, b) *
                         smoothstep(s.boat.y - 0.3, s.boat.y + 0.35, o.y + d.y * t) *
-                        mix(0.3, 0.8, up_k) *
+                        0.55 *
                         min(strong * 1.6, 1.0)
                     acc = acc * (1.0 - cover) + vec4(lit * (0.85 + 0.3 * streaks) * cover, cover)
                 }
@@ -293,7 +293,7 @@ pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
 /// long the shutter draws each (s): long, so each is a streak of its flight, not a drop.
 const DRIFT: u32 = 28
 const DRIFT_BOX: f32 = 22.0
-const DRIFT_SHUTTER: f32 = 0.07
+const DRIFT_SHUTTER: f32 = 0.035
 
 /// The gale's spindrift round the eye, in front of what the ray met at `hit`: spray torn off the
 /// crests flying on the wind in streaks, low over the water, past the skiff as fast as the air
@@ -321,11 +321,12 @@ pub fn spindrift(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
         )
         // (Faded in and out at the box's walls so none blinks into being.)
         let fade = (1.0 - smoothstep(0.3, 0.5, abs(wrapped.x) / DRIFT_BOX)) *
-            (1.0 - smoothstep(0.3, 0.5, abs(wrapped.z) / DRIFT_BOX))
+            (1.0 - smoothstep(0.3, 0.5, abs(wrapped.z) / DRIFT_BOX)) *
+            pow(sin(3.14159 * fract(s.held * 0.9 + seed.y * 7.0)), 2.0)
         let p0 = at - by * DRIFT_SHUTTER
-        let dr = drop(o, d, hit, p0, at, 0.006, px_k, lit * 0.9)
+        let dr = drop(o, d, hit, p0, at, 0.004, px_k, lit * 0.8)
         acc = acc * (1.0 - dr.a * fade) + dr * fade
     }
     let strength = smoothstep(4.0, 16.0, length(by))
-    vec4(acc.rgb, min(acc.a, 1.0)) * (0.55 * strength)
+    vec4(acc.rgb, min(acc.a, 1.0)) * (0.4 * strength)
 }
