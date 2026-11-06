@@ -236,6 +236,11 @@ pub const ACCAD_M2_STOP: Clip = cleanup::cleaned(
     HERO.rig.clone(),
     Cleanup {},
 )
+/// Male 2's walk as it's written in Wrela (content/moves/walk.wrela, fitted from
+/// `ACCAD_M2_WALK` by the moves tool), played on the body.
+@fuel(2 ** 40)
+pub const ACCAD_M2_WALK_CODE: Clip = moves::walk::WALK.clip(HERO.rig.clone(), 120.0)
+
 @fuel(2 ** 40)
 pub const ACCAD_M1_WALK: Clip = cleanup::cleaned(
     ACCAD_M1_WALK_RAW.clone(),

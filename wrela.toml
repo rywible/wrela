@@ -28,6 +28,7 @@ members = [
     "studio/lookbook",
     "studio/styles",
     "studio/motion",
+    "studio/moves",
     "studio/serve",
     "studio/release",
     "studio/deploy",
@@ -103,6 +104,12 @@ browser = true
 package = "studio/motion"
 write = ["ws=."]
 run = ["ffmpeg"]
+
+# The moves tool (studio/moves): a reference capture's clip fitted as motion written in Wrela,
+# written into content/moves.
+[tools.moves]
+package = "studio/moves"
+write = ["ws=."]
 
 # The bench tool (studio/bench): what the engine's scenes cost on this machine, in headless
 # Chrome and natively. It reads the workspace's packages and builds each into build/bench, and

@@ -1,0 +1,9 @@
+# The moves tool (`wrela tool moves`): a reference capture's clip fitted as motion written in
+# Wrela (engine::cycle) and written into content/moves (main.wrela says how).
+[package]
+name = "moves_tool"
+
+[dependencies]
+engine = { workspace = true }
+humanoid = { workspace = true }
+moves = { workspace = true }

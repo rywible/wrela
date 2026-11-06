@@ -17,8 +17,9 @@
 
 use body::{
     ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
-    ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_RAW, ACT_PUNCH, ACT_ROLL, ACTS, GAITS, HERO,
-    PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
+    ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_CODE, ACCAD_M2_WALK_RAW, ACT_PUNCH, ACT_ROLL,
+    ACTS, GAITS, HERO, PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS, TURNS_RAW,
+    WALK, WALK_RAW,
 }
 use engine::cleanup
 use engine::cleanup::Cleanup
@@ -42,6 +43,10 @@ use std::transform::identity
 /// turns, 6 the jog; and whether as its take has it (1), before its cleanup.
 pub const SHOW: u32 = 0
 pub const RAW: u32 = 0
+
+/// `--set CODE=1` plays a move as it's written in Wrela (content/moves, fitted from its clip by
+/// the moves tool) instead of the clip itself: Male 2's walk (`SHOW=8`).
+pub const CODE: u32 = 0
 
 /// `SHOW=11` as a game without this layer's help would play it, for comparison: `--set CUT=1`
 /// cuts from move to move and lets the feet go where the moves put them.
@@ -169,7 +174,13 @@ fn pose_at(time: f32) -> Pose {
         5 => if raw { TURNS_RAW.pose(time) } else { TURNS.pose(time) },
         6 => if raw { JOG_RAW.pose(time) } else { JOG.pose(time) },
         7 => if raw { ACCAD_M1_WALK_RAW.pose(time) } else { ACCAD_M1_WALK.pose(time) },
-        8 => if raw { ACCAD_M2_WALK_RAW.pose(time) } else { ACCAD_M2_WALK.pose(time) },
+        8 => if CODE == 1 {
+            ACCAD_M2_WALK_CODE.pose(time)
+        } else if raw {
+            ACCAD_M2_WALK_RAW.pose(time)
+        } else {
+            ACCAD_M2_WALK.pose(time)
+        },
         9 => if raw { ACCAD_M1_RUN_RAW.pose(time) } else { ACCAD_M1_RUN.pose(time) },
         10 => if raw { ACCAD_M2_RUN_RAW.pose(time) } else { ACCAD_M2_RUN.pose(time) },
         _ => if time < IDLE_AT {
