@@ -385,8 +385,9 @@ pub fn camera(time: f32, tune: Tune) -> (f32, f32) {
     } else {
         time - h
     }
-    // (Dead still through the impact frame; it moves as the colour comes back.)
-    let t = at - tune.flash
+    // (Dead still through the impact frame and the hit-stop: a held moment; it moves as the
+    // bodies do.)
+    let t = at - max(tune.flash, tune.hold)
     if t < 0.0 {
         return (0.0, 0.0)
     }
@@ -439,16 +440,54 @@ pub fn fist_track() -> String {
         }
         out.push_str(f"idle: {yaws(i0)}\nreact: {yaws(r0)}\ncontact {contact()}\n".as_str())
     }
-    for k in 0..24 {
-        let t = h - 0.14 + f32(k) * 0.01
-        let w = stride::worlds(rig, one_pose(striker(t)), 0)
-        let f = w[rig.find("rightHand")].t
-        let e = w[rig.find("rightLowerArm")].t
-        let s = w[rig.find("rightUpperArm")].t
-        let ang = acos(clamp(dot(normalize(s - e), normalize(f - e)), -1.0, 1.0))
+    let tn = Tune {
+        hold: 0.15,
+        flash: 0.05,
+        kick: 0.07,
+        push: 0.3,
+        blast: 0.0,
+        give: 0.5,
+        twos: false,
+        giant: false,
+    }
+    let at = place(tn)
+    let f = at[2].xyz
+    let sc = length(f)
+    let yaw = yaw_q(atan2(f.x, f.z))
+    let o = at[3].xyz
+    var last = vec3(0.0)
+    for k in 0..40 {
+        let c = h - 0.12 + f32(k) / 60.0
+        let ps = played_striker(c, tn)
+        let pf = played_at(c, tn)
+        let sp = striker_hit(ps, pf, c - h, tn)
+        let ws = stride::worlds(rig, one_pose(sp), 0)
+        let wr = ws[rig.find("rightHand")].t
+        let el = ws[rig.find("rightLowerArm")].t
+        let kn = wr + normalize(wr - el) * 0.09
+        let fp = clear_of(struck(pf, tn), at, sp)
+        let wf = stride::worlds(rig, one_pose(fp), 0)
+        let hd = o + yaw.rotate(wf[rig.find("head")].t) * sc
+        let nk = o + yaw.rotate(wf[rig.find("neck")].t) * sc
+        var gl = 9.0
+        for side in 0..2 {
+            let hn = o + yaw.rotate(wf[rig.find(if side == 0 { "leftHand" } else {
+                "rightHand"
+            })].t) * sc
+            let lo = o + yaw.rotate(wf[rig.find(if side == 0 { "leftLowerArm" } else {
+                "rightLowerArm"
+            })].t) * sc
+            let g = hn + normalize(hn - lo) * 0.07
+            let ab = kn - el
+            let q = el + ab * clamp(dot(g - el, ab) / dot(ab, ab), 0.0, 1.0)
+            gl = min(gl, length(g - q))
+        }
+        let ab = hd - nk
+        let q = nk + ab * clamp(dot(kn - nk, ab) / dot(ab, ab), 0.0, 1.5)
         out.push_str(
-            f"{t - h:.2}: along {dot(f, BLOW):.3} y {f.y:.3} elbow {ang * 57.3:.0}\n".as_str(),
+            f"{(c - h) * 60.0:.0}: kn {dot(kn, BLOW):.3} headcap {length(kn - q):.3} dhead {length(hd - last) * 100.0:.1}cm glove {gl:.3}\n".as_str(),
         )
+        last = hd
     }
     out
 }
@@ -461,19 +500,42 @@ pub fn played_striker(time: f32, t: Tune) -> f32 {
         return played_at(time, t)
     }
     if time < h {
-        time
+        // (The cross's own snap is two frames of travel; spread over the last `X_SNAP_WARP` s
+        // before the contact, so the fist is seen going in, not swapped in.)
+        let u = h - time
+        if u >= X_SNAP_WARP {
+            return time
+        }
+        let x = u / X_SNAP_WARP
+        let a = X_SNAP_START
+        h - X_SNAP_WARP * x * (a + x * (1.0 - a) * (2.0 - x))
     } else if time < h + t.hold {
         h + (time - h) * t.grind
     } else {
         // (He comes out of the hit-stop easing back up to speed, never lunging on at once.)
         let u = time - h - t.hold
         let r = X_EASE_OUT
-        h + t.hold * t.grind + (if u < r { u * u / (2.0 * r) } else { u - r * 0.5 })
+        // (And he's quicker off the face than the take is: its own stop and follow-through are
+        // the hit-stop's to give, so `X_SKIP` s of them are passed over, smoothly.)
+        h + t.hold * t.grind + (if u < r { u * u / (2.0 * r) } else {
+            u - r * 0.5
+        }) + X_SKIP * smoothstep(0.0, X_SKIP_OVER, u)
     }
 }
 
+/// How long before the contact the striker's clock is warped (s), and how fast it runs at the
+/// contact (of real time): the snap drawn out over a few frames, the wind-up taken a little
+/// quicker to pay for it.
+pub const X_SNAP_WARP: f32 = 0.15
+pub const X_SNAP_START: f32 = 0.5
+
 /// How long the striker takes to come back up to speed after the hit-stop (s).
 pub const X_EASE_OUT: f32 = 0.1
+
+/// How much of the cross's follow-through is passed over after the hit-stop (s), and over how
+/// long (s).
+pub const X_SKIP: f32 = 0.1
+pub const X_SKIP_OVER: f32 = 0.15
 
 /// Where the blow lands on him, and which bone carries it: his face (his head's), or the giant's
 /// lead shin.
@@ -554,10 +616,10 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
     })
     let r = t.recoil * j
     if r > 0.0 {
-        turn("rightShoulder", lift, r * 1.6)
+        turn("rightShoulder", lift, r * 1.2)
         turn("rightShoulder", back, -r * 0.8)
-        turn("upperChest", back, -r * 0.5)
-        turn("head", back, -r * 0.6)
+        turn("upperChest", back, -r * 0.6)
+        turn("head", back, -r * 1.2)
     }
     // His fist on the place it struck, carried with it, then let go.
     if since < end {
@@ -577,37 +639,55 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
     c.pose(0.0)
 }
 
-/// How near the struck one's hands may come to the striker's forearm and fist (m, from the
-/// wrist's bone): a glove's half-width and a forearm's.
-pub const X_CLEAR: f32 = 0.13
+/// How near the middle of the struck one's glove may come to the striker's arms and fists, as
+/// the side-on camera sees them (m): a glove's half-width, an arm's, and a gap between. (Seen
+/// side on, a glove a hand's width in front of the arm still reads as on it.)
+pub const X_CLEAR: f32 = 0.14
 
-/// The struck one (`foe`, stood at `at`) with his hands kept off the striker's punching forearm
-/// and fist (`striker`, in the world): a hand that would be in it is moved out of it, the
-/// shortest way, its arm reaching there.
+/// The struck one (`foe`, stood at `at`) with his gloves kept off the striker's arms and fists
+/// (`striker`, in the world), as seen side on: a glove that would be over one is moved off it,
+/// the shortest way across the picture, its arm reaching there.
 pub fn clear_of(foe: Pose, at: mat4, striker: Pose) -> Pose {
     borrow rig = HERO.rig
     let ws = stride::worlds(rig, one_pose(striker), 0)
-    let a = ws[rig.find("rightLowerArm")].t
-    let wrist = ws[rig.find("rightHand")].t
-    let b = wrist + normalize(wrist - a) * 0.09
     let f = at[2].xyz
     let k = length(f)
     let yaw = yaw_q(atan2(f.x, f.z))
     let o = at[3].xyz
+    // (Across the picture: the depth the side-on camera looks along taken out.)
+    let side_on = normalize(cross(vec3(0.0, 1.0, 0.0), BLOW))
+    let flat = |x: vec3| -> vec3 { x - side_on * dot(x, side_on) }
+    var segs: Vec<(vec3, vec3)> = Vec::new()
+    for arm in ["left", "right"] {
+        let s0 = ws[rig.find(f"{arm}UpperArm".as_str())].t
+        let e = ws[rig.find(f"{arm}LowerArm".as_str())].t
+        let wr = ws[rig.find(f"{arm}Hand".as_str())].t
+        segs.push((flat(s0), flat(e)))
+        segs.push((flat(e), flat(wr + normalize(wr - e) * 0.09)))
+    }
     let c0 = one_pose(foe)
     var c = c0.clone()
     var w = stride::worlds(rig, c0, 0)
     var moved = false
     for side in 0..2 {
         let hand = rig.find(if side == 0 { "leftHand" } else { "rightHand" })
+        let lower = rig.find(if side == 0 { "leftLowerArm" } else { "rightLowerArm" })
         let p = o + yaw.rotate(w[hand].t) * k
-        let ab = b - a
-        let q = a + ab * clamp(dot(p - a, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
-        let d = length(p - q)
-        if d < X_CLEAR {
-            let away = if d > 1.0e-4 { (p - q) / d } else { vec3(0.0, 1.0, 0.0) }
-            let want = q + away * X_CLEAR
-            arm_to(rig, mut w, u32(side), yaw.inverse().rotate(want - o) / k)
+        // (The glove's middle, a little on from the wrist.)
+        let g = flat(p + yaw.rotate(normalize(w[hand].t - w[lower].t)) * 0.07)
+        var push = vec3(0.0)
+        for sg in segs {
+            let (a, b) = sg
+            let ab = b - a
+            let q = a + ab * clamp(dot(g + push - a, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
+            let d = length(g + push - q)
+            if d < X_CLEAR {
+                let away = if d > 1.0e-4 { (g + push - q) / d } else { vec3(0.0, -1.0, 0.0) }
+                push += away * (X_CLEAR - d)
+            }
+        }
+        if length(push) > 1.0e-5 {
+            arm_to(rig, mut w, u32(side), yaw.inverse().rotate(p + push - o) / k)
             moved = true
         }
     }
