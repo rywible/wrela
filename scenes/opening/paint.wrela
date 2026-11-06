@@ -820,7 +820,10 @@ fn sea_shade(
     // points as the points a pixel can hold carry; the rest lies smooth.)
     let along = vec3(flat.x, 0.0, flat.y)
     let wind = normalize(SEA_STATE.wind)
-    let rough = vec2(sqrt(0.004 + 2.4 * lost.x), sqrt(0.004 + 2.4 * lost.y))
+    // (Under the deck the sun's no disc but a broad glow through it: its path on the water wide and
+    // dim, as a disc's mirror spread over that glow's breadth, not a ruled bar.)
+    let glow_w = 0.1 * OVERCAST
+    let rough = vec2(sqrt(0.004 + 2.4 * lost.x + glow_w), sqrt(0.004 + 2.4 * lost.y + glow_w))
     // (Its colour the sun's as the frame draws its disc: burnt toward a warm white.)
     let sun_seen = mix(h.light.sun_colour, vec3(1.0, 0.84, 0.55) * luma(h.light.sun_colour), 0.55)
     // (Under the overcast's deck the sun's a glow, not a disc: no burning points of it.)
@@ -840,7 +843,8 @@ fn sea_shade(
     let gather_raw = smoothstep(
         0.3,
         0.7,
-        noise(drift * vec2(1.3, 0.9) + vec2(4.0, 2.0)) * 0.6 + noise(drift * 0.4 + vec2(9.0)) * 0.4,
+        noise(drift * vec2(2.6, 1.1) + vec2(4.0, 2.0)) * 0.4 + noise(drift * vec2(0.8, 3.1) + vec2(9.0)) * 0.35 +
+            noise(drift * 0.35 + vec2(2.0, 7.0)) * 0.25,
     ) *
         2.2
     let gather = mix(gather_raw, 1.0, smoothstep(0.6, 3.0, length(dv)))
@@ -865,7 +869,7 @@ fn sea_shade(
         reflected / max(luma(reflected), 1.0e-5),
         0.3,
     )
-    let kept_ = hue * kept_l
+    let kept_ = hue * kept_l * mix(mix(0.35, 1.35, gather_raw / 2.2), 1.0, smoothstep(0.6, 3.0, length(dv)))
     let cut = luma(spread_) - kept_l
     let carried = mean * pointed
     let glint = kept_ + carried * points * (1.0 + cut / max(luma(carried), 1.0e-4))
