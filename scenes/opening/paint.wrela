@@ -711,7 +711,11 @@ fn sea_shade(
     // it, along the ray's own heading, as far as the slant stretches it.)
     let px_at = px_m * dot(d, s.forward)
     let du = normalize(vec2(s.right.x, s.right.z)) * px_at
-    let dv = flat * (px_at / max(-d.y, 0.01))
+    // (The slant's the flat sea's: near the eye, where a wave's face stands up toward it, that
+    // stretch would smear the face's foam into long streaks, so near by, it's held to a few
+    // pixels' worth; far off the flat sea's is right and keeps the far water from shimmering.)
+    let least_slant = mix(0.3, 0.01, smoothstep(15.0, 80.0, t))
+    let dv = flat * (px_at / max(-d.y, least_slant))
     let (wave, n0, foam_k, squeezed, lost0, rest) = surface_at(waves, xz, du, dv, tiles(calm))
     // Where the skiff has been: its slick, its ripples, its spray falling back.
     let (n, splash) = stirred(s, xz, rest, n0)
@@ -915,7 +919,10 @@ fn sea_shade(
     // lace, and the last of it lies in streaks drawn down the wind. Laid where the water rests
     // (`rest`), so it rides with it. A pixel too wide to hold the froth reads the density
     // itself, so far off the sea's as grey with foam as it is, not bare.
-    let wa = vec2(dot(rest, wind), dot(rest, vec2(-wind.y, wind.x)))
+    // (Laid where the water is more than where it rested: a crest about to break crowds its rest
+    // into a sliver, and froth laid on rest there would stretch along it, a smeared texture.)
+    let laid = mix(rest, xz, 0.7)
+    let wa = vec2(dot(laid, wind), dot(laid, vec2(-wind.y, wind.x)))
     let lace = noise(wa * vec2(1.0, 2.4) + vec2(3.0, 9.0)) * 0.5 +
         noise(wa * vec2(4.0, 9.0) + vec2(7.0, 1.0)) * 0.32 +
         noise(wa * vec2(13.0, 24.0)) * 0.18
@@ -967,7 +974,9 @@ fn sea_shade(
         mix(blown * 0.1, lines * 0.2 * (1.0 - smoothstep(0.975, 0.995, ridge)) * smoothstep(0.05, 0.5, blown + dense), web_k),
     ) *
         (0.7 + 0.3 * lace) *
-        heaped
+        heaped *
+        // (Thinning to its edge, the water seen through it, never a cut-out block on the sea.)
+        smoothstep(0.03, 0.45, dense + tail)
     // (Lit as a mass of bubbles: its domes bright, its creases and thin film greyer, the older
     // the greyer.)
     // (And modelled as the wave it rides: brightest on the crest's top, greyer down its back, so a
