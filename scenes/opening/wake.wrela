@@ -47,7 +47,7 @@ pub fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
     let lane = 0.45 + 0.06 * behind
     let calm = (1.0 - smoothstep(lane * 0.5, lane, abs(q.x))) *
         smoothstep(0.0, 1.0, behind) *
-        exp(-behind / (5.0 + 10.0 * way + 18.0 * run)) *
+        exp(-behind / (5.0 + 8.0 * way + 6.0 * run)) *
         smoothstep(0.0, 0.4, way) *
         0.6
     let along = q.y - clamp(q.y, -1.7, 1.7)
@@ -74,7 +74,7 @@ pub fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
         0.8
     let world_tilt = bx * tilt.x + bz * tilt.y
     let m = normalize(n + vec3(world_tilt.x, 0.0, world_tilt.y))
-    (normalize(mix(m, vec3(y: 1.0), calm * 0.85)), splash)
+    (normalize(mix(m, vec3(y: 1.0), calm * 0.55)), splash)
 }
 
 /// The skiff's marks at `p` on the sea (`xz`, `rest` where its water rests): its wake (white),
@@ -115,16 +115,16 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32) {
     let arms = exp(-pow(abs(off) - behind_ * 0.36 - 0.4, 2.0) / (0.03 + behind_ * 0.02)) *
         smoothstep(0.0, 1.0, behind_) *
         smoothstep(7.0 + 6.0 * way + 22.0 * run, 1.0, behind_) *
-        (0.6 + 0.4 * run) *
+        (0.6 + 0.5 * run) *
         mix(broken, 1.0, 0.45 * run * exp(-behind_ / 10.0)) *
         wavelets
     // Straight astern, the churned water it leaves: lace on the water that rides with it (laid
     // where it rests), in patches that thin as it widens and fades; running, a broad white
     // furrow of it close astern.
-    let churn = 0.2 + behind_ * 0.05 + 0.12 * run
+    let churn = 0.16 + behind_ * 0.04 + 0.08 * run
     let trail = exp(-off * off / churn) *
         smoothstep(0.0, 0.8, behind_) *
-        exp(-behind_ / (3.0 + 9.0 * way + 26.0 * run)) *
+        exp(-behind_ / (3.0 + 9.0 * way + 12.0 * run)) *
         smoothstep(
             0.15 - 0.06 * run * exp(-behind_ / 8.0),
             0.7 - 0.15 * run * exp(-behind_ / 8.0),
@@ -200,7 +200,10 @@ const FLIGHT: f32 = 0.8
 /// (premultiplied) and cover.
 pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
     let run = running(s)
-    let thrown = max(max(run, s.slap * smoothstep(0.5, 2.0, s.speed)), s.jolt)
+    let thrown = max(
+        max(run * (0.35 + 0.65 * s.power), s.slap * smoothstep(0.5, 2.0, s.speed)),
+        s.jolt,
+    )
     if thrown <= 0.0 {
         return vec4(0.0)
     }
@@ -217,7 +220,9 @@ pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
     // it as (how far aft along it, how high up it).
     for k in 0..2 {
         let side = if k == 0 { lee_side } else { -lee_side }
-        let strong = thrown * (if k == 0 { 1.0 } else { 0.55 }) * (0.75 + 0.35 * s.gust)
+        // (Pulsing as the bow meets each wave, never one steady card.)
+        let pulse = 0.55 + 0.7 * noise(vec2(s.held * 2.6 + f32(k) * 5.0, 1.0))
+        let strong = thrown * (if k == 0 { 1.0 } else { 0.5 }) * (0.75 + 0.35 * s.gust) * pulse
         let root = s.boat + s.boat_x * (side * 0.34) + s.boat_z * 1.55 - s.boat_y * 0.12
         let aft = normalize(-s.boat_z + s.boat_x * (side * 0.55))
         let rise = normalize(up + s.boat_x * (side * 0.4))

@@ -353,8 +353,9 @@ pub fn pose(r: Rig) -> Pose {
     // the sail's sheeted, the further.
     let mid = (fore_hand + aft_hand) * 0.5
     let away = normalize(vec3(-belly.x, 0.0, -belly.z) + vec3(0.0, 0.0, -0.35))
-    let reach = 0.5 + 0.32 * p
-    var neck = mid + away * reach + vec3(0.0, 0.08 - 0.22 * p, 0.0)
+    let reach = 0.5 + 0.4 * p
+    // (Ducked under the boom as it slams across in a gybe.)
+    var neck = mid + away * reach + vec3(0.0, 0.08 - 0.22 * p - 0.4 * r.jolt, 0.0)
     neck.x = clamp(neck.x, -0.95, 0.95)
     neck.z = clamp(neck.z, -1.3, 0.55)
     var hips = neck + vec3(0.0, -0.56, 0.0) - away * (0.2 * p)
