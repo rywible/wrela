@@ -5,11 +5,12 @@
 
 use engine::air::{Air, Tables, hazy, tables}
 use engine::light::{Light, SUN_TOP, sunlight}
-use engine::sky::{Clouds, Gap, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky}
+use engine::sky::{Clouds, Gap, MAP_BANDS, NOISE_SLICES, Region, Sky, Weather, new_sky}
 use engine::switches::Switches
 use std::gpu::{Address, Sampler, sampler}
 use std::math::PI
-use look::{BREAK, LIFT, OVERCAST, SUN, THIN}
+use look::{BREAK, LIFT, OVERCAST, SUN, THIN, VEIL}
+use wind::{cleared_at, climates, gale, mean_wind}
 
 /// The engine's approved switches: the sky's march at full size.
 pub struct Approved {}
@@ -25,6 +26,12 @@ pub struct Heavens {
     pub clouds: Clouds,
     pub linear: Sampler,
     pub repeat: Sampler,
+    /// The light under an open sky, and how much of the storm is where the eye is now (0 clear
+    /// to `OVERCAST`): the light is the two mixed by it (`lit`).
+    pub open: Light,
+    pub storm: f32,
+    /// The wind's mean where the eye is (m/s: `wind::mean_wind`), eased as `storm` is.
+    pub wind: vec2,
     /// The cook's steps done: the tables (1), the noises (2), the weather and its shadow (3);
     /// after, the dome marches.
     cooked: u32,
@@ -42,14 +49,46 @@ fn weather() -> Weather {
             b: normalize(vec2(SUN.x, SUN.z)) * 20000.0 - vec2(-SUN.z, SUN.x) * 9000.0,
             radius: BREAK,
         },
-        wind: vec2(9.0, -14.0),
+        // (The deck goes with the storm's wind, faster up where it is.)
+        wind: gale() * 1.4,
         overcast: OVERCAST,
         thin: THIN,
+        // (Thinner behind the cathedral, as the eye sees the deck over its spires: a soft,
+        // lighter reach for them to stand against.)
+        veil: Gap { a: vec2(-1700.0, 7000.0), b: vec2(-2500.0, 11500.0), radius: VEIL },
     }
 }
 
+/// The places with weather of their own (`engine::sky::Region`): the storm's deck pulls back
+/// over each, its clouds thinning and breaking up as they drift in.
+pub fn regions() -> Vec<Region> {
+    var r = Vec::new()
+    for c in climates() {
+        r.push(Region { at: c.at, reach: c.reach, clear: c.clear })
+    }
+    r
+}
+
+/// How much of the way to the weather where the eye is now the light goes each drawing.
+const STORM_EASE: f32 = 0.04
+
+/// How fully the deck's own column shades it (`engine::sky::Clouds::gloom`): a little under
+/// all, so its billows still take some of the light from above and show their form.
+const GLOOM: f32 = 1.0
+
 /// The share of the sun's light that comes through the overcast's deck.
 const UNDER_DECK: f32 = 0.1
+
+/// The light under `storm` of the storm (0 open, 1 the deck): exposed for the dimmer world under
+/// it, the sun's light only as far as it comes through it.
+fn lit(open: Light, storm: f32) -> Light {
+    Light {
+        exposure: (0.66 + 0.75 * storm) * mix(1.0, LIFT, storm),
+        sun_colour: open.sun_colour * mix(1.0, mix(UNDER_DECK, 0.3, THIN), storm),
+        storm,
+        ..open
+    }
+}
 
 /// The heavens, the sun toward `sun`, seen from an eye `eye` m over the sea; uncooked.
 pub fn heavens(sun: vec3, eye: f32) -> Heavens {
@@ -65,14 +104,11 @@ pub fn heavens(sun: vec3, eye: f32) -> Heavens {
     // through it: a tenth, all round (the deck itself is lit from above it, `engine::sky`), and
     // the rest of its light from the deck (`paint::storm_sky`). Exposed for that dimmer world.
     let open = sunlight(air)
-    let light = Light {
-        exposure: (0.66 + 0.75 * OVERCAST) * mix(1.0, LIFT, OVERCAST),
-        sun_colour: open.sun_colour * mix(1.0, mix(UNDER_DECK, 0.3, THIN), OVERCAST),
-        ..open,
-    }
+    let light = lit(open, OVERCAST)
     // (A storm's deck: `engine::sky::Clouds::gloom`.)
     var sky = new_sky::<Approved>()
-    sky.gloom = OVERCAST
+    sky.gloom = OVERCAST * GLOOM
+    sky.set_regions(regions())
     let clouds = sky.clouds::<Approved>(
         light,
         vec3(0.0, eye, 0.0),
@@ -89,6 +125,9 @@ pub fn heavens(sun: vec3, eye: f32) -> Heavens {
         clouds,
         linear: sampler(),
         repeat: sampler(address: Address::Repeat),
+        open,
+        storm: OVERCAST,
+        wind: gale(),
         cooked: 0,
     }
 }
@@ -97,6 +136,13 @@ impl Heavens {
     /// This frame's step: a cook's, until all are in, then a phase of the dome from `eye`,
     /// looking along `forward`, the clouds drifted to `time`.
     pub fn step(mut self, eye: vec3, forward: vec3, time: f32) {
+        // The weather where the eye is: eased toward it a drawing at a time (a few seconds to
+        // cross into a clear region's light), at once while the sky is still cooking.
+        let here = OVERCAST * (1.0 - cleared_at(eye.xz))
+        self.storm = if self.cooked < 3 { here } else { mix(self.storm, here, STORM_EASE) }
+        self.light = lit(self.open, self.storm)
+        let blowing = mean_wind(eye.xz)
+        self.wind = if self.cooked < 3 { blowing } else { mix(self.wind, blowing, STORM_EASE) }
         if self.cooked == 0 {
             self.tables.cook(self.air, self.linear)
         } else if self.cooked == 1 {

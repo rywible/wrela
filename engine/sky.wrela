@@ -88,6 +88,9 @@ const EXTINCTION: f32 = 0.06
 /// a billow's skin; a fixed sample count spread across a grazing ray misses that skin.
 const VIEW_STEP: f32 = 40.0
 const LIGHT_SAMPLES: u32 = 8
+/// How strongly the cloud just over a point under a storm's deck shades it (`march`): a
+/// fraction of the field's own extinction, so a billow's relief reads in light.
+const RELIEF: f32 = 0.06
 
 fn view_samples(cell_length: f32) -> u32 {
     max(8, u32(ceil(cell_length / VIEW_STEP)))
@@ -122,6 +125,33 @@ pub struct Weather: Clone {
     /// How far an overcast thins between its banks (0: covered all over; 1: its thinner reaches
     /// let the light through).
     pub thin: f32 = 0.0,
+    /// A reach of an overcast's deck thinned (within `radius` of the segment, softly): less of
+    /// it covered and its clouds lower, so it's lighter there with the light let through it,
+    /// its billows still in it (none: radius 0).
+    pub veil: Gap = Gap { a: vec2(0.0, 0.0), b: vec2(0.0, 0.0), radius: 0.0 },
+}
+
+/// A region of the world with weather of its own: within `reach` (m) of `at` (the world's x,
+/// z, not the drifting field's), `clear` of the clouds pulled back (0 as the map has them, 1
+/// none), softly toward its edge. The clouds drift through it and thin as they go in: weather
+/// that belongs to a place, not to the sky over the eye.
+pub struct Region: Copy + GpuData {
+    pub at: vec2,
+    pub reach: f32,
+    pub clear: f32,
+}
+
+/// How much of the clouds `regions` (the first `count`) pull back at `xz` (the world's, m):
+/// the most any of them does there, each region's edge torn by the noise so it isn't a
+/// circle.
+pub fn cleared(regions: [Region], count: u32, xz: vec2) -> f32 {
+    var k = 0.0
+    for i in 0..count {
+        let r = regions[i]
+        let torn = (fbm2(xz / 6000.0 + vec2(3.0, 17.0), 3) - 0.5) * 0.5 * r.reach
+        k = max(k, r.clear * smoothstep(r.reach, r.reach * 0.45, length(xz - r.at) + torn))
+    }
+    k
 }
 
 /// What the dome's march and the clouds' shadows read: where the eye is, which of the dome's
@@ -316,6 +346,7 @@ pub fn cook_weather(
     gap: Gap,
     overcast: f32,
     thin: f32,
+    veil: Gap,
     wind: vec2,
     from: u32,
     to: u32,
@@ -350,7 +381,7 @@ pub fn cook_weather(
     // going away, not one even field of lumps.
     var lifted = 0.0
     if overcast > 0.0 {
-        let mass = fbm2(xz * (3.0 / SPAN) + vec2(13.0, 71.0), 4)
+        let mass = fbm2(xz * (5.0 / SPAN) + vec2(13.0, 71.0), 4)
         let along = normalize(wind + vec2(1.0e-4))
         let w2 = vec2(
             dot(xz, along) * (3.0 / SPAN),
@@ -361,6 +392,15 @@ pub fn cook_weather(
         cover = max(cover, overcast * (0.6 - 0.35 * thin + (0.35 + 0.35 * thin) * thick))
         tall = max(tall, overcast * (DECK_BASE + 1500.0 + 1800.0 * thick))
         lifted = overcast * (DECK_BASE + 450.0 * (1.0 - roll) - 250.0 * thick)
+        // Thinned in the veil's reach: its edge torn by the deck's own masses.
+        if veil.radius > 0.0 {
+            let vb = veil.b - veil.a
+            let va = saturate(dot(xz - veil.a, vb) / max(dot(vb, vb), 1.0))
+            let r = length(xz - veil.a - vb * va) / veil.radius
+            let k = smoothstep(1.0, 0.25, r + (mass - 0.5) * 0.8) * overcast
+            cover *= 1.0 - 0.3 * k
+            tall = mix(tall, DECK_BASE + 900.0, 0.55 * k)
+        }
     }
     // Broken a little, so no cloud is a disc; and clear in the gap.
     let ab = gap.b - gap.a
@@ -378,7 +418,7 @@ pub fn cook_weather(
             saturate(broken),
             saturate(tall / (TOP - BASE)),
             bottom / (TOP - BASE),
-            1.0 - 0.8 * overcast,
+            1.0 - 0.15 * overcast,
         ),
     )
 }
@@ -447,7 +487,9 @@ fn field_in(
         let d = detail.sample_level(rep, q / DETAIL_SPAN)
         let fine = d.r * 0.625 + d.g * 0.25 + d.b * 0.125
         let wisp = mix(fine, 1.0 - fine, saturate(hf * 4.0))
-        s = saturate(above(s, from: wisp * mix(0.6, 0.35, w.a)))
+        // (A storm's deck, its map's alpha a little under 1, torn harder at its edges.)
+        let storm = saturate((1.0 - w.a) / 0.15)
+        s = saturate(above(s, from: wisp * mix(mix(0.6, 0.35, w.a), 0.5, storm)))
     }
     // Dense a little way in: a cloud's edge is sharp. (An overcast's deck thickens slowly into
     // its base, wisps and scud first: no hard floor for the march's steps to terrace.)
@@ -497,6 +539,8 @@ fn march(
     aerial: Texture3d<Rgba16Float>,
     rep: Sampler,
     s: Sampler,
+    regions: [Region],
+    region_count: u32,
 ) -> vec4 {
     let y = c.eye.y
     let enter = reach(y, dir.y, BASE)
@@ -552,7 +596,9 @@ fn march(
     // Each marked cell has enough samples to resolve its skin, including long grazing
     // rays. Jitter stays within one short interval rather than moving a surface hundreds
     // of metres between neighbouring dome texels.
-    let fine = view_samples(ct)
+    // (Under a storm's deck, twice as many: its long grazing base otherwise terraces into a
+    // fine woven grain, the march's steps showing.)
+    let fine = view_samples(ct * (1.0 + c.gloom))
     let dt = ct / f32(fine)
     for i in 0..cells {
         if through < 0.01 {
@@ -570,7 +616,12 @@ fn march(
             let h = height_along(y, dir.y, t) - BASE
             let p = c.eye + dir * t
             let q = vec3(p.x - c.drift.x, h + BASE, p.z - c.drift.y)
-            let w = weather_at(weather, rep, q)
+            // Pulled back where a region's own weather clears them (`Region`): less of the map's
+            // cover, lower, and no storm's shade.
+            let kr = if region_count > 0 { cleared(regions, region_count, p.xz) } else { 0.0 }
+            let wm = weather_at(weather, rep, q)
+            let w = vec4(wm.r * (1.0 - kr), wm.g * mix(1.0, 0.6, kr), wm.b, wm.a)
+            let gl = c.gloom * (1.0 - kr)
             let dens = field_in(w, q, h, shape, detail, rep, detailed: true)
             if dens > 0.0 {
                 // Resolve the sunlit skin before the deep shadow. Equal 150 m intervals
@@ -585,7 +636,7 @@ fn march(
                     od += field(ql, ql.y - BASE, weather, shape, detail, rep, detailed: k < 2) *
                         step
                 }
-                od *= EXTINCTION
+                od *= EXTINCTION * (1.0 - kr)
                 // Scattering many times (Wrenninge's octaves): each fainter, less forward and
                 // reaching deeper; four, so a thick cloud's sunlit side reflects as a white
                 // surface would (an albedo of about 0.8).
@@ -608,9 +659,24 @@ fn march(
                 // Under a storm's deck: the column over the point darkens it, down to near black
                 // at the base of a deck kilometres thick.
                 let over = max(local_top - h, 0.0) *
-                    max(w.r, 0.7 * c.gloom * smoothstep(0.0, 0.3, w.r))
-                let shut = mix(1.0, exp(-over * 0.0016), c.gloom)
-                let dim = mix(1.0, 0.12 + 0.88 * hf * hf, c.gloom)
+                    max(w.r, 0.7 * gl * smoothstep(0.0, 0.3, w.r))
+                let shut = mix(1.0, exp(-over * 0.0016), gl)
+                var dim = mix(1.0, 0.12 + 0.88 * hf * hf, gl)
+                // Under a storm's deck, each billow's own relief: how much cloud is just over
+                // the point (a kilometre up, no farther). The deck's light comes down from above,
+                // so a pouch's thick core goes dark and its thin flanks and torn edges catch the
+                // light: rounded forms with lit rims, not one even shade.
+                if gl > 0.0 {
+                    var od_up = 0.0
+                    for k in 0..3 {
+                        let rise = 70.0 * pow(3.0, f32(k))
+                        let qu = q + vec3(0.0, rise, 0.0)
+                        od_up += field(qu, h + rise, weather, shape, detail, rep, detailed: k == 0) *
+                            rise * 1.3
+                    }
+                    let lift = exp(-od_up * EXTINCTION * RELIEF)
+                    dim *= mix(1.0, 0.45 + 1.6 * lift, gl)
+                }
                 let source = sun_light * to_sun * shut + ambient * dim
                 let step_t = exp(-dens * EXTINCTION * dt)
                 let absorbed = through * (1.0 - step_t)
@@ -684,6 +750,8 @@ pub fn march_dome(
     aerial: Texture3d<Rgba16Float>,
     rep: Sampler,
     s: Sampler,
+    regions: [Region],
+    region_count: u32,
     out: mut Slots<vec4>,
     id: GlobalId,
 ) {
@@ -723,6 +791,8 @@ pub fn march_dome(
         aerial,
         rep,
         s,
+        regions,
+        region_count,
     )
     out[id] = mix(old, new, vec4(c.blend))
 }
@@ -888,6 +958,9 @@ pub struct Sky {
     pub frames: u32,
     /// The storm's share, 0 by default (`Clouds::gloom`).
     pub gloom: f32,
+    /// The regions with weather of their own (`Region`, `set_regions`) and how many.
+    pub regions: GpuBuffer<Region>,
+    pub region_count: u32,
 }
 
 /// The clouds' textures, uncooked, for a program of switches `Q` (`Switches::HALVED`: the march
@@ -905,10 +978,18 @@ pub fn new_sky<Q: Switches>() -> Sky {
         marched: buffer(if Q::HALVED { PHASE_TEXELS / 4 } else { PHASE_TEXELS }),
         frames: 0,
         gloom: 0.0,
+        regions: buffer_of(Vec::<Region>::new(), at_least: 1),
+        region_count: 0,
     }
 }
 
 impl Sky {
+    /// The regions with weather of their own (`Region`): the clouds pulled back in them.
+    pub fn set_regions(mut self, regions: Vec<Region>) {
+        self.region_count = regions.len()
+        self.regions = buffer_of(regions, at_least: 1)
+    }
+
     /// The GPU bytes its textures take (half floats: the noises, the weather, the clouds'
     /// shadow and the dome).
     pub fn bytes(self) -> u64 {
@@ -954,6 +1035,7 @@ impl Sky {
                 gap: w.gap,
                 overcast: w.overcast,
                 thin: w.thin,
+                veil: w.veil,
                 wind: w.wind,
                 from: band * rows,
                 to: (band + 1) * rows,
@@ -1032,6 +1114,8 @@ impl Sky {
                 tables.aerial,
                 rep,
                 s,
+                regions: self.regions.span(start: 0, count: max(self.region_count, 1)),
+                region_count: self.region_count,
                 out: mut self.marched,
             ),
             over: PHASE_TEXELS / (scale * scale),

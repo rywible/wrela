@@ -11,7 +11,7 @@
 // falls move each drawing, so they're not added up here, which would smear them: the paint draws
 // them fresh, with `falls`.)
 
-use look::{GILT, GLASS, ISLE, OVERCAST, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
+use look::{GILT, GLASS, ISLE, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use far::far_off
 use stacks::{march_stacks, stacks_albedo, stacks_ao, stacks_normal, stacks_shadow}
@@ -180,7 +180,7 @@ fn isle_shade(
     // (Its shadows likewise: none from a recess too small for a pixel to hold.)
     let lift = max(2.0, t * 0.0012)
     let sun = isle_shadow(p + n * lift, light.sun, lift, hash2(px * 1.37)) *
-        mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, OVERCAST))
+        mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, light.storm))
     let ao = isle_ao(p, n)
     // The rock and the cathedral on it in the same air: all the air their 8 km holds, and a
     // little past it toward the sky's own colour, as a painter pushes back what's far; so the
@@ -300,7 +300,7 @@ fn stacks_shade(
     let albedo = stacks_albedo(p, n, px)
     let lift = max(0.1, px)
     let sun = stacks_shadow(p + n * lift, h.light.sun, px) *
-        mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, OVERCAST))
+        mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, h.light.storm))
     let ao = stacks_ao(p, n, px)
     // (All the air between, and the farther a little past it toward the deck's own colour, as
     // the rock is pushed back: so a stack two kilometres off stands paler than one at three
@@ -360,7 +360,7 @@ pub fn yonder(
         let (tf, fnn) = far_off(o, d, far, k)
         if tf < far {
             let p = o + d * tf
-            let sun = mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, OVERCAST))
+            let sun = mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, h.light.storm))
             let albedo = vec3(0.07, 0.072, 0.08) * (0.85 + 0.3 * noise(vec2(p.x + p.z, p.y) * 0.02))
             // (Pushed back past their air toward the deck's colour, as the rock is.)
             let lit = lit_solid(s, h, view, aerial, dome, smp, p, fnn, d, albedo, 0.9, 0.0, vec3(0.0), sun, 1.0, 1.0, 0.0)
@@ -425,9 +425,8 @@ pub fn yonder(
     Targets3 { first: now, second: marks, third }
 }
 
-/// The wind the falls' spray goes with (the sky's, `heavens`: 9 m/s east, 14 south), and how
-/// far it carries a drop for each metre it falls (the spray's slow fall against it).
-const WIND = vec2(0.54, -0.84)
+/// How far the wind (`Shot::wind`, the world's one: `wind`) carries a drop for each metre it
+/// falls (the spray's slow fall against it).
 const CARRY: f32 = 0.55
 
 /// How much of the falls a ray `o` + `d` t meets before `hit`, and their light (premultiplied);
@@ -466,7 +465,7 @@ pub(package) fn falls(
                 let p = o + d * tc
                 let drop = lip.y - p.y
                 // Where the fall's middle is at this depth: off down the wind as it falls.
-                let carried = dot(WIND, side_dir) * CARRY * max(drop - 60.0, 0.0)
+                let carried = dot(normalize(s.wind), side_dir) * CARRY * max(drop - 60.0, 0.0)
                 let side = dot(vec2(p.x - lip.x, p.z - lip.z), side_dir) - carried
                 let fi = f32(i) * 13.7
                 let px_m = tc * 2.0 / (s.resolution.y * s.focal)
