@@ -135,11 +135,23 @@ fn cliffs(r: Ring, q: vec3) -> vec2 {
     } else { 0.0 }
     // Its brink crumbled: the top falls away over its last metres, under the turf.
     let brink = smoothstep(4.0, -2.0, half - abs(u)) * 2.5
-    let wall = max(abs(u) - half, max(q.y - line.z + brink, -q.y - 40.0))
+    // Its crown ragged: the columns stand in clusters some ten metres across, each broken off at
+    // its own height, a few metres short of the flow's top or a whole column's length, so the
+    // skyline is the ends of columns, never a roofline.
+    let (cc, cl) = hex_cell(vec2(q.x, q.z), 9.0)
+    let ch = hash2(cc * 0.173)
+    let crown = floor(ch * 4.0) * 2.4 + step(0.88, ch) * 7.0
+    let whole = max(abs(u) - half, max(q.y - line.z + brink, -q.y - 40.0))
+    // (Never stepping past a cluster's edge, where a taller one may stand.)
+    let edge = 4.5 - max(abs(cl.x), dot(abs(cl), vec2(0.5, 0.8660254)))
+    let wall = min(
+        max(abs(u) - half, max(q.y - line.z + brink + crown, -q.y - 40.0)),
+        max(whole, 0.0) + max(edge, 0.1),
+    )
     // The inner shelf the fishers' huts stand along: a step a few metres over the lagoon.
     let shelf = max(abs(u + half + 7.0) - 9.0, max(q.y - 2.6, -q.y - 40.0))
     let mass = min(wall, shelf) * 0.7
-    vec2(mass, if shelf < wall { 2.6 } else { line.z })
+    vec2(mass, if shelf < wall { 2.6 } else { line.z - crown })
 }
 
 /// The two stacks that stand at the mouth's sides, its gateposts: basalt pillars taller than the
@@ -151,8 +163,8 @@ fn gates(r: Ring, q: vec3, px: f32) -> f32 {
         let a = r.mouth + side * (r.gap * 0.5 + 0.045)
         let out = vec2(cos(a), sin(a))
         let along = vec2(-out.y, out.x)
-        let c = out * (r.radius + 85.0)
-        let tall = r.height * (1.8 - 0.3 * f32(i))
+        let c = out * (r.radius + 115.0)
+        let tall = r.height * (2.3 - 0.4 * f32(i))
         // Its footprint: about 20 m round, lobed, a lesser stack leaning off it seaward.
         let v = vec2(q.x, q.z) - c
         let ang = atan2(v.y, v.x)
@@ -293,7 +305,7 @@ fn other_sky(r: Ring, d: vec3) -> vec3 {
     let across = dot(d, band_n)
     let clot = noise3(d * 7.0 + vec3(2.0)) * 0.7 + noise3(d * 19.0) * 0.3
     let band = exp(-across * across * 26.0) * smoothstep(0.25, 0.75, clot)
-    c += vec3(0.03, 0.032, 0.045) * band
+    c += vec3(0.07, 0.075, 0.1) * band
     // Three fields of stars: a dust of faint ones, thickest in the band; lesser ones; and a few
     // large and bright, each its own colour, white, blue-white or a dull amber. (Each in a cell of
     // a lattice round the sky, so none is drawn out where a chart's grid would crowd.)
@@ -330,9 +342,9 @@ fn other_sky(r: Ring, d: vec3) -> vec3 {
     let rr = clamp(off / mr, 0.0, 1.0)
     let disc = 1.0 - smoothstep(mr * 0.97, mr * 1.02, off)
     let limb = pow(max(1.0 - rr * rr, 0.0), 0.3)
-    let seas = 0.25 * smoothstep(0.5, 0.7, noise3(d * 18.0 + vec3(4.0))) + 0.1 * noise3(d * 80.0)
+    let seas = 0.3 * smoothstep(0.52, 0.58, noise3(d * 18.0 + vec3(4.0))) + 0.12 * smoothstep(0.6, 0.65, noise3(d * 70.0))
     let face = limb * (0.85 - seas)
-    c = mix(c, vec3(0.7, 0.69, 0.64) * face, disc)
+    c = mix(c, vec3(0.8, 0.82, 0.86) * face, disc)
     c += vec3(0.5, 0.55, 0.65) *
         (0.07 * exp(-max(off - mr, 0.0) * 18.0) + 0.015 * exp(-off * 4.0))
     c
@@ -390,7 +402,7 @@ impl Isle for Ring {
             return matte(thatch(q, foot), 0.95)
         }
         if id == TIMBER {
-            return matte(timber(q, q.x + q.z, foot), 0.85)
+            return matte(timber(q, q.x + q.z, foot) * 1.7, 0.85)
         }
         // Basalt, and the salt turf on its tops.
         var a = basalt(q, n, 2.4, foot) * 1.35
@@ -410,7 +422,7 @@ impl Isle for Ring {
         let grass = smoothstep(0.75, 0.92, n.y) *
             smoothstep(top - 2.5, top - 0.4, q.y) *
             smoothstep(0.3, 0.5, noise3(q * 0.06))
-        a = mix(a, turf(q), grass * 0.9)
+        a = mix(a, turf(q) * (0.6 + 0.5 * noise3(q * 0.3)), grass * 0.75)
         // Where the swell breaks on the cliffs' foot, a ragged line of white water and the wet,
         // salt-white rock over it.
         let rad = length(vec2(q.x, q.z))
@@ -432,9 +444,10 @@ impl Isle for Ring {
         // never by this sun. So its rim stands black on the indigo, edged in moonlight.
         let m = moon(self)
         let sky = other_sky(self, vec3(r.x, max(r.y, 0.05), r.z))
-        let lit = a * (vec3(0.5, 0.56, 0.72) * 0.65 * max(dot(n, m), 0.0) + vec3(0.04, 0.05, 0.1))
-        let rim = pow(1.0 - abs(dot(n, r)), 4.0) * 0.5
-        vec4(lit + sky * rim, 1.0)
+        let lit = a * (vec3(0.5, 0.56, 0.72) * 1.0 * max(dot(n, m), 0.0) + vec3(0.25, 0.3, 0.5))
+        // (And its edges silvered where they turn from the eye toward the moon.)
+        let rim = pow(1.0 - abs(dot(n, r)), 3.0) * clamp(dot(n, m) + 0.4, 0.0, 1.0)
+        vec4(lit + (sky + vec3(0.05, 0.06, 0.09)) * rim, 1.0)
     }
 
     fn mirror(self, id: f32) -> f32 {
@@ -443,7 +456,7 @@ impl Isle for Ring {
 
     fn mirrored_tint(self) -> vec4 {
         // (Black basalt: the sky it hides is nearly all hidden.)
-        vec4(0.3, 0.3, 0.32, 0.25)
+        vec4(0.25, 0.25, 0.28, 0.55)
     }
 
     fn dry(self, p: vec3) -> bool {
