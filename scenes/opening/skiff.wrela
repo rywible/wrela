@@ -142,7 +142,10 @@ fn cloth(s: Shot, q: vec3) -> (f32, vec2) {
     let bubble = -c.z * lee * 6.75 * x * (1.0 - x) * (1.0 - x) * (0.4 + up)
     let flutter = s.quiver.x * x * x * x * sin(3.1415927 * up) * 4.0
     let loose = c.w
-    let shiver = loose *
+    // (A junk's battens hold it: let fly, its panels shiver between them; it never folds.)
+    let stiff = if SAIL == 1 { 0.3 } else { 1.0 }
+    let panels = if SAIL == 1 { loose * 0.05 * panel * sin(u * 6.0 - s.held * 30.0 + floor(up * 6.0) * 1.7) } else { 0.0 }
+    let shiver = panels + stiff * loose *
         (0.1 + 0.32 * x) *
         x *
         sin(u * 4.0 + v * 1.1 - s.held * 26.0) +
@@ -169,13 +172,18 @@ fn cut(u: f32, v: f32) -> (f32, f32, f32, f32) {
     if SAIL == 1 {
         // A junk's lug sail: a peaked yard over it, a boom batten under, its leech fanned out
         // between them, six panels each bellying between bamboo battens.
-        let xu = clamp(u / BOOM, 0.0, 1.15)
+        // (Set a little forward of the mast, as a balanced lug is; its battens' ends standing
+        // proud of the leech.)
+        let xu = clamp(u / BOOM, -0.2, 1.15)
         let v0 = 0.5 + 0.3 * xu
         let v1 = 2.9 + 1.25 * xu
         let sv = clamp((v - v0) / (v1 - v0), 0.0, 1.0)
-        let reach = BOOM * (1.0 + 0.1 * sin(3.1415927 * sv))
-        let edge = max(max(v0 - v, v - v1) * 0.55, max(-u, u - reach))
-        let x = clamp(u / reach, 0.0, 1.0)
+        let lead = 0.32 - 0.1 * sv
+        let rib = 1.0 - smoothstep(0.012, 0.03, abs(fract(sv * 6.0 + 0.5) - 0.5) / 6.0 * (v1 - v0))
+        let inner = step(0.05, sv) * step(sv, 0.95)
+        let reach = BOOM * (1.0 + 0.1 * sin(3.1415927 * sv)) + 0.1 * rib * inner
+        let edge = max(max(v0 - v, v - v1) * 0.55, max(-u - lead, u - reach))
+        let x = clamp((u + lead) / (reach + lead), 0.0, 1.0)
         let panel = 0.35 + 0.65 * pow(max(sin(3.1415927 * fract(sv * 6.0)), 0.0), 0.6)
         return (edge, x, sv, panel)
     }
@@ -185,7 +193,7 @@ fn cut(u: f32, v: f32) -> (f32, f32, f32, f32) {
         let a = vec2(u, v - 0.3)
         let r = length(a)
         let th = atan2(a.x, a.y)
-        let low = 1.15
+        let low = 1.05
         let tn = clamp(th / low, 0.0, 1.0)
         let reach = mix(4.0, 2.7, tn) * (1.0 - 0.4 * pow(sin(3.1415927 * tn), 1.5))
         let edge = max(max(-th, th - low) * max(r, 0.2) * 0.9, r - reach)
@@ -223,8 +231,8 @@ fn spars(s: Shot, q: vec3) -> f32 {
     if SAIL == 2 {
         // The claw's lower spar, bowed a little, and the mast standing on as its upper one.
         let root = FOOT + s.mast * 0.3
-        let tip = FOOT + s.mast * 1.4 + s.boom * 2.47
-        let bend = (root + tip) * 0.5 - s.mast * 0.12
+        let tip = FOOT + s.mast * 1.75 + s.boom * 2.4
+        let bend = (root + tip) * 0.5 - s.mast * 0.15
         d = min(d, min(sd_capsule(q, root, bend, 0.03), sd_capsule(q, bend, tip, 0.026)))
         d = min(d, sd_capsule(q, FOOT + s.mast * HEAD, FOOT + s.mast * 4.35, 0.026))
     }
@@ -504,8 +512,17 @@ fn sail_kind(uv: vec2, stain: f32) -> vec3 {
         let tone = hash2(vec2(band, 21.0))
         var c = mix(vec3(0.28, 0.09, 0.05), vec3(0.46, 0.19, 0.1), tone * 0.5 + stain * 0.5)
         c *= 0.85 + 0.2 * smoothstep(0.0, 0.6, up)
-        let rib = 1.0 - smoothstep(0.0, 0.05, abs(fract(up * 6.0 + 0.5) - 0.5) / 6.0 * 3.6)
-        c = mix(c, vec3(0.15, 0.11, 0.06), rib * 0.9)
+        // (A patch of paler cloth sewn into one panel, the grime of years low down.)
+        let (pa, pa_edge) = patch(uv, vec2(1.3, 1.75), vec2(0.3, 0.2), 0.05)
+        c = mix(c, vec3(0.5, 0.26, 0.15) * (0.9 + 0.2 * stain), pa * 0.85)
+        c *= 1.0 - 0.15 * pa_edge
+        c *= 0.8 + 0.2 * smoothstep(0.0, 0.35, up)
+        // (Bamboo battens, pale and knotted, across it.)
+        let v0 = 0.5 + 0.3 * clamp(uv.x / BOOM, -0.2, 1.15)
+        let v1 = 2.9 + 1.25 * clamp(uv.x / BOOM, -0.2, 1.15)
+        let rib = 1.0 - smoothstep(0.014, 0.03, abs(fract(up * 6.0 + 0.5) - 0.5) / 6.0 * (v1 - v0))
+        let knot = smoothstep(0.85, 1.0, sin(uv.x * 9.0) * 0.5 + 0.5)
+        c = mix(c, vec3(0.5, 0.42, 0.26) * (0.85 - 0.25 * knot), rib)
         return c
     }
     if SAIL == 2 {
@@ -515,7 +532,7 @@ fn sail_kind(uv: vec2, stain: f32) -> vec3 {
         var c = mix(vec3(0.42, 0.34, 0.2), vec3(0.6, 0.5, 0.32), stain)
         c *= 0.86 + 0.18 * weave
         // (Bound round its curved edge with dark cord.)
-        c = mix(c, vec3(0.12, 0.08, 0.05), 1.0 - smoothstep(-0.06, -0.03, edge))
+        c = mix(c, vec3(0.12, 0.08, 0.05), smoothstep(-0.06, -0.03, edge))
         return c
     }
     var c = mix(vec3(0.34, 0.05, 0.035), vec3(0.46, 0.08, 0.05), stain)

@@ -97,7 +97,8 @@ pub fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
         // glowing bar.)
         (0.35 + 0.65 * noise(rest * 0.6)) *
         (1.0 - 0.6 * run) *
-        0.6
+        // (Faint: smooth enough to mirror the sky, a lane astern read as a beam of light.)
+        0.15
     let along = q.y - clamp(q.y, -1.7, 1.7)
     let out = vec2(q.x, along)
     let off_hull = length(out) - 0.5
@@ -112,14 +113,15 @@ pub fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
     // Where the bow's spray falls back, either side and a little aft of it: a scatter of white
     // that's left astern as it runs.
     let fall = vec2(abs(q.x) - 1.1 - 0.5 * run, q.y - 0.2 + 1.2 * run)
-    let splash = exp(-dot(fall, fall) / (0.35 + 0.6 * run)) *
+    // (Small and torn: soft and broad, it lay on the water as white tubes.)
+    let splash = exp(-dot(fall, fall) / (0.12 + 0.2 * run)) *
         smoothstep(
-            0.35,
-            0.75,
+            0.5,
+            0.8,
             lace_at(rest * 1.9) + 0.25 * noise(rest * 3.0 + vec2(s.held * 2.0)),
         ) *
         run *
-        0.8
+        0.45
     let world_tilt = bx * tilt.x + bz * tilt.y
     // (The water the hull heaps up turned to face the light as its slopes do.)
     let at3 = vec3(xz.x, s.boat.y, xz.y)
@@ -165,9 +167,13 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32) {
         0.9,
         0.5 + 0.5 * sin(behind_ * 5.0 + abs(off) * 3.0 - s.held * 4.0 + 6.0 * noise(rest * 0.45)),
     )
-    let arms = exp(-pow(abs(off) - behind_ * 0.36 - 0.4, 2.0) / (0.03 + behind_ * 0.02)) *
-        smoothstep(0.0, 1.0, behind_) *
-        smoothstep(7.0 + 6.0 * way + 22.0 * run, 1.0, behind_) *
+    // (Its arms the bow wave's own crests carried on aft: one V from the stem, not a second
+    // pair starting at the transom.)
+    let from_b = max(back + bow_at(s) - 0.6, 0.0)
+    let arm_w = 0.03 + from_b * 0.018
+    let arms = exp(-pow(abs(off) - crest_out(s, from_b + 0.6), 2.0) / arm_w) *
+        smoothstep(1.2, 3.0, from_b) *
+        smoothstep(9.0 + 6.0 * way + 22.0 * run, 2.0, from_b) *
         (0.6 + 0.5 * run) *
         mix(broken, 1.0, 0.45 * run * exp(-behind_ / 10.0)) *
         mix(1.0, wavelets, 0.4)
@@ -201,7 +207,7 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32) {
     // soft glowing pools, as if on the lens.)
     let near_eye = smoothstep(3.0, 7.0, length(p - s.eye))
     let wake = max(
-        max(arms, trail) * step(0.0, back) * smoothstep(0.0, 0.5, way) * near_eye,
+        max(arms * step(-2.5, back), trail * step(0.0, back)) * smoothstep(0.0, 0.5, way) * near_eye,
         bow_wave * (0.7 + 0.3 * run),
     )
     // Where the sea meets the hull: a lip of churned water along its waterline, out past the
