@@ -578,7 +578,7 @@ impl Ocean {
         let d = breaking(sea)
         Ocean {
             sea,
-            big: tile(sea, 0, d + 0.3),
+            big: tile(sea, 0, d + 0.6),
             mid: tile(sea, 1, d + 0.6),
             fine: tile(sea, 2, 0.0),
             ripple: tile(sea, 3, 0.0),

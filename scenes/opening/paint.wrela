@@ -955,7 +955,7 @@ fn sea_shade(
     let lines = smoothstep(0.93 - blown * 0.06, 0.97 - blown * 0.04, ridge) * (0.4 + 0.6 * lace)
     // (Under the lace, the thin film of old foam: a grey marbling, the water showing through.)
     let white = max(
-        max(mix(dense * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.55 * age) * mix(1.0, smoothstep(0.3, 0.75, lace), age), web_k), dense * 0.35 * (1.0 - age)),
+        max(mix(dense * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.75 * age) * mix(1.0, smoothstep(0.3, 0.75, lace), age), web_k), dense * 0.35 * (1.0 - age)),
         mix(blown * 0.1, lines * 0.2 * (1.0 - smoothstep(0.975, 0.995, ridge)) * smoothstep(0.05, 0.5, blown + dense), web_k),
     ) *
         0.95
