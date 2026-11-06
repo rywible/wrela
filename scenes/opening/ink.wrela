@@ -5,7 +5,7 @@
 // lines fray: they break into strands, throw off static, and the palette drains toward black
 // and white. Quiet, it's a painting with ink; at the edges of a violent thing, chaos.
 
-use look::{INK, LIFT, OVERCAST, PAPER, ROCK, SEA, SKIFF, SKY, Shot, band, hash2, luma, noise, ray}
+use look::{INK, LIFT, PAPER, ROCK, SEA, SKIFF, SKY, Shot, band, hash2, luma, noise, ray}
 use engine::light::{LUMA, Light, aces, display, srgb}
 use std::gpu::{FragCoord, Rgba16Float, Rgba8, Texture}
 
@@ -549,7 +549,7 @@ pub fn ink(
         // (Not on the sun's glints on the water: they burn white, as the sun's own mirror does.)
         let toward_sun = max(dot(normalize(vec3(dv.x, dv.y * 0.5, dv.z)), light.sun), 0.0)
         let kept = if m0.y == SEA { 1.0 - smoothstep(0.8, 0.97, luma(c)) } else { 1.0 }
-        let open = 1.0 - OVERCAST
+        let open = 1.0 - light.storm
         c *= mix(vec3(1.0), vec3(1.06, 0.96, 0.8), pow(toward_sun, 6.0) * s.style * kept * open)
         let hot = if m0.y == SEA { 0.0 } else { 1.0 }
         c = mix(
@@ -619,7 +619,7 @@ pub fn ink(
         // and not an edge's bright side: they move with the waves, steady, and the water between
         // keeps its colour. Faint out by the horizon, where the sea mustn't stand brighter than
         // the sky over it.)
-        if m0.y == SEA && toward > 0.01 && OVERCAST < 0.5 {
+        if m0.y == SEA && toward > 0.01 && light.storm < 0.5 {
             let here = luma(seen(light, at(colour, px, size).xyz, clean))
             var l4 = vec4(here)
             for i in 0..4 {
@@ -643,18 +643,18 @@ pub fn ink(
             c = mix(
                 c,
                 vec3(1.0, 0.98, 0.93),
-                clamp(disc + corona * 0.5, 0.0, 1.0) * (1.0 - OVERCAST),
+                clamp(disc + corona * 0.5, 0.0, 1.0) * (1.0 - light.storm),
             )
         }
     }
     // Under the overcast, graded as a storm: the colour drained toward a cold slate, the sky's
     // warmth with it, and the shade pressed darker, so the light under the deck reads as heavy.
-    if OVERCAST > 0.0 {
+    if light.storm > 0.0 {
         let l = luma(c)
         let cold = mix(vec3(l), c, 0.5) * vec3(0.93, 0.98, 1.05)
         let pressed = cold *
             mix(0.78 + 0.14 * saturate((LIFT - 1.0) / 0.45), 1.0, smoothstep(0.08, 0.6, l))
-        c = mix(c, pressed, OVERCAST * s.style)
+        c = mix(c, pressed, light.storm * s.style)
     }
     // A vignette, as a lens's edge darkens.
     let uv = px / size - vec2(0.5)
@@ -665,7 +665,7 @@ pub fn ink(
     // (Clean, toward a clear deep blue at the sky's own brightness, and less toward the sun: a
     // gold sky only darkened goes grey and mauve.)
     if m0.y == SKY {
-        let top_k = smoothstep(0.45, 0.0, px.y / size.y) * s.style * (1.0 - OVERCAST)
+        let top_k = smoothstep(0.45, 0.0, px.y / size.y) * s.style * (1.0 - light.storm)
         if clean {
             let deep = vec3(0.34, 0.5, 0.82)
             let away = 1.0 -

@@ -1,0 +1,124 @@
+// The wind over the sea, one field for all that it moves: the sail (`sail`), the water's
+// roughness and foam (`paint`'s sea, `engine::ocean`'s spectrum from the mean), the falls' spray,
+// the scud and rain (`weather`) and the clouds (`heavens`). Its mean is the storm's, the sea
+// state's (`sea::SEA`), round the cathedral; each region of the map with weather of its own
+// (`Climate`) has its own wind, given way to softly at its edge. Over the mean, gusts and lulls
+// in cells a few tens of metres across, carried down the wind at its own speed (as turbulence
+// is: frozen in the air that carries it), each gust veering the wind a little as it passes.
+//
+// What's read where:
+// - `air_at` (CPU): the wind at a place, gusts and all: what fills the sail.
+// - `air_over` (CPU or GPU): the gusts over a given mean: a shader passes `Shot::wind` (the
+//   mean where the eye is, eased as the skiff sails between regions), so a gust's darker patch
+//   on the water passes the skiff as the sail fills, because both read the same cells.
+// - `GALE`: the storm's mean, for what's built once (the ocean's spectrum, the clouds' drift).
+
+use sea::SEA
+use look::noise
+use engine::noise::fbm2
+
+/// The wind at a place: the way it blows (x, z: a unit vector), its speed (m/s) and its gust (its
+/// speed over the mean: 1 the mean, more in a gust, less in a lull).
+pub struct Air: Copy {
+    pub way: vec2,
+    pub speed: f32,
+    pub gust: f32,
+    /// How far it's veered off the mean (rad, positive turning the way as `sail::wind_in` does).
+    pub veer: f32,
+}
+
+/// The storm's wind round the cathedral (m/s, toward where it blows): the sea state's.
+pub fn gale() -> vec2 {
+    SEA.wind * SEA.speed
+}
+
+/// The gust cells' sizes (m): broad gusts, and the puffs inside them.
+const BROAD: f32 = 85.0
+const PUFF: f32 = 25.0
+
+/// The wind at `xz` (the world's, m) at time `t` (s) over the mean wind `mean` (m/s, toward where
+/// it blows): its gusts and lulls, carried down the wind.
+pub fn air_over(xz: vec2, t: f32, mean: vec2) -> Air {
+    let speed = max(length(mean), 1.0e-3)
+    let w = mean / speed
+    // (Where this air was when the field began: the gusts ride down the wind with it.)
+    let at = xz - mean * t
+    let g = noise(at / BROAD) * 0.65 + noise(at / PUFF) * 0.35
+    let gust = 0.78 + 0.5 * g
+    // (A gust veers as it strikes, and backs as it passes: the broad cells' own slope.)
+    let veer = (noise(at / (BROAD * 1.7) + vec2(31.0, 7.0)) - 0.5) * 0.3
+    let c = cos(veer)
+    let s = sin(veer)
+    Air { way: vec2(w.x * c - w.y * s, w.x * s + w.y * c), speed: speed * gust, gust, veer }
+}
+
+/// The wind at `xz` at time `t`, the region's mean and its gusts: what fills the sail.
+pub fn air_at(xz: vec2, t: f32) -> Air {
+    air_over(xz, t, mean_wind(xz))
+}
+
+/// A region of the map with weather of its own: within `reach` (m) of `at` (the world's x, z),
+/// softly toward its edge, `clear` of the storm's clouds pulled back (0 none, 1 all) and the
+/// wind `wind` (m/s, toward where it blows).
+pub struct Climate: Copy {
+    pub at: vec2,
+    pub reach: f32,
+    pub clear: f32,
+    pub wind: vec2,
+}
+
+/// The world's regions with weather of their own; everywhere else, the storm and its gale.
+pub fn climates() -> Vec<Climate> {
+    var r = Vec::new()
+    // (Clear weather behind the skiff, the way it came: out of the opening's sight. A fresh
+    // breeze there, 7 m/s, backed a little from the gale.)
+    r.push(Climate {
+        at: vec2(0.0, -26000.0),
+        reach: 14000.0,
+        clear: 1.0,
+        wind: vec2(-4.9, 5.0),
+    })
+    r
+}
+
+/// How far into `c` the point `xz` is (0 outside, 1 well within): its edge torn by the noise,
+/// so a region is no circle. (`engine::sky::cleared` tears the clouds' edge the same way.)
+pub fn within(c: Climate, xz: vec2) -> f32 {
+    let torn = (fbm2(xz / 6000.0 + vec2(3.0, 17.0), 3) - 0.5) * 0.5 * c.reach
+    smoothstep(c.reach, c.reach * 0.45, length(xz - c.at) + torn)
+}
+
+/// How much of the storm's clouds are pulled back at `xz`: the most any region does there.
+pub fn cleared_at(xz: vec2) -> f32 {
+    var k = 0.0
+    for c in climates() {
+        k = max(k, c.clear * within(c, xz))
+    }
+    k
+}
+
+/// The climate's mean wind at `xz` (m/s): the gale, given way to each region's own as far into
+/// it as the point is. No gusts (`air_over` adds them).
+pub fn mean_wind(xz: vec2) -> vec2 {
+    var w = gale()
+    for c in climates() {
+        w = mix(w, c.wind, within(c, xz))
+    }
+    w
+}
+
+@test
+fn far_from_every_region_the_wind_is_the_seas() {
+    let w = mean_wind(vec2(0.0, 30000.0))
+    assert(length(w - SEA.wind * SEA.speed) < 1.0e-3)
+}
+
+@test
+fn gusts_stay_within_a_believable_band() {
+    for i in 0..50 {
+        let xz = vec2(f32(i) * 137.0, f32(i) * -91.0)
+        let a = air_at(xz, f32(i) * 1.7)
+        assert(a.gust >= 0.77 && a.gust <= 1.29)
+        assert(abs(length(a.way) - 1.0) < 1.0e-3)
+    }
+}

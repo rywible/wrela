@@ -6,7 +6,7 @@
 // a line field, the line's weight, the normal and the moment's energy.
 
 use look::{
-    OVERCAST, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, cells, hash2, luma, fbm,
+    STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, cells, hash2, luma, fbm,
     noise, ray,
 }
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
@@ -41,9 +41,9 @@ fn storm_sky(
 ) -> vec4 {
     let c = dome.sample_level(smp, sky_uv(d))
     let open = clear_sky(view, smp, light, d) + (if disc {
-        sun_disc(light, d) * (1.0 - OVERCAST)
+        sun_disc(light, d) * (1.0 - light.storm)
     } else { vec3(0.0) })
-    let behind = mix(open, vec3(luma(open)) * vec3(0.8, 0.85, 0.9) * STORM_BEHIND, OVERCAST)
+    let behind = mix(open, vec3(luma(open)) * vec3(0.8, 0.85, 0.9) * STORM_BEHIND, light.storm)
     vec4(behind * (1.0 - c.a) + c.rgb, c.a)
 }
 
@@ -59,7 +59,7 @@ fn into_the_air(
     dome: Texture<Rgba16Float>,
     smp: Sampler,
 ) -> vec4 {
-    if OVERCAST <= 0.0 || d.y > STORM_LOW {
+    if light.storm <= 0.0 || d.y > STORM_LOW {
         return sky
     }
     var far = vec3(0.0)
@@ -84,13 +84,10 @@ fn into_the_air(
 
 /// The elevation (as a direction's y) the deck is sure to be under, from the eye: what's below
 /// it is the air the deck goes into.
-const STORM_LOW: f32 = 0.14
 
 /// How much lighter the air is at the horizon itself than under the deck.
-const STORM_HORIZON: f32 = 1.6
 
 /// How bright the air past the deck's reach is, against the open sky's there.
-const STORM_BEHIND: f32 = 0.2
 
 /// The sky along `d`, with its clouds (their cover in alpha); the clouds lost in the air low on
 /// the horizon, where they'd be sixty kilometres off and more (the cloud field's far repeats).
@@ -104,7 +101,7 @@ fn heaven(
     let cloudy = storm_sky(view, light, d, dome, smp, disc: true)
     // (Under the overcast, the deck goes on down to the horizon: its far repeats are lost in
     // its own air.)
-    let lost = mix(smoothstep(0.034, 0.058, d.y), 1.0, OVERCAST)
+    let lost = mix(smoothstep(0.034, 0.058, d.y), 1.0, light.storm)
     let clear = clear_sky(view, smp, light, normalize(vec3(d.x, max(d.y, 0.0), d.z)))
     let open = vec4(mix(clear, cloudy.rgb, lost), cloudy.a * lost)
     into_the_air(open, view, light, d, dome, smp)
@@ -121,7 +118,7 @@ pub(package) fn aired(
     eye: vec3,
 ) -> vec3 {
     let v = world - eye
-    let a = stormy_air(air, smp, light.sun, normalize(v), length(v) * 0.001, OVERCAST)
+    let a = stormy_air(air, smp, light.sun, normalize(v), length(v) * 0.001, light.storm)
     colour * a.a + a.rgb
 }
 
@@ -137,7 +134,7 @@ fn mirrored_sky(
     let cloudy = storm_sky(view, light, d, dome, smp, disc: false).rgb
     // (Under the overcast, the deck goes on down to the horizon: its far repeats are lost in
     // its own air.)
-    let lost = mix(smoothstep(0.034, 0.058, d.y), 1.0, OVERCAST)
+    let lost = mix(smoothstep(0.034, 0.058, d.y), 1.0, light.storm)
     let clear = clear_sky(view, smp, light, normalize(vec3(d.x, max(d.y, 0.0), d.z)))
     into_the_air(vec4(mix(clear, cloudy, lost), 1.0), view, light, d, dome, smp).rgb
 }
@@ -401,7 +398,7 @@ pub(package) fn lit_solid(
             disc: false,
         ).rgb) /
         3.0
-    let skyward = mix(clear_light, deck_light, OVERCAST)
+    let skyward = mix(clear_light, deck_light, h.light.storm)
     // (The sea under the low sun is bright: it throws a warm light up under what hangs over it.)
     let under = if cel { band(-n.y, 0.35, 0.04) * 0.6 } else { max(-n.y, 0.0) }
     let below = h.light.sun_colour * vec3(0.085, 0.07, 0.055) * under
@@ -443,7 +440,7 @@ pub(package) fn lit_solid(
     let behind = mix(
         clear_sky(view, smp, h.light, back),
         storm_sky(view, h.light, back, dome, smp, disc: false).rgb,
-        OVERCAST,
+        h.light.storm,
     )
     if haze <= 1.0 {
         return mix(raw, aired, haze)
@@ -472,7 +469,7 @@ pub(package) fn hazed_far(
     let behind = mix(
         clear_sky(view, smp, h.light, back),
         storm_sky(view, h.light, back, dome, smp, disc: false).rgb,
-        OVERCAST,
+        h.light.storm,
     )
     if haze <= 1.0 {
         return mix(raw, aired, haze)
@@ -981,7 +978,7 @@ fn sea_shade(
     let bright = (0.4 + 0.6 * smoothstep(0.5, 1.4, mass)) * (0.7 + 0.5 * froth)
     // Under it and round it, the water's paler and greener, full of the bubbles the break drove
     // down, as the water under a whitecap is.
-    let bubbles = smoothstep(mix(0.02, 0.2, OVERCAST), 0.5, foam_k)
+    let bubbles = smoothstep(mix(0.02, 0.2, h.light.storm), 0.5, foam_k)
     // Foam where the sea meets the skiff, lit as a white surface is.
     // The skiff's wake: two thin lines spreading from its stern as it drifts, and the stirred
     // water straight behind it.
@@ -1070,7 +1067,7 @@ fn sea_shade(
         PI
     let foam_light = mix(foam_lit, vec3(luma(foam_lit)) * vec3(1.0, 0.97, 0.94), 0.45) * 1.6
     c *= mix(0.45, 1.0, smoothstep(0.0, 0.3, max(wl, 0.0)))
-    c += body * (1.0 - fresnel) * mix(2.6, 0.9, OVERCAST) * bubbles * (1.0 - white)
+    c += body * (1.0 - fresnel) * mix(2.6, 0.9, h.light.storm) * bubbles * (1.0 - white)
     c = mix(c, foam_light * bright, white * 0.92)
     c = mix(c, foam_light, max(max(foam * 0.9, wake), splash))
     // The crests' ink strokes and pale lips, light: the ink sits on the water's form.
@@ -1369,7 +1366,7 @@ fn sample(
         // (Under the overcast, more of it: the deck's light all round is all it has.)
         let bounce = sea_light * PI * (if cg { 0.13 } else {
             0.22
-        }) * mix(1.0, 2.2, OVERCAST) * (0.4 + 0.6 * ao) * (0.5 + 0.5 * (if cel {
+        }) * mix(1.0, 2.2, light.storm) * (0.4 + 0.6 * ao) * (0.5 + 0.5 * (if cel {
             band(toward, 0.3, 0.04)
         } else { toward }))
         let edge_k = pow(1.0 - max(dot(n, -d), 0.0), 3.0) *
