@@ -85,7 +85,8 @@ fn sample<I: Isle>(
             let wob = (noise(vec2(p.x * 0.03, p.z * 0.3)) - 0.5) * 0.05 +
                 (noise(vec2(p.x * 0.11, p.z * 0.9)) - 0.5) * 0.02
             // (And a little sideways, so its edges fray as the swell takes them.)
-            let side = (noise(vec2(p.x * 0.25, p.z * 0.06)) - 0.5) * 0.03
+            let side = (noise(vec2(p.x * 0.25, p.z * 0.06)) - 0.5) * 0.06 +
+                (noise(vec2(p.x * 0.9, p.z * 0.2)) - 0.5) * 0.03
             let r0 = normalize(vec3(d.x + side * d.z, -d.y + wob, d.z - side * d.x))
             let ib = sphere(p, r0, isle.bounds(), far)
             if ib.x < ib.y {

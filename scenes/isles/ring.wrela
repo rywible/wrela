@@ -81,6 +81,11 @@ fn rim(r: Ring, a: f32) -> vec3 {
     var top = r.height * (0.55 + 0.95 * noise(along * 1.3 + vec2(1.9))) + fault
     // And saddles where the rim sags between its heights.
     top -= r.height * 0.35 * smoothstep(0.6, 0.85, noise(along * 2.7 + vec2(8.3)))
+    // And one height on its far side, the ring's crag, where the old vent's wall stands highest;
+    // and across from it a deep saddle: so from the sea the wall rises and sags, never a slab.
+    let crag = from_mouth(a, r.mouth + 0.5)
+    top += r.height * 0.7 * smoothstep(0.9, 0.2, abs(crag - 2.6))
+    top -= r.height * 0.45 * smoothstep(0.35, 0.0, abs(from_mouth(a, r.mouth) - 1.25))
     // (Its skyline steps in whole flows, each 11 m: a flow's top stays level till it ends, then
     // the rim drops to the next, as a basalt plateau's edge does; never a dune's roll.)
     let flows = top / 11.0
@@ -168,7 +173,7 @@ fn gates(r: Ring, q: vec3, px: f32) -> f32 {
         // Its footprint: about 20 m round, lobed, a lesser stack leaning off it seaward.
         let v = vec2(q.x, q.z) - c
         let ang = atan2(v.y, v.x)
-        let reach = 18.0 +
+        let reach = 15.0 + 9.0 * f32(i) +
             6.0 * noise(vec2(ang * 1.2 + f32(i) * 7.0, 0.5)) +
             14.0 * smoothstep(0.7, 1.0, dot(normalize(v + vec2(1.0e-4)), out))
         let rv = length(v)
@@ -305,7 +310,7 @@ fn other_sky(r: Ring, d: vec3) -> vec3 {
     let across = dot(d, band_n)
     let clot = noise3(d * 7.0 + vec3(2.0)) * 0.7 + noise3(d * 19.0) * 0.3
     let band = exp(-across * across * 26.0) * smoothstep(0.25, 0.75, clot)
-    c += vec3(0.07, 0.075, 0.1) * band
+    c += vec3(0.12, 0.12, 0.16) * band
     // Three fields of stars: a dust of faint ones, thickest in the band; lesser ones; and a few
     // large and bright, each its own colour, white, blue-white or a dull amber. (Each in a cell of
     // a lattice round the sky, so none is drawn out where a chart's grid would crowd.)
@@ -338,7 +343,7 @@ fn other_sky(r: Ring, d: vec3) -> vec3 {
     }
     // The moon: eleven degrees across, a sphere, full, darker toward its limb, its seas grey on it,
     // in a ring of its own light.
-    let mr = 0.1
+    let mr = 0.13
     let rr = clamp(off / mr, 0.0, 1.0)
     let disc = 1.0 - smoothstep(mr * 0.97, mr * 1.02, off)
     let limb = pow(max(1.0 - rr * rr, 0.0), 0.3)
@@ -358,7 +363,13 @@ impl Isle for Ring {
     fn mirrored(self, p: vec3, px: f32) -> f32 {
         let q = p - self.at
         let mt = cliffs(self, q)
-        min(columns(q, mt.x, mt.y, 2.4, px), gates(self, q, px))
+        var d = min(columns(q, mt.x, mt.y, 2.4, px), gates(self, q, px))
+        // (And the fishers' huts on their stilts, standing in it.)
+        let rad = length(vec2(q.x, q.z))
+        if rad > self.radius * 0.7 && rad < self.radius + 20.0 && q.y < 12.0 {
+            d = min(d, village(self, q, px).x)
+        }
+        d
     }
 
     fn field(self, p: vec3, px: f32) -> vec2 {
@@ -405,7 +416,12 @@ impl Isle for Ring {
             return matte(timber(q, q.x + q.z, foot) * 1.7, 0.85)
         }
         // Basalt, and the salt turf on its tops.
-        var a = basalt(q, n, 2.4, foot) * 1.35
+        var a = basalt(q, n, 2.4, foot) * 1.8
+        // (In clusters of columns, each its own shade, so the faces read as colonnades far off, and
+        // the joints between them dark.)
+        let (kc, kl) = hex_cell(vec2(q.x, q.z), 9.0)
+        let kj = 4.5 - max(abs(kl.x), dot(abs(kl), vec2(0.5, 0.8660254)))
+        a *= (0.7 + 0.6 * hash2(kc * 0.311)) * mix(0.55, 1.0, smoothstep(0.0, 0.6, kj))
         let top = cliffs(self, q).y
         // A lava flow's two tiers, as basalt cliffs stand: the colonnade below, its columns
         // straight and pale with salt; over it the entablature, darker, its columns thin and
@@ -444,7 +460,7 @@ impl Isle for Ring {
         // never by this sun. So its rim stands black on the indigo, edged in moonlight.
         let m = moon(self)
         let sky = other_sky(self, vec3(r.x, max(r.y, 0.05), r.z))
-        let lit = a * (vec3(0.5, 0.56, 0.72) * 1.0 * max(dot(n, m), 0.0) + vec3(0.25, 0.3, 0.5))
+        let lit = a * (vec3(0.5, 0.56, 0.72) * 0.75 * max(dot(n, m), 0.0) + vec3(0.1, 0.12, 0.22))
         // (And its edges silvered where they turn from the eye toward the moon.)
         let rim = pow(1.0 - abs(dot(n, r)), 3.0) * clamp(dot(n, m) + 0.4, 0.0, 1.0)
         vec4(lit + (sky + vec3(0.05, 0.06, 0.09)) * rim, 1.0)
