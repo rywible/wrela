@@ -10,7 +10,7 @@
 // much of the pixel they cover (the falls too, in front of the rock); how far, what, the ink's
 // line and weight; and the normal.
 
-use look::{GILT, GLASS, ISLE, OVERCAST, ROCK, SKY, STONE, Shot, band, hash2, noise, ray}
+use look::{GILT, GLASS, ISLE, OVERCAST, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use paint::{Heaven, aired, lit_solid, sphere}
 use engine::far::foot
@@ -291,7 +291,7 @@ pub fn yonder(
         n = inn
     }
     // The falls, in front of the rock.
-    let (fall, fall_t) = falls(s, h, aerial, smp, o, d, t)
+    let (fall, fall_t) = falls(s, h, view, aerial, dome, smp, o, d, t)
     c = c * (1.0 - fall.a) + fall.rgb
     cover = cover + fall.a * (1.0 - cover)
     if id == SKY && fall.a > 0.0 {
@@ -327,14 +327,25 @@ pub fn yonder(
     Targets3 { first: now, second: marks, third }
 }
 
+/// The wind the falls' spray goes with (the sky's, `heavens`: 9 m/s east, 14 south), and how
+/// far it carries a drop for each metre it falls (the spray's slow fall against it).
+const WIND = vec2(0.54, -0.84)
+const CARRY: f32 = 0.55
+
 /// How much of the falls a ray `o` + `d` t meets before `hit`, and their light (premultiplied);
 /// and how far the nearest is (`hit` if none).
-/// Each falls as water does: a sheet of strands, bright where they catch the light, dark between
-/// where the rock shows through, fraying at its edges, clumping as it drops, then gone to mist.
+///
+/// Water falling kilometres doesn't reach the bottom as water. Each fall leaves its lip as a
+/// sheet, white as it breaks, and within a few hundred metres it's all spray: a plume that
+/// widens as it falls, billowing, carried off down the wind and thinning till it's gone, long
+/// before the sea. (Big things fall slowly on the screen: the billows sink at the spray's own
+/// slow pace.) Each is drawn on the plane through its lip turned to the eye.
 fn falls(
     s: Shot,
     h: Heaven,
+    view: Texture<Rgba16Float>,
     aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
     smp: Sampler,
     o: vec3,
     d: vec3,
@@ -342,72 +353,80 @@ fn falls(
 ) -> (vec4, f32) {
     var acc = vec4(0.0)
     var first = hit
-    let dd = vec2(d.x, d.z)
-    let len2 = max(dot(dd, dd), 1.0e-6)
-    let k = SCALE / 4.5
     for i in 0..3 {
         let f = FALLS[i]
-        let at = vec2(ISLE.x + f.x * SCALE, ISLE.z + f.y * SCALE)
-        let lip = ISLE.y + f.z * SCALE
-        let width = f.w * SCALE
-        let rel = vec2(o.x, o.z) - at
-        let tc = -dot(rel, dd) / len2
-        if tc > 0.0 && tc < hit {
-            let p = o + d * tc
-            let drop = (lip - p.y) / k
-            let across = length(vec2(p.x, p.z) - at) / k
-            let side = dot(vec2(p.x, p.z) - at, normalize(vec2(-dd.y, dd.x))) / k
-            // Its edges fray, wider as it falls.
-            let w = width /
-                k *
-                (0.38 + drop * 0.005) *
-                (0.92 + 0.16 * noise(vec2(drop * 0.012 - s.held * 0.3, f32(i) * 5.0)))
-            // The strands, running down as the water does.
-            let fi = f32(i) * 7.0
-            let strand = noise(vec2(side / (w * 0.22 + 0.5) + fi, drop * 0.006 - s.held * 2.4)) *
-                0.65 +
-                noise(vec2(side / (w * 0.08 + 0.3) + fi * 2.0, drop * 0.02 - s.held * 5.5)) * 0.35
-            // (Strands finer than a pixel averaged out: far off the sheet is one soft fall.)
-            let px_m = tc * 2.0 / (s.resolution.y * s.focal) / k
-            let sheet = mix(
-                0.5,
-                smoothstep(0.32, 0.62, strand),
-                1.0 - smoothstep(w * 0.2, w * 0.6, px_m),
-            )
-            // Lower down it clumps and breaks apart.
-            let clump = smoothstep(
-                0.2 + 0.45 * smoothstep(120.0, 480.0, drop),
-                0.95,
-                noise(vec2(side * 0.08 + fi, drop * 0.02 - s.held * 1.4)),
-            )
-            // (Softer at its edges, and thinning away down the cliff into its spray, not cut off.)
-            let body = smoothstep(w, w * 0.15, across) *
-                smoothstep(-15.0, 70.0, drop) *
-                smoothstep(620.0, 140.0, drop) *
-                step(1.0, f.w) *
-                mix(1.0, clump, 0.55 * smoothstep(60.0, 300.0, drop))
-            let mist = exp(-(across * across) / (w * w * 22.0)) *
-                smoothstep(220.0, 560.0, drop) *
-                smoothstep(1400.0, 750.0, drop) *
-                step(1.0, f.w) *
-                0.3 *
-                (0.55 + 0.45 * noise(vec2(side * 0.05, drop * 0.01 - s.held * 0.2)))
-            let a = clamp(body * (0.6 + 0.4 * sheet) + mist, 0.0, 0.92) * (1.0 - acc.a)
-            // Lit from behind and above: the strands' crowns warm with the low sun, the sheet
-            // between them cooler and darker, the mist a soft warm grey.
-            let warm = h.light.sun_colour * vec3(1.0, 0.86, 0.66)
-            let cool = vec3(0.16, 0.18, 0.22)
-            // (Backlit, its spray glows warm: the low sun through it.)
-            // (At its lip a smooth glassy sheet, dark as the cliff it leaves: it only whitens and
-            // glows as it breaks up falling, so its top is no bright mark of its own.)
-            let broken = smoothstep(20.0, 300.0, drop)
-            let water = cool * (0.15 + 0.55 * broken) + warm * (0.035 + 0.08 * sheet) * broken
-            let haze_ = cool * 1.1 + warm * 0.12
-            let lit = mix(water, haze_, clamp(mist / max(a + mist, 1.0e-3), 0.0, 1.0))
-            let col = aired(aerial, smp, h.light, lit, p, s.eye)
-            acc += vec4(col * a, a)
-            if a > 0.0 {
-                first = min(first, tc)
+        if f.w >= 1.0 {
+            let lip = vec3(ISLE.x + f.x * SCALE, ISLE.y + f.z * SCALE, ISLE.z + f.y * SCALE)
+            let width = f.w * SCALE
+            // The plane through the lip, facing the eye (about the vertical).
+            let facing = normalize(vec2(lip.x - o.x, lip.z - o.z))
+            let side_dir = vec2(-facing.y, facing.x)
+            let den = dot(vec2(d.x, d.z), facing)
+            let tc = dot(vec2(lip.x - o.x, lip.z - o.z), facing) / max(den, 1.0e-4)
+            if den > 0.0 && tc < hit {
+                let p = o + d * tc
+                let drop = lip.y - p.y
+                // Where the fall's middle is at this depth: off down the wind as it falls.
+                let carried = dot(WIND, side_dir) * CARRY * max(drop - 60.0, 0.0)
+                let side = dot(vec2(p.x - lip.x, p.z - lip.z), side_dir) - carried
+                let fi = f32(i) * 13.7
+                let px_m = tc * 2.0 / (s.resolution.y * s.focal)
+                // The sheet: water still, its strands running down it, breaking up as it goes.
+                let sheet_w = width * (0.5 + drop * 0.0016)
+                let strands = mix(
+                    0.55,
+                    smoothstep(0.3, 0.75, noise(vec2(side / 7.0 + fi, drop / 40.0 - s.held * 1.6))),
+                    1.0 - smoothstep(3.0, 9.0, px_m),
+                )
+                let edge = smoothstep(sheet_w, sheet_w * 0.45, abs(side))
+                let sheet = edge *
+                    smoothstep(-6.0, 12.0, drop) *
+                    smoothstep(420.0, 90.0, drop) *
+                    mix(0.85, 0.35 + 0.65 * strands, smoothstep(10.0, 160.0, drop))
+                // The spray: a plume widening as it falls, billowing, fading out down the wind.
+                let plume_w = width * 0.6 + drop * 0.32
+                let sinking = s.held * 7.0
+                let billow = fbm(vec2(side / 110.0 + fi, (drop - sinking) / 130.0), 4)
+                let fine = noise(vec2(side / 28.0 - fi, (drop - sinking * 1.4) / 34.0))
+                let lump = mix(
+                    billow,
+                    billow * (0.6 + 0.8 * fine),
+                    1.0 - smoothstep(6.0, 18.0, px_m),
+                )
+                let across = side / plume_w
+                let body = exp(-across * across * 2.2)
+                let spray = body *
+                    smoothstep(40.0, 320.0, drop) *
+                    smoothstep(1700.0, 500.0, drop) *
+                    smoothstep(0.28, 0.75, lump + 0.25 * body)
+                let a = clamp(sheet * 0.95 + spray * 0.8, 0.0, 0.95) * (1.0 - acc.a)
+                if a > 0.001 {
+                    // Lit as the world is: a pale matte facing the eye and the sky over it, the
+                    // spray's top lighter than its shadowed belly.
+                    let n = normalize(-d + vec3(0.0, 0.6 + 0.3 * lump, 0.0))
+                    let white = mix(0.55, 0.85, smoothstep(0.0, 200.0, drop))
+                    let lit = lit_solid(
+                        s,
+                        h,
+                        view,
+                        aerial,
+                        dome,
+                        smp,
+                        p,
+                        n,
+                        d,
+                        vec3(white),
+                        1.0,
+                        0.0,
+                        vec3(0.0),
+                        1.0,
+                        mix(0.55, 1.0, lump),
+                        1.0,
+                        0.0,
+                    )
+                    acc += vec4(lit * a, a)
+                    first = min(first, tc)
+                }
             }
         }
     }
