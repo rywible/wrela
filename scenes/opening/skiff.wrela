@@ -33,7 +33,7 @@ pub fn local(s: Shot, p: vec3) -> vec3 {
 /// The sheer's rise over the gunwale's middle at `z` (along, of the half-length).
 fn sheer_at(z: f32) -> f32 {
     if PLANING > 0.5 {
-        0.06 * z * z + 0.14 * pow(max(z, 0.0), 2.5)
+        0.06 * z * z + 0.32 * pow(max(z, 0.0), 2.5)
     } else {
         0.16 * z * z + 0.05 * max(z, 0.0) + 0.3 * pow(max(z, 0.0), 4.0)
     }
@@ -94,7 +94,7 @@ fn hull(q: vec3) -> f32 {
         // (Decked flush from end to end, its deck crowned a little: a board you stand on, not
         // a tray you stand in.)
         let w = max(BEAM * 0.8, 0.02)
-        d = max(f.x, f.y - 0.025 * (1.0 - min(q.x * q.x / (w * w), 1.0)))
+        d = max(f.x, f.y - 0.05 * (1.0 - min(q.x * q.x / (w * w), 1.0)))
     }
     d
 }

@@ -14,6 +14,8 @@ pub const SAIL: Script = Script::frames()
     .key_up(420, Key::W)
     .key_down(460, Key::A)
     .key_up(535, Key::A)
+    .key_down(565, Key::D)
+    .key_up(610, Key::D)
     .key_down(640, Key::S)
     .key_up(720, Key::S)
 
