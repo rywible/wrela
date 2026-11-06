@@ -291,8 +291,10 @@ pub fn weather(
         c = vec4(min(c.rgb, cap), c.a)
     }
     // Where the sea meets the sky, the far sea lost in the same air: no ruled line.
+    // (The far sea only: the skiff and its sail, close by below the horizon, were hazed as it
+    // was, a ruled line across them where the horizon passed behind.)
     if m.y != SKY && d.y < 0.0 {
-        let k = exp(d.y / 0.008) * 0.5
+        let k = exp(d.y / 0.008) * 0.5 * smoothstep(800.0, 4000.0, dist)
         c = vec4(mix(c.rgb, air, k), c.a)
     }
     // The scud, in front of what's behind it.
