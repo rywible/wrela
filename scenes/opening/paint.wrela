@@ -5,6 +5,7 @@
 // (`engine::light::hazed`). Beside the colour it writes what the ink reads: how far, what it is,
 // a line field, the line's weight, the normal and the moment's energy.
 
+use main::LOOK
 use look::{
     OVERCAST, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, cells, hash2, luma, fbm,
     noise, ray,
@@ -447,7 +448,7 @@ fn lit_solid(
     let up = vec3(y: 1.0)
     // The cel look's light: the sun on a face or not, at one strength, the terminator a pixel
     // wide; the sky's light the same over every face. (Its glints keep their own light.)
-    let cel = s.look > 1.5 && s.look < 2.5
+    let cel = LOOK > 1.5 && LOOK < 2.5
     // The sky's light on it: the sky toward its normal, lifted toward the zenith, and the sea's
     // light from below.
     // (The clear sky's, not the clouds': a cloud's patch in it would mottle a whole face.)
@@ -911,13 +912,13 @@ fn sea_shade(
     c = mix(c, foam_light, max(max(foam * 0.9, wake), splash))
     // The crests' ink strokes and pale lips, light: the ink sits on the water's form.
     let footprint = t * 2.0 / (s.resolution.y * s.focal)
-    let crest_ink = if s.look > 2.5 { vec2(0.0) } else {
+    let crest_ink = if LOOK > 2.5 { vec2(0.0) } else {
         strokes(xz, s.held, footprint, d, wave) * clamp(1.0 - t / 70.0, 0.0, 1.0)
     }
     // (The painted look keeps the lips, a brush's light; the cel look the ink too, drawn; the
     // clean look neither.)
-    let lips = if s.look > 2.5 { 0.0 } else if s.look > 1.5 { 0.5 } else { 0.35 }
-    let crest_dark = if s.look > 2.5 || (s.look > 0.5 && s.look < 1.5) { 0.0 } else { 0.45 }
+    let lips = if LOOK > 2.5 { 0.0 } else if LOOK > 1.5 { 0.5 } else { 0.35 }
+    let crest_dark = if LOOK > 2.5 || (LOOK > 0.5 && LOOK < 1.5) { 0.0 } else { 0.45 }
     c = mix(c, c * 1.6 + vec3(0.02, 0.04, 0.045), crest_ink.y * lips)
     c = mix(c, c * 0.35, crest_ink.x * crest_dark)
     // The bow's cut: where the ink frays, more when it slaps down.
@@ -1178,8 +1179,8 @@ fn sample(
         ).rgb
         // (The CG looks light it as a hero is against the sun: less fill, so its shade side
         // holds its value against the bright sea, and a stronger rim; the cel look's both hard.)
-        let cg = s.look > 0.5
-        let cel = s.look > 1.5 && s.look < 2.5
+        let cg = LOOK > 0.5
+        let cel = LOOK > 1.5 && LOOK < 2.5
         let toward = max(dot(n, normalize(vec3(light.sun.x, -0.4, light.sun.z))), 0.0)
         // (Under the overcast, more of it: the deck's light all round is all it has.)
         let bounce = sea_light * PI * (if cg { 0.13 } else {
@@ -1278,7 +1279,7 @@ fn sample(
         let side = normalize(vec3(light.sun.x, 0.15, light.sun.z))
         // (The rock's rim off its broad planes, not every crack's: a light along its edges, not
         // a sparkle.)
-        let cel = s.look > 1.5 && s.look < 2.5
+        let cel = LOOK > 1.5 && LOOK < 2.5
         let edge_soft = pow(1.0 - max(dot(rn, -d), 0.0), 3.0) * max(dot(rn, side), 0.0)
         let edge_on = if cel { band(edge_soft, 0.15, 0.02) * 0.4 } else { edge_soft }
         // (Far off, a rim along a spire finer than a pixel only beads: held down there.)
@@ -1336,7 +1337,7 @@ fn sample(
     if id != SKIFF && t > 400.0 {
         let k = max(dot(d, s.glow), 0.0)
         let over = if id == SKY { 1.0 } else { 0.0 }
-        c += light.sun_colour * vec3(1.0, 0.8, 0.5) * (0.05 * pow(k, 250.0) + (if s.look > 2.5 {
+        c += light.sun_colour * vec3(1.0, 0.8, 0.5) * (0.05 * pow(k, 250.0) + (if LOOK > 2.5 {
             0.0
         } else { 0.85 }) * pow(k, 1400.0)) * over
     }
