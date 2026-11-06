@@ -15,7 +15,7 @@ use look::{GILT, GLASS, ISLE, OVERCAST, ROCK, SKY, STONE, Shot, band, fbm, hash2
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use far::far_off
 use stacks::{march_stacks, stacks_albedo, stacks_ao, stacks_normal, stacks_shadow}
-use paint::{Heaven, aired, hazed_far, lit_solid, sphere}
+use paint::{Heaven, aired, hazed_far, heaven, lit_solid, sphere}
 use engine::far::foot
 use engine::light::Light
 use engine::sky::{Clouds, cloud_shadow}
@@ -272,6 +272,15 @@ fn isle_shade(
     (c, line, weight, n)
 }
 
+/// `c` (a far solid's light through all its air, along `d`) pushed back `k` (0 to 1) of the way on
+/// toward the sky behind it, the sky the eye sees there (the storm's own air on the horizon); and
+/// never brighter than that sky: a stack against the light is its shadow side, and a pale sliver
+/// of it toward the sun reads as a white spark on the horizon.
+fn pushed_back(h: Heaven, view: Texture<Rgba16Float>, dome: Texture<Rgba16Float>, smp: Sampler, c: vec3, d: vec3, k: f32) -> vec3 {
+    let sky = heaven(view, h.light, normalize(vec3(d.x, max(d.y, 0.0), d.z)), dome, smp).rgb
+    min(mix(c, sky, k), sky * 0.9)
+}
+
 /// A stack where the ray met it at `p`, a pixel `px` m across there: its light in its air, and
 /// its normal. Lit as the rock is lit: the one sun through the deck, the deck's light, the air.
 fn stacks_shade(
@@ -297,9 +306,8 @@ fn stacks_shade(
     // the rock is pushed back: so a stack two kilometres off stands paler than one at three
     // hundred metres, and the eye reads how far each is.)
     let t = length(p - s.eye)
-    let haze = 1.0 + 0.45 * smoothstep(200.0, 2600.0, t)
-    let c = lit_solid(s, h, view, aerial, dome, smp, p, n, d, albedo, 0.85, 0.0, vec3(0.0), sun, ao, haze, 0.0)
-    (c, n)
+    let c = lit_solid(s, h, view, aerial, dome, smp, p, n, d, albedo, 0.85, 0.0, vec3(0.0), sun, ao, 1.0, 0.0)
+    (pushed_back(h, view, dome, smp, c, d, 0.7 * smoothstep(120.0, 2400.0, t)), n)
 }
 
 @fragment
@@ -355,8 +363,8 @@ pub fn yonder(
             let sun = mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, OVERCAST))
             let albedo = vec3(0.07, 0.072, 0.08) * (0.85 + 0.3 * noise(vec2(p.x + p.z, p.y) * 0.02))
             // (Pushed back past their air toward the deck's colour, as the rock is.)
-            let haze = 1.0 + 0.4 * smoothstep(3000.0, 10000.0, tf)
-            c = lit_solid(s, h, view, aerial, dome, smp, p, fnn, d, albedo, 0.9, 0.0, vec3(0.0), sun, 1.0, haze, 0.0)
+            let lit = lit_solid(s, h, view, aerial, dome, smp, p, fnn, d, albedo, 0.9, 0.0, vec3(0.0), sun, 1.0, 1.0, 0.0)
+            c = pushed_back(h, view, dome, smp, lit, d, 0.4 * smoothstep(3000.0, 10000.0, tf))
             cover = 1.0
             marks = vec4(log2(tf), ROCK, 1.0, 0.3)
             n = fnn

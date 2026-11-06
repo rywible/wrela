@@ -58,6 +58,11 @@ fn kept_out(at: vec2) -> bool {
 /// Cell `c`'s cluster: its middle (x, z), its main stack's height and girth (m), and its seed;
 /// height 0 if the cell has none.
 fn cluster(c: vec2) -> vec4 {
+    // (One placed: a tall stack and its skerries some sixty metres off the lane, two hundred
+    // metres out, so the skiff passes close by something fixed in its first half minute.)
+    if c.x == 0.0 && c.y == 1.0 {
+        return vec4(70.0, 230.0, 46.0, 41.0)
+    }
     let h = hash2(c * 0.913 + vec2(3.7))
     let at = (c + vec2(0.5)) * CELL + (vec2(hash2(c + vec2(1.1)), hash2(c + vec2(7.3))) - 0.5) * (CELL - 2.0 * REACH - 14.0)
     // (In groups: whole stretches of sea bare, and where the rock is, several cells together.)
@@ -232,7 +237,7 @@ pub fn stacks_albedo(p: vec3, n: vec3, px: f32) -> vec3 {
     let (cc, lv) = hex_cell(vec2(p.x, p.z), COLUMN)
     let k = 1.0 - smoothstep(0.4, 1.2, px)
     let own = mix(0.5, hash2(cc * 1.37), k)
-    var a = vec3(0.065, 0.068, 0.075) * (0.75 + 0.5 * own)
+    var a = vec3(0.085, 0.088, 0.095) * (0.75 + 0.5 * own)
     // (The joints between columns dark.)
     let joint = (1.0 - smoothstep(0.0, 0.1, COLUMN * 0.5 - max(abs(lv.x), dot(abs(lv), vec2(0.5, 0.8660254))))) * k
     a *= 1.0 - 0.5 * joint * smoothstep(0.6, 0.2, abs(n.y))

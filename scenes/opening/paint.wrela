@@ -96,7 +96,7 @@ const STORM_BEHIND: f32 = 0.2
 
 /// The sky along `d`, with its clouds (their cover in alpha); the clouds lost in the air low on
 /// the horizon, where they'd be sixty kilometres off and more (the cloud field's far repeats).
-fn heaven(
+pub(package) fn heaven(
     view: Texture<Rgba16Float>,
     light: Light,
     d: vec3,
