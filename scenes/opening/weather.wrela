@@ -9,7 +9,7 @@
 // plane over the curved sea, and the dome's light is given the detail it can't hold: what's
 // finer than a pixel faded to its mean (`fbm2_seen`), so nothing crawls.
 
-use look::{ISLE, OVERCAST, SKY, SUN, Shot, hash2, luma, ray, wind}
+use look::{ISLE, OVERCAST, ROCK, SKY, SUN, Shot, hash2, luma, ray, wind}
 use engine::air::{ALTITUDE, BOTTOM}
 use engine::light::Light
 use engine::light::sky as clear_sky
@@ -103,25 +103,30 @@ fn surface(
     let sun_flat = normalize(SUN.xz)
     let from_light = normalize(vec3(sun_flat.x, -0.55, sun_flat.y))
     let facing = dot(n, from_light)
-    (0.84 + 0.7 * max(facing, 0.0) - 0.16 * max(-facing, 0.0)) *
-        mix(1.15, 0.85, smoothstep(150.0, HANG, h0))
+    // (Soft: a cloud's surface scatters, it doesn't shine; the light's side at most a fifth
+    // brighter. Higher up in it, its crevices between the hanging masses, darker.)
+    (0.92 + 0.22 * smoothstep(-0.3, 0.8, facing)) * mix(1.0, 0.72, smoothstep(250.0, HANG, h0))
 }
 
 /// How deep the deck's base hangs at the most (m).
-const HANG: f32 = 700.0
+const HANG: f32 = 870.0
 
 /// How far the deck's base hangs at `q` (field frame; m, down from its mean): rolls laid
 /// across the wind (`across`, `along`), pouches sagging from them, both flattened to nothing as
 /// the pixel's footprint (`foot`, m) outgrows them.
 fn hanging(q: vec2, across: vec2, along: vec2, turn: f32, foot: f32, deep: f32) -> f32 {
     let w = vec2(dot(q, across), dot(q, along))
-    let warp = vec2(fbm2(w / 7000.0 + vec2(3.1, turn), 2), fbm2(w / 7000.0 + vec2(turn, 8.7), 2)) -
+    let warp = vec2(fbm2(w / 9000.0 + vec2(3.1, turn), 3), fbm2(w / 9000.0 + vec2(turn, 8.7), 3)) -
         vec2(0.5)
-    let roll = fbm2(vec2(w.x / 4200.0, w.y / 2200.0) + warp * 1.5 + vec2(0.0, turn), 3) *
-        (1.0 - smoothstep(600.0, 1600.0, foot))
-    let pouch = pouches(w / 720.0 + warp * 2.0 + vec2(turn * 2.0, 0.0)) *
-        (1.0 - smoothstep(90.0, 300.0, foot))
-    (roll * 420.0 + pouch * 260.0 * smoothstep(0.35, 0.65, roll)) * deep
+    // Great masses kilometres across, rolls in them, lumps on those: each layer gone as the
+    // footprint outgrows it.
+    let mass = fbm2(w / 9000.0 + warp * 0.8 + vec2(5.0, 1.0), 2)
+    let roll = fbm2_seen(vec2(w.x / 3600.0, w.y / 2000.0) + warp * 1.8 + vec2(0.0, turn), 4, foot / 2000.0)
+    let lump = fbm2_seen(w / 480.0 + warp * 4.0 + vec2(turn * 3.0, 2.0), 3, foot / 480.0)
+    // Pouches only where the deck's heaviest, in patches.
+    let pouch = pouches(w / 760.0 + warp * 2.5 + vec2(turn * 2.0, 0.0)) *
+        (1.0 - smoothstep(90.0, 300.0, foot)) * smoothstep(0.52, 0.68, mass)
+    (mass * 260.0 + roll * 300.0 + lump * 110.0 + pouch * 200.0) * deep
 }
 
 /// The deck's mean light at `READ_LOW`, all round: eight of its directions'.
@@ -221,16 +226,29 @@ fn deck(
     )
     let h0 = hanging(s.eye.xz + d.xz * hit - drift, across, along, turn, hit * px_angle / max(d.y, 0.02), deep)
     // Darker over the rain.
-    let wet = smoothstep(0.56, 0.8, rain_cell(s, s.eye.xz + d.xz * t))
+    let wet = smoothstep(0.52, 0.78, rain_cell(s, s.eye.xz + d.xz * t))
     let held = smoothstep(0.0, 0.05, d.y) * OVERCAST
     lit *= mix(1.0, shade * (1.0 - 0.35 * wet), held)
-    // (Under the deck, its darkest reaches lifted a little toward its mean: a storm's base is
-    // dark, not black, lit by the miles of air round it.)
-    lit = lit * 1.12 + mean * 0.1 * held
-    // Behind the cathedral the deck's thinner, the light it lets through pale and a little warm:
-    // what the spires stand dark against.
-    let behind_k = exp(-(1.0 - dot(d, s.glow)) / 0.04) * 0.3 * smoothstep(0.3, 0.7, h0 / HANG + 0.25)
-    lit *= 1.0 + behind_k * vec3(0.75, 0.7, 0.6) * held
+    // Behind the cathedral the deck's thinner, a reach of it sheared out along the rolls,
+    // across the wind: the light it lets through pale and a little warm, what the spires stand
+    // dark against.
+    let behind_at = s.eye + s.glow * reach(s.eye.y, s.glow.y, DECK)
+    let here = s.eye + d * t
+    let off = here.xz - behind_at.xz
+    let across_w = vec2(-wind().y, wind().x)
+    let e = vec2(dot(off, across_w) / 9000.0, dot(off, wind()) / 3200.0)
+    let torn = fbm2(here.xz / 2600.0 + vec2(17.0, s.time * 0.01), 3)
+    let thin = exp(-dot(e, e)) * smoothstep(0.3, 0.65, torn) * held
+    // One gradient over it all: darkest overhead and off to the sides, opening toward the
+    // rock and down toward the horizon.
+    let toward_rock = max(dot(normalize(d.xz), normalize(s.glow.xz)), 0.0)
+    let open = mix(0.86, 1.16, smoothstep(0.5, 0.0, d.y) * 0.6 + toward_rock * toward_rock * 0.4)
+    // Lifted overall (a storm's base is dark, not black: lit by the miles of air round it),
+    // its lit reaches a little warm, its cores a little green-grey.
+    let tone = shade * (1.0 - 0.35 * wet)
+    let tint = mix(vec3(0.94, 1.0, 1.0), vec3(1.04, 1.0, 0.95), smoothstep(0.85, 1.12, tone))
+    lit = lit * 1.18 * open * mix(vec3(1.0), tint, held) + mean * 0.08 * held
+    lit *= vec3(1.0) + thin * vec3(0.32, 0.29, 0.24)
     // Off toward the horizon, into the storm's air: what's past where the dome was read.
     let t_read = reach(s.eye.y, READ_LOW, DECK)
     let gone = 1.0 - exp(-max(t - t_read, 0.0) / FAR_AIR)
@@ -240,19 +258,19 @@ fn deck(
 /// The rain under the deck where it's heaviest, from `t0` to `t1` along `d` from the eye: its
 /// cells drifting on the wind, its shafts leaning down-wind, streaked; its light the storm's
 /// grey (rgb) and how much it lets through (a).
-fn rain(s: Shot, d: vec3, t0: f32, t1: f32, jitter: f32) -> f32 {
+fn rain(s: Shot, d: vec3, id: f32, t0: f32, t1: f32, jitter: f32) -> f32 {
     if t1 <= t0 {
         return 1.0
     }
     let along = wind()
     // (The shafts lean across the view as they fall, the wind up there veering from the sea's.)
-    let lean = vec2(along.x * 0.5 - along.y * 0.87, along.x * 0.87 + along.y * 0.5)
+    let lean = along
     let moved = along * (RAIN_DRIFT * s.time)
     // Their streaks, seen at the view's own scale (they're kilometres off, finer than the
     // march's steps): falling.
     let az = atan2(d.x, d.z)
-    let streak = fbm2(vec2(az * 260.0 + d.y * 90.0, d.y * 10.0 + s.time * 0.6), 4)
-    let clear = clear_of_rock(s, d, 0.1)
+    let streak = fbm2(vec2(az * 300.0, d.y * 8.0 + s.time * 0.6), 4)
+    let clear = clear_of_rock(id, 0.25)
     var through = 1.0
     let n = 18
     let k = log(t1 / t0)
@@ -264,15 +282,15 @@ fn rain(s: Shot, d: vec3, t0: f32, t1: f32, jitter: f32) -> f32 {
             continue
         }
         // Leaning as it falls: the shaft's foot is blown on from its top.
-        let xz = p.xz - moved + lean * (DECK - p.y) * 1.2
+        let xz = p.xz - moved + lean * (DECK - p.y) * 0.25
         let cell = rain_cell(s, xz + moved)
-        let heavy = smoothstep(0.6, 0.84, cell) * clear
+        let heavy = smoothstep(0.55, 0.8, cell) * clear
         if heavy <= 0.0 {
             continue
         }
         // Into the deck at its top; at its foot ragged, some shafts falling to the sea, some
         // drying out on the way (virga).
-        let dries = max(fbm2(xz / 2400.0 + vec2(3.0, 7.0), 2) - 0.48, 0.0) * DECK * 2.2
+        let dries = max(fbm2(xz / 2400.0 + vec2(3.0, 7.0), 2) - 0.6, 0.0) * DECK * 2.2
         let column = smoothstep(DECK * 1.02, DECK * 0.5, p.y) * smoothstep(dries, dries + 600.0, p.y)
         let sigma = heavy * (0.6 + 0.4 * streak) * column / RAIN_THICK
         through *= exp(-sigma * (b - a))
@@ -286,11 +304,10 @@ fn rain_cell(s: Shot, xz: vec2) -> f32 {
     fbm2((xz - wind() * (RAIN_DRIFT * s.time)) / 6500.0 + vec2(11.0, s.time * 0.0015), 3)
 }
 
-/// How much weather is let stand along `d`: `least` of it over the rock, so the cathedral
-/// stands clear, all of it a few degrees off.
-fn clear_of_rock(s: Shot, d: vec3, least: f32) -> f32 {
-    let rock = normalize(ISLE + vec3(0.0, -150.0, 0.0) - s.eye)
-    mix(least, 1.0, smoothstep(0.9965, 0.988, dot(d, rock)))
+/// How much weather is let stand in front of what the pixel met (`id`): `least` of it over the
+/// rock and its cathedral, so they stand clear of it, all of it elsewhere.
+fn clear_of_rock(id: f32, least: f32) -> f32 {
+    if id >= ROCK { least } else { 1.0 }
 }
 
 /// How far a heavy shaft goes before it's taken all but a third of the light (m), what light
@@ -308,6 +325,7 @@ fn scud(
     light: Light,
     deck_light: vec3,
     d: vec3,
+    id: f32,
     t_max: f32,
     px_angle: f32,
 ) -> vec4 {
@@ -323,22 +341,74 @@ fn scud(
     let xz = s.eye.xz + d.xz * t - along * (SCUD_DRIFT * s.time)
     let w = vec2(dot(xz, across), dot(xz, along))
     let foot = t * px_angle / max(d.y, 0.02)
-    let big = fbm2(w / 6000.0 + vec2(29.0, s.time * 0.002), 3)
-    let torn = fbm2_seen(vec2(w.x / 520.0, w.y / 900.0) + vec2(4.0, 1.0), 5, foot / 520.0)
-    let cover = smoothstep(0.56, 0.74, torn * 0.6 + big * 0.55) * smoothstep(40000.0, 12000.0, t) *
-        clear_of_rock(s, d, 0.15)
+    let big = fbm2(w / 5000.0 + vec2(29.0, s.time * 0.002), 3)
+    let torn = fbm2_seen(vec2(w.x / 420.0, w.y / 700.0) + vec2(4.0, 1.0), 5, foot / 420.0)
+    let cover = smoothstep(0.6, 0.72, torn) * smoothstep(0.5, 0.62, big) * (1.0 - smoothstep(60.0, 200.0, foot)) * smoothstep(32000.0, 14000.0, t) *
+        clear_of_rock(id, 0.15)
     if cover <= 0.0 {
         return vec4(0.0)
     }
     // Darker than the deck it's seen against, its thinner edges a little lighter.
-    let col = deck_light * mix(0.22, 0.45, smoothstep(0.5, 0.85, torn))
+    let col = deck_light * mix(0.5, 0.28, smoothstep(0.6, 0.85, torn))
     let ap = stormy_air(aerial, smp, light.sun, d, t * 0.001, OVERCAST)
-    vec4(col * ap.a + ap.rgb, cover * 0.88)
+    vec4(col * ap.a + ap.rgb, cover * 0.8)
 }
 
 /// The scud's height (m), and how fast it's driven (m/s): faster than the deck.
 const SCUD_AT: f32 = 650.0
 const SCUD_DRIFT: f32 = 19.0
+
+/// A strike of lightning: where it comes down (world, m; at the sea), how bright it is now (0
+/// gone to 1 its peak), and its number (its bolt's own shape).
+struct Strike {
+    at: vec3,
+    now: f32,
+    k: f32,
+}
+
+/// The strike under way at `s.time`: one every `STRIKE_EVERY` seconds or so, far off (18 to
+/// 30 km) to either side of the view, not behind the rock; a flash, a flicker and a second
+/// stroke, then dark.
+fn strike(s: Shot) -> Strike {
+    let k = floor(s.time / STRIKE_EVERY)
+    let u = s.time - k * STRIKE_EVERY - hash2(vec2(k, 3.1)) * (STRIKE_EVERY - 1.5)
+    let pulse = |at: f32, decay: f32| if u >= at { exp(-(u - at) / decay) } else { 0.0 }
+    let now = clamp(pulse(0.0, 0.05) + 0.6 * pulse(0.13, 0.04) + 0.85 * pulse(0.31, 0.09), 0.0, 1.0)
+    let side = if hash2(vec2(k, 7.7)) < 0.5 { -1.0 } else { 1.0 }
+    let a = side * mix(0.2, 0.4, hash2(vec2(k, 1.3)))
+    let f = normalize(s.forward.xz)
+    let dir = vec2(f.x * cos(a) - f.y * sin(a), f.x * sin(a) + f.y * cos(a))
+    let far = mix(18000.0, 30000.0, hash2(vec2(k, 5.9)))
+    Strike { at: vec3(s.eye.x + dir.x * far, 0.0, s.eye.z + dir.y * far), now, k }
+}
+
+/// How often lightning strikes, about (s).
+const STRIKE_EVERY: f32 = 9.0
+
+/// The bolt along `d`, if it's nearer than `t_max`: how much of the pixel it lights (its core
+/// and the glow round it in the rain), its path jagged as it comes down.
+fn bolt(s: Shot, b: Strike, d: vec3, t_max: f32, px_angle: f32) -> f32 {
+    if b.now <= 0.02 {
+        return 0.0
+    }
+    let flat = length(d.xz)
+    let to = b.at.xz - s.eye.xz
+    let t = length(to) / max(flat, 1.0e-4)
+    if t > t_max || dot(d.xz, to) <= 0.0 {
+        return 0.0
+    }
+    let p = s.eye + d * t
+    if p.y < 0.0 || p.y > DECK {
+        return 0.0
+    }
+    let across = normalize(vec2(-to.y, to.x))
+    let fall = p.y / DECK
+    let jag = (fbm2(vec2(fall * 9.0, b.k * 3.7), 3) - 0.5) * 1400.0 +
+        (fbm2(vec2(fall * 40.0, b.k), 2) - 0.5) * 260.0
+    let off = abs(dot(p.xz - b.at.xz, across) - jag)
+    let w = t * px_angle
+    (exp(-(off / (w * 0.9)) * (off / (w * 0.9))) + 0.25 * exp(-off / (w * 9.0))) * b.now
+}
 
 /// The pass: the painted scene with the weather laid over it, for the ink.
 @fragment
@@ -367,26 +437,39 @@ pub fn weather(
     let px_angle = 2.0 / (s.resolution.y * s.focal)
     let air = horizon_air(view, light, dome, smp)
     let deck_light = luma(dome.sample_level(smp, sky_uv(vec3(0.0, 1.0, 0.0))).rgb) * vec3(0.95, 0.97, 1.0)
+    let mean = deck_mean(view, light, dome, smp)
+    let b = strike(s)
     // The sky: the deck met here at the pixel's size, down to the horizon.
     if m.y == SKY && d.y > 0.0 {
-        let mean = deck_mean(view, light, dome, smp)
         let base = deck(s, view, light, dome, smp, clouds.drift, air, mean, d, px_angle)
         // Just over the horizon the far air itself, lighter where the eye looks out under the
         // deck's edge; a silver of the sun's light far off toward it.
         let low = exp(-d.y / 0.028)
         let toward = pow(max(dot(normalize(d.xz), normalize(SUN.xz)), 0.0), 6.0)
-        let horizon = air * (1.0 + 0.1 * low) + light.sun_colour * vec3(0.9, 0.95, 1.0) * (0.035 * toward * low)
+        let strip = exp(-d.y / 0.008)
+        let horizon = air * (1.0 + 0.1 * low) * mix(vec3(1.0), vec3(1.1, 1.06, 0.98), strip) +
+            light.sun_colour * vec3(1.0, 0.92, 0.8) * (0.05 * toward * strip)
         c = vec4(mix(base, horizon, low), c.a)
+        // The deck lit from inside round the strike.
+        let hit = s.eye + d * reach(s.eye.y, d.y, DECK)
+        let r = length(hit.xz - b.at.xz)
+        c = vec4(c.rgb + mean * FLASH * 1.6 * b.now * exp(-(r / 5000.0) * (r / 5000.0)), c.a)
     }
     // The scud, in front of what's behind it.
-    let sc = scud(s, aerial, smp, light, deck_light, d, dist, px_angle)
+    let sc = scud(s, aerial, smp, light, deck_light, d, m.y, dist, px_angle)
     c = vec4(c.rgb * (1.0 - sc.a) + sc.rgb * sc.a, c.a)
     // The rain's curtains, between the eye and what it sees.
     // (Each pixel's samples at the same distances: shells, so neighbours agree.)
     let jitter = 0.5
     // (Darker than what's behind them: grey veils, taking the far air's light more than they
     // give back.)
-    let r = rain(s, d, 6000.0, min(dist, 40000.0), jitter)
+    let r = rain(s, d, m.y, 6000.0, min(dist, 40000.0), jitter)
     c = vec4(c.rgb * mix(RAIN_LIGHT, 1.0, r), c.a)
+    // The bolt, and the flash on everything: the sea and the rock caught for an instant.
+    let bolt_k = bolt(s, b, d, dist, px_angle)
+    c = vec4(c.rgb + vec3(0.85, 0.88, 1.0) * mean * FLASH * 6.0 * bolt_k + mean * FLASH * 0.12 * b.now, c.a)
     c
 }
+
+/// How bright lightning is, against the deck's mean light.
+const FLASH: f32 = 1.0
