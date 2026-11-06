@@ -49,6 +49,40 @@ pub const X_STONE = vec4(0.62, 0.66, 0.72, 2.0)
 pub const STRUCK_TINT: vec4 = X_TINT * (1.0 - f32(X_GIANT)) + X_STONE * f32(X_GIANT)
 pub const X_TWOS: u32 = 0
 
+/// What the combat lab (`lab`) tunes live: the hit-stop, the impact frame, the camera's kick and
+/// push, the blast's size, how hard the giant gives, whether the bodies are drawn on twos, and
+/// who's struck (the fighter, or the giant). `TUNED` is what the constants above say.
+pub struct Tune: Copy + Eq {
+    pub hold: f32,
+    pub flash: f32,
+    pub kick: f32,
+    pub push: f32,
+    pub blast: f32,
+    pub give: f32,
+    pub twos: bool,
+    pub giant: bool,
+}
+
+pub const TUNED: Tune = Tune {
+    hold: X_HOLD,
+    flash: X_FLASH,
+    kick: X_KICK,
+    push: X_PUSH,
+    blast: X_BLAST,
+    give: X_GIVE,
+    twos: X_TWOS == 1,
+    giant: X_GIANT == 1,
+}
+
+/// Who's struck, as `t` says: where he stands, and his tint (`paint`: above 1.5 in `w`, stone).
+pub fn place(t: Tune) -> mat4 {
+    if t.giant { GIANT } else { FOE }
+}
+
+pub fn tint(t: Tune) -> vec4 {
+    if t.giant { X_STONE } else { X_TINT }
+}
+
 /// The hit reaction: a Kimodo take, its last frame, the frame where the blow lands (the head
 /// starts snapping back) and the frame where he's back on guard (30 fps).
 pub const REACT_LAST: u32 = 59
@@ -62,10 +96,10 @@ pub fn hit_at() -> f32 {
 }
 
 /// The clock the bodies play on: held through the hit-stop.
-pub fn played_at(time: f32) -> f32 {
+pub fn played_at(time: f32, t: Tune) -> f32 {
     let h = hit_at()
-    let p = if time < h { time } else if time < h + X_HOLD { h } else { time - X_HOLD }
-    if X_TWOS == 1 {
+    let p = if time < h { time } else if time < h + t.hold { h } else { time - t.hold }
+    if t.twos {
         // (On twos, a drawing lands on the contact.)
         return h + floor((p - h) * 12.0 + 1.0e-4) / 12.0
     }
@@ -88,6 +122,10 @@ fn yaw_q(a: f32) -> Quat {
 /// Where the one struck stands: the fighter's place, or the giant's.
 @fuel(2 ** 40)
 pub const PLACE: mat4 = if X_GIANT == 1 { giant_place() } else { foe_place() }
+
+/// The giant's place (`giant_place`), for the lab, which may strike either.
+@fuel(2 ** 40)
+pub const GIANT: mat4 = giant_place()
 
 /// The giant's place: turned to face the striker, `X_SCALE` times as big, stood so the fist
 /// lands on the front of his lead shin.
@@ -120,8 +158,8 @@ fn giant_place() -> mat4 {
 }
 
 /// The one struck at played time `p`: the fighter, or the giant, who stands his ground.
-pub fn struck(p: f32) -> Pose {
-    if X_GIANT == 1 { giant(p) } else { foe(p) }
+pub fn struck(p: f32, t: Tune) -> Pose {
+    if t.giant { giant(p, t.give) } else { foe(p) }
 }
 
 /// How hard the giant gives under the blow (radians at its knee): one sprung bump, no swing back
@@ -132,11 +170,11 @@ pub const X_GIVE_LIFE: f32 = 0.13
 /// The giant at played time `p`: still, until struck; then his struck leg gives (the knee dips),
 /// his hips sink and his trunk rocks back off the blow, and he settles: a sprung bump that rises
 /// over `X_GIVE_LIFE` and dies away.
-fn giant(p: f32) -> Pose {
+fn giant(p: f32, give: f32) -> Pose {
     borrow rig = HERO.rig
     let still = foe_idle(hit_at())
     let t = p - hit_at()
-    if t <= 0.0 || X_GIVE <= 0.0 {
+    if t <= 0.0 || give <= 0.0 {
         return still
     }
     let x = t / X_GIVE_LIFE
@@ -147,7 +185,7 @@ fn giant(p: f32) -> Pose {
     for (name, part) in [("spine", 0.35), ("chest", 0.3), ("upperChest", 0.25), ("head", 0.4)] {
         let i = rig.find(name)
         if i != humanoid::NONE {
-            pose.turns[i] = Quat::axis_angle(side, -X_GIVE * part * 0.6 * b).mul(pose.turns[i])
+            pose.turns[i] = Quat::axis_angle(side, -give * part * 0.6 * b).mul(pose.turns[i])
         }
     }
     // His hips sink and give back, his feet kept where they stand: the knees take it.
@@ -159,7 +197,7 @@ fn giant(p: f32) -> Pose {
     let foot_q = [w[lf].q, w[rf].q]
     let g = guard_yaw(still)
     let back = -vec3(sin(g), 0.0, cos(g))
-    stride::shift(mut w, (vec3(0.0, -0.05, 0.0) + back * 0.03) * b * (X_GIVE / 0.22))
+    stride::shift(mut w, (vec3(0.0, -0.05, 0.0) + back * 0.03) * b * (give / 0.22))
     legs_to(rig, mut w, feet, foot_q)
     stride::store(rig, w, mut c, 0)
     c.pose(0.0)
@@ -180,16 +218,16 @@ fn lead_left() -> bool {
 
 /// The blast at clock `time`: where it starts (the knuckles at contact) and how old it is (s;
 /// below 0, none), and the way it goes and its size (m).
-pub fn blast(time: f32) -> (vec4, vec4) {
+pub fn blast(time: f32, t: Tune) -> (vec4, vec4) {
     let age = time - hit_at()
-    if X_BLAST <= 0.0 || age < 0.0 || age > X_BLAST_LIFE {
+    if t.blast <= 0.0 || age < 0.0 || age > X_BLAST_LIFE {
         return (vec4(0.0, 0.0, 0.0, -1.0), vec4(0.0))
     }
-    (vec4(KNUCKLES, age), vec4(BLOW, X_BLAST))
+    (vec4(KNUCKLES, age), vec4(BLOW, t.blast))
 }
 
 @fuel(2 ** 40)
-const KNUCKLES: vec3 = knuckles()
+pub const KNUCKLES: vec3 = knuckles()
 
 fn knuckles() -> vec3 {
     borrow rig = HERO.rig
@@ -223,7 +261,7 @@ fn foe_place() -> mat4 {
     mat4(vec4(r, 0.0), vec4(0.0, 1.0, 0.0, 0.0), vec4(f, 0.0), vec4(at.x, 0.0, at.z, 1.0))
 }
 
-fn foe_idle(p: f32) -> Pose {
+pub fn foe_idle(p: f32) -> Pose {
     FIGHT_IDLE_M.pose((p + X_PHASE) % FIGHT_IDLE_M.length())
 }
 
@@ -261,35 +299,37 @@ pub fn foe(p: f32) -> Pose {
     let rh = base.t + base.q.rotate(placed(REACT.pose(REACT_HOME / 30.0)).hips)
     var off = rh - to
     off.y = 0.0
+    // (Then he steps back in to where he stood, over a second, so the next blow finds him.)
+    off *= 1.0 - smoothstep(home + X_BACK, home + X_BACK + 1.0, v)
     var b = foe_idle(p)
     b.hips = b.hips + inv.q.rotate(off)
     humanoid::blend(r, b, smoothstep(0.0, X_BACK, v - home), n)
 }
 
 /// The camera at clock `time`: its kick along the blow (m), and how far it's pushed in (m).
-pub fn camera(time: f32) -> (f32, f32) {
+pub fn camera(time: f32, tune: Tune) -> (f32, f32) {
     let h = hit_at()
     // (On twos it steps with the bodies' drawings, held through the hit-stop: one cadence for
     // the whole frame.)
-    let at = if X_TWOS == 1 {
-        played_at(time) - h + (if time >= h + X_HOLD { X_HOLD } else { 0.0 })
+    let at = if tune.twos {
+        played_at(time, tune) - h + (if time >= h + tune.hold { tune.hold } else { 0.0 })
     } else {
         time - h
     }
     // (Dead still through the impact frame; it moves as the colour comes back.)
-    let t = at - X_FLASH
+    let t = at - tune.flash
     if t < 0.0 {
         return (0.0, 0.0)
     }
-    let kick = X_KICK * smoothstep(0.0, 0.1, t) * exp(-t / X_KICK_LIFE)
-    let push = X_PUSH * smoothstep(0.0, 0.14, t) * exp(-t / X_PUSH_LIFE)
+    let kick = tune.kick * smoothstep(0.0, 0.1, t) * exp(-t / X_KICK_LIFE)
+    let push = tune.push * smoothstep(0.0, 0.14, t) * exp(-t / X_PUSH_LIFE)
     (kick, push)
 }
 
 /// How kinetic the moment is at clock `time`: the impact frame drains the palette.
-pub fn flash(time: f32) -> f32 {
+pub fn flash(time: f32, tune: Tune) -> f32 {
     let t = time - hit_at()
-    if t >= 0.0 && t < X_FLASH { 1.0 } else { 0.0 }
+    if t >= 0.0 && t < tune.flash { 1.0 } else { 0.0 }
 }
 
 /// The way the blow travels, along the ground.

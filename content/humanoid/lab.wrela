@@ -1,0 +1,311 @@
+// The combat lab (`SHOW=29`): the exchange (`exchange`) played, not watched. A press (J, F, a
+// click on the scene, or a pad's face button) throws the cross out of the bounce at whoever
+// stands there, the fighter or the stone giant; a panel tunes the hit's feel live (the hit-stop,
+// the impact frame, the camera's kick and push, the blast, the giant's give, on twos), in two
+// slots, A and B. A take records the presses' times; replayed, it plays them through A, then B,
+// then A again, so the same strikes are seen through both.
+//
+// Every press is the exchange's own clock started at the cross, so the contact lands where the
+// exchange put it, whatever the tuning. The bodies blend from where the last press left them.
+
+use body::HERO
+use engine::humanoid
+use engine::humanoid::Pose
+use exchange::{Tune, foe_idle, hit_at, played_at, striker, struck}
+use kimodo::{FIGHT_IDLE_M, a_end, a_hit}
+
+/// No press yet.
+pub const NEVER: f32 = -1.0e6
+
+/// Where a press starts the exchange's clock: the cross starts two bounces in.
+pub fn start() -> f32 {
+    FIGHT_IDLE_M.length() * 2.0
+}
+
+/// How long after a press the next is taken: once the cross is home again.
+pub fn busy(t: Tune) -> f32 {
+    a_end() + t.hold + 0.1
+}
+
+/// How long from a press to the contact (s, on the clock).
+pub fn to_contact() -> f32 {
+    hit_at() - start()
+}
+
+/// The presets: the bare exchange, a grounded one, anime at contact, and anime with the blast.
+pub fn preset(k: u32, giant: bool) -> Tune {
+    let blast = if giant { 3.2 } else { 1.1 }
+    match k {
+        0 => Tune {
+            hold: 0.0,
+            flash: 0.0,
+            kick: 0.0,
+            push: 0.0,
+            blast: 0.0,
+            give: 0.5,
+            twos: false,
+            giant,
+        },
+        1 => Tune {
+            hold: 0.06,
+            flash: 0.0,
+            kick: 0.04,
+            push: 0.15,
+            blast: 0.0,
+            give: 0.35,
+            twos: false,
+            giant,
+        },
+        2 => Tune {
+            hold: 0.15,
+            flash: 0.05,
+            kick: 0.07,
+            push: 0.3,
+            blast: 0.0,
+            give: 0.5,
+            twos: false,
+            giant,
+        },
+        _ => Tune {
+            hold: 0.15,
+            flash: 0.05,
+            kick: 0.07,
+            push: 0.3,
+            blast,
+            give: 0.5,
+            twos: false,
+            giant,
+        },
+    }
+}
+
+pub fn preset_name(k: u32) -> String {
+    match k {
+        0 => "Bare".to_string(),
+        1 => "Grounded".to_string(),
+        2 => "Anime".to_string(),
+        _ => "Anime + blast".to_string(),
+    }
+}
+
+/// A press: when (on the lab's clock) and through which tuning.
+pub struct Press: Copy {
+    pub at: f32,
+    pub tune: Tune,
+}
+
+/// The lab: the two slots and which is being tuned, the last two presses, the take and its
+/// replay, and the panel's other settings.
+pub struct Lab: Clone {
+    pub a: Tune,
+    pub b: Tune,
+    pub editing_b: bool,
+    pub now: Press,
+    pub prev: Press,
+    pub recording: bool,
+    pub rec_from: f32,
+    pub punches: Vec<f32>,
+    pub take_len: f32,
+    pub replaying: bool,
+    pub replay_from: f32,
+    pub replay_b: bool,
+    pub fired: u32,
+    /// The clock of the press last frame (for the sounds' cues).
+    pub last_clock: f32,
+    pub zoom: f32,
+    pub volume: f32,
+    pub panel: bool,
+}
+
+impl Lab {
+    pub fn new() -> Lab {
+        let a = preset(2, giant: false)
+        var punches: Vec<f32> = Vec::new()
+        punches.push(0.4)
+        Lab {
+            a,
+            b: preset(3, giant: false),
+            editing_b: false,
+            now: Press { at: NEVER, tune: a },
+            prev: Press { at: NEVER, tune: a },
+            recording: false,
+            rec_from: 0.0,
+            punches,
+            take_len: 2.6,
+            replaying: false,
+            replay_from: 0.0,
+            replay_b: false,
+            fired: 0,
+            last_clock: -1.0,
+            zoom: 1.0,
+            volume: 0.8,
+            panel: true,
+        }
+    }
+
+    /// The tuning live presses use: the slot being tuned.
+    pub fn live(self) -> Tune {
+        if self.editing_b { self.b } else { self.a }
+    }
+
+    /// Whether a press now would be taken.
+    pub fn ready(self, g: f32) -> bool {
+        g - self.now.at >= busy(self.now.tune)
+    }
+
+    /// A press at `at`, through `tune`.
+    pub fn fire(mut self, at: f32, tune: Tune) {
+        self.prev = self.now
+        self.now = Press { at, tune }
+        self.last_clock = clock(at, at) - 1.0e-3
+    }
+
+    /// A press from the player at `g`: taken if the last is done, and recorded if a take is being recorded.
+    /// It stops a replay.
+    pub fn press(mut self, g: f32) {
+        if self.replaying {
+            self.replaying = false
+        }
+        if !self.ready(g) {
+            return
+        }
+        self.fire(g, self.live())
+        if self.recording {
+            self.punches.push(g - self.rec_from)
+        }
+    }
+
+    pub fn record(mut self, g: f32) {
+        self.replaying = false
+        self.recording = true
+        self.rec_from = g
+        self.punches.clear()
+    }
+
+    pub fn stop(mut self, g: f32) {
+        if self.recording {
+            self.recording = false
+            self.take_len = max(g - self.rec_from, 0.5)
+            if self.punches.len() > 0 {
+                // (The last strike's whole exchange is in the take.)
+                let last = self.punches[self.punches.len() - 1]
+                self.take_len = max(self.take_len, last + busy(self.b) + 0.6)
+            }
+        }
+        self.replaying = false
+    }
+
+    pub fn replay(mut self, g: f32) {
+        self.recording = false
+        if self.punches.len() == 0 {
+            return
+        }
+        self.replaying = true
+        self.replay_from = g
+        self.replay_b = false
+        self.fired = 0
+    }
+
+    /// The replay's presses come due by `g`, through A, then B, and round again.
+    pub fn tick(mut self, g: f32) {
+        if !self.replaying {
+            return
+        }
+        let round = self.take_len + 0.6
+        if g - self.replay_from > round {
+            self.replay_from += round
+            self.replay_b = !self.replay_b
+            self.fired = 0
+        }
+        while self.fired < self.punches.len() && self.replay_from + self.punches[self.fired] <= g {
+            let tune = if self.replay_b { self.b } else { self.a }
+            self.fire(self.replay_from + self.punches[self.fired], tune)
+            self.fired += 1
+        }
+    }
+
+    /// The tuning on screen now: the last press's.
+    pub fn shown(self) -> Tune {
+        self.now.tune
+    }
+}
+
+/// The exchange's clock at `g` for a press at `at`.
+pub fn clock(g: f32, at: f32) -> f32 {
+    start() + (g - at)
+}
+
+/// The striker at `g` as press `p` left him: bouncing, if there was none.
+fn striker_by(g: f32, p: Press) -> Pose {
+    if p.at <= NEVER {
+        return FIGHT_IDLE_M.pose(g % FIGHT_IDLE_M.length())
+    }
+    striker(played_at(clock(g, p.at), p.tune))
+}
+
+/// The one struck at `g` as press `p` left him.
+fn struck_by(g: f32, p: Press) -> Pose {
+    if p.at <= NEVER {
+        return if p.tune.giant { struck(0.0, p.tune) } else { foe_idle(g) }
+    }
+    struck(played_at(clock(g, p.at), p.tune), p.tune)
+}
+
+/// The striker at `g`: out of where the last press left him into this one's cross, quickly.
+pub fn striker_at(l: Lab, g: f32) -> Pose {
+    let n = HERO.rig.bones.len()
+    let to = striker_by(g, l.now)
+    let w = smoothstep(0.0, 0.1, g - l.now.at)
+    if w >= 1.0 {
+        return to
+    }
+    humanoid::blend(striker_by(g, l.prev), to, w, n)
+}
+
+/// The one struck at `g`: his bounce eased into the one the exchange times its contact on over
+/// the windup, so the blow lands where it was placed.
+pub fn struck_at(l: Lab, g: f32) -> Pose {
+    let n = HERO.rig.bones.len()
+    let to = struck_by(g, l.now)
+    let w = smoothstep(0.0, to_contact() * 0.8, g - l.now.at)
+    if w >= 1.0 || l.prev.tune.giant != l.now.tune.giant {
+        return to
+    }
+    humanoid::blend(struck_by(g, l.prev), to, w, n)
+}
+
+/// The camera's kick and push, the impact frame, and the blast at `g`.
+pub fn camera(l: Lab, g: f32) -> (f32, f32) {
+    if l.now.at <= NEVER {
+        return (0.0, 0.0)
+    }
+    exchange::camera(clock(g, l.now.at), l.now.tune)
+}
+
+pub fn flash(l: Lab, g: f32) -> f32 {
+    if l.now.at <= NEVER {
+        return 0.0
+    }
+    exchange::flash(clock(g, l.now.at), l.now.tune)
+}
+
+pub fn blast(l: Lab, g: f32) -> (vec4, vec4) {
+    if l.now.at <= NEVER {
+        return (vec4(0.0, 0.0, 0.0, -1.0), vec4(0.0))
+    }
+    exchange::blast(clock(g, l.now.at), l.now.tune)
+}
+
+/// What sounds this frame, as the press's clock passes from last frame's to `g`'s: the whoosh
+/// (as the fist leaves), and the hit (at contact).
+pub fn sounds(l: mut Lab, g: f32) -> (bool, bool) {
+    if l.now.at <= NEVER {
+        return (false, false)
+    }
+    let c = clock(g, l.now.at)
+    let was = l.last_clock
+    l.last_clock = c
+    let h = hit_at()
+    let swing = h - 0.12
+    (was < swing && c >= swing, was < h && c >= h)
+}
