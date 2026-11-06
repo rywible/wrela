@@ -34,6 +34,9 @@ pub struct Light: Copy + GpuData + Eq {
     /// A fitting look's constants (`style::Knob`, `wrela tool fit --style`): what a fit's build
     /// draws the candidate it's scoring with; 0 and unread otherwise.
     pub fit: [vec4; 2] = [vec4(0.0), vec4(0.0)],
+    /// How much of a storm's deck the world is under where the eye is (0 open sky, 1 the deck
+    /// over all of it): a scene with weather by region shades its sky, air and water for it.
+    pub storm: f32 = 0.0,
 }
 
 /// The clay view's albedo (`Light`'s `clay`): a mid grey.
