@@ -571,7 +571,9 @@ fn march(
     // Each marked cell has enough samples to resolve its skin, including long grazing
     // rays. Jitter stays within one short interval rather than moving a surface hundreds
     // of metres between neighbouring dome texels.
-    let fine = view_samples(ct)
+    // (Under a storm's deck, twice as many: its long grazing base otherwise terraces into a
+    // fine woven grain, the march's steps showing.)
+    let fine = view_samples(ct * (1.0 + c.gloom))
     let dt = ct / f32(fine)
     for i in 0..cells {
         if through < 0.01 {
