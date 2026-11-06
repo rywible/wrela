@@ -14,7 +14,8 @@
 // off (in the actor's own first steps), turns it, runs it, throws a punch over the run (timed
 // to the fight's attack frames), stops it (in his own last steps), rolls it, turns it on the spot
 // (stepping round) and walks it back, each change inertial. `--set SHOW=12` stands the body in
-// its guard and throws the hand-posed cross (`fists`), twice.
+// its guard and throws the hand-posed cross (`fists`), twice. `--set SHOW=16` plays a take NVIDIA's
+// Kimodo made from a text prompt (`kimodo`), its right cross retimed to the fight's frame data.
 
 use body::{
     ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
@@ -212,9 +213,31 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
     let pose = if SHOW == 12 {
         playback::step(mut s.mover, FIGHT_GAITS, ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
     } else if SHOW == 13 {
-        playback::step(mut s.mover, accad_fists::GUARD_GAITS, accad_fists::ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
+        playback::step(
+            mut s.mover,
+            accad_fists::GUARD_GAITS,
+            accad_fists::ACTS,
+            HERO.rig,
+            s.mask,
+            stick,
+            act,
+            upper,
+            how,
+            dt,
+        )
     } else if SHOW == 14 {
-        playback::step(mut s.mover, accad_fists::KEYED_GAITS, accad_fists::ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
+        playback::step(
+            mut s.mover,
+            accad_fists::KEYED_GAITS,
+            accad_fists::ACTS,
+            HERO.rig,
+            s.mask,
+            stick,
+            act,
+            upper,
+            how,
+            dt,
+        )
     } else {
         playback::step(mut s.mover, GAITS, ACTS, HERO.rig, s.mask, stick, act, upper, how, dt)
     }
@@ -237,6 +260,7 @@ fn pose_at(time: f32) -> Pose {
         8 => if raw { ACCAD_M2_WALK_RAW.pose(time) } else { ACCAD_M2_WALK.pose(time) },
         9 => if raw { ACCAD_M1_RUN_RAW.pose(time) } else { ACCAD_M1_RUN.pose(time) },
         10 => if raw { ACCAD_M2_RUN_RAW.pose(time) } else { ACCAD_M2_RUN.pose(time) },
+        16 => kimodo::TIMED.pose(time % (kimodo::TIMED.length() + 0.4)),
         _ => if time < IDLE_AT {
             T_POSE.pose(0.0)
         } else if time < WALK_AT {
@@ -281,7 +305,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.height = height
     }
     let game = SHOW == 11 || SHOW == 12 || SHOW == 13 || SHOW == 14
-    let crosses = SHOW == 13 || SHOW == 14
+    let crosses = SHOW == 13 || SHOW == 14 || SHOW == 16
 
     let dt = clamp(time - s.last, 1.0e-4, 0.1)
     let (pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
@@ -325,7 +349,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // The camera follows the hips along the ground, steadily: where they are on average over a
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
     // followed where gameplay puts it, which is steady already.
-    let hips = if SHOW == 12 || crosses { vec3(0.0, 0.0, 0.25) } else if game { s.mover.place } else {
+    let hips = if SHOW == 12 || crosses { vec3(0.0, 0.0, 0.25) } else if game {
+        s.mover.place
+    } else {
         steady_hips(time)
     }
     let walking = SHOW != 12 && !crosses && (SHOW >= 3 || (SHOW == 0 && time >= WALK_AT))

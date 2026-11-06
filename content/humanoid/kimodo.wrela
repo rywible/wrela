@@ -1,0 +1,224 @@
+// Takes made by NVIDIA's Kimodo (text to motion, the SOMA skeleton), on the body: each as the
+// model gave it, retargeted the way ACCAD's takes are (rested as Kimodo's own standing frame) and
+// its feet held. A trial of where combat motion could come from; the timing stays ours.
+
+use engine::bvh
+use engine::cleanup
+use engine::humanoid
+use engine::humanoid::{Clip, Retarget, Take}
+use body::HERO
+use engine::stride
+use accad_fists::{LOAD, TELL}
+
+/// Kimodo's SOMA joints (its BVH's names) as VRM's bones. Its fingers are left out: the model
+/// moves only the wrist.
+pub const SOMA: [(Text, Text); 22] = [
+    ("Hips", "hips"),
+    ("Spine1", "spine"),
+    ("Spine2", "chest"),
+    ("Chest", "upperChest"),
+    ("Neck1", "neck"),
+    ("Head", "head"),
+    ("LeftLeg", "leftUpperLeg"),
+    ("LeftShin", "leftLowerLeg"),
+    ("LeftFoot", "leftFoot"),
+    ("LeftToeBase", "leftToes"),
+    ("RightLeg", "rightUpperLeg"),
+    ("RightShin", "rightLowerLeg"),
+    ("RightFoot", "rightFoot"),
+    ("RightToeBase", "rightToes"),
+    ("LeftShoulder", "leftShoulder"),
+    ("LeftArm", "leftUpperArm"),
+    ("LeftForeArm", "leftLowerArm"),
+    ("LeftHand", "leftHand"),
+    ("RightShoulder", "rightShoulder"),
+    ("RightArm", "rightUpperArm"),
+    ("RightForeArm", "rightLowerArm"),
+    ("RightHand", "rightHand"),
+]
+
+/// Kimodo standing still, arms at its sides: the rest its takes are read against (its BVH's
+/// own rest lays every bone along x, not a pose).
+pub const STAND: Take = humanoid::take_of_bvh(
+    bvh::read(embed("assets/kimodo/stand.bvh")),
+    SOMA,
+    humanoid::NO_NAMES,
+    from: 0,
+    to: 0,
+)
+
+/// The take on trial, as Kimodo gave it, on the body.
+@fuel(2 ** 40)
+pub const PICK: Clip = cleanup::cleaned(
+    humanoid::retarget(
+        humanoid::take_of_bvh(
+            bvh::read(embed("assets/kimodo/pick.bvh")),
+            SOMA,
+            humanoid::NO_NAMES,
+            from: 0,
+            to: PICK_LAST,
+        )
+            .rested_as(STAND.clone(), 0),
+        HERO.rig.clone(),
+        Retarget { face_ahead: false, looped: false, carried: true, stood: true },
+    ),
+    HERO.rig.clone(),
+    cleanup::KEYED,
+)
+
+/// The pick's last frame.
+pub const PICK_LAST: u32 = 89
+
+/// The pick's beats (its frames): its guard, the load (the fist drawn back), contact (full
+/// reach), and its guard again after. `PICK_TIMED=1` plays it to the fight's frame data
+/// (`accad_fists`' cross's: load, tell, snap, hold, pull home); 0 as Kimodo timed it.
+pub const PICK_GUARD: f32 = 0.0
+pub const PICK_LOADED: f32 = 7.0
+pub const PICK_CONTACT: f32 = 15.0
+pub const PICK_HOME: f32 = 37.0
+pub const PICK_TIMED: u32 = 1
+
+/// How long the timed pick stands in its guard before and after the strike (s).
+pub const STILL: f32 = 0.8
+
+/// The wind-up laid over the timed pick (Kimodo's strikes go from the guard without one): the
+/// trunk turned back (radians, the striking shoulder drawn away) and the hips sunk (m) through
+/// the load, held through the tell, let go through the snap.
+pub const COIL: f32 = 0.28
+pub const DIP: f32 = 0.035
+
+/// How wound up the timed pick is `time` into the strike (0 to 1).
+fn wound(time: f32) -> f32 {
+    if time < LOAD + TELL {
+        smoothstep(0.0, LOAD, time)
+    } else {
+        1.0 - smoothstep(LOAD + TELL, k_hit(), time)
+    }
+}
+
+/// The timed pick's own frame data after its tell (s): the snap, the hold on the hit, and the
+/// pull home as a share of the take's own (its recovery played near its own pace, not squeezed:
+/// a squeezed one pops).
+pub const K_SNAP: f32 = 0.11
+pub const K_HOLD: f32 = 0.06
+pub const K_PULL: f32 = 0.85
+
+/// When the timed pick's snap lands, and when it's home (s from the strike's start).
+fn k_hit() -> f32 {
+    LOAD + TELL + K_SNAP
+}
+
+fn k_end() -> f32 {
+    k_hit() + K_HOLD + (PICK_HOME - PICK_CONTACT - 1.0) / 30.0 * K_PULL
+}
+
+/// The pick's frame `time` into the strike: the load and tell to the frame data, the snap over
+/// the take's own frames at its own acceleration, a slow drift on through the hold, then its
+/// own recovery.
+fn pick_frame(time: f32) -> f32 {
+    let at = [0.0, LOAD, LOAD + TELL, k_hit(), k_hit() + K_HOLD, k_end()]
+    let src = [
+        PICK_GUARD,
+        PICK_LOADED,
+        PICK_LOADED + 0.3,
+        PICK_CONTACT,
+        PICK_CONTACT + 1.0,
+        PICK_HOME,
+    ]
+    if time <= 0.0 {
+        return src[0]
+    }
+    for i in 1..6 {
+        if time <= at[i] {
+            var x = (time - at[i - 1]) / (at[i] - at[i - 1])
+            if i == 1 {
+                x = smoothstep(0.0, 1.0, x)
+            }
+            return mix(src[i - 1], src[i], x)
+        }
+    }
+    src[5]
+}
+
+/// How far the wrists are cocked (radians, the back of the fist up): a fist driven straight
+/// from the forearm reads; a dropped one reads broken.
+pub const COCK: f32 = 0.2
+
+/// The pick at 60 poses a second: to the frame data (`PICK_TIMED=1`, its guard held `STILL`
+/// before and after) or as Kimodo timed it; each wrist straight (Kimodo bends them back,
+/// open-palmed) and each hand a fist, held off the face.
+@fuel(2 ** 40)
+pub const TIMED: Clip = timed(PICK.clone())
+
+fn timed(c: Clip) -> Clip {
+    let nb = c.bones
+    let length = if PICK_TIMED == 1 { STILL * 2.0 + k_end() } else { c.length() }
+    let n = u32(length * 60.0) + 1
+    var turns: Vec<Quat> = Vec::with_capacity(n * nb)
+    var hips: Vec<vec3> = Vec::with_capacity(n)
+    let wrists = [HERO.rig.find("leftHand"), HERO.rig.find("rightHand")]
+    for f in 0..n {
+        let t = f32(f) / 60.0
+        let src = if PICK_TIMED == 1 { pick_frame(t - STILL) } else { t * c.fps }
+        var p = c.pose(src / c.fps)
+        if PICK_TIMED == 1 {
+            let k = wound(t - STILL)
+            let up = vec3(0.0, 1.0, 0.0)
+            for (name, part) in [("spine", 0.35), ("chest", 0.35), ("upperChest", 0.3)] {
+                let b = HERO.rig.find(name)
+                if b != humanoid::NONE {
+                    p.turns[b] = Quat::axis_angle(up, -COIL * part * k).mul(p.turns[b])
+                }
+            }
+            p.hips = p.hips + HERO.rig.base.q.inverse().rotate(vec3(0.0, -DIP * k, 0.0))
+        }
+        p.turns[wrists[0]] = Quat::axis_angle(vec3(0.0, 0.0, 1.0), COCK)
+        p.turns[wrists[1]] = Quat::axis_angle(vec3(0.0, 0.0, 1.0), -COCK)
+        for b in 0..nb {
+            turns.push(p.turns[b])
+        }
+        hips.push(p.hips)
+    }
+    let out = Clip {
+        fps: 60.0,
+        frames: n,
+        bones: nb,
+        turns: turns,
+        hips: hips,
+        looped: false,
+        travel: vec3(0.0),
+        travel_local: vec3(0.0),
+    }
+    stride::curled_hands(accad_fists::off_the_face(out), HERO.rig, 2.0)
+}
+
+/// The pick's arms against real ones (`engine::arms`): printed, for sorting takes.
+@test
+fn kimodo_pick_arms() {
+    let k = engine::arms::checked(HERO.rig, PICK.clone(), accad_fists::REAL)
+    std::io::print(
+        f"KIMODO hinge {k.hinge_off:.0} at {k.hinge_at:.2} head {k.head_in * 100.0:.1} at {k.head_at:.2} unreal {k.unreal:.0} at {k.unreal_at:.2} flags {k.flags.len()}",
+    )
+    for flag in k.flags.clone() {
+        std::io::print(f"  {flag}")
+    }
+}
+
+/// The timed pick's right wrist at contact: the angle (degrees) between the forearm and the
+/// hand (wrist to the middle finger's base), printed.
+@test
+fn kimodo_wrist_at_contact() {
+    borrow rig = HERO.rig
+    let f = u32((STILL + k_hit()) * 60.0)
+    let w = stride::worlds(rig, TIMED, f)
+    let (e, h, k) = (
+        rig.find("rightLowerArm"),
+        rig.find("rightHand"),
+        rig.find("rightMiddleProximal"),
+    )
+    let fore = normalize(w[h].t - w[e].t)
+    let hand = normalize(w[k].t - w[h].t)
+    std::io::print(
+        f"KWRIST {acos(clamp(dot(fore, hand), -1.0, 1.0)) * 57.2958:.1} down {dot(cross(fore, hand), cross(fore, vec3(0.0, 1.0, 0.0))):.2} hand-y {hand.y:.2} fore-y {fore.y:.2}",
+    )
+}
