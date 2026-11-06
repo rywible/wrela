@@ -735,3 +735,31 @@ fn kimodo_round_jitter() {
         last = now
     }
 }
+
+/// An ACCAD Male 2 take as captured, on the body (`SHOW=20`): for choosing a stance's body
+/// language from real capture. Its fists curled and wrists straight, nothing else changed.
+pub const PREVIEW_LAST: u32 = 226
+
+@fuel(2 ** 40)
+pub const PREVIEW: Clip = stride::curled_hands(
+    straight_wrists(
+        cleanup::cleaned(
+            humanoid::retarget(
+                humanoid::take_of_bvh(
+                    bvh::read(embed("assets/accad_preview.bvh")),
+                    humanoid::ACCAD,
+                    humanoid::NO_NAMES,
+                    from: 0,
+                    to: PREVIEW_LAST,
+                )
+                    .rested_as(body::ACCAD_M2_STAND.clone(), 0),
+                HERO.rig.clone(),
+                Retarget { face_ahead: false, looped: false, carried: true, stood: true },
+            ),
+            HERO.rig.clone(),
+            cleanup::KEYED,
+        ),
+    ),
+    HERO.rig,
+    2.0,
+)
