@@ -40,6 +40,10 @@ const G: f32 = 9.81
 /// deviations: a breaking crest's froth is white at once, its foam greying only as it fades.
 const WHITENS: f32 = 0.6
 
+/// How far a wind's crests lean down it, per metre they stand over the level (times the
+/// sea's chop).
+const LEAN: f32 = 0.35
+
 /// How many steps the sea's settled over before its first (`Ocean::step`).
 const WARM: u32 = 12
 
@@ -371,6 +375,7 @@ fn settle(
     dt: f32,
     fade: f32,
     drift: vec2,
+    lean: vec2,
     breaks: f32,
     spread: f32,
     heights: Texture<Rgba32Float>,
@@ -385,10 +390,16 @@ fn settle(
     }
     let hq = heights.load(x: id.x, y: id.y)
     let sq = slopes.load(x: id.x, y: id.y)
-    let dxx = sq.z * chop
-    let dzz = sq.w * chop
-    let dxz = hq.w * chop
-    let squeezed = (1.0 + dxx) * (1.0 + dzz) - dxz * dxz
+    // (The crests leaned on down the wind, `lean` m per metre they stand over the level, so
+    // their lee faces steepen and their backs lengthen, as a wind's waves are: the water over
+    // the level carried that far further, and its stretches with it.)
+    let up = step(0.0, hq.y)
+    let carried = lean * max(hq.y, 0.0)
+    let dxx = sq.z * chop + lean.x * sq.x * up
+    let dzz = sq.w * chop + lean.y * sq.y * up
+    let dxz = hq.w * chop + lean.x * sq.y * up
+    let dzx = hq.w * chop + lean.y * sq.x * up
+    let squeezed = (1.0 + dxx) * (1.0 + dzz) - dxz * dzx
     // (The foam carried on from upwind, `drift` texels this step along x and z: from the
     // texels behind on either axis, as far as it moved.)
     let back_x = u32((i32(id.x) - i32(sign(drift.x)) + i32(SIDE)) % i32(SIDE))
@@ -401,7 +412,7 @@ fn settle(
         before.load(x: back_x, y: back_z).w * ax * az
     let broke = clamp((breaks - squeezed) / (spread * WHITENS), 0.0, 1.0)
     let foam = max(old * exp(-dt / fade), broke)
-    shape.store(id, vec4(hq.x * chop, hq.y, hq.z * chop, foam))
+    shape.store(id, vec4(hq.x * chop + carried.x, hq.y, hq.z * chop + carried.y, foam))
     tilt.store(id, vec4(sq.x, sq.y, dxx, dzz))
 }
 
@@ -493,6 +504,7 @@ fn run(sea: SeaState, t: f32, dt: f32, tile: mut Tile, f: mut Scratch, s: Sample
             dt,
             foam_fade(sea),
             sea.wind * (BLOWN * sea.speed * dt * f32(SIDE) / tile.band.side),
+            sea.wind * (LEAN * sea.chop),
             tile.breaks,
             tile.spread,
             heights: f.a,
@@ -576,7 +588,7 @@ impl Ocean {
                 to_a: writable_texture::<Rgba32Float>(width: SIDE, height: SIDE),
                 to_b: writable_texture::<Rgba32Float>(width: SIDE, height: SIDE),
             },
-            s: sampler(address: Address::Repeat, anisotropy: 16),
+            s: sampler(address: Address::Repeat, anisotropy: 8),
             mips: sampler(address: Address::Repeat),
             swell: Swell::new(sea, kept, mid),
             last: -1.0,
@@ -738,6 +750,8 @@ pub struct Swell: Clone {
     pub modes: Vec<Mode>,
     pub chop: f32,
     pub held: f32,
+    /// How far the crests lean down the wind per metre they stand (as `settle` leans them).
+    pub lean: vec2,
 }
 
 impl Swell {
@@ -772,7 +786,12 @@ impl Swell {
                 modes.push(m)
             }
         }
-        Swell { modes, chop: sea.chop, held: if total > 0.0 { held / total } else { 0.0 } }
+        Swell {
+            modes,
+            chop: sea.chop,
+            held: if total > 0.0 { held / total } else { 0.0 },
+            lean: sea.wind * (LEAN * sea.chop),
+        }
     }
 
     /// Its displacement along x, height and displacement along z at lattice point `p` (x, z) at
@@ -788,7 +807,8 @@ impl Swell {
             let u = m.k / length(m.k)
             d += vec3(-u.x * im, re, -u.y * im) * 2.0
         }
-        vec3(d.x * self.chop, d.y, d.z * self.chop)
+        let carried = self.lean * max(d.y, 0.0)
+        vec3(d.x * self.chop + carried.x, d.y, d.z * self.chop + carried.y)
     }
 
     /// Its height at `p` (x, z: a place on the level) at time `t`, the water carried there found
