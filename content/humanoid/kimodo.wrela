@@ -825,22 +825,22 @@ pub struct Swagger: Copy {
 
 pub const SWAGGERS: [Swagger; 4] = [
     // Cool: side-on, hands low, chin down.
-    Swagger { lead: 0.35, out: 0.0, rear: 0.3, chin: -0.04, lean: -0.05, blade: 0.35, sink: 0.08 },
+    Swagger { lead: 0.47, out: 0.0, rear: 0.42, chin: -0.04, lean: -0.05, blade: 0.35, sink: 0.08 },
     // Dangerous: hands lower still, chin tucked, leaning in.
-    Swagger { lead: 0.42, out: 0.0, rear: 0.38, chin: -0.18, lean: -0.22, blade: 0.3, sink: 0.12 },
+    Swagger { lead: 0.54, out: 0.0, rear: 0.50, chin: -0.18, lean: -0.22, blade: 0.3, sink: 0.12 },
     // Cocky: chin up, sat back, hands hanging.
-    Swagger { lead: 0.5, out: 0.0, rear: 0.45, chin: 0.18, lean: 0.1, blade: 0.1, sink: 0.05 },
+    Swagger { lead: 0.62, out: 0.0, rear: 0.57, chin: 0.18, lean: 0.1, blade: 0.1, sink: 0.05 },
     // Explosive: low in the legs, coiled well side-on, leaning in.
-    Swagger { lead: 0.3, out: 0.0, rear: 0.28, chin: -0.1, lean: -0.2, blade: 0.45, sink: 0.17 },
+    Swagger { lead: 0.42, out: 0.0, rear: 0.40, chin: -0.1, lean: -0.2, blade: 0.45, sink: 0.17 },
 ]
 
 /// The loose hands' spring on the chest (Hz, damping ratio), how much of its swing they keep,
 /// how far short of full reach they hang, and how far the fingers curl (1 loose, 2 a claw-like curl).
-pub const SW_HZ: f32 = 2.2
-pub const SW_DAMP: f32 = 0.3
-pub const SW_SLACK: f32 = 0.96
+pub const SW_HZ: f32 = 3.5
+pub const SW_DAMP: f32 = 0.45
+pub const SW_SLACK: f32 = 0.985
 pub const SW_TRAIL: f32 = 1.0
-pub const SW_CURL: f32 = 2.6
+pub const SW_CURL: f32 = 2.3
 
 /// Which swagger `SHOW=22` plays.
 pub const SWAG: u32 = 2
