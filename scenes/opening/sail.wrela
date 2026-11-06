@@ -478,7 +478,9 @@ fn rigged(off: f32, turn: f32, p: f32, phi: f32, jolt: f32) -> Pose {
     // The mast leans to windward as the traveller hangs on it, the more as the sail's squared
     // off (so the sail's over the boat, not out over the sea); and raked forward to bear away,
     // aft to head up.
-    let up_into = turn * (if off > 0.0 { 1.0 } else { -1.0 })
+    // (Eased to nothing as the wind comes dead ahead or astern: a sign flipped there raked the
+    // mast over in a frame as the wind crossed the stern.)
+    let up_into = turn * clamp(sin(off) / 0.3, -1.0, 1.0)
     let rake = clamp(-up_into / TURN_RATE, -1.0, 1.0) * 0.16 + 0.05
     let tilt = (0.1 + 0.32 * smoothstep(0.6, 1.5, a)) * smoothstep(0.1, 0.6, p)
     let mast = normalize(vec3(wind * sin(tilt), cos(tilt) * cos(rake), sin(rake)))
