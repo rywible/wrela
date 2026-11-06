@@ -31,7 +31,8 @@ pub const START: f32 = 0.0
 pub const KINETIC: f32 = 0.0
 
 /// Which view draws: 0 the opening's, 1 the rock near, 2 the skiff near, 3 the cathedral, 4
-/// the sea from over it, 5 toward the sun, 8 the traveller close (`--set VIEW=1`).
+/// the sea from over it, 5 toward the sun, 8 the traveller close, 9 him
+/// from off the starboard quarter (`--set VIEW=1`).
 pub const VIEW: u32 = 0
 
 /// How much of the drawing lies over the render: 1, all of it; 0, the physical render alone

@@ -220,9 +220,8 @@ pub fn bones(s: Shot) -> [mat4; 64] {
     m[B_SPINE1] = placed(r_spine1, spine1, SPINE1)
     m[B_SPINE2] = placed(r_spine2, spine2, SPINE2)
     m[B_SPINE3] = placed(r_chest, spine3, SPINE3)
-    // His head up, between the sail in his hands and the way ahead past the bow (the skiff's +z),
-    // a third of the way round to it, so his mask stays in profile.
-    let look = normalize(vec3(0.0, 0.06, 1.0) * 0.5 + facing)
+    // His head along the sailing's gaze: ahead over the bow, into turns.
+    let look = normalize(s.gaze)
     let r_head = aim(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), look, up + spine)
     let r_neck = aim(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), normalize(spine + up), look)
     m[B_NECK] = placed(r_neck, neck, NECK)
