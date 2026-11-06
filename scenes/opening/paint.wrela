@@ -686,7 +686,7 @@ const SPARK_GLINT: f32 = 1.5
 
 /// How much of the sky's light comes through a crest's thin top (against the light on the
 /// water).
-const THROUGH_SKY: f32 = 0.3
+const THROUGH_SKY: f32 = 0.8
 
 /// The steepest a crest's face leans toward the eye (a slope): the march steps no further than
 /// a face so steep could rise to meet it, so it never steps past a crest's top.
@@ -695,6 +695,9 @@ const STEEPEST: f32 = 0.5
 /// How high over the sea's level its highest crests stand (m): its significant height's
 /// worth (a gale's sea over its swell).
 const CREST: f32 = 7.0
+
+/// How much of the sea's colour an overcast greys.
+const SLATE: f32 = 0.3
 
 /// How far down the wind of a breaking crest its spindrift's blown (m).
 const DRIFT: f32 = 2.5
@@ -829,7 +832,8 @@ fn sea_shade(
     let rough = vec2(sqrt(0.004 + 2.4 * lost.x), sqrt(0.004 + 2.4 * lost.y))
     // (Its colour the sun's as the frame draws its disc: burnt toward a warm white.)
     let sun_seen = mix(h.light.sun_colour, vec3(1.0, 0.84, 0.55) * luma(h.light.sun_colour), 0.55)
-    let mean = sun_seen * glitter(n, l, v, along, rough) * sun * 2.0
+    // (Under the overcast's deck the sun's a glow, not a disc: no burning points of it.)
+    let mean = sun_seen * glitter(n, l, v, along, rough) * sun * 2.0 * mix(1.0, 0.08, OVERCAST)
     let slant = max(-d.y, 0.003)
     let footprint_m2 = px_at * px_at / slant
     let peak = clamp(SPARK_GLINT / footprint_m2, 4.0, SPARK_PEAK)
@@ -877,7 +881,7 @@ fn sea_shade(
     // The light that comes back up out of the water: deep blue-green, brighter through the
     // crests lit from behind.
     let sky_up = storm_sky(view, h.light, vec3(y: 1.0), dome, smp, disc: false).rgb * PI
-    let body = vec3(0.028, 0.07, 0.072) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
+    let body = vec3(0.03, 0.066, 0.062) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
     let behind = pow(max(dot(normalize(vec3(-d.x, 0.0, -d.z)), -l) * 0.5 + 0.5, 0.0), 4.0)
     // The sun through the waves' crests: their thin tops, where the waves crowd and sharpen,
     // glowing green on the faces turned to the eye, most when the eye looks toward the sun
@@ -927,12 +931,12 @@ fn sea_shade(
     let share = clamp(foam_k * 1.3, 0.0, 0.92)
     let pattern = mix(noise(vec2(wa.x * 0.12, wa.y * 0.7) + warp) * 0.5 + raft * 0.5, raft, smoothstep(0.1, 0.6, share))
     let web_k = clamp(1.0 - px_m * 2.0, 0.0, 1.0)
-    let edge = 0.04 + 0.25 * (1.0 - web_k)
+    let edge = 0.1 + 0.25 * (1.0 - web_k)
     let drawn = smoothstep(1.0 - share - edge, 1.0 - share + edge, pattern)
     // (The streaks, laid where the foam upwind was blown: thin, greyer, never a sheet.)
-    let lines = smoothstep(1.0 - blown * 0.35 - edge - 0.12, 1.0 - blown * 0.35 + edge + 0.06, streak) *
-        (0.5 + 0.5 * lace)
-    let white = max(mix(share, drawn, web_k), mix(blown * 0.08, lines * 0.16, web_k)) * 0.95
+    let lines = smoothstep(1.0 - blown * 0.6 - edge - 0.3, 1.0 - blown * 0.6 + edge + 0.1, streak) *
+        (0.4 + 0.6 * lace)
+    let white = max(mix(share, drawn, web_k), mix(blown * 0.12, lines * 0.3, web_k)) * 0.95
     // (Its thick froth bright, its thin film greyer, the water showing through it.)
     let froth = mix(0.5, noise(wa * vec2(8.0, 12.0) + vec2(2.0)), web_k)
     let bright = (0.4 + 0.6 * smoothstep(0.3, 0.9, share)) * (0.6 + 0.4 * lace + 0.4 * froth)
@@ -1006,6 +1010,8 @@ fn sea_shade(
     // the thicker: some kilometres' sight in a gale), lit as the air at the horizon is.
     let spray = 1.0 - exp(-t * SPRAY * whitecaps(SEA_STATE))
     let hazy = mix(aired, horizon_sky, max(spray, smoothstep(2500.0, 30000.0, t) * 0.85))
+    // (Under an overcast a storm's sea is slate, its blue mostly gone grey.)
+    let hazy = mix(hazy, vec3(luma(hazy)), SLATE * OVERCAST)
     (hazy, line, detail * 0.6 + foam, n, cut)
 }
 
