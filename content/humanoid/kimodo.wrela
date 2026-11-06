@@ -1117,3 +1117,76 @@ fn span_loop(c: Clip, from: f32, to: f32, fade: f32) -> Clip {
     }
     out
 }
+
+/// The locked fight idle: the boxer's bounce as Wrela code (content/moves, fitted from `BOUNCE`).
+@fuel(2 ** 40)
+pub const FIGHT_IDLE: Clip = moves::stance::STANCE.clip(HERO.rig.clone(), 60.0)
+
+/// How long a round of `fight_round` runs: three bounce loops, the cross thrown in the third,
+/// so the bounce runs on across the seam.
+pub fn fight_length() -> f32 {
+    FIGHT_IDLE.length() * 3.0
+}
+
+/// The fight idle bouncing, then the Kimodo cross fired out of it and settling back into it
+/// (`SHOW=26`): the cross stood where the bounce stands.
+pub fn fight_round(time: f32) -> humanoid::Pose {
+    let n = HERO.rig.bones.len()
+    let base = HERO.rig.base
+    let u = time % fight_length()
+    let bounce = FIGHT_IDLE.pose(u % FIGHT_IDLE.length())
+    let start = FIGHT_IDLE.length() * 2.0
+    if u < start {
+        return bounce
+    }
+    let v = u - start
+    // The cross turned to face the way the bounce faces and stood over its hips as it starts.
+    let b0 = FIGHT_IDLE.pose(start % FIGHT_IDLE.length())
+    let c0 = TIMED.pose(STILL)
+    let turn = Quat::axis_angle(vec3(0.0, 1.0, 0.0), facing(base.q.mul(b0.turns[0])) - facing(base.q.mul(c0.turns[0])))
+    let from = base.t + base.q.rotate(c0.hips)
+    let to = base.t + base.q.rotate(b0.hips)
+    let inv = base.inverse()
+    let placed = |q: humanoid::Pose| -> humanoid::Pose {
+        var p = q
+        let hw = base.t + base.q.rotate(p.hips)
+        let o = turn.rotate(hw - from)
+        p.hips = inv.t + inv.q.rotate(vec3(to.x + o.x, hw.y, to.z + o.z))
+        p.turns[0] = base.q.inverse().mul(turn.mul(base.q.mul(p.turns[0])))
+        p
+    }
+    // His feet kept where the bounce had them as the cross starts: the cross is thrown from the
+    // same stance, nothing skating.
+    let wb = stride::worlds(HERO.rig, one_pose(b0), 0)
+    let (fl, fr) = (HERO.rig.find("leftFoot"), HERO.rig.find("rightFoot"))
+    let feet = [wb[fl].t, wb[fr].t]
+    let foot_q = [wb[fl].q, wb[fr].q]
+    let cross = placed(TIMED.pose(STILL + min(v, a_end() + STILL * 0.9)))
+    var c = one_pose(cross)
+    var w = stride::worlds(HERO.rig, c, 0)
+    legs_to(HERO.rig, mut w, feet, foot_q)
+    stride::store(HERO.rig, w, mut c, 0)
+    let held = c.pose(0.0)
+    let back = a_end() - FT_EARLY
+    if v < back {
+        return humanoid::blend(bounce, held, smoothstep(0.0, FT_IN, v), n)
+    }
+    humanoid::blend(held, bounce, smoothstep(0.0, FT_OUT, v - back), n)
+}
+
+/// A pose as a one-frame clip (to take its bones' places).
+fn one_pose(p: humanoid::Pose) -> Clip {
+    let nb = HERO.rig.bones.len()
+    var c = Clip { fps: 60.0, frames: 1, bones: nb, turns: Vec::new(), hips: Vec::new(), looped: false, travel: vec3(0.0), travel_local: vec3(0.0) }
+    for b in 0..nb {
+        c.turns.push(p.turns[b])
+    }
+    c.hips.push(p.hips)
+    c
+}
+
+/// How long the bounce takes to give way to the cross, and the cross to settle back into it (s).
+pub const FT_IN: f32 = 0.2
+pub const FT_OUT: f32 = 0.5
+/// How long before the cross ends it starts settling back into the bounce (s).
+pub const FT_EARLY: f32 = 0.15

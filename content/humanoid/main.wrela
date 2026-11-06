@@ -289,6 +289,7 @@ fn pose_at(time: f32) -> Pose {
         23 => kimodo::SPAR_IDLE.pose(time % kimodo::SPAR_IDLE.length()),
         24 => kimodo::SHRUG_D.pose(time % kimodo::SHRUG_D.length()),
         25 => kimodo::SHRUG_N.pose(time % kimodo::SHRUG_N.length()),
+        26 => kimodo::fight_round(time),
         _ => if time < IDLE_AT {
             T_POSE.pose(0.0)
         } else if time < WALK_AT {
@@ -333,7 +334,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.height = height
     }
     let game = SHOW == 11 || SHOW == 12 || SHOW == 13 || SHOW == 14
-    let crosses = SHOW == 13 || SHOW == 14 || SHOW == 16 || SHOW == 18 || SHOW == 19 || SHOW == 20 || SHOW == 21 || SHOW == 22 || SHOW == 23 || SHOW == 24 || SHOW == 25
+    let crosses = SHOW == 13 || SHOW == 14 || SHOW == 16 || SHOW == 18 || SHOW == 19 || SHOW == 20 || SHOW == 21 || SHOW == 22 || SHOW == 23 || SHOW == 24 || SHOW == 25 || SHOW == 26
 
     let dt = clamp(time - s.last, 1.0e-4, 0.1)
     let (pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
@@ -377,7 +378,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // The camera follows the hips along the ground, steadily: where they are on average over a
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
     // followed where gameplay puts it, which is steady already.
-    let hips = if SHOW == 19 { vec3(0.0, 0.0, 0.25) + kimodo::a_shake(time % kimodo::stance_round() - kimodo::STANCE.length()) } else if SHOW == 16 { vec3(0.0, 0.0, 0.25) + kimodo::a_shake(time % (kimodo::TIMED.length() + 0.4) - kimodo::STILL) } else if SHOW == 12 || crosses { vec3(0.0, 0.0, 0.25) } else if game {
+    let hips = if SHOW == 26 { vec3(0.0, 0.0, 0.25) } else if SHOW == 19 { vec3(0.0, 0.0, 0.25) + kimodo::a_shake(time % kimodo::stance_round() - kimodo::STANCE.length()) } else if SHOW == 16 { vec3(0.0, 0.0, 0.25) + kimodo::a_shake(time % (kimodo::TIMED.length() + 0.4) - kimodo::STILL) } else if SHOW == 12 || crosses { vec3(0.0, 0.0, 0.25) } else if game {
         s.mover.place
     } else {
         steady_hips(time)
