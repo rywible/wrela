@@ -656,6 +656,11 @@ pub fn ink(
         let pressed = cold *
             mix(0.78 + 0.14 * saturate((LIFT - 1.0) / 0.45), 1.0, smoothstep(0.08, 0.6, l))
         c = mix(c, pressed, OVERCAST * s.style)
+        // (The storm's sea a grey-green slate, not the sky's cold blue: the colour of deep water
+        // under a grey sky.)
+        if m0.y == SEA {
+            c *= mix(vec3(1.0), vec3(0.94, 1.04, 0.96), OVERCAST * s.style)
+        }
     }
     // A vignette, as a lens's edge darkens.
     let uv = px / size - vec2(0.5)

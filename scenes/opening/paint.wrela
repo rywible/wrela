@@ -666,7 +666,7 @@ const CREST: f32 = 7.0
 const GLOW: f32 = 4.0
 
 /// How much of the sea's colour an overcast greys.
-const SLATE: f32 = 0.3
+const SLATE: f32 = 0.55
 
 /// How far down the wind of a breaking crest its spindrift's blown (m).
 const DRIFT: f32 = 2.5
@@ -888,7 +888,7 @@ fn sea_shade(
         PI *
         (1.0 - under_isle(p))
     let horizon_sky = heaven(view, h.light, normalize(vec3(d.x, 0.006, d.z)), dome, smp).rgb
-    let body = vec3(0.03, 0.066, 0.062) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
+    let body = vec3(0.055, 0.14, 0.12) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
     let behind = pow(max(dot(normalize(vec3(-d.x, 0.0, -d.z)), -l) * 0.5 + 0.5, 0.0), 4.0)
     // The sun through the waves' crests: their thin tops, where the waves crowd and sharpen,
     // glowing green on the faces turned to the eye, most when the eye looks toward the sun
@@ -907,7 +907,7 @@ fn sea_shade(
     // it): the higher the crest stands over the sea, the more its face is turned to the eye
     // away from that light, the more of it comes through, green-grey.
     let lf = normalize(vec3(d.x, 0.0, d.z))
-    let glow = vec3(0.05, 0.16, 0.14) * horizon_sky * GLOW *
+    let glow = vec3(0.05, 0.2, 0.15) * horizon_sky * GLOW *
         clamp(wave / CREST * 2.5, 0.0, 1.0) *
         (1.0 - smoothstep(0.12, 0.45, -d.y)) *
         pow(clamp(0.5 - 0.5 * dot(lf, n), 0.0, 1.0), 3.0)
@@ -966,7 +966,7 @@ fn sea_shade(
     let walls = (1.0 - smoothstep(0.0, 0.35 + 0.5 * lace, gap)) * (0.25 + 0.3 * lace) + lace * 0.4
     let froth_h = mix(mix(billow, walls, smoothstep(0.05, 0.45, age)), streak, smoothstep(0.3, 0.8, age))
     let web_k = clamp(1.0 - px_m * 2.0, 0.0, 1.0)
-    let feather = 0.18 + 0.3 * age + 0.3 * (1.0 - web_k)
+    let feather = 0.09 + 0.3 * age + 0.3 * (1.0 - web_k)
     let eroded = clamp((dense - (1.0 - froth_h)) / feather + dense * dense * 0.2, 0.0, 1.0)
     let lines = smoothstep(0.9 - blown * 0.06, 0.96 - blown * 0.04, ridge) * (0.4 + 0.6 * lace)
     // (Too far for its froth, a whitecap still breaks up: torn by a coarser pattern a pixel there
@@ -990,7 +990,7 @@ fn sea_shade(
         (0.7 + 0.3 * lace) *
         heaped *
         // (Thinning to its edge, the water seen through it, never a cut-out block on the sea.)
-        smoothstep(0.1, 0.4, dense + tail + (lace - 0.5) * 0.6)
+        smoothstep(0.18, 0.3, dense + tail + (lace - 0.5) * 0.6)
     let white = max(foamed, rows)
     // (Lit as a mass of bubbles: its domes bright, its creases and thin film greyer, the older
     // the greyer.)
@@ -1081,7 +1081,8 @@ fn sea_shade(
     let spray = 1.0 - exp(-t * SPRAY * whitecaps(SEA_STATE))
     let hazy = mix(aired, horizon_sky, max(spray, smoothstep(2500.0, 30000.0, t) * 0.85))
     // (Under an overcast a storm's sea is slate, its blue mostly gone grey.)
-    let hazy = mix(hazy, vec3(luma(hazy)), SLATE * OVERCAST)
+    // (Under an overcast a storm's sea is slate, its blue mostly gone to a grey-green.)
+    let hazy = mix(hazy, vec3(luma(hazy)) * vec3(0.92, 1.04, 1.0), SLATE * OVERCAST)
     (hazy, line, detail * 0.6 + foam, n, cut)
 }
 
