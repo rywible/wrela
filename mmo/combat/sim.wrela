@@ -956,6 +956,17 @@ fn every_bosss_patterns_name_its_attacks() {
             assert(a < ATTACKS.len())
         }
         assert(b.hp_each > 0 && b.speed > 0 && b.rage > 0 && b.rage < 100)
+        // Each pattern has an attack it walks in for that meets someone right by it: it never
+        // stands still beside a player.
+        let close = |pattern: [u32; 8]| -> bool {
+            for a in pattern {
+                if ATTACKS[a].walks_in && ATTACKS[a].near == 0 {
+                    return true
+                }
+            }
+            false
+        }
+        assert(close(b.calm) && close(b.enraged))
     }
     for a in ATTACKS {
         assert(a.near <= a.far && a.windup > 0 && a.active > 0 && (a.stagger > 0) == a.parried)
@@ -1037,17 +1048,18 @@ fn stick_to(dx: i32, dz: i32) -> u32 {
     1 + best * 3 + 2
 }
 
-/// A player who reads the idol's tells, as `skill` of 100 do: parries what a parry meets, dodges
-/// what it doesn't, and cuts in the openings. Its next input, from `w`, its last `input`.
-fn reader(w: World, i: u32, input: u32, skill: u32) -> u32 {
+/// A player who reads the idol's tells, `skill` of 100 of them (each tell read or missed once,
+/// the same every run): parries what a parry meets, dodges what it doesn't, and cuts in the
+/// openings, from `keep` away (a player who keeps close is stomped on). Its next input, from
+/// `w`, its last `input`.
+fn reader(w: World, i: u32, input: u32, skill: u32, keep: i32) -> u32 {
     let p = w.party[i].clone()
     let b = w.boss.clone()
     let d = reach(p.x, p.z, b.x, b.z)
     let buttons = input & BUTTON_BITS
     let toward = stick_to(b.x - p.x, b.z - p.z)
     let away = stick_to(p.x - b.x, p.z - b.z)
-    // Each tell read or missed, by the frame: the same every run.
-    let reads = w.frame.wrapping_mul(2654435761) % 100 < skill
+    let reads = (w.made * 7 + i * 3).wrapping_mul(2654435761) % 100 < skill
     if b.act == WINDUP && b.move_ < ATTACKS.len() {
         let a = ATTACKS[b.move_]
         let reached = a.near <= d && d <= a.far + 32
@@ -1058,39 +1070,62 @@ fn reader(w: World, i: u32, input: u32, skill: u32) -> u32 {
             return (buttons ^ (DODGE << 6)) | away
         }
         // Out of its way, or waiting for it.
-        return buttons | if d < 170 { 0 } else { toward }
+        return buttons | if d < keep + 5 { 0 } else { toward }
     }
     // An opening long enough for a cut to land and its recovery to end before the next tell.
     let open = (b.act == RECOVER || b.act == STAGGERED) && b.timer >= 20
     if open && d <= 170 && p.stamina >= 20 && p.act == IDLE {
         return buttons ^ (ATTACK << 6)
     }
-    buttons | if d > 165 { toward } else { 0 }
+    buttons | if d > keep { toward } else { 0 }
 }
 
-/// The fight of `n` readers of `skill`, to its end.
-fn read_out(n: u32, skill: u32) -> World {
+/// The fight of `n` readers of `skill`, the second keeping close, to its end; and how many times
+/// the boss made each attack.
+fn read_out(n: u32, skill: u32) -> (World, Vec<u32>) {
     var w = World::start(n)
     var inputs: Vec<u32> = Vec::new()
     for _ in 0..n {
         inputs.push(0)
     }
+    var made: Vec<u32> = Vec::new()
+    for _ in 0..ATTACKS.len() {
+        made.push(0)
+    }
     while !w.over {
         for i in 0..n {
-            inputs[i] = reader(w, i, inputs[i], skill)
+            inputs[i] = reader(w, i, inputs[i], skill, if i == 1 { 40 } else { 160 })
         }
+        let idle = w.boss.act != WINDUP
         step(mut w, inputs)
+        if idle && w.boss.act == WINDUP && w.boss.move_ < ATTACKS.len() {
+            made[w.boss.move_] += 1
+        }
     }
-    w
+    (w, made)
 }
 
 @test
 fn the_idol_falls_to_a_party_that_reads_its_tells_and_not_to_one_that_doesnt() {
-    for n in 1..3 {
-        let good = read_out(n, 95)
+    // Every attack is made, enraged ones too: the palm at those who keep their distance, the
+    // stomp on the one who keeps close.
+    var all: Vec<u32> = Vec::new()
+    for _ in 0..ATTACKS.len() {
+        all.push(0)
+    }
+    for n in 1..4 {
+        let (good, made) = read_out(n, 95)
         assert(good.winner == Winner::Party, f"{n} who read it win")
-        let poor = read_out(n, 20)
+        let (poor, _) = read_out(n, 20)
         assert(poor.winner == Winner::Boss, f"{n} who miss most tells fall")
-        std::io::print(f"{n}: read in {good.frame / 60} s; missed, fell in {poor.frame / 60} s")
+        for a in 0..ATTACKS.len() {
+            all[a] += made[a]
+        }
+        std::io::print(
+            f"{n}: read in {good.frame / 60} s; missed, fell in {poor.frame / 60} s; slams {made[2] + made[5]}, stomps {made[3]}",
+        )
+    }
+    for a in 0..ATTACKS.len() {
+        assert(all[a] > 0, f"attack {a} made")
     }
 }
