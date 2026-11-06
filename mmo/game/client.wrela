@@ -2038,6 +2038,14 @@ fn draw_fight(s: mut Client, middle: vec2, size: f32) {
     }
     let boss_line = String::from(f"Boss  {boss.hp} hp")
     let _ = s.list.text(s.fonts, Face::Mono, boss_line.as_str(), 15.0, vec2(24.0, 150.0), BOSS)
+    // Its tell, said while it winds up: what it is, and what meets it.
+    if boss.act == 1 {
+        if let Some(a) = world.boss_attack() {
+            let answer = if a.parried { "parry it" } else { "dodge it" }
+            let tell = String::from(f"{a.name}: {answer}")
+            let _ = s.list.text(s.fonts, Face::Sans, tell.as_str(), 20.0, vec2(24.0, 180.0), TELL)
+        }
+    }
     // The room's word once it's settled; until then, this client's.
     let shown = match settled {
         Some(w) => Some(w.clone()),

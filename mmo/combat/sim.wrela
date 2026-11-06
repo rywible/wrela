@@ -41,7 +41,6 @@ const UNIT: i32 = 64
 const ARENA: i32 = 20 * 64
 const PLAYER_HP: i32 = 100
 const STAMINA: i32 = 100
-const BOSS_HP_EACH: i32 = 300
 
 /// An attack: its stamina, its frames (windup, active, recovery), its reach and damage, and the
 /// move a light press in its recovery goes on to (its combo's next; `NO_MOVE`: none).
@@ -72,7 +71,7 @@ pub const MOVES: [Move; 6] = [
         next: NO_MOVE,
     },
     // The longsword (two-handed): a three-cut combo, each cut longer and harder, and an overhead;
-    // it outreaches the boss (`BOSS_REACH`), so footing decides who's in range.
+    // it outreaches the idol's sweep (`ATTACKS`), so footing decides who's in range.
     Move { cost: 18, windup: 12, active: 5, recovery: 18, reach: 176, damage: 9, next: 3 },
     Move { cost: 18, windup: 10, active: 5, recovery: 18, reach: 176, damage: 10, next: 4 },
     Move { cost: 22, windup: 14, active: 6, recovery: 26, reach: 192, damage: 14, next: NO_MOVE },
@@ -97,14 +96,153 @@ const PARRY_RECOVERY: u32 = 12
 const DODGE_COST: i32 = 20
 const DODGE_FRAMES: u32 = 12
 const DODGE_SPEED: i32 = 20
-// The boss: its speed, its attack's frames (the windup is its tell), reach, damage, and stagger.
-const BOSS_SPEED: i32 = 4
-const BOSS_WINDUP: u32 = 24
-const BOSS_ACTIVE: u32 = 6
-const BOSS_RECOVERY: u32 = 30
-const BOSS_REACH: i32 = 5 * 32
-const BOSS_DAMAGE: i32 = 20
-const STAGGER: u32 = 60
+
+// ---- bosses, as data -----------------------------------------------------------------------------
+
+/// A boss's attack: its frames (the windup is its tell, the recovery the opening it leaves), the
+/// distances from it the attack covers (`near` to `far`: a stomp meets only who's underfoot, a
+/// palm reaches out past its sweeps), its damage, whether a parry meets it (then the boss is
+/// staggered `stagger` frames) or only a dodge passes it, and its name, for a client to say.
+pub struct Attack: Copy + Eq {
+    pub windup: u32,
+    pub active: u32,
+    pub recovery: u32,
+    pub near: i32,
+    pub far: i32,
+    pub damage: i32,
+    pub parried: bool,
+    pub stagger: u32,
+    /// Whether it walks in to make it (else it makes it only if someone's there already, and
+    /// goes on to its next).
+    pub walks_in: bool,
+    pub name: Text,
+}
+
+/// How many attacks one of a boss's patterns lists.
+pub const PATTERN: u32 = 8
+
+/// A boss: its health for each player, its speed (units a frame), and the attacks it makes
+/// (`ATTACKS`), in order, while calm and once enraged, below `rage` percent of its health. Each
+/// time it's free it makes the next in its pattern, walking in to its nearest player first if it
+/// must; one it can't make from there (a stomp for no one underfoot, a palm with someone too
+/// close) it passes by.
+pub struct Boss: Copy + Eq {
+    pub hp_each: i32,
+    pub speed: i32,
+    pub calm: [u32; 8],
+    pub enraged: [u32; 8],
+    pub rage: i32,
+}
+
+/// Every boss's attacks, by number.
+pub const ATTACKS: [Attack; 7] = [
+    // The cathedral's idol, the stone god with three heads and three hands. Its side hands sweep
+    // the ground in front of it: parry one and it reels.
+    Attack {
+        windup: 24,
+        active: 6,
+        recovery: 30,
+        near: 0,
+        far: 160,
+        damage: 20,
+        parried: true,
+        stagger: 60,
+        walks_in: true,
+        name: "Sweep",
+    },
+    // Its middle hand thrusts out flat, reaching past the sweeps: the tell is the hand drawn back.
+    Attack {
+        windup: 30,
+        active: 5,
+        recovery: 34,
+        near: 96,
+        far: 256,
+        damage: 24,
+        parried: true,
+        stagger: 72,
+        walks_in: true,
+        name: "Palm",
+    },
+    // All three hands come down: no parry holds it, only a dodge, and it's stuck a long while
+    // after, the opening to punish.
+    Attack {
+        windup: 42,
+        active: 8,
+        recovery: 70,
+        near: 0,
+        far: 192,
+        damage: 40,
+        parried: false,
+        stagger: 0,
+        walks_in: true,
+        name: "Slam",
+    },
+    // A stomp for whoever is underfoot: quick, short, and not parried.
+    Attack {
+        windup: 16,
+        active: 5,
+        recovery: 26,
+        near: 0,
+        far: 80,
+        damage: 15,
+        parried: false,
+        stagger: 0,
+        walks_in: false,
+        name: "Stomp",
+    },
+    // Enraged, it sweeps and thrusts sooner and recovers sooner, and its slam comes quicker.
+    Attack {
+        windup: 18,
+        active: 6,
+        recovery: 18,
+        near: 0,
+        far: 160,
+        damage: 22,
+        parried: true,
+        stagger: 48,
+        walks_in: true,
+        name: "Sweep",
+    },
+    Attack {
+        windup: 32,
+        active: 8,
+        recovery: 56,
+        near: 0,
+        far: 208,
+        damage: 44,
+        parried: false,
+        stagger: 0,
+        walks_in: true,
+        name: "Slam",
+    },
+    Attack {
+        windup: 22,
+        active: 5,
+        recovery: 26,
+        near: 96,
+        far: 256,
+        damage: 26,
+        parried: true,
+        stagger: 60,
+        walks_in: true,
+        name: "Palm",
+    },
+]
+
+/// Every boss, by number.
+pub const BOSSES: [Boss; 1] = [
+    Boss {
+        hp_each: 300,
+        speed: 4,
+        // Sweep, sweep, palm, stomp, slam: a stomp only for anyone underfoot.
+        calm: [0, 0, 1, 3, 2, 0, 1, 3],
+        // Two sweeps and a palm, a stomp, then the slam.
+        enraged: [4, 4, 6, 3, 5, 4, 6, 3],
+        rage: 50,
+    },
+]
+/// The cathedral's idol, the first boss.
+pub const THE_IDOL: u32 = 0
 
 /// What a fighter is doing.
 const IDLE: u32 = 0
@@ -214,6 +352,10 @@ pub struct World: Clone + Eq {
     pub frame: u32,
     party: Vec<Fighter>,
     boss: Fighter,
+    /// Which boss it is (`BOSSES`), its full health, and how far through its pattern it is.
+    foe: u32,
+    full: i32,
+    made: u32,
     /// Each player's buttons as of the frame before.
     before: Vec<u32>,
     pub over: bool,
@@ -228,7 +370,8 @@ pub struct Seen: Copy {
     pub stamina: i32,
     /// 0 idle, 1 winding up, 2 striking, 3 recovering, 4 parrying, 5 dodging, 6 staggered.
     pub act: u32,
-    /// The move it's making (`MOVES`; `NO_MOVE`: none), so a client draws which cut it is.
+    /// The move it's making (a player's in `MOVES`, the boss's in `ATTACKS`; `NO_MOVE`: none), so
+    /// a client draws which it is.
     pub move_: u32,
 }
 
@@ -257,7 +400,10 @@ impl World {
         World {
             frame: 0,
             party,
-            boss: Fighter::new(0, 6 * UNIT, BOSS_HP_EACH * i32(n), FISTS),
+            boss: Fighter::new(0, 6 * UNIT, BOSSES[THE_IDOL].hp_each * i32(n), FISTS),
+            foe: THE_IDOL,
+            full: BOSSES[THE_IDOL].hp_each * i32(n),
+            made: 0,
             before,
             over: false,
             winner: Winner::Draw,
@@ -275,6 +421,16 @@ impl World {
 
     pub fn boss(self) -> Seen {
         seen(self.boss.clone())
+    }
+
+    /// The attack the boss is making, from its windup (its tell) to the end of its recovery.
+    pub fn boss_attack(self) -> Option<Attack> {
+        if self.boss.move_ < ATTACKS.len() &&
+            (self.boss.act == WINDUP || self.boss.act == ACTIVE || self.boss.act == RECOVER) {
+            Some(ATTACKS[self.boss.move_])
+        } else {
+            None
+        }
     }
 
     /// The bits of player `i`'s input that the next `step` reads (its read set): all of them while
@@ -363,7 +519,7 @@ pub fn step(w: mut World, inputs: [u32]) {
         }
         w.party[i] = take p
     }
-    step_boss(mut w.boss, mut w.party)
+    step_boss(BOSSES[w.foe], w.full, mut w.made, mut w.boss, mut w.party)
     w.frame += 1
     if w.boss.hp <= 0 {
         w.winner = Winner::Party
@@ -498,8 +654,31 @@ fn step_player(p: mut Fighter, stick: u32, pressed: u32) {
     p.z = clamp(p.z, -ARENA, ARENA)
 }
 
+/// The attack boss `b` makes next, its health `hp` of `full`, `made` places through its pattern,
+/// its nearest player `d` away, and how many places on in the pattern that is: the next in its
+/// pattern, past any that can't be made from there and that it doesn't walk in for. None while it
+/// walks in for the next.
 @deterministic
-fn step_boss(boss: mut Fighter, party: mut Vec<Fighter>) {
+fn next_attack(b: Boss, hp: i32, full: i32, made: u32, d: i32) -> Option<(u32, u32)> {
+    let pattern = if hp * 100 < full * b.rage { b.enraged } else { b.calm }
+    for k in 0..PATTERN {
+        let a = pattern[(made + k) % PATTERN]
+        if a >= ATTACKS.len() {
+            continue
+        }
+        let at = ATTACKS[a]
+        if at.near <= d && d <= at.far {
+            return Some((a, k + 1))
+        }
+        if at.walks_in && d > at.far {
+            return None
+        }
+    }
+    None
+}
+
+@deterministic
+fn step_boss(b: Boss, full: i32, made: mut u32, boss: mut Fighter, party: mut Vec<Fighter>) {
     if boss.hp <= 0 {
         return
     }
@@ -519,16 +698,19 @@ fn step_boss(boss: mut Fighter, party: mut Vec<Fighter>) {
         if boss.timer > 0 {
             boss.timer -= 1
         }
+        let attack = if boss.move_ < ATTACKS.len() { ATTACKS[boss.move_] } else { ATTACKS[0] }
         if boss.act == ACTIVE && !boss.landed {
-            // Its swing meets every player in reach once: a parry staggers it, a dodge passes.
+            // It meets every player where it reaches, once: a parry staggers it, if a parry meets
+            // it at all; a dodge passes it.
             var parried = false
             for i in 0..party.len() {
                 var p = party[i].clone()
-                if p.hp > 0 && reach(boss.x, boss.z, p.x, p.z) <= BOSS_REACH {
-                    if p.act == PARRYING {
+                let d = reach(boss.x, boss.z, p.x, p.z)
+                if p.hp > 0 && attack.near <= d && d <= attack.far {
+                    if p.act == PARRYING && attack.parried {
                         parried = true
                     } else if p.act != DODGING {
-                        p.hp -= BOSS_DAMAGE
+                        p.hp -= attack.damage
                     }
                     party[i] = take p
                 }
@@ -536,20 +718,21 @@ fn step_boss(boss: mut Fighter, party: mut Vec<Fighter>) {
             boss.landed = true
             if parried {
                 boss.act = STAGGERED
-                boss.timer = STAGGER
+                boss.timer = attack.stagger
                 return
             }
         }
         if boss.timer == 0 {
             if boss.act == WINDUP {
                 boss.act = ACTIVE
-                boss.timer = BOSS_ACTIVE
+                boss.timer = attack.active
                 boss.landed = false
             } else if boss.act == ACTIVE {
                 boss.act = RECOVER
-                boss.timer = BOSS_RECOVERY
+                boss.timer = attack.recovery
             } else {
                 boss.act = IDLE
+                boss.move_ = NO_MOVE
             }
         }
         return
@@ -557,15 +740,17 @@ fn step_boss(boss: mut Fighter, party: mut Vec<Fighter>) {
     if target == party.len() {
         return
     }
-    if best <= BOSS_REACH {
+    if let Some((a, on)) = next_attack(b, boss.hp, full, made, best) {
+        made += on
         boss.act = WINDUP
-        boss.timer = BOSS_WINDUP
+        boss.move_ = a
+        boss.timer = ATTACKS[a].windup
         return
     }
     let tx = party[target].x
     let tz = party[target].z
-    boss.x += clamp(tx - boss.x, -BOSS_SPEED, BOSS_SPEED)
-    boss.z += clamp(tz - boss.z, -BOSS_SPEED, BOSS_SPEED)
+    boss.x += clamp(tx - boss.x, -b.speed, b.speed)
+    boss.z += clamp(tz - boss.z, -b.speed, b.speed)
 }
 
 /// Whether `log` is a log a player could send: changes in order of their frames, each a change,
@@ -759,4 +944,188 @@ fn each_weapon_fights_with_its_own_moves() {
     assert(f.party[0].act == RECOVER, "no next jab")
     // A weapon that isn't one is fists, so any party is a fight.
     assert(World::armed([77]).party[0].weapon == FISTS)
+}
+
+@test
+fn every_bosss_patterns_name_its_attacks() {
+    for b in BOSSES {
+        for a in b.calm {
+            assert(a < ATTACKS.len())
+        }
+        for a in b.enraged {
+            assert(a < ATTACKS.len())
+        }
+        assert(b.hp_each > 0 && b.speed > 0 && b.rage > 0 && b.rage < 100)
+        // Each pattern has an attack it walks in for that meets someone right by it: it never
+        // stands still beside a player.
+        let close = |pattern: [u32; 8]| -> bool {
+            for a in pattern {
+                if ATTACKS[a].walks_in && ATTACKS[a].near == 0 {
+                    return true
+                }
+            }
+            false
+        }
+        assert(close(b.calm) && close(b.enraged))
+    }
+    for a in ATTACKS {
+        assert(a.near <= a.far && a.windup > 0 && a.active > 0 && (a.stagger > 0) == a.parried)
+    }
+}
+
+@test
+fn the_idol_makes_the_next_attack_in_its_pattern_that_reaches() {
+    let idol = BOSSES[THE_IDOL]
+    let full = idol.hp_each
+    // Calm, from the start: a sweep for someone in front of it.
+    assert(next_attack(idol, full, full, 0, 128) == Some((0, 1)))
+    // Third in the pattern: the palm, which reaches past the sweeps.
+    assert(next_attack(idol, full, full, 2, 240) == Some((1, 1)))
+    // Fourth is the stomp, for someone underfoot; anyone farther gets the slam after it.
+    assert(next_attack(idol, full, full, 3, 40) == Some((3, 1)))
+    assert(next_attack(idol, full, full, 3, 150) == Some((2, 2)))
+    // Out of the next one's reach: it walks in for it, even if another reaches.
+    assert(next_attack(idol, full, full, 0, 400).is_none())
+    assert(next_attack(idol, full, full, 0, 200).is_none(), "the sweep's next, not the palm")
+    // The palm with someone too close: it goes on to the stomp.
+    assert(next_attack(idol, full, full, 2, 40) == Some((3, 2)))
+    // Below half its health, enraged: the quicker sweep.
+    assert(next_attack(idol, full / 2 - 1, full, 0, 128) == Some((4, 1)))
+}
+
+@test
+fn a_parry_meets_a_sweep_but_not_the_slam() {
+    // Standing in front of it, parrying as its attack strikes.
+    let struck = |attack: u32| -> World {
+        var w = at_the_boss(LONGSWORD)
+        w.boss.act = WINDUP
+        w.boss.move_ = attack
+        w.boss.timer = 1
+        w.party[0].act = PARRYING
+        w.party[0].timer = PARRY_WINDOW
+        step(mut w, [0])
+        step(mut w, [0])
+        take w
+    }
+    let swept = struck(0)
+    assert(swept.party[0].hp == PLAYER_HP && swept.boss.act == STAGGERED, "the sweep is parried")
+    assert(swept.boss.timer + 1 >= ATTACKS[0].stagger)
+    let slammed = struck(2)
+    assert(slammed.party[0].hp == PLAYER_HP - ATTACKS[2].damage, "no parry holds the slam")
+    assert(slammed.boss.act == ACTIVE || slammed.boss.act == RECOVER)
+}
+
+@test
+fn the_idol_winds_up_its_tell_then_strikes() {
+    var w = at_the_boss(LONGSWORD)
+    // Nothing pressed: it walks up and sweeps, and the tell says so for the whole windup.
+    var told: u32 = 0
+    for _ in 0..200 {
+        step(mut w, [0])
+        if w.boss.act == WINDUP {
+            let Some(a) = w.boss_attack() else { panic("its attack, in its windup") }
+            assert(a.name == "Sweep")
+            told += 1
+        }
+        if w.party[0].hp < PLAYER_HP {
+            break
+        }
+    }
+    assert(told == ATTACKS[0].windup && w.party[0].hp == PLAYER_HP - ATTACKS[0].damage)
+}
+
+/// The stick toward (`dx`, `dz`) at full speed (`away`: from it).
+fn stick_to(dx: i32, dz: i32) -> u32 {
+    var best: u32 = 0
+    var most: i32 = -1000000
+    for d in 0..16 {
+        let dot = DIR_X[d] * dx + DIR_Z[d] * dz
+        if dot > most {
+            most = dot
+            best = d
+        }
+    }
+    1 + best * 3 + 2
+}
+
+/// A player who reads the idol's tells, `skill` of 100 of them (each tell read or missed once,
+/// the same every run): parries what a parry meets, dodges what it doesn't, and cuts in the
+/// openings, from `keep` away (a player who keeps close is stomped on). Its next input, from
+/// `w`, its last `input`.
+fn reader(w: World, i: u32, input: u32, skill: u32, keep: i32) -> u32 {
+    let p = w.party[i].clone()
+    let b = w.boss.clone()
+    let d = reach(p.x, p.z, b.x, b.z)
+    let buttons = input & BUTTON_BITS
+    let toward = stick_to(b.x - p.x, b.z - p.z)
+    let away = stick_to(p.x - b.x, p.z - b.z)
+    let reads = (w.made * 7 + i * 3).wrapping_mul(2654435761) % 100 < skill
+    if b.act == WINDUP && b.move_ < ATTACKS.len() {
+        let a = ATTACKS[b.move_]
+        let reached = a.near <= d && d <= a.far + 32
+        if reached && b.timer <= 3 && p.act == IDLE && reads {
+            if a.parried {
+                return buttons ^ (PARRY << 6)
+            }
+            return (buttons ^ (DODGE << 6)) | away
+        }
+        // Out of its way, or waiting for it.
+        return buttons | if d < keep + 5 { 0 } else { toward }
+    }
+    // An opening long enough for a cut to land and its recovery to end before the next tell.
+    let open = (b.act == RECOVER || b.act == STAGGERED) && b.timer >= 20
+    if open && d <= 170 && p.stamina >= 20 && p.act == IDLE {
+        return buttons ^ (ATTACK << 6)
+    }
+    buttons | if d > keep { toward } else { 0 }
+}
+
+/// The fight of `n` readers of `skill`, the second keeping close, to its end; and how many times
+/// the boss made each attack.
+fn read_out(n: u32, skill: u32) -> (World, Vec<u32>) {
+    var w = World::start(n)
+    var inputs: Vec<u32> = Vec::new()
+    for _ in 0..n {
+        inputs.push(0)
+    }
+    var made: Vec<u32> = Vec::new()
+    for _ in 0..ATTACKS.len() {
+        made.push(0)
+    }
+    while !w.over {
+        for i in 0..n {
+            inputs[i] = reader(w, i, inputs[i], skill, if i == 1 { 40 } else { 160 })
+        }
+        let idle = w.boss.act != WINDUP
+        step(mut w, inputs)
+        if idle && w.boss.act == WINDUP && w.boss.move_ < ATTACKS.len() {
+            made[w.boss.move_] += 1
+        }
+    }
+    (w, made)
+}
+
+@test
+fn the_idol_falls_to_a_party_that_reads_its_tells_and_not_to_one_that_doesnt() {
+    // Every attack is made, enraged ones too: the palm at those who keep their distance, the
+    // stomp on the one who keeps close.
+    var all: Vec<u32> = Vec::new()
+    for _ in 0..ATTACKS.len() {
+        all.push(0)
+    }
+    for n in 1..4 {
+        let (good, made) = read_out(n, 95)
+        assert(good.winner == Winner::Party, f"{n} who read it win")
+        let (poor, _) = read_out(n, 20)
+        assert(poor.winner == Winner::Boss, f"{n} who miss most tells fall")
+        for a in 0..ATTACKS.len() {
+            all[a] += made[a]
+        }
+        std::io::print(
+            f"{n}: read in {good.frame / 60} s; missed, fell in {poor.frame / 60} s; slams {made[2] + made[5]}, stomps {made[3]}",
+        )
+    }
+    for a in 0..ATTACKS.len() {
+        assert(all[a] > 0, f"attack {a} made")
+    }
 }
