@@ -957,7 +957,7 @@ fn sea_shade(
     let ragged = shape_at(waves, rest + (warp * 2.4 + warp2 * 1.2) * mix(1.0, 0.0, smoothstep(60.0, 200.0, t)), du, dv, tiles(calm)).w
     // (The big waves break at their crests: there their foam's thickest, in their troughs it's
     // thinned and swept on, so the white sits on the swell's crests, not anywhere.)
-    let on_crest = mix(0.4, 1.5, smoothstep(-0.3, 0.5, wave / SEA_STATE.swell_height))
+    let on_crest = mix(0.3, 2.2, smoothstep(-0.2, 0.6, wave / SEA_STATE.swell_height))
     let dense = clamp(max(mix(foam_k, ragged, 0.75) * on_crest, tail) * (0.9 + 0.6 * gusting), 0.0, 1.0)
     let age = smoothstep(0.05, 0.8, -log(max(dense, 1.0e-3)))
     // (Between: the cells' walls, a lace round the holes the bubbles left as they burst.)
