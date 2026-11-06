@@ -122,7 +122,8 @@ fn cloth(s: Shot, q: vec3) -> (f32, vec2) {
     let high = HEAD - (HEAD - LASHED) * pow(x, 1.5)
     let edge = max(max(low - v, v - high) * 0.55, max(-u, u - BOOM))
     let up = clamp((v - 0.2) / HEAD, 0.0, 1.0)
-    let depth = (0.08 + 0.32 * s.power) * (1.0 - 0.45 * up)
+    // (Deepest a third of the way up, flat along the boom and toward the head, as a cut sail is.)
+    let depth = (0.08 + 0.32 * s.power) * (0.55 + 1.6 * up * (1.0 - up))
     let loose = 1.0 - smoothstep(0.1, 0.6, s.power)
     let shiver = loose *
         (0.08 + 0.26 * x) *
