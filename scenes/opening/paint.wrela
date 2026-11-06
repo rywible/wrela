@@ -834,7 +834,7 @@ fn sea_shade(
     // (Its colour the sun's as the frame draws its disc: burnt toward a warm white.)
     let sun_seen = mix(h.light.sun_colour, vec3(1.0, 0.84, 0.55) * luma(h.light.sun_colour), 0.55)
     // (Under the overcast's deck the sun's a glow, not a disc: no burning points of it.)
-    let mean = sun_seen * glitter(n, l, v, along, rough) * sun * 2.0 * mix(1.0, 0.04, h.light.storm)
+    let mean = sun_seen * glitter(n, l, v, along, rough) * sun * 2.0 * mix(1.0, 0.04, smoothstep(0.0, 0.6, h.light.storm))
     let slant = max(-d.y, 0.003)
     let footprint_m2 = px_at * px_at / slant
     let peak = clamp(SPARK_GLINT / footprint_m2, 4.0, SPARK_PEAK)
@@ -880,7 +880,7 @@ fn sea_shade(
     let cut = luma(spread_) - kept_l
     let carried = mean * pointed
     // (Under the deck there's no sun disc for a facet to burn with: no scattered white points.)
-    let glint = kept_ + carried * points * (1.0 + cut / max(luma(carried), 1.0e-4)) * (1.0 - h.light.storm)
+    let glint = kept_ + carried * points * (1.0 + cut / max(luma(carried), 1.0e-4)) * (1.0 - smoothstep(0.0, 0.6, h.light.storm))
     // The light that comes back up out of the water: deep blue-green, brighter through the
     // crests lit from behind.
     // (Under the rock, less of it: the rock's mass hides a great piece of the sky over the water
@@ -958,8 +958,11 @@ fn sea_shade(
     let ragged = shape_at(waves, rest + (warp * 2.4 + warp2 * 1.2) * mix(1.0, 0.0, smoothstep(60.0, 200.0, t)), du, dv, tiles(calm)).w
     // (The big waves break at their crests: there their foam's thickest, in their troughs it's
     // thinned and swept on, so the white sits on the swell's crests, not anywhere.)
-    let on_crest = mix(0.3, 2.2, smoothstep(-0.2, 0.6, wave / SEA_STATE.swell_height))
-    let dense = clamp(max(mix(foam_k, ragged, 0.75) * on_crest, tail) * (0.9 + 0.6 * gusting), 0.0, 1.0)
+    let on_crest = mix(0.3, mix(1.0, 2.2, smoothstep(4.0, 14.0, t)), smoothstep(-0.2, 0.6, wave / SEA_STATE.swell_height))
+    let dense_ = clamp(max(mix(foam_k, ragged, 0.75) * on_crest, tail) * (0.9 + 0.6 * gusting), 0.0, 1.0)
+    // (Never one solid mass, even where a whole crest breaks at once: it breaks in tongues and
+    // bursts along the ridge, with darker water torn between them.)
+    let dense = dense_ * mix(1.0, 0.45 + 0.55 * smoothstep(0.3, 0.7, noise(wa * 0.35 + warp * 2.0 + vec2(5.0, 2.0))), smoothstep(0.4, 0.9, foam_k))
     let age = smoothstep(0.05, 0.8, -log(max(dense, 1.0e-3)))
     // (Between: the cells' walls, a lace round the holes the bubbles left as they burst.)
     // (Never a net's even mesh: its walls thick and thin, broken where the lace is thin.)
@@ -968,7 +971,8 @@ fn sea_shade(
     let froth_h = mix(mix(billow, walls, smoothstep(0.05, 0.45, age)), streak, smoothstep(0.3, 0.8, age))
     let web_k = clamp(1.0 - px_m * 2.0, 0.0, 1.0)
     let feather = 0.09 + 0.3 * age + 0.3 * (1.0 - web_k)
-    let eroded = clamp((dense - (1.0 - froth_h)) / feather + dense * dense * 0.2, 0.0, 1.0)
+    // (And its bubbles' holes kept open even at its thickest: a froth, never a painted sheet.)
+    let eroded = clamp((dense * (0.62 + 0.3 * lace) - (1.0 - froth_h)) / feather + dense * dense * 0.1, 0.0, 1.0)
     let lines = smoothstep(0.9 - blown * 0.06, 0.96 - blown * 0.04, ridge) * (0.4 + 0.6 * lace)
     // (Too far for its froth, a whitecap still breaks up: torn by a coarser pattern a pixel there
     // can hold, metres across, not a smooth lens of white.)
@@ -992,6 +996,12 @@ fn sea_shade(
         heaped *
         // (Thinning to its edge, the water seen through it, never a cut-out block on the sea.)
         smoothstep(0.18, 0.3, dense + tail + (lace - 0.5) * 0.6)
+    // (Far off, the foam's too fine to draw, but the big swells still break: their crests read
+    // white in broken caps along the ridge, a cap here and there, never a sheet.)
+    let far_caps = smoothstep(12.0, 45.0, t) *
+        smoothstep(0.2, 0.8, p.y) *
+        smoothstep(0.5, 0.78, noise(vec2(wa.x * 0.05, wa.y * 0.12) + warp * 0.6) * 0.7 + lace * 0.3) *
+        smoothstep(0.03, 0.1, whitecaps(SEA_STATE)) * 0.6
     let white = max(foamed, rows)
     // (Lit as a mass of bubbles: its domes bright, its creases and thin film greyer, the older
     // the greyer.)
@@ -1002,7 +1012,7 @@ fn sea_shade(
     // (A break that's breaking now is the whitest thing on the sea, its top lit full: no grey
     // pillow.)
     let fresh = 1.0 - smoothstep(0.0, 0.3, age)
-    let bright_ = mix(bright, max(bright, 0.95), fresh * smoothstep(0.5, 0.9, dense) * 0.45) *
+    let bright_ = mix(bright, max(bright, 0.95), fresh * smoothstep(0.5, 0.9, dense) * 0.25) *
         // (Up close, its bubbles: a fine grain of brighter and greyer, never a smooth glowing sheet.)
         mix(1.0, 0.7 + 0.5 * noise(wa * vec2(9.0, 12.0) + warp2 * 2.0), web_k)
     // Under it and round it, the water's paler and greener, full of the bubbles the break drove
@@ -1026,6 +1036,8 @@ fn sea_shade(
     c *= mix(0.45, 1.0, smoothstep(0.0, 0.3, max(wl, 0.0)))
     c += body * (1.0 - fresnel) * mix(2.6, 0.9, h.light.storm) * max(bubbles, aer * 0.8) * (1.0 - white)
     c = mix(c, foam_light * bright_, white * 0.92)
+    // (The far crests' caps, lit full: the whitest thing out there, as a breaking crest is.)
+    c = mix(c, foam_light * 0.9, far_caps * (1.0 - white))
     // (Over a fresh break, the spray it throws: a soft haze round its head, blurring its edge.)
     c = mix(c, foam_light * 0.8, smoothstep(0.45, 0.95, torn) * 0.18 * (1.0 - white) * web_k)
     // Spindrift: the spray the wind tears off a crest as it breaks, a thin white veil blown a few
