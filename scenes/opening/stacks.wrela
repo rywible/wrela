@@ -10,7 +10,7 @@
 // None in the skiff's first reach, none in the lane it sails out along, none in front of the
 // cathedral rock.
 
-use look::{ISLE, hash2, noise}
+use look::{ISLE, hash2, noise, noise3}
 
 /// A cell's side (m), and how far a cluster reaches from its middle (m): a cluster stays a margin
 /// inside its cell.
@@ -74,14 +74,21 @@ fn stack(q: vec3, r: f32, tall: f32, seed: f32, px: f32) -> f32 {
     // set spacing; and only where a pixel holds them steadily.)
     let hard = smoothstep(0.55, 0.8, noise(vec2(q.y * 0.22, seed * 1.7)))
     let lip = 1.0 + 0.06 * hard * (1.0 - smoothstep(0.3, 1.0, px))
-    // (Narrowing as it rises; the sea's notch cut into its foot, a fallen apron round it.)
-    let notch = 1.0 - 0.14 * exp(-pow((q.y - 2.5) / 2.0, 2.0))
-    let girth = r * lobe * lip * (1.0 - 0.4 * up) * notch
-    let tilt = vec2(hash2(vec2(seed, 3.0)) - 0.5, hash2(vec2(seed, 4.0)) - 0.5) * 0.5
-    // (Its crown broken in steps, a bed or two, round its top.)
-    let broken = floor(noise(dir * 2.2 + vec2(seed * 3.0)) * 3.0) * tall * 0.07
-    let crown = tall - dot(v, tilt) - 0.2 * rv - broken
-    max(rv - girth, max(q.y - crown, -q.y - 12.0)) * 0.75
+    // (Stepping in as it rises, a few great shelves where whole beds have fallen away, each
+    // step eased over a couple of metres; and the sea's notch cut deep into its foot.)
+    let tiers = q.y / (tall * (0.24 + 0.12 * hash2(vec2(seed, 6.0)))) + hash2(vec2(seed, 7.0))
+    let stepped = floor(tiers) + smoothstep(0.8, 1.0, fract(tiers))
+    let shelf = 1.0 - (0.06 + 0.06 * hash2(vec2(seed, 8.0))) * stepped * (0.6 + 0.8 * noise(around * 1.1 + vec2(seed * 4.0)))
+    let notch = 1.0 - 0.26 * exp(-pow((q.y - 2.2) / 2.2, 2.0))
+    let girth = r * lobe * lip * max(shelf, 0.35) * (1.0 - 0.2 * up) * notch
+    // (Its crown a tilted shelf, a bed's top, slumped toward one side; no battlements.)
+    let tilt = vec2(hash2(vec2(seed, 3.0)) - 0.5, hash2(vec2(seed, 4.0)) - 0.5) * 0.7
+    let crown = tall - dot(v, tilt) - 0.12 * rv
+    // (Its faces rough: blocks proud and hollows fallen out, a few metres across, where a pixel
+    // holds them steadily; its mass alone farther off.)
+    let rough = (noise3(q * 0.16 + vec3(seed)) - 0.5) * 2.4 + (noise3(q * 0.4 + vec3(seed * 2.0)) - 0.5) * 0.9
+    let shell = max(rv - girth, max(q.y - crown, -q.y - 12.0))
+    (shell + rough * (1.0 - smoothstep(0.4, 1.6, px)) * smoothstep(8.0, 0.0, abs(shell))) * 0.6
 }
 
 /// A skerry: a low hump of broken rock, `r` m round and `tall` high, awash.
@@ -97,7 +104,17 @@ fn in_cluster(cl: vec4, p: vec3, px: f32) -> f32 {
     let q = p - vec3(cl.x, 0.0, cl.y)
     let tall = cl.z
     let seed = cl.w
-    var d = stack(q, 4.5 + tall * 0.16, tall, seed, px)
+    // (Some slender, some squat and broad as a bastion.)
+    let girth = (4.5 + tall * 0.16) * mix(0.85, 1.7, hash2(vec2(seed, 9.0)))
+    var d = stack(q, girth, tall, seed, px)
+    // (The fallen blocks round its foot, awash.)
+    for i in 0..3 {
+        let fi = f32(i)
+        let a = hash2(vec2(seed, fi + 40.0)) * 6.2831853
+        let at = vec3(cos(a), 0.0, sin(a)) * (girth * 1.05 + 2.0 + 3.0 * hash2(vec2(seed, fi + 50.0)))
+        let br = 1.2 + 2.0 * hash2(vec2(seed, fi + 60.0))
+        d = min(d, skerry(q - at, br * 1.3, br, seed + fi * 3.0))
+    }
     for i in 0..4 {
         let fi = f32(i)
         let a = hash2(vec2(seed, fi + 10.0)) * 6.2831853
