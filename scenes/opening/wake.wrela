@@ -306,7 +306,7 @@ pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
                         noise(flow * vec2(2.3, 2.9) + vec2(4.0)) * 0.45
                     let up_k = clamp(b / max(crest, 0.02), 0.0, 1.2)
                     // (Glassy and whole near the hull, streaked higher, in drops at its crest.)
-                    let torn = smoothstep(0.1 + 0.4 * up_k, 0.8 + 0.4 * up_k, streaks)
+                    let torn = smoothstep(0.3 + 0.4 * up_k, 0.85 + 0.4 * up_k, streaks)
                     let edge = 1.0 - smoothstep(0.45, 1.0, up_k + 0.3 * (streaks - 0.5))
                     let ends = smoothstep(0.0, 0.25, x) * smoothstep(1.0, 0.45, x)
                     let cover = torn *
@@ -314,7 +314,7 @@ pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
                         ends *
                         smoothstep(-0.05, 0.35, b) *
                         smoothstep(s.boat.y - 0.3, s.boat.y + 0.35, o.y + d.y * t) *
-                        0.38 *
+                        0.22 *
                         min(strong * 1.6, 1.0) *
                         // (Seen edge on, a sheet's streaks crowd into a comb of white ticks.)
                         smoothstep(0.12, 0.4, abs(dn))

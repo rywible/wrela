@@ -151,7 +151,12 @@ fn cloth(s: Shot, q: vec3) -> (f32, vec2) {
         x *
         sin(u * 4.0 + v * 1.1 - s.held * 26.0) +
         smoothstep(0.3, 1.0, loose) * 0.06 * x * sin(u * 11.0 - v * 2.5 - s.held * 47.0)
-    let off = w - belly - twist - bubble - flutter - shiver
+    // (Held between the wishbone's arms where it passes them: deeper there, the boom showed
+    // through it as a slit.)
+    let shape = belly + twist + bubble + flutter + shiver
+    let cap = BOW_OUT * sin(3.1415927 * x) * 0.8
+    let at_boom = smoothstep(0.45, 0.0, abs(v - LASHED))
+    let off = w - mix(shape, clamp(shape, -cap, cap), at_boom)
     // (Its flogging folds steepen the field: march it more carefully the looser it flies, or
     // the rays step through the cloth and it reads torn.)
     let face = abs(off) * 0.85 / (1.0 + 1.6 * loose) - 0.011
@@ -373,7 +378,7 @@ fn patch(uv: vec2, at: vec2, half: vec2, turn: f32) -> (f32, f32) {
 fn old_wood(q: vec3, y: f32, outside: f32, inside: f32, grain: f32, fine: f32) -> (vec3, f32, f32) {
     let lap = floor(y / 0.075)
     let tone = hash2(vec2(lap, 7.0))
-    var wood = mix(vec3(0.17, 0.14, 0.11), vec3(0.3, 0.26, 0.21), tone * 0.5 + grain * 0.5)
+    var wood = mix(vec3(0.27, 0.24, 0.2), vec3(0.43, 0.39, 0.33), tone * 0.5 + grain * 0.5)
     wood *= 0.85 + 0.3 * fine
     // (The paint, worn through to the wood where hands and the sea rub it most: at the rail, the
     // bow, each lap's edge.)
@@ -381,7 +386,7 @@ fn old_wood(q: vec3, y: f32, outside: f32, inside: f32, grain: f32, fine: f32) -
         0.2 * smoothstep(-0.06, 0.0, y) + 0.15 * smoothstep(1.2, 2.0, q.z) +
         0.15 * smoothstep(0.75, 1.0, fract(y / 0.075))
     let painted = 1.0 - smoothstep(0.62, 0.7, wear)
-    let faded = mix(vec3(0.24, 0.06, 0.04), vec3(0.3, 0.17, 0.13), smoothstep(-0.25, 0.0, y))
+    let faded = mix(vec3(0.36, 0.1, 0.07), vec3(0.45, 0.26, 0.2), smoothstep(-0.25, 0.0, y))
     var c = mix(wood, faded * (0.85 + 0.25 * grain), painted)
     let ochre = smoothstep(-0.245, -0.235, y) * smoothstep(-0.205, -0.215, y)
     c = mix(c, vec3(0.42, 0.31, 0.13) * (0.8 + 0.3 * grain), ochre * painted)
@@ -402,7 +407,7 @@ fn old_wood(q: vec3, y: f32, outside: f32, inside: f32, grain: f32, fine: f32) -
     let board = floor(q.x / 0.085 + 0.5)
     let bt = hash2(vec2(board, 11.0))
     let dg = noise(vec2(q.z * 2.0 + bt * 9.0, q.x * 70.0))
-    var deck = mix(vec3(0.2, 0.18, 0.15), vec3(0.36, 0.33, 0.28), bt * 0.5 + dg * 0.5) * (0.85 + 0.3 * fine)
+    var deck = mix(vec3(0.3, 0.28, 0.24), vec3(0.5, 0.47, 0.41), bt * 0.5 + dg * 0.5) * (0.85 + 0.3 * fine)
     let edge = abs(fract(q.x / 0.085 + 0.5) - 0.5) * 0.085
     let gap = 1.0 - smoothstep(0.003, 0.007, edge)
     deck = mix(deck, vec3(0.03, 0.025, 0.02), gap * 0.9)
