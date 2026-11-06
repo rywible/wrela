@@ -948,16 +948,16 @@ fn sea_shade(
     // (Between: the cells' walls, a lace round the holes the bubbles left as they burst.)
     // (Never a net's even mesh: its walls thick and thin, broken where the lace is thin.)
     let gap = min(c1.y - c1.x, (c2.y - c2.x) * 1.6 + 0.15 * (1.0 - lace))
-    let walls = (1.0 - smoothstep(0.0, 0.3 + 0.5 * lace, gap)) * (0.35 + 0.35 * lace) + lace * 0.3
+    let walls = (1.0 - smoothstep(0.0, 0.35 + 0.5 * lace, gap)) * (0.25 + 0.3 * lace) + lace * 0.4
     let froth_h = mix(mix(billow, walls, smoothstep(0.05, 0.45, age)), streak, smoothstep(0.3, 0.8, age))
     let web_k = clamp(1.0 - px_m * 2.0, 0.0, 1.0)
     let feather = 0.15 + 0.35 * age + 0.3 * (1.0 - web_k)
     let eroded = clamp((dense - (1.0 - froth_h)) / feather + dense * dense, 0.0, 1.0)
-    let lines = smoothstep(0.9 - blown * 0.12, 0.97 - blown * 0.12, ridge) * (0.4 + 0.6 * lace)
+    let lines = smoothstep(0.93 - blown * 0.06, 0.97 - blown * 0.04, ridge) * (0.4 + 0.6 * lace)
     // (Under the lace, the thin film of old foam: a grey marbling, the water showing through.)
     let white = max(
-        max(mix(dense, eroded * (1.0 - 0.55 * age), web_k), dense * 0.35),
-        mix(blown * 0.1, lines * 0.45, web_k),
+        max(mix(dense * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.55 * age) * mix(1.0, smoothstep(0.3, 0.75, lace), age), web_k), dense * 0.35 * (1.0 - age)),
+        mix(blown * 0.1, lines * 0.2 * (1.0 - smoothstep(0.975, 0.995, ridge)) * smoothstep(0.05, 0.5, blown + dense), web_k),
     ) *
         0.95
     // (Lit as a mass of bubbles: its domes bright, its creases and thin film greyer, the older
@@ -966,7 +966,7 @@ fn sea_shade(
     let bright = (0.62 + 0.38 * froth) * (0.75 + 0.25 * (1.0 - age)) * (0.75 + 0.25 * eroded)
     // Under it and round it, the water's paler and greener, full of the bubbles the break drove
     // down, as the water under a whitecap is.
-    let bubbles = smoothstep(0.02, 0.4, foam_k)
+    let bubbles = smoothstep(0.08, 0.6, foam_k) * (0.5 + 0.5 * lace)
     // The skiff's wake, and the lip of broken water along its waterline (`wake`).
     let (wake, foam, wl) = marks(s, p, xz, rest)
     // (Foam's a froth of bubbles: lit by the sun on it, and through it from behind when the eye
