@@ -189,7 +189,7 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32, f32) {
     let fresh = exp(-behind_ / (3.5 + 7.0 * way + 12.0 * run))
     let trail = core *
         smoothstep(-0.3, 0.4, behind_) *
-        smoothstep(0.78 - 0.48 * fresh, 0.98 - 0.38 * fresh, churned) *
+        smoothstep(0.78 - 0.48 * fresh, 0.92 - 0.46 * fresh, churned) *
         (0.35 + 0.65 * fresh) *
         smoothstep(0.0, 0.4, way)
     // (Under it, the water's paler and greener, full of the bubbles the hull and its wash drove
