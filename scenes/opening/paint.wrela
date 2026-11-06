@@ -625,7 +625,7 @@ pub fn sea_shade(
     p: vec3,
     d: vec3,
     t: f32,
-    mirrors: bool,
+    mirrors: f32,
     tint: vec4,
 ) -> (vec3, f32, f32, vec3, f32) {
     let detail = clamp(1.0 - t / 60.0, 0.0, 1.0)
@@ -693,9 +693,10 @@ pub fn sea_shade(
     // the swell in broken vertical strokes, as the waves under it each mirror a piece.
     // (Whether the mirrored ray meets it is the caller's, `mirrors`: each scene has its own; and
     // how its rock darkens the sky it hides, `tint`: the colour, and the least of it that shows.)
-    if mirrors {
+    // (`mirrors` how much of the pixel's water the mirrored rays found the isle in, 0 to 1.)
+    if mirrors > 0.0 {
         let broken = smoothstep(0.3, 0.7, noise(vec2(p.x * 0.02, p.z * 0.25)))
-        mirrored = mix(mirrored, mirrored * tint.rgb, tint.a + (0.8 - tint.a) * broken)
+        mirrored = mix(mirrored, mirrored * tint.rgb, (tint.a + (0.8 - tint.a) * broken) * mirrors)
     }
     // The skiff's own reflection beside it: the hull's own colours in the shade it hangs in,
     // its edge soft (how near the mirrored ray came to it) and broken by the ripples, and gone a
@@ -1355,7 +1356,7 @@ fn sample(
             p,
             d,
             t,
-            mirrors,
+            if mirrors { 1.0 } else { 0.0 },
             vec4(0.72, 0.6, 0.52, 0.35),
         )
         c = sc
