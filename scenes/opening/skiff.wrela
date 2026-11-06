@@ -51,14 +51,15 @@ fn form(q: vec3) -> vec2 {
         let w = max(BEAM * 0.8 * taper, 0.02)
         let dk = max(
             DEEP *
-                0.72 *
+                0.85 *
                 (1.0 - 0.85 * pow(max(z, 0.0), 1.6)) *
                 (1.0 - 0.25 * z * z * step(z, 0.0)),
             0.03,
         )
         let xs = abs(q.x) / w
         let ys = abs(y) / dk
-        let e = pow(xs * xs * xs + ys * ys * ys, 1.0 / 3.0)
+        // (Its bilge and deck edge rounded, not a slab's square corners.)
+        let e = pow(pow(xs, 2.4) + pow(ys, 2.4), 1.0 / 2.4)
         return vec2(max((e - 1.0) * min(w, dk) * 0.8, abs(q.z) - LONG), y)
     }
     let taper = if z > 0.0 { 1.0 - pow(z, 1.8) } else { 1.0 - 0.75 * pow(-z, 2.6) }
@@ -215,8 +216,10 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
     let outside = 1.0 - smoothstep(0.6, 0.7, dot(n, s.boat_y))
     let sheer = sheer_at(clamp(q.z / LONG, -1.0, 1.0))
     let y = q.y - sheer
-    let strake = smoothstep(-0.12, -0.105, y) * outside
-    let cream = smoothstep(-0.15, -0.14, y) * (1.0 - smoothstep(-0.125, -0.115, y)) * outside
+    // (The planing hull lacquered madder all down its topsides, the gilt line at its chine.)
+    let strake = smoothstep(if PLANING > 0.5 { -0.2 } else { -0.12 }, if PLANING > 0.5 { -0.185 } else { -0.105 }, y) * outside
+    let cl = if PLANING > 0.5 { -0.08 } else { 0.0 }
+    let cream = smoothstep(-0.15 + cl, -0.14 + cl, y) * (1.0 - smoothstep(-0.125 + cl, -0.115 + cl, y)) * outside
     let bottom = (1.0 - smoothstep(-0.34, -0.32, y)) * outside
     a = mix(a, vec3(0.3, 0.045, 0.03) * (0.85 + 0.3 * grain), strake)
     a = mix(a, vec3(0.75, 0.52, 0.18), cream)
