@@ -1,0 +1,9 @@
+# Hakuro, the hero: the fox-masked wanderer locked on Nov 5 (hero-masks v17), written as fields
+# on a skeleton (engine::creature) and realized as a mesh by the engine (engine::realize). The
+# Quaternius body he was designed on is only a measured reference: nothing here is loaded from a
+# file.
+[package]
+name = "hakuro"
+
+[dependencies]
+engine = { workspace = true }

@@ -31,7 +31,7 @@ pub const START: f32 = 0.0
 pub const KINETIC: f32 = 0.0
 
 /// Which view draws: 0 the opening's, 1 the rock near, 2 the skiff near, 3 the cathedral, 4
-/// the sea from over it, 5 toward the sun (`--set VIEW=1`).
+/// the sea from over it, 5 toward the sun, 8 the traveller close (`--set VIEW=1`).
 pub const VIEW: u32 = 0
 
 /// How much of the drawing lies over the render: 1, all of it; 0, the physical render alone
@@ -59,6 +59,11 @@ pub const PLANING: f32 = 1.0
 /// Where the camera stands: 0 the opening's shot, 1 the player's, up behind the skiff
 /// (`Rig::framing`; `--set FRAMING=1`).
 pub const FRAMING: f32 = 0.0
+
+/// Whether the hero (Hakuro, content/hakuro: his fields realized and drawn into the painted
+/// scene, `aboard`) stands to the sail: 1, him; 0 the traveller's figure in his place
+/// (`--set HERO=0`).
+pub const HERO: f32 = 1.0
 
 pub fn init() -> State {
     targets(heavens(SUN, 3.0), 640, 360)

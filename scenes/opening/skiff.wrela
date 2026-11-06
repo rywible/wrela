@@ -226,6 +226,26 @@ fn parts(s: Shot, q: vec3) -> vec4 {
     vec4(wood, sail, rig, hero(j, q, blow, s.held))
 }
 
+/// The skiff without its traveller at `p` (the world's): the hull, the sail and the spars, as
+/// the eye meets them where the hero is drawn himself (`main::HERO`), and as they shadow him.
+pub fn vessel(s: Shot, p: vec3) -> f32 {
+    let k = parts(s, local(s, p))
+    min(min(k.x, k.y), k.z)
+}
+
+/// How much of the sun reaches `p` past the hull, the sail and the spars (1 all of it), toward
+/// `l`: the hero's shadows from the rig.
+pub fn vessel_shadow(s: Shot, p: vec3, l: vec3) -> f32 {
+    var t = 0.02
+    var lit = 1.0
+    for _ in 0..24 {
+        let h = vessel(s, p + l * t)
+        lit = min(lit, 12.0 * h / t)
+        t += clamp(h, 0.02, 0.4)
+    }
+    clamp(lit, 0.0, 1.0)
+}
+
 /// The skiff at `p` (the world's): its distance.
 pub fn skiff(s: Shot, p: vec3) -> f32 {
     let k = parts(s, local(s, p))
