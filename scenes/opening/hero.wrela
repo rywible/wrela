@@ -75,8 +75,12 @@ pub fn parts(j: Joints, q: vec3, blow: vec3, t: f32) -> vec4 {
     let (spine, side, face) = frame(j)
     let up = vec3(y: 1.0)
     // Legs, bent at the knee out toward the face, into heavy boots.
-    let knee_a = mix(j.fore_foot, j.hips, 0.5) + face * 0.14 + up * 0.22 * j.sit
-    let knee_b = mix(j.aft_foot, j.hips, 0.5) + face * 0.12 + up * 0.22 * j.sit
+    // (Each knee out as far as the leg's two halves, 0.46 m each, leave it: the lower the hips
+    // sink, the deeper the bend.)
+    let la = length(j.hips - j.fore_foot) * 0.5
+    let lb = length(j.hips - j.aft_foot) * 0.5
+    let knee_a = mix(j.fore_foot, j.hips, 0.5) + face * max(sqrt(max(0.2116 - la * la, 0.0)), 0.06) + up * 0.22 * j.sit
+    let knee_b = mix(j.aft_foot, j.hips, 0.5) + face * max(sqrt(max(0.2116 - lb * lb, 0.0)), 0.05) + up * 0.22 * j.sit
     let hip_a = j.hips + side * 0.1
     let hip_b = j.hips - side * 0.1
     var body = min(
@@ -89,8 +93,11 @@ pub fn parts(j: Joints, q: vec3, blow: vec3, t: f32) -> vec4 {
     // Bare arms, heavy at the shoulder, bent a little at the elbow.
     let sh_a = j.neck - spine * 0.07 + side * 0.22
     let sh_b = j.neck - spine * 0.07 - side * 0.22
-    let el_a = mix(sh_a, j.fore_hand, 0.5) - spine * 0.06 - side * 0.03
-    let el_b = mix(sh_b, j.aft_hand, 0.5) - spine * 0.06 + side * 0.03
+    // (Elbows bent out and down as far as the arm's halves, 0.3 m each, leave them.)
+    let ea = length(j.fore_hand - sh_a) * 0.5
+    let eb = length(j.aft_hand - sh_b) * 0.5
+    let el_a = mix(sh_a, j.fore_hand, 0.5) - (spine * 0.8 + side * 0.4) * max(sqrt(max(0.09 - ea * ea, 0.0)), 0.03)
+    let el_b = mix(sh_b, j.aft_hand, 0.5) - (spine * 0.8 - side * 0.4) * max(sqrt(max(0.09 - eb * eb, 0.0)), 0.03)
     let arms = min(
         min(taper(q, sh_a, el_a, 0.068, 0.05), taper(q, el_a, j.fore_hand, 0.05, 0.04)),
         min(taper(q, sh_b, el_b, 0.068, 0.05), taper(q, el_b, j.aft_hand, 0.05, 0.04)),

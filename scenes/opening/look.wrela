@@ -83,6 +83,10 @@ pub struct Shot: Copy + GpuData {
     pub fore_foot: vec3,
     pub aft_foot: vec3,
     pub gaze: vec3,
+    /// The sail's cloth: its belly, twist, luff bubble and flogging, its leech's flutter
+    /// (`sail::Motion`).
+    pub cloth: vec4,
+    pub quiver: vec4,
     /// Which shading language draws it all: 0 the drawn look (ink and hatching over the render),
     /// 1 painted CG, 2 cel and ink, 3 clean CG.
     pub look: f32,
@@ -147,15 +151,15 @@ pub fn shot_at(
     // The player's camera: up behind the skiff along the way it's looking, the skiff low in the
     // frame and the sea ahead of it, wider, so the water is seen going by.
     let heading = vec2(sin(-0.22 + r.shown_look), cos(-0.22 + r.shown_look))
-    // (Under way it falls back as the skiff surges and catches up as it settles, lower and wider
-    // the faster it runs.)
+    // (Under way it falls back a little as the skiff surges and catches up as it settles, a
+    // little lower the faster it runs.)
     let run = smoothstep(2.0, 10.0, r.shown_rush)
     let surge = clamp(r.shown_speed - r.shown_rush, -1.0, 3.0)
-    let back = PLAY_BACK - 0.5 * run + max(surge, 0.0) * 0.8 + min(surge, 0.0) * 0.25
+    let back = PLAY_BACK - 0.3 * run + max(surge, 0.0) * 0.35 + min(surge, 0.0) * 0.15
     let beside = vec2(heading.y, -heading.x) * (PLAY_SIDE * r.shown_perch)
     let high = vec3(
         r.shown_at.x - heading.x * back + beside.x,
-        PLAY_UP - 0.7 * run + boat.y * 0.5,
+        PLAY_UP - 0.35 * run + boat.y * 0.5,
         r.shown_at.y - heading.y * back + beside.y,
     )
     let ahead_of = vec3(
@@ -175,7 +179,9 @@ pub fn shot_at(
         chatter
     let eye = mix(low, high + shake, k)
     let at = eye + normalize(mix(rock, normalize(ahead_of - high), k)) * 1000.0
-    let near = mix(3.7, PLAY_FOCAL - 0.32 * run - 0.12 * max(surge, 0.0) - 0.2 * r.jolt, k)
+    // (Only a touch wider at a run: widened much, the near water stretched and swam toward the
+    // frame's edges like a fish-eye's.)
+    let near = mix(3.7, PLAY_FOCAL - 0.06 * run - 0.03 * max(surge, 0.0) - 0.04 * r.jolt, k)
     // The other views, for looking closer: the rock from 1.1 km, the skiff from beside it, the
     // cathedral from 900 m, the low sun raking across it from the left, the sea from 30 m over
     // it, looking down its sun path, and the sun from the skiff's own eye.
@@ -208,7 +214,7 @@ pub fn shot_at(
     let forward = normalize(at - eye)
     let level = normalize(cross(vec3(y: 1.0), forward))
     // (The player's camera leans a little with the skiff's heel.)
-    let roll = if view == 0 { -r.shown_heel * 0.3 * k } else { 0.0 }
+    let roll = if view == 0 { -r.shown_heel * 0.12 * k } else { 0.0 }
     let flat_up = cross(forward, level)
     let right = level * cos(roll) + flat_up * sin(roll)
     let up = cross(forward, right)
@@ -246,6 +252,8 @@ pub fn shot_at(
         fore_foot: g.fore_foot,
         aft_foot: g.aft_foot,
         gaze: g.gaze,
+        cloth: g.cloth,
+        quiver: g.quiver,
         look: 0.0,
         lantern: 0.0,
         fine: 1.0,

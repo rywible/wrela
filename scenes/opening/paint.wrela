@@ -16,7 +16,7 @@ use engine::ocean::{Waves, level_at, shape_at, surface_at, whitecaps}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use yonder::falls
 use skiff::{dry, skiff, skiff_material, skiff_normal}
-use wake::{marks, spray, stirred}
+use wake::{lifted, marks, spray, stirred}
 use engine::far::foot
 use engine::light::{Light, Lit, gloss, hazed, matte, sun_disc, world}
 use engine::air::aerial_uvw
@@ -246,7 +246,9 @@ fn sea_level(s: Shot, waves: Waves, p: vec3, foot: f32) -> f32 {
     // width or so, so the water slopes down to it rather than standing in a wall round it.)
     let gunwale = s.boat.y - (s.boat_y.x * rel.x + s.boat_y.z * rel.z) / max(s.boat_y.y, 0.5)
     let near = 1.0 - smoothstep(1.0, 2.6, e)
-    mix(level, min(level, gunwale - 0.14), near * near * (3.0 - 2.0 * near))
+    // (And heaped by the hull as it makes way: its bow wave, its quarters' hollow, the hump
+    // astern: `wake::lifted`.)
+    mix(level, min(level, gunwale - 0.14), near * near * (3.0 - 2.0 * near)) + lifted(s, p)
 }
 
 fn march_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {

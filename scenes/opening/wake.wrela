@@ -14,6 +14,49 @@ fn running(s: Shot) -> f32 {
     smoothstep(1.5, 8.5, s.speed)
 }
 
+/// How far aft of the bow its wave peels off (m, along the hull from its middle), and how far out
+/// the wave's crest stands from the centreline `from` m aft of there: close along the forward
+/// sections, then spreading away. Running, the water lets go further aft, where the hull's lifted
+/// onto it.
+fn bow_at(s: Shot) -> f32 {
+    1.95 - 0.6 * running(s)
+}
+
+fn crest_out(s: Shot, from: f32) -> f32 {
+    0.2 + from * (0.42 - 0.12 * running(s)) + 0.08 * sqrt(from)
+}
+
+/// How the skiff heaps the sea at `p` (the world's): the water piled against its bow and peeled
+/// off either side as a wave that spreads aft, the hollow along its quarters where the water's
+/// drawn down, and the hump that closes behind its transom. Its rise there (m).
+pub fn lifted(s: Shot, p: vec3) -> f32 {
+    let rel = p - s.boat
+    let along = dot(rel, s.boat_z)
+    let across = abs(dot(rel, s.boat_x))
+    if along > 2.8 || along < -6.0 || across > 3.5 {
+        return 0.0
+    }
+    let way = clamp(abs(s.speed) / 3.0, 0.0, 1.0)
+    let run = running(s)
+    let bow = bow_at(s)
+    let from = bow - along
+    // (The pile-up at the stem, the water shoved ahead of it.)
+    let stem = vec2(across / 0.35, (along - bow - 0.05) / 0.3)
+    let pile = 0.05 * way * (1.0 - 0.4 * run) * exp(-dot(stem, stem))
+    // (The wave off each bow: a steep ridge hard by the hull, lowering and broadening aft.)
+    let f = max(from, 0.0)
+    let out = across - crest_out(s, f)
+    let wide = 0.02 + 0.035 * f
+    let rise = (0.07 * way + 0.06 * run) * smoothstep(-0.15, 0.25, from) * exp(-f / (1.4 + 1.6 * run))
+    let ridge = rise * exp(-out * out / wide) * (1.0 + 0.6 * smoothstep(0.0, -0.2, out) * (1.0 - smoothstep(0.0, 1.0, f)))
+    // (The water drawn down along the quarters, and filling back in behind the transom.)
+    let quarter = -0.05 * way * exp(-pow(across - 0.5, 2.0) / 0.06) * smoothstep(0.6, -0.2, along) * smoothstep(-2.8, -1.8, along)
+    let behind = -along - 2.1
+    let hump = (0.05 * way + 0.03 * run) * (exp(-pow(behind - 1.1 - 0.5 * run, 2.0) / 0.5) - 0.6 * exp(-behind * behind / 0.12)) *
+        exp(-across * across / (0.18 + 0.04 * max(behind, 0.0)))
+    pile + ridge + quarter + hump * step(0.0, behind + 0.3)
+}
+
 /// Foam's lace at `w` (m, where the water rests): clots of froth and the bubbles round them,
 /// in drifts, warped and broken so it's never a net's mesh. In [0, 1].
 pub fn lace_at(w: vec2) -> f32 {
@@ -77,7 +120,12 @@ pub fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
         run *
         0.8
     let world_tilt = bx * tilt.x + bz * tilt.y
-    let m = normalize(n + vec3(world_tilt.x, 0.0, world_tilt.y))
+    // (The water the hull heaps up turned to face the light as its slopes do.)
+    let at3 = vec3(xz.x, s.boat.y, xz.y)
+    let e = 0.06
+    let gx = (lifted(s, at3 + vec3(e, 0.0, 0.0)) - lifted(s, at3 - vec3(e, 0.0, 0.0))) / (2.0 * e)
+    let gz = (lifted(s, at3 + vec3(0.0, 0.0, e)) - lifted(s, at3 - vec3(0.0, 0.0, e))) / (2.0 * e)
+    let m = normalize(n + vec3(world_tilt.x - gx, 0.0, world_tilt.y - gz))
     (normalize(mix(m, vec3(y: 1.0), calm * 0.55)), splash)
 }
 
@@ -136,11 +184,13 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32) {
         )
     // The bow's wave, peeling off either side; running, it breaks white along the forward third
     // of the hull where it lifts onto the plane.
-    let from_bow = max(1.9 - along, 0.0)
-    let bow_wave = exp(
-        -pow(abs(across) - 0.12 - from_bow * (0.4 - 0.1 * run), 2.0) / (0.012 + 0.03 * run),
-    ) *
-        smoothstep(0.0, 0.3, from_bow) *
+    let from_bow = max(bow_at(s) - along, 0.0)
+    // (White along the crest of the wave the hull heaps (`lifted`), and down its face toward
+    // the hull where it's steep enough to break.)
+    let crest_d = abs(across) - crest_out(s, from_bow)
+    let bow_wave = exp(-pow(crest_d + 0.03, 2.0) / (0.006 + 0.012 * from_bow + 0.02 * run)) *
+        (0.6 + 0.4 * smoothstep(0.3, 0.0, from_bow)) *
+        smoothstep(0.0, 0.15, from_bow) *
         // (Along the hull only, peeling off it: carried on astern it drew a bar of white
         // straight down the screen behind the skiff.)
         smoothstep(3.9, 2.8, from_bow) *
