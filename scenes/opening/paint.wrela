@@ -878,7 +878,8 @@ fn sea_shade(
     let kept_ = hue * kept_l * mix(mix(0.35, 1.35, gather_raw / 2.2), 1.0, smoothstep(0.6, 3.0, length(dv)))
     let cut = luma(spread_) - kept_l
     let carried = mean * pointed
-    let glint = kept_ + carried * points * (1.0 + cut / max(luma(carried), 1.0e-4))
+    // (Under the deck there's no sun disc for a facet to burn with: no scattered white points.)
+    let glint = kept_ + carried * points * (1.0 + cut / max(luma(carried), 1.0e-4)) * (1.0 - OVERCAST)
     // The light that comes back up out of the water: deep blue-green, brighter through the
     // crests lit from behind.
     // (Under the rock, less of it: the rock's mass hides a great piece of the sky over the water
@@ -980,7 +981,7 @@ fn sea_shade(
         smoothstep(0.03, 0.1, whitecaps(SEA_STATE)) * 0.35
     // (Never one smooth white even where it's densest: a fresh cap's a heap of bubble domes, its
     // creases thinner, the water glinting through.)
-    let heaped = 0.55 + 0.45 * smoothstep(0.15, 0.85, froth)
+    let heaped = 0.4 + 0.6 * smoothstep(0.15, 0.85, froth)
     // (Under the lace, the thin film of old foam: a grey marbling, the water showing through.)
     let foamed = max(
         max(mix(far_white * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.6 * age) * mix(1.0, smoothstep(0.3, 0.75, lace), age), web_k), far_white * 0.35 * (1.0 - age)),
@@ -1000,7 +1001,9 @@ fn sea_shade(
     // (A break that's breaking now is the whitest thing on the sea, its top lit full: no grey
     // pillow.)
     let fresh = 1.0 - smoothstep(0.0, 0.3, age)
-    let bright_ = mix(bright, max(bright, 0.95), fresh * smoothstep(0.5, 0.9, dense) * 0.8)
+    let bright_ = mix(bright, max(bright, 0.95), fresh * smoothstep(0.5, 0.9, dense) * 0.45) *
+        // (Up close, its bubbles: a fine grain of brighter and greyer, never a smooth glowing sheet.)
+        mix(1.0, 0.7 + 0.5 * noise(wa * vec2(9.0, 12.0) + warp2 * 2.0), web_k)
     // Under it and round it, the water's paler and greener, full of the bubbles the break drove
     // down, as the water under a whitecap is.
     let bubbles = smoothstep(0.08, 0.6, foam_k) * (0.5 + 0.5 * lace)
