@@ -106,12 +106,11 @@ fn hewn(q: vec3, s: f32, turn: f32, lid: f32) -> f32 {
     let k = clamp((p.y + DROP) / DROP, 0.0, 1.0)
     // Its flanks stepped in tiers, each overhanging the next, so it hangs in great broken masses,
     // not one cone.
-    let tier = smoothstep(
-        0.55,
-        0.85,
-        fract(p.y / 41.0 + noise(vec2(atan2(p.z, p.x) * 2.0, 4.0)) * 0.5),
-    )
-    let wide = TOP * pow(k, 0.85) * (1.0 - 0.09 * tier * (1.0 - k * 0.6))
+    // (Each tier's foot a sharp overhang, its face drawn back up it: from 8 km a ledge 50 m deep
+    // throws a shadow line a few pixels thick, the bands a far eye measures a cliff by.)
+    let tier_u = fract(p.y / 41.0 + noise(vec2(atan2(p.z, p.x) * 2.0, 4.0)) * 0.5)
+    let tier = smoothstep(0.0, 0.12, tier_u) * (1.0 - tier_u)
+    let wide = TOP * pow(k, 0.85) * (1.0 - 0.16 * tier * (1.0 - k * 0.5))
     let crag = (noise(vec2(ang * 4.0, p.y * 0.010)) - 0.5) * 46.0 * k +
         (noise(vec2(ang * 11.0, p.y * 0.03 + 7.0)) - 0.5) * 18.0
     let beds = abs(fract(p.y / 9.0 + noise(vec2(ang * 3.0, 1.0)) * 0.6) - 0.5) * 3.0
@@ -779,8 +778,8 @@ pub fn isle_material(p: vec3, n: vec3, id: f32, foot: f32) -> (vec3, f32, f32, v
         )
         a *= 0.75 + 0.5 * noise3(q * 0.18)
         // Its strata, read from far off: broad bands of lighter and darker stone, level.
-        a *= 0.68 +
-            0.64 * smoothstep(0.3, 0.7, noise(vec2(q.y * 0.06 + noise3(q * 0.01) * 0.8, 11.0)))
+        a *= 0.6 +
+            0.8 * smoothstep(0.3, 0.7, noise(vec2(q.y * 0.06 + noise3(q * 0.01) * 0.8, 11.0)))
         // Darker and cooler down its underside, toward the tip, as a mass hung in its own shade.
         let under = clamp(-q.y / DROP, 0.0, 1.0)
         a = mix(a, vec3(0.16, 0.15, 0.17), under * 0.5)

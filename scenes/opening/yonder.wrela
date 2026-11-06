@@ -227,6 +227,12 @@ fn isle_shade(
             fade
         c += albedo * vec3(0.5, 0.58, 0.75) * 0.12 * ledge * fade
         c *= mix(1.0, mix(0.72, 1.0, wrap), fade)
+        // Under the overcast, a ledge reads by the sky it sees: its top catching the deck's
+        // light, the overhang under it looking down at the dark sea. (By the finer normal: the
+        // broad one smooths a 50 m ledge away.) So its tiers band it, top to tip.
+        let up = smoothstep(0.15, 0.7, n.y)
+        let down = smoothstep(-0.1, -0.6, n.y)
+        c *= (1.0 + 0.55 * up) * (1.0 - 0.45 * down)
     }
     // (The air over all of that: the shading darkens the stone, never the air in front of it.)
     c = hazed_far(s, h, view, aerial, dome, smp, c, p, d, haze)
