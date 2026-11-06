@@ -363,7 +363,7 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     // (Sheeted, a gybe hangs a moment as the wind gets behind the sail, then slams it across.)
     let slam = smoothstep(1.2, 2.2, abs(swing)) * k
     // (Swung over in half a second or so, never in a frame or two: a snap reads as a glitch.)
-    r.boom += swing * (1.0 - exp(-dt * (2.0 + 2.5 * k + 3.0 * slam)))
+    r.boom += swing * (1.0 - exp(-dt * (2.0 + 1.5 * k + 1.2 * slam)))
     if was * r.boom < 0.0 && abs(was) > 0.3 && k > 0.5 {
         // (It lands with a jolt: the skiff knocked over onto its new side.)
         r.heel_rate += (if r.boom > 0.0 { 1.0 } else { -1.0 }) * 2.6
@@ -385,7 +385,7 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     r.look += (r.steer - r.look) * (1.0 - exp(-dt * 0.9))
     r.rush += (r.speed - r.rush) * (1.0 - exp(-dt * 0.9))
     let windward = if r.boom > 0.0 { -1.0 } else { 1.0 }
-    r.perch += (windward - r.perch) * (1.0 - exp(-dt * 0.7))
+    r.perch += (windward - r.perch) * (1.0 - exp(-dt * 0.35))
     moved(mut r, time, dt, swell, off)
     // What the drawing holds, renewed as each drawing comes.
     let drawing = floor(time * HELD)
