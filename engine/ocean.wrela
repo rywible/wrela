@@ -654,7 +654,7 @@ fn on_tile(p: vec2, side: f32) -> vec2 {
 /// half the near water's change frame to frame, measured); read through twice it, a mip
 /// coarser, they hold still, and the slopes the coarser read loses go to the roughness
 /// (`surface_at`).
-const STEADY: f32 = 2.0
+const STEADY: f32 = 1.4
 
 /// The ocean's shape at lattice point `p` (x, z, m: where the water rests, before it's carried):
 /// its displacement along x, its height, its displacement along z and its foam, each tile
