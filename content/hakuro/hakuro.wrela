@@ -109,6 +109,12 @@ const FINGER_NAMES_RIGHT = [
 /// The body's paint at `p` (rest space), his clothes by region as the locked outfit has them.
 pub fn body_paint(p: vec3) -> Cloth {
     // The head: under the mask a dark void, behind it a black wrap.
+    // (His nape bare between his collar and his hair, as the sheet's back view.)
+    // Its edges: the collar's top curving up round his neck, his hairline above.
+    let nape = p.y - (1.555 + 0.05 * (p.x / 0.07) * (p.x / 0.07))
+    if nape > 0.0 && p.y < 1.70 && p.z < -0.02 {
+        return SKIN
+    }
     if p.y > 1.56 {
         return if p.z > 0.0 { VOID } else { BLACK }
     }
@@ -430,7 +436,9 @@ pub fn hero() -> Creature<Cloth> {
         .join(
             "collar",
             b("spine 3"),
-            round_cone(vec3(0.0, 1.47, -0.045), vec3(0.0, 1.595, -0.055), r_top: 0.082, r_bottom: 0.094)
+            // (Kept within his neck now: the jacket's own collar stands round it, his nape bare
+            // above. Out round it, it read as a lump between his shoulders and his hair.)
+            round_cone(vec3(0.0, 1.47, -0.045), vec3(0.0, 1.53, -0.05), r_top: 0.04, r_bottom: 0.05)
                 .intersect(cuboid(vec3(1.0, 1.0, 0.1)).translate(vec3(0.0, 1.5, -0.075)))
                 .with_at(collar_paint)
                 .translate(-s.rest(b("spine 3"))),
