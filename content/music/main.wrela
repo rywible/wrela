@@ -1,0 +1,115 @@
+// The music's player, for the audio tool (`wrela tool audio -- content/music wav <out.wav>`):
+// take 0 is "Toward the Cathedral" whole; takes 1 to 4 are its strings, brass, choir and
+// percussion alone, so each can be judged by itself. A take of 1000 + 128 i + k is a probe:
+// instrument i of `PROBES` playing key k alone, mezzo-forte, for three bars at 60, beside a
+// recording of the same note.
+
+/// The instruments a probe can play.
+const PROBES: [Instrument; 13] = [
+    VIOLINS,
+    VIOLAS,
+    CELLI,
+    BASSES,
+    HORNS,
+    TRUMPETS,
+    TROMBONES,
+    TUBA,
+    CHOIR,
+    TIMPANI,
+    BASS_DRUM,
+    TAM_TAM,
+    CYMBAL,
+]
+
+fn probe(which: u32) -> Vec<Part> {
+    let i = (which - 1000) / 128
+    let key = (which - 1000) % 128
+    var s = score("probe", meter(beats: 4, unit: 4))
+    s.voices.push("probe")
+    s.bars = 4
+    s.notes.push(
+        Note { voice: 0, start: 0, length: 12 * TICKS, key, marks: 0, slur: NO_SLUR },
+    )
+    s.dynamics.push(Dynamic { at: 0, level: Level::MF })
+    Vec::from([Part { name: "probe", instrument: PROBES[i], score: s, pan: 0.0, depth: 0.3 }])
+}
+
+const PROBE_TEMPO: [Tempo; 1] = [Tempo { bar: 1, bpm: 60.0 }]
+
+use engine::orchestra::{
+    BASSES, BASS_DRUM, CELLI, CHOIR, CYMBAL, HORNS, Hall, Instrument, Orchestra, Part, TAM_TAM,
+    TIMPANI, TROMBONES, TRUMPETS, TUBA, Tempo, VIOLAS, VIOLINS, orchestra, play_orchestra,
+}
+use engine::score::{Dynamic, Level, Note, NO_SLUR, TICKS, meter, score}
+use opening::{TEMPO, parts}
+use std::audio::play
+use std::collections::Vec
+use std::io::print
+
+/// Which parts each take plays (indexes into `opening::parts`).
+fn chosen(which: u32) -> Vec<Part> {
+    let all = parts()
+    if which == 0 {
+        return all
+    }
+    var out: Vec<Part> = Vec::new()
+    for i in 0..all.len() {
+        let keep = if which == 1 {
+            i <= 4
+        } else if which == 2 {
+            i >= 5 && i <= 8
+        } else if which == 3 {
+            i == 9
+        } else {
+            i >= 10
+        }
+        if keep {
+            out.push(all[i].clone())
+        }
+    }
+    out
+}
+
+pub struct Piece {
+    which: u32,
+    started: bool,
+    seconds: f32,
+}
+
+pub fn init() -> Piece {
+    Piece { which: 0, started: false, seconds: 0.0 }
+}
+
+pub fn choose(p: mut Piece, which: u32) {
+    assert(!p.started, "a take is chosen before the piece starts")
+    p.which = which
+}
+
+fn build(which: u32) -> Orchestra {
+    if which >= 1000 {
+        return orchestra(probe(which), PROBE_TEMPO, Hall {}, master: 0.5)
+    }
+    orchestra(chosen(which), TEMPO, Hall {}, master: 0.5)
+}
+
+@audio
+fn render(o: mut Orchestra, left: mut [f32], right: mut [f32]) {
+    play_orchestra(mut o, mut left, mut right)
+}
+
+pub fn frame(p: mut Piece, time: f32, width: u32, height: u32) {
+    if !p.started {
+        p.started = true
+        play(build(p.which), render)
+    }
+}
+
+pub fn seconds(p: Piece) -> f32 {
+    f32(build(p.which).seconds)
+}
+
+pub fn describe(p: Piece) {
+    print(
+        f"{{\"title\":\"Toward the Cathedral\",\"take\":\"{p.which}\",\"bars\":28,\"beats_per_bar\":4,\"seconds\":{seconds(p)}}}",
+    )
+}

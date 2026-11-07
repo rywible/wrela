@@ -1,0 +1,304 @@
+// "Toward the Cathedral": the opening's cue. You wake on a skiff in a storm; far off, a rock hangs
+// in the sky with a cathedral on it, shining. Original music, written here, by Claude for Ryan.
+//
+// D minor, 4/4, 28 bars, about two minutes:
+// - bars 1-6, the storm: the basses' and cellos' tremolo on a low D, the timpani rolling, and
+//   under it all the deep motif, D rising a half step to E flat and falling a tritone to A, in
+//   the trombones and the tuba. A tam-tam blooms behind it.
+// - bars 7-14, the sea: the horns sing its theme (A, D, F, E, D...) over the strings, and the
+//   first violins take it an octave up; the harmony slips to E flat (the Neapolitan), the
+//   world tilting.
+// - bars 15-22, the cathedral: B flat with the choir and the violins high and soft, then D
+//   major, the light: the trumpets give the cathedral's theme (D, F sharp, A), it falls through
+//   C and B flat to A, and the whole orchestra lands on D major, fortissimo; then E flat crashes
+//   over the D: the deep motif's half step, as a chord.
+// - bars 23-28, the dark returns: the deep motif in all the brass, the strings fall in
+//   tremolo, and it ebbs to the low D, the choir's half step D and E flat the last thing heard
+//   before a bare fifth.
+
+use engine::orchestra::{
+    BASSES, BASS_DRUM, CELLI, CHOIR, CYMBAL, HORNS, Part, TAM_TAM, TIMPANI, TROMBONES, TRUMPETS,
+    TUBA, Tempo, VIOLAS, VIOLINS,
+}
+use engine::score::{Score, meter, score}
+use std::collections::Vec
+
+fn part(name: Text, lines: [Text]) -> Score {
+    score("Toward the Cathedral", meter(beats: 4, unit: 4)).voice(name, lines)
+}
+
+pub fn violins_1() -> Score {
+    part(
+        "violins 1",
+        [
+            "r/1 !pp | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "r/1 | r/1 | r/1 | r/1 |",
+            "a4/2. !mf d5/4 | f5/2. g5/8 f5/8 | eb5/2 !< d5/4 bb4/4 | a4/2 !f c#5/2 |",
+            "d6/1 !pp !< | d6/1 | <a5 d6>/1 !mp | <g5 c6>/1 | <f5 bb5>/1 !< | <e5 a5>/1 |",
+            "a5/2 !ff f#5/4 a5/4 | bb5/1 !accent |",
+            "d5/4 !ff !trem c#5/4 !trem c5/4 !trem b4/4 !trem | bb4/2 !> !trem a4/2 !trem |",
+            "g4/2 !mp !trem f4/2 !trem | r/1 !p | r/1 | r/1 |",
+        ],
+    )
+}
+
+pub fn violins_2() -> Score {
+    part(
+        "violins 2",
+        [
+            "r/1 !pp | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "<a4 d5>/1 !mp | <g4 c5>/2 <f4 bb4>/2 | <g4 bb4>/1 | <e4 a4>/2 <e4 c#5>/2 |",
+            "<a4 d5>/1 !mf | <f4 bb4>/1 | <g4 bb4>/1 !< | <e4 a4>/2 !f <g4 c#5>/2 |",
+            "<f5 bb5>/1 !pp !< | <g5 bb5>/1 | <f#5 a5>/1 !mp | <e5 g5>/1 | <f5 bb5>/1 !< |",
+            "<e5 a5>/1 |",
+            "<f#5 a5>/1 !ff | <g5 bb5>/1 |",
+            "<a4 d5>/1 !ff !trem | <g4 bb4>/1 !> !trem | <f4 bb4>/1 !mp !trem | <f4 a4>/1 !pp |",
+            "r/1 | r/1 |",
+        ],
+    )
+}
+
+pub fn violas() -> Score {
+    part(
+        "violas",
+        [
+            "r/1 !pp | r/1 | r/1 | r/1 |",
+            "<f3 a3>/1 !pp !< !trem | <g3 bb3>/2 !mp !trem <a3 c#4>/2 !trem |",
+            "<f3 a3>/1 !mp | <e3 g3>/2 <d3 f3>/2 | <d3 g3>/1 | <e3 a3>/1 |",
+            "<f3 a3>/1 !mf | <d3 f3>/1 | <eb3 g3>/1 !< | <e3 c#4>/1 !f |",
+            "<d4 f4>/1 !p !< | <d4 g4>/1 | <f#4 a4>/1 !mf | <e4 g4>/1 | <d4 f4>/1 !< |",
+            "<c#4 e4>/1 |",
+            "<f#4 a4>/1 !ff | <g4 bb4>/1 |",
+            "<f3 a3>/1 !ff !trem | <g3 bb3>/1 !> !trem | <f3 db4>/1 !mp !trem | <f3 a3>/1 !p |",
+            "r/1 | r/1 |",
+        ],
+    )
+}
+
+pub fn celli() -> Score {
+    part(
+        "cellos",
+        [
+            "r/1 !pp | <d2 a2>/1 !pp !< !trem | <d2 a2>/1 !p !trem | <d2 a2>/1 !> !trem |",
+            "<d2 a2>/1 !p !< !trem | <d2 bb2>/2 !mp !trem <e2 a2>/2 !trem |",
+            "<d3 a3>/1 !mp | <c3 a3>/2 <bb2 f3>/2 | <g2 d3>/1 | <a2 e3>/2 <a2 c#3>/2 |",
+            "<d3 a3>/1 !mf | <bb2 f3>/1 | <eb3 bb3>/1 !< | <a2 e3>/2 !f <a2 c#3>/2 |",
+            "<bb2 f3>/1 !p !< | <g2 d3>/1 | <d3 a3>/1 !mf | <c3 g3>/1 | <bb2 f3>/1 !< |",
+            "<a2 e3>/1 |",
+            "<d3 a3>/1 !ff | <eb3 bb3>/1 |",
+            "<d2 d3>/1 !ff !trem | <d2 g2>/1 !> !trem | <d2 f2>/1 !mp !trem | <d2 a2>/1 !p |",
+            "<d2 a2>/1 !pp | <d2 a2>/1 !ppp !fermata |",
+        ],
+    )
+}
+
+pub fn basses() -> Score {
+    part(
+        "basses",
+        [
+            "d1/1 !pp !< !trem | d1/1 !mp !> !trem | d1/1 !p !trem | d1/1 !trem |",
+            "d1/1 !< !trem | bb1/2 !mp a1/2 |",
+            "d2/1 !mp | c2/2 bb1/2 | g1/1 | a1/1 |",
+            "d2/1 !mf | bb1/1 | eb2/1 !< | a1/1 !f |",
+            "bb1/1 !p !< | g1/1 | d2/1 !mf | c2/1 | bb1/1 !< | a1/1 |",
+            "d2/1 !ff | d2/1 |",
+            "d1/1 !ff !trem | d1/1 !> !trem | d1/1 !mp !trem | d1/1 !p !trem |",
+            "d1/1 !pp !trem | d1/1 !ppp !trem !fermata |",
+        ],
+    )
+}
+
+pub fn horns() -> Score {
+    part(
+        "horns",
+        [
+            "r/1 !mp | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "a3/2. !mf d4/4 | f4/2. e4/8 d4/8 | d4/2 c4/4 bb3/4 | a3/1 |",
+            "a3/2. !f d4/4 | f4/2. g4/8 f4/8 | eb4/2 d4/4 bb3/4 | a3/2 c#4/2 |",
+            "r/1 | r/1 | <d4 f#4 a4>/1 !p !< | <c4 e4 g4>/1 | <bb3 d4 f4>/1 !< |",
+            "<a3 c#4 e4>/1 |",
+            "d4/4 !ff f#4/4 a4/2 | <bb3 eb4 g4>/1 |",
+            "d4/2 !ff !accent eb4/2 | d4/1 !> | <db4 f4>/1 !mp | a3/2. !pp d4/4 |",
+            "f4/2 e4/2 | d4/1 !ppp !fermata |",
+        ],
+    )
+}
+
+pub fn trumpets() -> Score {
+    part(
+        "trumpets",
+        [
+            "r/1 !p | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "d5/4 !p !< f#5/4 a5/2 | g5/2. e5/4 | f5/2 d5/4 bb4/4 | a4/1 !mf !< |",
+            "a5/2 !ff f#5/4 a5/4 | <g5 bb5>/1 !accent |",
+            "<d5 a5>/2 !fff !accent <eb5 bb5>/2 !accent | r/1 | r/1 | r/1 | r/1 | r/1 |",
+        ],
+    )
+}
+
+pub fn trombones() -> Score {
+    part(
+        "trombones",
+        [
+            "r/1 !p | r/1 | d3/2 !p !< eb3/2 | a2/1 !mf !> | r/1 | <g2 d3>/2 !p <a2 e3>/2 |",
+            "r/1 | r/1 | <g2 d3 bb3>/1 !p | <a2 e3 c#4>/1 |",
+            "r/1 | r/1 | <eb3 g3 bb3>/1 !mp !< | <a2 e3 c#4>/1 !mf |",
+            "r/1 | r/1 | r/1 | r/1 | <bb2 d3 f3>/1 !p !< | <a2 e3 a3>/1 !f |",
+            "<d3 f#3 a3>/1 !ff | <eb3 g3 bb3>/1 !ff |",
+            "d3/2 !fff !accent eb3/2 !accent | a2/1 !> | <bb2 db3 f3>/1 !mp | r/1 | r/1 | r/1 |",
+        ],
+    )
+}
+
+pub fn tuba() -> Score {
+    part(
+        "tuba",
+        [
+            "r/1 !p | r/1 | d2/2 !p !< eb2/2 | a1/1 !mf !> | r/1 | g1/2 !p a1/2 |",
+            "r/1 | r/1 | g1/1 !p | a1/1 |",
+            "r/1 | r/1 | eb1/1 !mp | a1/1 |",
+            "r/1 | r/1 | r/1 | r/1 | bb1/1 !p !< | a1/1 !f |",
+            "d1/1 !ff | eb1/1 |",
+            "d1/2 !fff !accent eb1/2 !accent | a1/1 !> | bb1/1 !mp | r/1 | r/1 | r/1 |",
+        ],
+    )
+}
+
+pub fn choir() -> Score {
+    part(
+        "choir",
+        [
+            "r/1 !pp | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "<bb3 d4 f4 bb4>/1 !pp !< | <bb3 d4 g4 bb4>/1 | <a3 d4 f#4 a4>/1 !mp | <g3 c4 e4 g4>/1 |",
+            "<f3 bb3 d4 f4>/1 !< | <e3 a3 c#4 e4>/1 !mf |",
+            "<f#3 a3 d4 f#4 a4>/1 !f | <eb3 g3 bb3 eb4 g4>/1 !ff |",
+            "r/1 | r/1 | r/1 | r/1 | <d4 eb4>/1 !ppp !< | <d4 a4>/2~ !pp !> <d4 a4>/2 !ppp !fermata |",
+        ],
+    )
+}
+
+pub fn timpani() -> Score {
+    part(
+        "timpani",
+        [
+            "d2/1 !pp !< !trem | d2/1 !mp !> !trem | r/1 | a1/2 !mf r/2 | d2/1 !p !< !trem |",
+            "r/2 a1/2 !mf !trem |",
+            "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | a1/2 !mp !trem a1/2 !< !trem |",
+            "r/1 | r/1 | r/1 | r/1 | r/1 | a1/1 !p !< !trem |",
+            "d2/4 !ff !accent r/4 d2/4 a1/4 | d2/1 !< !trem |",
+            "d2/2 !fff !accent r/2 | a1/2 !f r/2 | r/1 | d2/1 !pp !> !trem | r/1 | d2/1 !ppp !trem |",
+        ],
+    )
+}
+
+pub fn bass_drum() -> Score {
+    part(
+        "bass drum",
+        [
+            "r/1 !mf | r/1 | r/1 | g1/4 !mf r/4 r/2 | r/1 | r/1 |",
+            "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "g1/4 !ff !accent r/4 r/2 | r/1 |",
+            "g1/4 !fff !accent r/4 r/2 | r/1 | r/1 | r/1 | r/1 | r/1 |",
+        ],
+    )
+}
+
+pub fn tam_tam() -> Score {
+    part(
+        "tam-tam",
+        [
+            "r/1 !p | r/1 | c2/1 !p | r/1 | r/1 | r/1 |",
+            "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "r/1 | c2/1 !ff |",
+            "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
+        ],
+    )
+}
+
+pub fn cymbal() -> Score {
+    part(
+        "cymbal",
+        [
+            "r/1 !pp | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "r/1 | r/1 | r/1 | r/1 | r/1 | c5/1 !pp !< !trem |",
+            "c5/4 !ff !accent r/4 r/2 | r/1 |",
+            "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
+        ],
+    )
+}
+
+/// The cue's parts, seated: violins to the left, cellos and basses to the right, the brass
+/// behind (horns left, trombones and tuba right), the choir across the back, the percussion
+/// at the very back.
+pub fn parts() -> Vec<Part> {
+    Vec::from(
+        [
+            Part {
+                name: "violins 1",
+                instrument: VIOLINS,
+                score: violins_1(),
+                pan: -0.6,
+                depth: 0.1,
+            },
+            Part {
+                name: "violins 2",
+                instrument: VIOLINS,
+                score: violins_2(),
+                pan: -0.3,
+                depth: 0.2,
+            },
+            Part { name: "violas", instrument: VIOLAS, score: violas(), pan: 0.15, depth: 0.2 },
+            Part { name: "cellos", instrument: CELLI, score: celli(), pan: 0.4, depth: 0.15 },
+            Part { name: "basses", instrument: BASSES, score: basses(), pan: 0.65, depth: 0.3 },
+            Part { name: "horns", instrument: HORNS, score: horns(), pan: -0.4, depth: 0.6 },
+            Part {
+                name: "trumpets",
+                instrument: TRUMPETS,
+                score: trumpets(),
+                pan: 0.05,
+                depth: 0.7,
+            },
+            Part {
+                name: "trombones",
+                instrument: TROMBONES,
+                score: trombones(),
+                pan: 0.3,
+                depth: 0.7,
+            },
+            Part { name: "tuba", instrument: TUBA, score: tuba(), pan: 0.5, depth: 0.7 },
+            Part { name: "choir", instrument: CHOIR, score: choir(), pan: 0.0, depth: 0.85 },
+            Part {
+                name: "timpani",
+                instrument: TIMPANI,
+                score: timpani(),
+                pan: -0.15,
+                depth: 0.85,
+            },
+            Part {
+                name: "bass drum",
+                instrument: BASS_DRUM,
+                score: bass_drum(),
+                pan: 0.2,
+                depth: 0.9,
+            },
+            Part { name: "tam-tam", instrument: TAM_TAM, score: tam_tam(), pan: 0.35, depth: 0.9 },
+            Part { name: "cymbal", instrument: CYMBAL, score: cymbal(), pan: -0.3, depth: 0.9 },
+        ],
+    )
+}
+
+/// The tempo: a broad 54 to the quarter, pressing on to 60 into the light, easing to 50 for
+/// the dark, and dying away at the end.
+pub const TEMPO: [Tempo; 6] = [
+    Tempo { bar: 1, bpm: 54.0 },
+    Tempo { bar: 15, bpm: 56.0 },
+    Tempo { bar: 21, bpm: 60.0 },
+    Tempo { bar: 23, bpm: 54.0 },
+    Tempo { bar: 26, bpm: 50.0 },
+    Tempo { bar: 29, bpm: 40.0 },
+]
