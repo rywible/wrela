@@ -8,8 +8,6 @@
 // (This file is written by a script from the measured pieces; the shapes, the paint and the
 // skeleton are its template's.)
 
-use detail::Detail
-use tailoring::Tailoring
 use engine::creature::{Bone, Creature, Skeleton, creature, hard, smooth, split}
 use engine::character::Shaded
 use shapes::{
@@ -345,8 +343,11 @@ fn tails_paint(p: vec3) -> Cloth {
     if through < -0.004 || q.y < low + 0.022 { GOLD } else { BLACK }
 }
 
-/// Hakuro's body, dressed, standing at rest in a T-pose (his head's finer work is `head`).
-pub fn hero() -> Creature<Cloth> {
+/// His rig: his body's pieces as they were fitted to the reference, each on its bone or split
+/// between two across a joint. Never realized: his skin is sampled from the reference
+/// (`body_grid`, `arm_left_grid`, `arm_right_grid`), and this only says which bones move it
+/// (`sampled_skin::skinned`).
+pub fn rig() -> Creature<Cloth> {
     let s = skeleton()
     let b = |name: Text| s.find(name)
     creature(s)
@@ -365,8 +366,14 @@ pub fn hero() -> Creature<Cloth> {
         .join("adductor", b("thigh left"), oval(vec3(0.1009, 0.3094, 0.1181)).rotate(Quat { v: vec4(0.06203, -0.16765, 0.04373, 0.98292) }).translate(vec3(0.0949, 0.8357, -0.0265)).with_at(body_paint).translate(-s.rest(b("thigh left"))), seam: smooth(0.030), mirror: true)
         .join("calf", b("calf left"), oval(vec3(0.0892, 0.1836, 0.1037)).rotate(Quat { v: vec4(0.06653, -0.11183, 0.00873, 0.99146) }).translate(vec3(0.1277, 0.3882, -0.0850)).intersect(cuboid(vec3(1.0, 0.37, 1.0)).translate(vec3(0.0, 0.64, 0.0))).with_at(body_paint).translate(-s.rest(b("calf left"))), seam: smooth(0.030), mirror: true)
         .join("shin", b("calf left"), round_cone(vec3(0.1312, 0.8252, -0.0573), vec3(0.1258, 0.1209, -0.0870), r_top: 0.0750, r_bottom: 0.0683).intersect(cuboid(vec3(1.0, 0.37, 1.0)).translate(vec3(0.0, 0.64, 0.0))).with_at(body_paint).translate(-s.rest(b("calf left"))), seam: smooth(0.030), mirror: true)
-        .then(Detail { from: -1.0, reach: 0.21 })
-        .then(Tailoring {})
+}
+
+/// What he wears that isn't his body's own surface: the collar, the belt, the boots. (His body,
+/// dressed, is sampled: `body_grid`.)
+pub fn hero() -> Creature<Cloth> {
+    let s = skeleton()
+    let b = |name: Text| s.find(name)
+    creature(s)
         .join(
             "collar",
             b("spine 3"),

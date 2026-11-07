@@ -9,7 +9,7 @@
 // as fine as his fields, however coarse his mesh. He's lit as the skiff is (`paint::lit_solid`,
 // its sea bounce and its rim), shadowed by the rig and the clouds.
 
-use hakuro::arms::arm
+use hakuro::arms::{arm, sampled_body}
 use hakuro::hakuro::{Cloth, body_paint, coat, hands, head, hero}
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
 use engine::character::skin_matrix
@@ -55,7 +55,7 @@ pub struct Aboard {
     head: Mesh,
     coat: Mesh,
     hands: Mesh,
-    arms: [Mesh; 2],
+    arms: [Mesh; 3],
     palette: GpuBuffer<mat4>,
     colour: Texture<Rgba16Float>,
     marks: Texture<Rgba16Float>,
@@ -81,8 +81,8 @@ pub fn aboard() -> Aboard {
         head: realize_once(head(), HEAD),
         coat: realize_once(coat(), COAT),
         hands: realize_once(hands(), HANDS),
-        // (His arms are sampled from the reference's own surface: `hakuro::arms`.)
-        arms: [arm(0), arm(1)],
+        // (His arms and body are sampled from the reference's own surface: `hakuro::arms`.)
+        arms: [arm(0), arm(1), sampled_body()],
         palette: buffer(MAX_BONES),
         colour: texture(width: 1, height: 1),
         marks: texture(width: 1, height: 1),
@@ -723,7 +723,7 @@ impl Aboard {
             indirect: self.hands.draw.items(),
             cull: Cull::Front,
         )
-        for a in 0..2 {
+        for a in 0..3 {
             draw(
                 p,
                 hero_vertex.bind(

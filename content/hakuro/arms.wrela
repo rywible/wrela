@@ -7,6 +7,9 @@
 
 use arm_left_grid
 use arm_right_grid
+use body_grid
+use engine::creature::{ALL, Parts}
+use hakuro::rig
 use engine::realize::{BLOCK, Mesh, SkinVertex, Tally}
 use engine::realize::corner_offset
 use engine::sampled::{BLOCK_WORDS, Lattice, STORED, realize_sampled}
@@ -111,6 +114,55 @@ pub fn arm(side: u32) -> Mesh {
     dispatch(
         skin_arm.bind(
             side: side,
+            lattice: shape.lattice,
+            slots: shape.slots.items(),
+            words: shape.samples.items(),
+            tally: mesh.tally.items(),
+            verts: mesh.verts.items_mut(),
+        ),
+        groups: mesh.skin.items(),
+    )
+    mesh
+}
+
+// ---- his body ------------------------------------------------------------------------------
+
+/// Each of his sampled body's vertices skinned by his rig (`hakuro::rig`: its pieces' weights,
+/// falling off over `falloff`), its normal taken over a cell and a half each way.
+@compute(64)
+pub fn skin_by_rig<C, F: Parts<C>>(
+    field: F,
+    falloff: f32,
+    lattice: Lattice,
+    slots: [u32],
+    words: [u32],
+    tally: [Tally],
+    verts: mut Slots<SkinVertex>,
+    id: GlobalId,
+) {
+    if id.x >= tally[0].vertices {
+        return
+    }
+    let v = verts[id]
+    let (bones, weights) = field.skin_at(v.pos, ALL, lattice.cell, falloff)
+    let e = lattice.cell * 1.5
+    let g = vec3(
+        sampled_at(lattice, slots, words, v.pos + vec3(e, 0.0, 0.0)) - sampled_at(lattice, slots, words, v.pos - vec3(e, 0.0, 0.0)),
+        sampled_at(lattice, slots, words, v.pos + vec3(0.0, e, 0.0)) - sampled_at(lattice, slots, words, v.pos - vec3(0.0, e, 0.0)),
+        sampled_at(lattice, slots, words, v.pos + vec3(0.0, 0.0, e)) - sampled_at(lattice, slots, words, v.pos - vec3(0.0, 0.0, e)),
+    )
+    let normal = if length(g) > 1.0e-6 { normalize(g) } else { v.normal }
+    verts[id] = SkinVertex { pos: v.pos, bones, normal, weights, mask: v.mask }
+}
+
+/// His trunk, legs and head (`body_grid`) realized from their samples and skinned by his rig.
+pub fn sampled_body() -> Mesh {
+    let shape = body_grid::samples(0).upload()
+    var mesh = realize_sampled(shape)
+    dispatch(
+        skin_by_rig.bind(
+            field: rig().field(),
+            falloff: 0.05,
             lattice: shape.lattice,
             slots: shape.slots.items(),
             words: shape.samples.items(),
