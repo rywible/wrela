@@ -669,7 +669,7 @@ const SLATE: f32 = 0.85
 const DRIFT: f32 = 2.5
 
 /// How thick the spray over the water is (1/m), per share of the sea white (`whitecaps`).
-const SPRAY: f32 = 0.009
+const SPRAY: f32 = 0.016
 
 /// The sea at `p`, seen along `d` from `t` away: its light, line field, weight, normal and energy.
 
@@ -1094,7 +1094,7 @@ fn sea_shade(
     let hazy = mix(aired, horizon_sky, max(spray, smoothstep(2500.0, 30000.0, t) * 0.85))
     // (Under an overcast a storm's sea is slate, its blue and green mostly gone grey, and only a
     // few values darker than the sky over it.)
-    let hazy = mix(hazy, vec3(luma(hazy)) * vec3(0.97, 1.06, 0.95) * 0.95, SLATE * h.light.storm)
+    let hazy = mix(hazy, vec3(luma(hazy)) * vec3(0.94, 1.08, 0.97) * 1.2, SLATE * h.light.storm)
     (hazy, line, detail * 0.6 + foam, n, cut)
 }
 
