@@ -518,7 +518,7 @@ fn rigged(off: f32, turn: f32, p: f32, phi: f32, jolt: f32) -> Pose {
     // the sail's sheeted, the further.
     let mid = (fore_hand + aft_hand) * 0.5
     let away = normalize(vec3(-belly.x, 0.0, -belly.z) + vec3(0.0, 0.0, -0.35))
-    let reach = 0.36 + 0.14 * p
+    let reach = 0.3 + 0.1 * p
     // (Ducked under the boom as it slams across in a gybe.)
     var neck = mid + away * reach + vec3(0.0, 0.08 - 0.22 * p - 0.4 * jolt, 0.0)
     neck.x = clamp(neck.x, -1.1, 1.1)
@@ -528,10 +528,10 @@ fn rigged(off: f32, turn: f32, p: f32, phi: f32, jolt: f32) -> Pose {
     // (And the whole of him tipped out over his feet, from the ankles, across the boat over
     // the windward rail: shoulders furthest, hips between, knees a little bent. Eased through
     // the centreline, so it never flips in a frame.)
-    let tip = 0.22 + 0.16 * p
+    let tip = 0.3 + 0.2 * p
     let out = vec3(clamp(away.x * 3.0, -1.0, 1.0), 0.0, 0.0)
     neck += out * tip
-    hips += out * (tip * 0.5) + vec3(0.0, -0.04, 0.0)
+    hips += out * (tip * 0.8) + vec3(0.0, -0.05, 0.0)
     let ahead = normalize(vec3(-away.z, 0.0, away.x))
     let fwd = if ahead.z > 0.0 { ahead } else { -ahead }
     let stance = vec3(clamp(hips.x - out.x * 0.42, -0.4, 0.4), FOOT.y, hips.z)
