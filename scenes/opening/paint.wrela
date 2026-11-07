@@ -57,7 +57,7 @@ fn sea_day_sky(view: Texture<Rgba16Float>, light: Light, d: vec3, smp: Sampler) 
     let flat = normalize(vec2(-light.sun.z, light.sun.x))
     let k = sqrt(max(1.0 - d.y * d.y, 0.0))
     let square = clear_sky(view, smp, light, vec3(flat.x * k, d.y, flat.y * k))
-    mix(square, here, pow(max(dot(d, light.sun), 0.0), 24.0))
+    mix(square, here, pow(max(dot(d, light.sun), 0.0), 48.0))
 }
 
 /// The glare round the sun's disc under an open sky: a hot core and a wide soft halo, the haze
@@ -137,9 +137,10 @@ fn under_the_far_deck(
 }
 
 /// Under an open sky, the elevation (a direction's y) under which the clouds' far repeats are
-/// all lost in the air (they fade out from 0.058 down to it): low, so the open sky's band
-/// under them is a thin seam, not a strip.
-const LOST_LOW: f32 = 0.0
+/// all lost in the air, and over which they're whole (between, they fade): their far repeats,
+/// grazing, step into ruled dashes, so they go softly into the horizon's air.
+const LOST_LOW: f32 = 0.02
+const LOST_HIGH: f32 = 0.08
 
 /// The open sky low on the horizon along `d` on a sea day: as bright as the sky's own there,
 /// but no brighter than the sky a little over it by much, and its hue the air's square to the
@@ -165,7 +166,7 @@ pub(package) fn heaven(
     let cloudy = storm_sky(view, light, d, dome, smp, disc: true)
     // (Under the overcast, the deck goes on down to the horizon: its far repeats are lost in
     // its own air.)
-    let lost = mix(smoothstep(LOST_LOW, 0.058, d.y), 1.0, light.storm)
+    let lost = mix(smoothstep(LOST_LOW, LOST_HIGH, d.y), 1.0, light.storm)
     let clear = under_the_far_deck(view, light, d, dome, smp)
     let open = vec4(mix(clear, cloudy.rgb, lost), cloudy.a * lost)
     into_the_air(open, view, light, d, dome, smp)
@@ -213,7 +214,7 @@ fn mirrored_sky(
     let cloudy = storm_sky(view, light, d, dome, smp, disc: false).rgb
     // (Under the overcast, the deck goes on down to the horizon: its far repeats are lost in
     // its own air.)
-    let lost = mix(smoothstep(LOST_LOW, 0.058, d.y), 1.0, light.storm)
+    let lost = mix(smoothstep(LOST_LOW, LOST_HIGH, d.y), 1.0, light.storm)
     let clear = under_the_far_deck(view, light, d, dome, smp)
     into_the_air(vec4(mix(clear, cloudy, lost), 1.0), view, light, d, dome, smp).rgb
 }

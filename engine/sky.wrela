@@ -714,6 +714,10 @@ fn march(
                     let lift = exp(-od_up * EXTINCTION * RELIEF)
                     dim *= mix(1.0, 0.45 + 1.6 * lift, gl)
                 }
+                // (Fair weather's heaps darker toward their flat bases, in their own shade.)
+                if fair > 0.0 {
+                    dim *= mix(1.0, mix(0.55, 1.0, smoothstep(0.0, 0.45, hf)), kr)
+                }
                 let source = sun_light * to_sun * shut + ambient * dim
                 let step_t = exp(-dens * EXTINCTION * dt)
                 let absorbed = through * (1.0 - step_t)
