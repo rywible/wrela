@@ -1,0 +1,7 @@
+# A sphere's distance sampled into bricks and realized from GPU memory (engine::sampled): its
+# vertices on the sphere within a millimetre and a half, its normals outward, no holes.
+[package]
+name = "sampled_test"
+
+[dependencies]
+engine = { workspace = true }
