@@ -87,20 +87,35 @@ fn was_at(y: Yon, w: vec3) -> vec3 {
 /// empty air round them by it, a read a step, and meets them by their own field as before.
 pub const FIELD_SIDE: u32 = 128
 
-/// How much steeper than a distance the isle's field may run (the march steps 0.8 of it).
-const STEEP: f32 = 1.25
+/// How much steeper than a distance the isle's field may run: the march steps 0.8 of it, but
+/// the rock's fractures and crags run steeper in places (about 2 at worst).
+const STEEP: f32 = 2.0
+
+/// How far the rock's field jumps where its beds wrap (m): its ledges' lips (4.5) and its finer
+/// beds (2.2), in the rock's own units, scaled to the world's. A cell across one of those sheets
+/// can't vouch for its far side by its slope alone.
+const JUMPS: f32 = 6.7 * SCALE
+
+/// The cook's slabs of the grid (in z), one a drawing, so the first drawing isn't held up by it.
+pub const FIELD_SLABS: u32 = 8
 
 /// Past how far (m) the cooked field is trusted for a step: nearer, the isle's own.
 const NEAR: f32 = 6.0
 
 /// A cell of the isle's cooked field: the field at its middle, less the most it can fall from
 /// there to the cell's corners.
+/// (Only slab `slab` of `FIELD_SLABS`, the rest left as they are. A cell not yet cooked reads 0:
+/// the isle's own field there, as before.)
 @compute(4, 4, 4)
-pub fn cook_isle(out: mut Texels3d<R32Float>, id: GlobalId) {
+pub fn cook_isle(slab: u32, out: mut Texels3d<R32Float>, id: GlobalId) {
+    let per = FIELD_SIDE / FIELD_SLABS
+    if id.z < slab * per || id.z >= (slab + 1) * per {
+        return
+    }
     let b = bounds()
     let cell = 2.0 * b.w / f32(FIELD_SIDE)
     let at = b.xyz - vec3(b.w) + (vec3(f32(id.x), f32(id.y), f32(id.z)) + vec3(0.5)) * cell
-    out.store(id, isle(at).x - STEEP * 0.8660254 * cell)
+    out.store(id, isle(at).x - STEEP * 0.8660254 * cell - JUMPS)
 }
 
 /// How far the isle is from `p` at least (m), by its cooked field (`cook_isle`); 0 outside it.

@@ -9,7 +9,7 @@ use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
 use paint::paint
-use yonder::{FIELD_SIDE, Yon, cook_isle, yonder}
+use yonder::{FIELD_SIDE, FIELD_SLABS, Yon, cook_isle, yonder}
 use ink::ink
 use weather::weather
 use sail::{Rig, key, let_go, rest, step}
@@ -48,10 +48,10 @@ pub struct State {
     pub(package) yon_shot: Shot,
     pub(package) yon_count: f32,
     pub(package) yon_seq: u32,
-    /// The isle's field, cooked once on the first drawing (`yonder::cook_isle`), and whether it
-    /// has been.
+    /// The isle's field, cooked once over the first drawings (`yonder::cook_isle`), and how many
+    /// of its slabs have been.
     pub(package) isle_field: Texture3d<R32Float>,
-    pub(package) isle_cooked: bool,
+    pub(package) isle_cooked: u32,
     pub(package) width: u32,
     pub(package) height: u32,
     /// The skiff as the player sails it.
@@ -92,7 +92,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         yon_count: 0.0,
         yon_seq: 0,
         isle_field: texture3d::<R32Float>(FIELD_SIDE, FIELD_SIDE, FIELD_SIDE),
-        isle_cooked: false,
+        isle_cooked: 0,
         image: texture(width: 1, height: 1),
         image_size: (1, 1),
         spare: texture(width: 1, height: 1),
@@ -234,10 +234,10 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         s: s.ocean.s,
     }
     let width = s.width
-    if !s.isle_cooked {
+    if s.isle_cooked < FIELD_SLABS {
         label("cook isle")
-        dispatch(cook_isle.bind(out: mut s.isle_field), over: s.isle_field)
-        s.isle_cooked = true
+        dispatch(cook_isle.bind(slab: s.isle_cooked, out: mut s.isle_field), over: s.isle_field)
+        s.isle_cooked += 1
     }
     label("yonder")
     let f = begin_pass3(mut s.yon_colour, mut s.yon_marks, mut s.yon_normal, keep: true)
