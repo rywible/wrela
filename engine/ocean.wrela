@@ -53,7 +53,7 @@ const BLOWN: f32 = 0.035
 
 /// How long a broken crest's foam takes to fade to a third (s), in a sea with no whitecaps to
 /// speak of; a rougher sea's lasts longer (`foam_fade`).
-const FOAM_FADE: f32 = 6.0
+const FOAM_FADE: f32 = 12.0
 
 /// What sea it is: the wind that raises it and the swell come from far off.
 pub struct SeaState: Copy + GpuData {

@@ -669,7 +669,7 @@ const SLATE: f32 = 0.85
 const DRIFT: f32 = 2.5
 
 /// How thick the spray over the water is (1/m), per share of the sea white (`whitecaps`).
-const SPRAY: f32 = 0.018
+const SPRAY: f32 = 0.009
 
 /// The sea at `p`, seen along `d` from `t` away: its light, line field, weight, normal and energy.
 
@@ -963,7 +963,7 @@ fn sea_shade(
     // (The big waves break at their crests: there their foam's thickest, in their troughs it's
     // thinned and swept on, so the white sits on the swell's crests, not anywhere.)
     let on_crest = mix(0.4, mix(1.0, 2.2, smoothstep(4.0, 14.0, t)), smoothstep(-0.4, 1.2, p.y))
-    let dense_ = clamp(max(mix(foam_k, ragged, 0.75) * on_crest, tail) * (1.5 + 0.9 * gusting), 0.0, 1.0)
+    let dense_ = clamp(max(mix(foam_k, ragged, 0.75) * on_crest, tail) * (2.1 + 1.0 * gusting), 0.0, 1.0)
     // (Never one solid mass, even where a whole crest breaks at once: it breaks in tongues and
     // bursts along the ridge, with darker water torn between them.)
     let dense = dense_ * mix(1.0, 0.45 + 0.55 * smoothstep(0.3, 0.7, noise(wa * 0.35 + warp * 2.0 + vec2(5.0, 2.0))), smoothstep(0.4, 0.9, foam_k))
@@ -976,7 +976,7 @@ fn sea_shade(
     let web_k = clamp(1.0 - px_m * 2.0, 0.0, 1.0)
     let feather = 0.05 + 0.2 * age + 0.2 * (1.0 - web_k)
     // (And its bubbles' holes kept open even at its thickest: a froth, never a painted sheet.)
-    let eroded = clamp((min(dense * (0.9 + 0.3 * lace), 0.85) - (1.0 - froth_h)) / feather + dense * dense * 0.1, 0.0, 1.0)
+    let eroded = clamp((min(dense * (1.4 + 0.4 * lace), 0.9) - (1.0 - froth_h)) / feather + dense * dense * 0.1, 0.0, 1.0)
     let lines = smoothstep(0.9 - blown * 0.06, 0.96 - blown * 0.04, ridge) * (0.4 + 0.6 * lace)
     // (Too far for its froth, a whitecap still breaks up: torn by a coarser pattern a pixel there
     // can hold, metres across, not a smooth lens of white.)
@@ -993,7 +993,7 @@ fn sea_shade(
     let heaped = 0.4 + 0.6 * smoothstep(0.15, 0.85, froth)
     // (Under the lace, the thin film of old foam: a grey marbling, the water showing through.)
     let foamed = max(
-        max(mix(far_white * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.6 * age) * mix(1.0, smoothstep(0.3, 0.75, lace), age), web_k), far_white * 0.35 * (1.0 - age)),
+        max(mix(far_white * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.25 * age) * mix(1.0, smoothstep(0.3, 0.75, lace), age), web_k), far_white * 0.35 * (1.0 - age)),
         mix(blown * 0.1, lines * 0.4 * (1.0 - smoothstep(0.975, 0.995, ridge)) * mix(0.35, 1.0, smoothstep(0.05, 0.5, blown + dense)), web_k),
     ) *
         (0.7 + 0.3 * lace) *
@@ -1094,7 +1094,7 @@ fn sea_shade(
     let hazy = mix(aired, horizon_sky, max(spray, smoothstep(2500.0, 30000.0, t) * 0.85))
     // (Under an overcast a storm's sea is slate, its blue and green mostly gone grey, and only a
     // few values darker than the sky over it.)
-    let hazy = mix(hazy, vec3(luma(hazy)) * vec3(1.0, 1.05, 0.92) * 1.12, SLATE * h.light.storm)
+    let hazy = mix(hazy, vec3(luma(hazy)) * vec3(0.97, 1.06, 0.95) * 0.95, SLATE * h.light.storm)
     (hazy, line, detail * 0.6 + foam, n, cut)
 }
 
