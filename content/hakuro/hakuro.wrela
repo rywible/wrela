@@ -102,8 +102,8 @@ pub fn body_paint(p: vec3) -> Cloth {
         let t = clamp((1.50 - p.y) / 0.50, 0.0, 1.0)
         let e = abs(p.x + 0.05 * t) - (0.040 + 0.070 * sqrt(t))
         if e < 0.0 {
-            let inner = 0.018 + 0.085 * clamp((1.47 - p.y) / 0.45, 0.0, 1.0) + 0.015
-            return if abs(p.x) < inner { CHARCOAL } else { BLACK }
+            // (His shirt: a matte charcoal knit, so it reads as a layer under the jacket.)
+            return CHARCOAL
         }
         if e < 0.013 {
             return GOLD
