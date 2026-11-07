@@ -60,8 +60,7 @@ fn frame(j: Joints) -> (vec3, vec3, vec3) {
 /// flapping.
 fn hem_at(j: Joints, spine: vec3, face: vec3, q: vec3, blow: vec3, t: f32) -> vec3 {
     let up = vec3(y: 1.0)
-    let flap = 0.05 * sin(t * 15.0 + dot(q, spine) * 5.0) +
-        0.03 * sin(t * 23.0 + dot(q, face) * 9.0)
+    let flap = 0.05 * sin(t * 15.0 + dot(q, spine) * 5.0) + 0.03 * sin(t * 23.0 + dot(q, face) * 9.0)
     j.hips - spine * 0.42 * (1.0 - 0.7 * j.sit) - face * 0.25 * j.sit + blow * 0.32 + up * flap
 }
 
@@ -80,31 +79,15 @@ pub fn parts(j: Joints, q: vec3, blow: vec3, t: f32) -> vec4 {
     // sink, the deeper the bend.)
     let la = length(j.hips - j.fore_foot) * 0.5
     let lb = length(j.hips - j.aft_foot) * 0.5
-    let knee_a = mix(j.fore_foot, j.hips, 0.5) +
-        face * max(sqrt(max(0.2116 - la * la, 0.0)), 0.06) +
-        up * 0.22 * j.sit
-    let knee_b = mix(j.aft_foot, j.hips, 0.5) +
-        face * max(sqrt(max(0.2116 - lb * lb, 0.0)), 0.05) +
-        up * 0.22 * j.sit
+    let knee_a = mix(j.fore_foot, j.hips, 0.5) + face * max(sqrt(max(0.2116 - la * la, 0.0)), 0.06) + up * 0.22 * j.sit
+    let knee_b = mix(j.aft_foot, j.hips, 0.5) + face * max(sqrt(max(0.2116 - lb * lb, 0.0)), 0.05) + up * 0.22 * j.sit
     let hip_a = j.hips + side * 0.1
     let hip_b = j.hips - side * 0.1
     var body = min(
-        min(
-            taper(q, j.fore_foot + up * 0.06, knee_a, 0.065, 0.07),
-            taper(q, knee_a, hip_a, 0.075, 0.095),
-        ),
-        min(
-            taper(q, j.aft_foot + up * 0.06, knee_b, 0.065, 0.07),
-            taper(q, knee_b, hip_b, 0.075, 0.095),
-        ),
+        min(taper(q, j.fore_foot + up * 0.06, knee_a, 0.065, 0.07), taper(q, knee_a, hip_a, 0.075, 0.095)),
+        min(taper(q, j.aft_foot + up * 0.06, knee_b, 0.065, 0.07), taper(q, knee_b, hip_b, 0.075, 0.095)),
     )
-    body = min(
-        body,
-        min(
-            capsule(q, j.fore_foot, j.fore_foot + face * 0.12, 0.055),
-            capsule(q, j.aft_foot, j.aft_foot + face * 0.12, 0.055),
-        ),
-    )
+    body = min(body, min(capsule(q, j.fore_foot, j.fore_foot + face * 0.12, 0.055), capsule(q, j.aft_foot, j.aft_foot + face * 0.12, 0.055)))
     // A broad chest over a narrow waist.
     body = blend(body, taper(q, j.hips + spine * 0.05, j.neck - spine * 0.1, 0.13, 0.19), 0.06)
     // Bare arms, heavy at the shoulder, bent a little at the elbow.
@@ -113,10 +96,8 @@ pub fn parts(j: Joints, q: vec3, blow: vec3, t: f32) -> vec4 {
     // (Elbows bent out and down as far as the arm's halves, 0.3 m each, leave them.)
     let ea = length(j.fore_hand - sh_a) * 0.5
     let eb = length(j.aft_hand - sh_b) * 0.5
-    let el_a = mix(sh_a, j.fore_hand, 0.5) -
-        (spine * 0.8 + side * 0.4) * max(sqrt(max(0.09 - ea * ea, 0.0)), 0.03)
-    let el_b = mix(sh_b, j.aft_hand, 0.5) -
-        (spine * 0.8 - side * 0.4) * max(sqrt(max(0.09 - eb * eb, 0.0)), 0.03)
+    let el_a = mix(sh_a, j.fore_hand, 0.5) - (spine * 0.8 + side * 0.4) * max(sqrt(max(0.09 - ea * ea, 0.0)), 0.03)
+    let el_b = mix(sh_b, j.aft_hand, 0.5) - (spine * 0.8 - side * 0.4) * max(sqrt(max(0.09 - eb * eb, 0.0)), 0.03)
     let arms = min(
         min(taper(q, sh_a, el_a, 0.068, 0.05), taper(q, el_a, j.fore_hand, 0.05, 0.04)),
         min(taper(q, sh_b, el_b, 0.068, 0.05), taper(q, el_b, j.aft_hand, 0.05, 0.04)),
@@ -134,27 +115,15 @@ pub fn parts(j: Joints, q: vec3, blow: vec3, t: f32) -> vec4 {
     let head = j.neck + spine * 0.17
     let (face, side) = facing(j, spine)
     var mask = length((q - head - face * 0.03) / vec3(1.0)) - 0.12
-    mask = blend(
-        mask,
-        taper(q, head + face * 0.05, head + face * 0.22 - spine * 0.04, 0.08, 0.025),
-        0.04,
-    )
+    mask = blend(mask, taper(q, head + face * 0.05, head + face * 0.22 - spine * 0.04, 0.08, 0.025), 0.04)
     let ear_a = head + side * 0.07 + spine * 0.08
     let ear_b = head - side * 0.07 + spine * 0.08
-    mask = min(
-        mask,
-        min(
-            taper(q, ear_a, ear_a + spine * 0.15 + side * 0.03, 0.04, 0.006),
-            taper(q, ear_b, ear_b + spine * 0.15 - side * 0.03, 0.04, 0.006),
-        ),
-    )
+    mask = min(mask, min(taper(q, ear_a, ear_a + spine * 0.15 + side * 0.03, 0.04, 0.006), taper(q, ear_b, ear_b + spine * 0.15 - side * 0.03, 0.04, 0.006)))
     // Black hair swept back in spikes behind the mask.
     var hair = length(q - head + face * 0.04 - spine * 0.03) - 0.125
     for k in 0..5 {
         let a = f32(k) * 0.9 - 1.8
-        let dir = normalize(
-            -face * 0.9 + spine * (0.55 - 0.08 * abs(a)) + side * (a * 0.35) + blow * 0.3,
-        )
+        let dir = normalize(-face * 0.9 + spine * (0.55 - 0.08 * abs(a)) + side * (a * 0.35) + blow * 0.3)
         let root = head - face * 0.05 + spine * 0.05
         hair = min(hair, taper(q, root, root + dir * (0.24 - 0.025 * abs(a)), 0.05, 0.004))
     }
@@ -189,8 +158,7 @@ pub fn hero_material(j: Joints, q: vec3, blow: vec3, t: f32) -> (vec3, f32) {
     if k.y <= k.x + 0.001 {
         // Gold along the coat's open edges and round its hem, and its lining inside.
         let h = dot(q - j.hips, spine)
-        let edge = smoothstep(0.075, 0.09, abs(dot(q - j.hips, side))) *
-            (1.0 - smoothstep(0.1, 0.115, abs(dot(q - j.hips, side))))
+        let edge = smoothstep(0.075, 0.09, abs(dot(q - j.hips, side))) * (1.0 - smoothstep(0.1, 0.115, abs(dot(q - j.hips, side))))
         let front = step(0.05, dot(q - j.hips, face))
         let hem = hem_at(j, spine, face, q, blow, t)
         let down = hem - j.hips
