@@ -358,6 +358,13 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
         rough = r
         seam = sm
     }
+    // (Wet and dark a hand's breadth up from where the sea stands on it, glossy, its edge
+    // wandering as the waves wash up and fall back: the line that says it's in the water, not
+    // laid on it.)
+    let wash = p.y - (s.boat.y - 0.05) - 0.06 * noise(vec2(q.z * 2.5 - s.held * 3.0, q.x * 4.0))
+    let soaked = (1.0 - smoothstep(0.02, 0.12, wash)) * outside
+    a *= 1.0 - 0.5 * soaked
+    rough = mix(rough, 0.2, soaked)
     let k = parts(s, q)
     // The sail: a heavy cloth, bone-pale and weathered, its panels seamed across, a broad band
     // of the cloak's madder through it and a dark leech tape; lit through when the light's

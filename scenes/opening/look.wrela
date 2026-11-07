@@ -158,7 +158,7 @@ pub fn shot_at(
     let bx = bx1
     // (Lifted a little on the plane; pressed down into the water as it heels into a turn, its
     // low chine dug in, as a carving hull loads up.)
-    let boat = afloat + vec3(y: 0.06 * pl - 0.12 * abs(sin(hl)))
+    let boat = afloat + vec3(y: 0.06 * pl - 0.2 * abs(sin(hl)))
     let g = pose(r)
     // The bounce: how sharply the skiff's fall was stopped over the last drawings.
     let dt = 1.0 / HELD
