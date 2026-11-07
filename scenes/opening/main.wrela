@@ -73,7 +73,7 @@ pub const FRAMING: f32 = 0.0
 
 /// The player's camera: 0 low behind the skiff, as it was; 1 higher and off its quarter, so the
 /// deck and the hull's length read (`--set CAMERA=1`).
-pub const CAMERA: f32 = 1.0
+pub const CAMERA: f32 = 0.0
 
 pub fn init() -> State {
     targets(heavens(SUN, 3.0), 640, 360)

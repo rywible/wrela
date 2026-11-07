@@ -379,8 +379,8 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
     // wandering as the waves wash up and fall back: the line that says it's in the water, not
     // laid on it.)
     let wash = p.y - (s.boat.y - 0.05) - 0.06 * noise(vec2(q.z * 2.5 - s.held * 3.0, q.x * 4.0))
-    let soaked = (1.0 - smoothstep(0.02, 0.12, wash)) * outside
-    a *= 1.0 - 0.5 * soaked
+    let soaked = (1.0 - smoothstep(0.04, 0.16, wash)) * outside
+    a *= 1.0 - 0.6 * soaked
     rough = mix(rough, 0.2, soaked)
     let k = parts(s, q)
     // The sail: a heavy cloth, bone-pale and weathered, its panels seamed across, a broad band
@@ -478,15 +478,16 @@ fn old_wood(q: vec3, y: f32, outside: f32, inside: f32, grain: f32, fine: f32, p
     let linek = 1.0 - smoothstep(0.002, 0.005, px)
     let lap = floor(y / 0.075)
     let tone = mix(0.5, hash2(vec2(lap, 7.0)), lapk)
-    var wood = mix(vec3(0.27, 0.24, 0.2), vec3(0.43, 0.39, 0.33), tone * 0.5 + grain * 0.5)
+    var wood = mix(vec3(0.3, 0.23, 0.16), vec3(0.47, 0.37, 0.26), tone * 0.5 + grain * 0.5)
     wood *= 0.85 + 0.3 * fine
     // (The paint, worn through to the wood where hands and the sea rub it most: at the rail, the
     // bow, each lap's edge.)
     let wear = fbm(vec2(q.z * 2.6, y * 7.0), 3) + 0.25 * fine +
         0.2 * smoothstep(-0.06, 0.0, y) + 0.15 * smoothstep(1.2, 2.0, q.z) +
         0.15 * lapk * smoothstep(0.75, 1.0, fract(y / 0.075))
-    let painted = 1.0 - smoothstep(0.62, 0.7, wear)
-    let faded = mix(vec3(0.36, 0.1, 0.07), vec3(0.45, 0.26, 0.2), smoothstep(-0.25, 0.0, y))
+    // (Paint left only on its sheerstrake, a band under the rail; below it bare wood.)
+    let painted = (1.0 - smoothstep(0.62, 0.7, wear)) * smoothstep(-0.13, -0.1, y)
+    let faded = mix(vec3(0.3, 0.12, 0.08), vec3(0.4, 0.24, 0.18), smoothstep(-0.12, 0.0, y))
     var c = mix(wood, faded * (0.85 + 0.25 * grain), painted)
     let ochre = smoothstep(-0.245, -0.235, y) * smoothstep(-0.205, -0.215, y)
     c = mix(c, vec3(0.42, 0.31, 0.13) * (0.8 + 0.3 * grain), ochre * painted * (1.0 - smoothstep(0.004, 0.008, px)))
