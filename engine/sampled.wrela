@@ -9,17 +9,25 @@
 // saying whether the block is all outside, all inside or stored. Realizing it is the realizer's
 // passes 2 to 4 with the samples for the field: the blocks it stores are the live ones; each
 // cell the surface crosses gets a vertex where the planes through its edges' crossings best
-// meet (the crossings and normals of the samples' trilinear blend); then `realize::emit_quads`
-// and `realize::finish_mesh` as for any field. Its vertices go whole to one bone, as a rigid
+// meet (the crossings and normals of the samples' trilinear blend); then its quads and
+// `realize::finish_mesh` as for any field. Its vertices go whole to one bone, as a rigid
 // realization's do.
+//
+// Its edges stay sharp: a field's vertex has one normal, the blend's gradient, which rounds a
+// crease off in the shading however sharp the surface is (a cut stone's edges look melted). Here
+// each cell's vertex looks at the quads round it, sorts their normals into sides (a quad joins
+// the side its normal is within `CREASE` degrees of, or starts one), and becomes a vertex a side,
+// each with its side's mean normal; each quad then takes, at each corner, the vertex of the side
+// that faces as it does. Faces meeting at a gentler angle share a vertex and shade smoothly.
 
 use realize::{
-    BLOCK, CellWord, Grid, LiveBlock, Mesh, NO_VERTEX, QEF_PULL, Room, Scratch, SkinVertex,
-    cell_key, corner_offset, record_mesh, solve3,
+    BLOCK, CellWord, Grid, LiveBlock, Mesh, NO_VERTEX, QEF_PULL, Quad, Room, Scratch, SkinVertex,
+    cell_key, corner_offset, finish_mesh, solve3, vertex_at,
 }
 use creature::PartMask
 use std::gpu::{
-    Append, Atomics, GlobalId, GpuBuffer, LocalId, Slots, WorkgroupId, buffer, dispatch, write,
+    Append, AppendBuffer, Atomics, GlobalId, GpuBuffer, LocalId, Slots, WorkgroupId, append_buffer,
+    buffer, dispatch, write,
 }
 
 /// A block's slot: all outside, all inside; a stored block's is `STORED` + its index.
@@ -237,15 +245,246 @@ pub fn place_sampled_vertices(
     cells.store(key, u32(CellWord { vertex: min(vi, NO_VERTEX), signs }))
 }
 
-/// `shape`'s mesh: a vertex for each cell its surface crosses (room for one a cell of its stored
-/// blocks), a quad for each crossed edge, its draw's arguments and tally, its vertices whole to
-/// its lattice's bone. At most 65,535 stored blocks.
-pub fn realize_sampled(shape: Sampled) -> Mesh {
+/// The angle (degrees) past which two faces meeting at a vertex make a crease: the vertex is split
+/// into one for each side of it, so the edge shades sharp. Gentler bends shade smoothly.
+pub const CREASE: f32 = 40.0
+
+/// The most sides a vertex is split into.
+pub const SIDES: u32 = 4
+
+/// The words a cell's vertex takes in the sides map: its sides' vertices (`NO_VERTEX` past the
+/// last), then their normals, packed.
+const SIDE_WORDS: u32 = 2 * SIDES
+
+/// `x`'s sign, 1 for 0.
+fn sign_of(x: f32) -> f32 {
+    if x < 0.0 { -1.0 } else { 1.0 }
+}
+
+/// A unit normal in a word: octahedral, 16 bits an axis.
+pub fn pack_normal(n: vec3) -> u32 {
+    var p = vec2(n.x, n.y) / (abs(n.x) + abs(n.y) + abs(n.z))
+    if n.z < 0.0 {
+        p = (vec2(1.0) - abs(vec2(p.y, p.x))) * vec2(sign_of(p.x), sign_of(p.y))
+    }
+    let q = clamp(p * 0.5 + vec2(0.5), vec2(0.0), vec2(1.0)) * 65535.0
+    u32(round(q.x)) | (u32(round(q.y)) << 16)
+}
+
+/// A normal `pack_normal` packed.
+pub fn unpack_normal(w: u32) -> vec3 {
+    let p = vec2(f32(w & 65535), f32(w >> 16)) / 65535.0 * 2.0 - vec2(1.0)
+    let z = 1.0 - abs(p.x) - abs(p.y)
+    if z >= 0.0 {
+        return normalize(vec3(p.x, p.y, z))
+    }
+    let q = (vec2(1.0) - abs(vec2(p.y, p.x))) * vec2(sign_of(p.x), sign_of(p.y))
+    normalize(vec3(q.x, q.y, z))
+}
+
+/// The unit vectors along the two axes across `axis`.
+fn across(axis: u32) -> (vec3i, vec3i) {
+    let a1 = (axis + 1) % 3
+    let a2 = (axis + 2) % 3
+    (
+        vec3i(i32(a1 == 0), i32(a1 == 1), i32(a1 == 2)),
+        vec3i(i32(a2 == 0), i32(a2 == 1), i32(a2 == 2)),
+    )
+}
+
+/// The outward normal (unit) of the quad round the lattice edge from point `g` along `axis` (the
+/// cells `g`, `g − u`, `g − u − w` and `g − w` round it), inside at `g` or not; zero if a
+/// cell round it has no vertex.
+fn edge_normal(
+    grid: Grid,
+    block_map: [u32],
+    cells: [u32],
+    blocks: u32,
+    points: [SkinVertex],
+    g: vec3i,
+    axis: u32,
+    inside_low: bool,
+) -> vec3 {
+    let room = points.len()
+    let (u, w) = across(axis)
+    let a = vertex_at(grid, block_map, cells, blocks, room, g)
+    let b = vertex_at(grid, block_map, cells, blocks, room, g - u)
+    let c = vertex_at(grid, block_map, cells, blocks, room, g - u - w)
+    let d = vertex_at(grid, block_map, cells, blocks, room, g - w)
+    if a == NO_VERTEX || b == NO_VERTEX || c == NO_VERTEX || d == NO_VERTEX {
+        return vec3(0.0)
+    }
+    let n = cross(points[c].pos - points[a].pos, points[d].pos - points[b].pos)
+    let l = length(n)
+    if l < 1.0e-12 {
+        return vec3(0.0)
+    }
+    let along = vec3(f32(axis == 0), f32(axis == 1), f32(axis == 2))
+    let out = if inside_low { along } else { -along }
+    if dot(n, out) < 0.0 { -n / l } else { n / l }
+}
+
+/// Each cell's vertex (`points`) split into a vertex for each side of the creases through it
+/// (pushed to `verts`, with its side's normal); the sides map gets them and their normals.
+@compute(4, 4, 4)
+pub fn crease_vertices(
+    grid: Grid,
+    first: u32,
+    blocks: [LiveBlock],
+    block_map: [u32],
+    cells: [u32],
+    points: [SkinVertex],
+    cos_crease: f32,
+    verts: mut Append<SkinVertex>,
+    sides: mut Atomics<u32>,
+    block: WorkgroupId,
+    lid: LocalId,
+) {
+    let slot = block.x + first
+    let n = cells.len() / (BLOCK * BLOCK * BLOCK)
+    let word = CellWord::of_bits(cells[cell_key(slot, lid.xyz(), n)])
+    let v0 = word.vertex
+    if v0 >= points.len() {
+        return
+    }
+    let c = vec3i(grid.block_xyz(blocks[slot].block) * BLOCK + lid.xyz())
+    // The quads round it are those of its crossed edges, one an edge.
+    var sums = [vec3(0.0); 4]
+    var count = 0
+    for e in 0..12 {
+        let axis = e >> 2
+        let r = e & 3
+        let ja = ((r & 1) << ((axis + 1) % 3)) | ((r >> 1) << ((axis + 2) % 3))
+        let jb = ja | (1 << axis)
+        let ia = (word.signs >> ja) & 1
+        if ia == ((word.signs >> jb) & 1) {
+            continue
+        }
+        let g = c + vec3i(corner_offset(ja))
+        let nf = edge_normal(grid, block_map, cells, n, points, g, axis, ia == 1)
+        if dot(nf, nf) == 0.0 {
+            continue
+        }
+        var best = 0
+        var near = -2.0
+        for k in 0..count {
+            let d = dot(normalize(sums[k]), nf)
+            if d > near {
+                near = d
+                best = k
+            }
+        }
+        if count < SIDES && near < cos_crease {
+            sums[count] = nf
+            count += 1
+        } else {
+            sums[best] += nf
+        }
+    }
+    let p = points[v0]
+    if count == 0 {
+        sums[0] = p.normal
+        count = 1
+    }
+    for k in 0..SIDES {
+        if k < count {
+            let nk = normalize(sums[k])
+            let vi = verts.push(
+                SkinVertex {
+                    pos: p.pos,
+                    bones: p.bones,
+                    normal: nk,
+                    weights: p.weights,
+                    mask: p.mask,
+                },
+            )
+            sides.store(v0 * SIDE_WORDS + k, min(vi, NO_VERTEX))
+            sides.store(v0 * SIDE_WORDS + SIDES + k, pack_normal(nk))
+        } else {
+            sides.store(v0 * SIDE_WORDS + k, NO_VERTEX)
+        }
+    }
+}
+
+/// Of cell vertex `v`'s sides (the sides map's), the vertex of the one facing most as `nf` does.
+fn side_facing(sides: [u32], v: u32, nf: vec3) -> u32 {
+    var best = sides[v * SIDE_WORDS]
+    var near = -2.0
+    for k in 0..SIDES {
+        let i = sides[v * SIDE_WORDS + k]
+        if i == NO_VERTEX {
+            continue
+        }
+        let d = dot(unpack_normal(sides[v * SIDE_WORDS + SIDES + k]), nf)
+        if d > near {
+            near = d
+            best = i
+        }
+    }
+    best
+}
+
+/// `realize::emit_quads` for a creased mesh: each quad round a crossed edge takes, at each corner,
+/// the side of that cell's vertex facing as it does.
+@compute(4, 4, 4)
+pub fn emit_creased_quads(
+    grid: Grid,
+    first: u32,
+    blocks: [LiveBlock],
+    block_map: [u32],
+    cells: [u32],
+    points: [SkinVertex],
+    sides: [u32],
+    quads: mut Append<Quad>,
+    holes: mut Atomics<u32>,
+    block: WorkgroupId,
+    lid: LocalId,
+) {
+    let slot = block.x + first
+    let n = cells.len() / (BLOCK * BLOCK * BLOCK)
+    let room = points.len()
+    let cell = CellWord::of_bits(cells[cell_key(slot, lid.xyz(), n)])
+    if cell.vertex >= room {
+        return
+    }
+    let g = vec3i(grid.block_xyz(blocks[slot].block) * BLOCK + lid.xyz())
+    let in0 = cell.signs & 1
+    for axis in 0..3 {
+        if in0 == ((cell.signs >> (1 << axis)) & 1) {
+            continue
+        }
+        let (u, w) = across(axis)
+        let p1 = vertex_at(grid, block_map, cells, n, room, g - u)
+        let p2 = vertex_at(grid, block_map, cells, n, room, g - u - w)
+        let p3 = vertex_at(grid, block_map, cells, n, room, g - w)
+        if p1 == NO_VERTEX || p2 == NO_VERTEX || p3 == NO_VERTEX {
+            let _ = holes.add(i: 0, value: 1)
+            continue
+        }
+        let nf = edge_normal(grid, block_map, cells, n, points, g, axis, in0 == 1)
+        let v0 = side_facing(sides, cell.vertex, nf)
+        let v1 = side_facing(sides, p1, nf)
+        let v2 = side_facing(sides, p2, nf)
+        let v3 = side_facing(sides, p3, nf)
+        let _ = quads.push(if in0 == 1 {
+            Quad { a: v0, b: v1, c: v2, d: v0, e: v2, f: v3 }
+        } else {
+            Quad { a: v0, b: v2, c: v1, d: v0, e: v3, f: v2 }
+        })
+    }
+}
+
+/// `shape`'s mesh: a vertex for each cell its surface crosses, split along creases sharper than
+/// `crease` degrees (room for one a cell of its stored blocks), a quad for each crossed edge, its
+/// draw's arguments and tally, its vertices whole to its lattice's bone. 180 shades it all
+/// smoothly. At most 65,535 stored blocks.
+pub fn realize_sampled(shape: Sampled, crease: f32 = CREASE) -> Mesh {
     let grid = shape.lattice.grid()
     let cells = BLOCK * BLOCK * BLOCK
-    var mesh = Mesh::new(
-        Room { vertices: max(shape.stored * cells, 1), quads: max(shape.stored * cells * 3, 1) },
-    )
+    let room = max(shape.stored * cells, 1)
+    var mesh = Mesh::new(Room { vertices: room, quads: room * 3 })
+    var points: AppendBuffer<SkinVertex> = append_buffer(room)
+    var sides: GpuBuffer<u32> = buffer(room * SIDE_WORDS)
     var scratch = Scratch::new(grid.blocks)
     write(mut mesh.holes, 0, [0])
     dispatch(
@@ -266,11 +505,52 @@ pub fn realize_sampled(shape: Sampled) -> Mesh {
             slots: shape.slots.items(),
             samples: shape.samples.items(),
             cells: mut scratch.cells,
-            verts: mut mesh.verts,
+            verts: mut points,
         ),
         groups: scratch.live.count(),
     )
-    record_mesh(grid, mut scratch, mut mesh)
+    dispatch(
+        crease_vertices.bind(
+            grid: grid,
+            first: 0,
+            blocks: scratch.live.items(),
+            block_map: scratch.block_map.items(),
+            cells: scratch.cells.items(),
+            points: points.items(),
+            cos_crease: cos(crease * 0.017453292),
+            verts: mut mesh.verts,
+            sides: mut sides,
+        ),
+        groups: scratch.live.count(),
+    )
+    dispatch(
+        emit_creased_quads.bind(
+            grid: grid,
+            first: 0,
+            blocks: scratch.live.items(),
+            block_map: scratch.block_map.items(),
+            cells: scratch.cells.items(),
+            points: points.items(),
+            sides: sides.items(),
+            quads: mut mesh.quads,
+            holes: mut mesh.holes,
+        ),
+        groups: scratch.live.count(),
+    )
+    dispatch(
+        finish_mesh.bind(
+            vertices: mesh.verts.count(),
+            quads: mesh.quads.count(),
+            live: scratch.live.count(),
+            holes: mesh.holes.items(),
+            vroom: room,
+            qroom: room * 3,
+            draw: mut mesh.draw,
+            skin: mut mesh.skin,
+            tally: mut mesh.tally,
+        ),
+        groups: 1,
+    )
     mesh
 }
 

@@ -1,7 +1,8 @@
-// A sphere sampled every 4 cm into a sampled shape's bricks on the CPU (the tables a tool writes
-// for a sculpt), uploaded, and realized through `engine::sampled`: each vertex lies on the
-// sphere within 1.5 mm, its normal points outward, and no quad is missing a vertex. The vertices
-// are read back once the tally is in.
+// A sphere and a box sampled every 4 cm into a sampled shape's bricks on the CPU (the tables a
+// tool writes for a sculpt), uploaded, and realized through `engine::sampled`: each of the
+// sphere's vertices lies on it within 1.5 mm, its normal points outward and isn't split (a curve
+// has no creases), and no quad is missing a vertex; the box's edges stay sharp, every vertex
+// facing as one of its faces does. The vertices are read back once the tallies are in.
 
 use engine::realize::{BLOCK, Mesh, SkinVertex, Tally}
 use engine::sampled::{
@@ -22,21 +23,40 @@ fn distance(p: vec3) -> f32 {
     length(p - CENTRE) - RADIUS
 }
 
+/// The box's half size: its faces cross the cells, off the lattice's planes.
+const HALF: f32 = 0.3
+
+fn box_distance(p: vec3) -> f32 {
+    let a = abs(p - CENTRE) - vec3(HALF)
+    length(max(a, vec3(0.0))) + min(max(a.x, max(a.y, a.z)), 0.0)
+}
+
+/// The sphere's distance, or the box's.
+fn shape_distance(p: vec3, boxed: bool) -> f32 {
+    if boxed { box_distance(p) } else { distance(p) }
+}
+
 /// The byte a distance is stored as.
 fn byte(d: f32) -> u32 {
     u32(round((clamp(d, -BAND, BAND) / BAND * 0.5 + 0.5) * 255.0))
 }
 
+/// The sphere's mesh and the box's, their tallies and vertices as they come back.
 pub struct State {
-    mesh: Mesh,
-    tally: Pending<Tally>,
+    meshes: Vec<Mesh>,
+    tallies: Vec<Pending<Tally>>,
     pub counted: Vec<Tally>,
     asked: Vec<Pending<SkinVertex>>,
-    pub read: Vec<SkinVertex>,
+    pub read: Vec<Vec<SkinVertex>>,
 }
 
 /// The sphere's tables, as a tool would write them.
 fn sphere() -> Samples {
+    tables(false)
+}
+
+/// The sphere's tables or the box's.
+fn tables(boxed: bool) -> Samples {
     var slots: Vec<u32> = Vec::new()
     var words: Vec<u32> = Vec::new()
     for bz in 0..SIZE {
@@ -49,7 +69,7 @@ fn sphere() -> Samples {
                 for i in 0..125 {
                     let c = vec3u(i / 25, (i / 5) % 5, i % 5)
                     let p = ORIGIN + (vec3(vec3u(bx, by, bz) * BLOCK + c)) * CELL
-                    let b = byte(distance(p))
+                    let b = byte(shape_distance(p, boxed))
                     bytes[i] = b
                     lo = min(lo, b)
                     hi = max(hi, b)
@@ -84,34 +104,36 @@ fn sphere() -> Samples {
 }
 
 pub fn init() -> State {
-    let mesh = realize_sampled(sphere().upload())
-    State {
-        tally: read(mesh.tally.items()),
-        mesh,
-        counted: Vec::new(),
-        asked: Vec::new(),
-        read: Vec::new(),
+    var meshes: Vec<Mesh> = Vec::new()
+    var tallies: Vec<Pending<Tally>> = Vec::new()
+    for boxed in [false, true] {
+        let mesh = realize_sampled(tables(boxed).upload())
+        tallies.push(read(mesh.tally.items()))
+        meshes.push(take mesh)
     }
+    State { meshes, tallies, counted: Vec::new(), asked: Vec::new(), read: Vec::new() }
 }
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
-    if s.counted.len() == 0 {
-        if let Some(Ok(t)) = s.tally.poll() {
+    if s.counted.len() < s.tallies.len() {
+        let k = s.counted.len()
+        if let Some(Ok(t)) = s.tallies[k].poll() {
             s.counted.push(t[0])
-            s.asked.push(read(s.mesh.verts.items()))
+            s.asked.push(read(s.meshes[k].verts.items()))
         }
         return
     }
-    if s.read.len() == 0 {
-        if let Some(Ok(v)) = s.asked[0].poll() {
-            s.read = Vec::from(v)
+    if s.read.len() < s.asked.len() {
+        let k = s.read.len()
+        if let Some(Ok(v)) = s.asked[k].poll() {
+            s.read.push(Vec::from(v))
         }
     }
 }
 
 @test(frames: 30, gpu: true)
 fn a_sampled_sphere_is_the_sphere(s: State) {
-    assert(s.counted.len() == 1, "the tally came back")
+    assert(s.counted.len() == 2, "the tallies came back")
     let t = s.counted[0]
     print(
         f"{t.vertices} vertices, {t.pushed_quads} quads, {t.live_blocks} live blocks, {t.holes} holes",
@@ -119,19 +141,44 @@ fn a_sampled_sphere_is_the_sphere(s: State) {
     assert(t.vertices > 1000, "the sphere has its vertices")
     assert(t.holes == 0, "no quad is missing a vertex")
     assert(t.flags == 0, "the mesh had room")
-    assert(s.read.len() > 0, "the vertices came back")
+    assert(s.read.len() == 2, "the vertices came back")
     var worst = 0.0
     var inward = 0
+    var bent = 1.0
     for i in 0..t.vertices {
-        let v = s.read[i]
+        let v = s.read[0][i]
         worst = max(worst, abs(distance(v.pos)))
         if dot(v.normal, v.pos - CENTRE) <= 0.0 {
             inward += 1
         }
+        bent = min(bent, dot(v.normal, normalize(v.pos - CENTRE)))
     }
-    print(f"farthest from the sphere: {worst * 1000.0} mm; {inward} normals inward")
+    print(
+        f"farthest from the sphere: {worst * 1000.0} mm; {inward} normals inward; least cos {bent}",
+    )
     assert(worst < 1.5e-3, "every vertex on the sphere within 1.5 mm")
     assert(inward == 0, "every normal outward")
+    assert(bent > 0.97, "every normal within 14 degrees of the sphere's")
+}
+
+/// The box's edges and corners stay sharp: every vertex, the ones on its edges too, faces as one
+/// of the faces it lies on, so each face shades flat to its edges.
+@test(frames: 30, gpu: true)
+fn a_sampled_box_keeps_its_edges(s: State) {
+    assert(s.read.len() == 2, "the vertices came back")
+    let t = s.counted[1]
+    print(f"box: {t.vertices} vertices, {t.pushed_quads} quads, {t.holes} holes")
+    assert(t.holes == 0 && t.flags == 0, "whole, with room")
+    var off = 0
+    for i in 0..t.vertices {
+        let v = s.read[1][i]
+        let n = abs(v.normal)
+        if max(n.x, max(n.y, n.z)) < 0.97 {
+            off += 1
+        }
+    }
+    print(f"{off} of {t.vertices} vertices face no face")
+    assert(off * 50 < t.vertices, "all but 2% of its vertices face as a face does")
 }
 
 /// A table's text comes back as its words: bytes 1 to 8, then 9 alone (its padding skipped).
