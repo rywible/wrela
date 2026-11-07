@@ -168,12 +168,14 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32, f32) {
     let clots = froth * (0.55 + 0.9 * fbm(grain * 0.5, 2))
     // (Churn: froth everywhere it's been stirred, not only where the lace drifts: gated by the
     // drifts, the trail astern went missing in long stretches.)
-    // (Fine: froth in clots a hand or two across, streaked; coarse, it lay in flat white
-    // blobs a metre across that came and went as the trail passed over them.)
+    // (Fine: froth streaked a hand or two across; coarse, it lay in flat white blobs a metre
+    // across that came and went as the trail passed over them.)
+    // (The cells as the holes in the froth, never as dots of it: dots read as a polka-dot
+    // trail.)
     let bub = cells(grain * 5.0 + vec2(3.1, 0.7))
-    let blots = 1.0 - smoothstep(0.12, 0.38, bub.x)
-    let churned = 0.65 * fbm(grain * 3.5 + vec2(1.7, 9.2), 3) + 0.45 * blots +
-        0.25 * fbm(grain * 0.9, 2) - 0.12
+    let holes = smoothstep(0.08, 0.45, bub.x)
+    let churned = 0.7 * fbm(grain * 3.5 + vec2(1.7, 9.2), 3) + 0.3 * fbm(grain * 0.9, 2) +
+        0.22 * holes - 0.12
     // Its arms: the bow wave's own crests carried on aft, one V from the stem, each a thin
     // broken line of froth riding the crest, dashes and clots with the dark sea between, fading
     // to nothing a few lengths astern. (Never a soft band: smooth, it glowed like a beam.)
