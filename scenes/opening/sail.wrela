@@ -381,7 +381,7 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     // spring, so a gust or a gybe sets it rocking.
     let pull = r.power * sin(abs(off)) * polar(off) * r.gust
     let lean = side * (0.3 * pull + 0.1 * r.power * r.gust) * (1.0 - 0.3 * r.plane) +
-        r.turn * clamp(r.speed, 0.0, 9.0) * 0.075
+        r.turn * clamp(r.speed, 0.0, 9.0) * 0.12
     r.heel_rate += ((lean - r.heel) * 22.0 - r.heel_rate * 5.0) * dt
     r.heel += r.heel_rate * dt
     // The camera: swung round after the bow, lagging it; falling back as it surges and catching
