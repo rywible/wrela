@@ -9,17 +9,33 @@ use std::derive::Box3
 use engine::character::{ByChannels, colours}
 use engine::creature::MAX_BONES
 use engine::carving::{STATUE, carved, skin_carved}
-use engine::plain::{LIGHTS, coloured, skin_coloured, unlit_shadow, view}
+use engine::plain::{LIGHTS, Lights, coloured, depth_only, skin_coloured, skin_shadow, view}
 use engine::realize::{Mesh, Tally, realize_once, solid}
 use std::gpu::{
-    ComparisonSampler, Cull, DepthTexture, GpuBuffer, Unorm8x4, begin_screen_pass_with_depth,
-    buffer, comparison_sampler, depth_texture, draw, read, write,
+    ComparisonSampler, Cull, DepthBias, DepthTexture, begin_depth_pass, GpuBuffer, Unorm8x4,
+    begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, draw, read, write,
 }
 use std::io::{Pending, print}
 use std::transform::{rotate_y, translate}
 
 /// Whether the stone is carved pixel by pixel (`engine::carving`), or plain (`--set CARVED=0`).
 pub const CARVED: u32 = 1
+
+/// Whether it's lit by a low sun from the side, with shadows, as stone is best judged (1), or
+/// by the examples' plain light, unshadowed (`--set RAKING=0`).
+pub const RAKING: u32 = 1
+
+/// The low sun's light: strong, with little from the sky, so relief casts and catches.
+const RAKED = Lights {
+    sun_colour: vec3(2.7, 2.45, 2.1),
+    sky: vec3(0.5, 0.6, 0.78),
+    ground: vec3(0.28, 0.24, 0.19),
+    ambient: 0.55,
+    exposure: 0.85,
+    f0: 0.04,
+    normal_offset: 1.5e-2,
+    compare_bias: 0.001,
+}
 
 /// A box round the idol (m), for its paint.
 const BOUNDS = Box3 { lo: vec3(-3.5, -0.5, -2.0), hi: vec3(3.5, 7.0, 3.3) }
@@ -48,7 +64,7 @@ pub struct State {
     colours: Vec<GpuBuffer<Unorm8x4>>,
     palettes: GpuBuffer<mat4>,
     tallies: Vec<Pending<Tally>>,
-    shadow: DepthTexture,
+    map: DepthTexture,
     smp: ComparisonSampler,
     shot: u32,
 }
@@ -86,7 +102,7 @@ pub fn init() -> State {
         colours: colour,
         palettes,
         tallies,
-        shadow: unlit_shadow(),
+        map: depth_texture(width: 4096, height: 4096),
         smp: comparison_sampler(),
         shot: 0,
     }
@@ -108,11 +124,36 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     } else {
         SHOTS[shot - 1]
     }
-    let v = view(eye, at, fovy, f32(width) / f32(height), vec3(0.5, 0.8, 0.6), 16.0)
-    var depth = depth_texture(width: width, height: height)
-    let pass = begin_screen_pass_with_depth(mut depth, clear: vec4(0.85, 0.82, 0.76, 1.0))
+    let raking = RAKING != 0
+    let sun = if raking { vec3(0.85, 0.55, 0.5) } else { vec3(0.5, 0.8, 0.6) }
+    let extent = if shot == 0 { 16.0 } else { 6.0 }
+    let lights = if raking { RAKED } else { LIGHTS }
+    let v = view(eye, at, fovy, f32(width) / f32(height), sun, extent)
     let n = if shot == 0 { 5 } else { 1 }
     let first = if shot == 0 { 0 } else { 5 }
+    // The sun's shadow map, when it's raking (cleared, it shadows nothing).
+    let cast = begin_depth_pass(mut s.map, clear_depth: 1.0)
+    if raking {
+        for k in 0..s.meshes.len() * n {
+            let m = k / n
+            draw(
+                cast,
+                skin_shadow.bind(
+                    verts: s.meshes[m].verts.items(),
+                    palettes: s.palettes.items(),
+                    first: (first + k % n) * MAX_BONES,
+                    view: v,
+                ),
+                depth_only,
+                indices: s.meshes[m].quads.items(),
+                indirect: s.meshes[m].draw.items(),
+                depth_bias: DepthBias { constant: 4, slope: 2.0, clamp: 0.0 },
+            )
+        }
+    }
+    cast.end()
+    var depth = depth_texture(width: width, height: height)
+    let pass = begin_screen_pass_with_depth(mut depth, clear: vec4(0.85, 0.82, 0.76, 1.0))
     for k in 0..s.meshes.len() * n {
         let m = k / n
         if CARVED == 0 {
@@ -125,7 +166,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                     first: (first + k % n) * MAX_BONES,
                     view: v,
                 ),
-                coloured.bind(view: v, lights: LIGHTS, shadow: s.shadow, shadow_sampler: s.smp),
+                coloured.bind(view: v, lights: lights, shadow: s.map, shadow_sampler: s.smp),
                 indices: s.meshes[m].quads.items(),
                 indirect: s.meshes[m].draw.items(),
                 cull: Cull::Back,
@@ -142,9 +183,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                 ),
                 carved.bind(
                     view: v,
-                    lights: LIGHTS,
+                    lights: lights,
                     carving: STATUE,
-                    shadow: s.shadow,
+                    shadow: s.map,
                     shadow_sampler: s.smp,
                 ),
                 indices: s.meshes[m].quads.items(),

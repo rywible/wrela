@@ -45,9 +45,9 @@ pub struct Carving: Copy + GpuData {
 /// A big statue's: a soft swell, granite flecks, a few clusters of pits, a few hairline cracks.
 pub const STATUE = Carving {
     swell: 0.09,
-    slope: 0.05,
-    fleck: 0.007,
-    flecked: 0.22,
+    slope: 0.3,
+    fleck: 0.009,
+    flecked: 0.38,
     pit: 0.014,
     pitting: 0.004,
     pitted: 0.25,
@@ -57,6 +57,9 @@ pub const STATUE = Carving {
     weathering: 1.0,
     seed: 7,
 }
+
+/// How much each of the weathered surface's three sizes bends it, coarsest first.
+const HARD = [0.2, 0.55, 1.0]
 
 /// What the carving makes of a surface: its normal, its colour's scale (each channel), and what
 /// its roughness gains.
@@ -123,12 +126,19 @@ pub fn carve(c: Carving, p: vec3, n: vec3, up: vec3, bulge: f32, px: f32) -> Car
     var tone = 1.0
     var rough = 0.0
     var bend = vec3(0.0)
-    // A soft swell, two sizes: the stone isn't quite smooth.
-    let swell = shows(c.swell * 0.5, px)
-    if swell > 0.0 {
-        let g = slope_of(p / c.swell + vec3(3.0), 0.2) + 0.5 * slope_of(p / (0.4 * c.swell), 0.2)
-        bend -= along(g, n) * (c.slope * swell)
+    // The weathered surface, three sizes: eroded, not smooth, but hard: the coarsest barely bends
+    // it (granite keeps its planes), the finest most.
+    var size = c.swell
+    for o in 0..3 {
+        let seen = shows(size * 0.5, px)
+        if seen > 0.0 {
+            let g = slope_of(p / size + vec3(3.0 + 17.0 * f32(o)), 0.2)
+            bend -= along(g, n) * (c.slope * seen * HARD[o])
+        }
+        size *= 0.4
     }
+    // Weathered patches, darker, a hand or two across.
+    tone *= 1.0 - 0.28 * c.weathering * smoothstep(0.55, 0.75, noise3(p * 2.5 + vec3(29.0)))
     // The granite's flecks: dark and light crystals in a mid grey, mostly colour, not shape.
     let flecks = shows(c.fleck, px)
     if flecks > 0.0 {
@@ -245,7 +255,7 @@ pub fn carved(
     let (dpx, dpy) = (dpdx(c.rest), dpdy(c.rest))
     let turn = dot(dpdx(n0), dpx) + dot(dpdy(n0), dpy)
     let bulge = turn / max(dot(dpx, dpx) + dot(dpy, dpy), 1.0e-10)
-    let k = carve(carving, c.rest, n0, vec3(0.0, 1.0, 0.0), bulge, px)
+    let k = carve(carving, c.rest, n0, vec3(0.0, 1.0, 0.0), bulge: bulge, px: px)
     let turned = c.x * k.normal.x + c.y * k.normal.y + c.z * k.normal.z
     let n = normalize(turned)
     let lit = lights.shadow(view, c.world, n, shadow, shadow_sampler)
@@ -262,7 +272,7 @@ fn carving_keeps_a_unit_normal_near_the_surface_s_own() {
         let t = f32(i)
         let p = vec3(sin(t * 1.7) * 2.0, t * 0.013, cos(t * 0.9) * 1.3)
         let n = normalize(vec3(sin(t), cos(t * 2.3), 0.4))
-        let k = carve(STATUE, p, n, vec3(0.0, 1.0, 0.0), 0.0, 0.002)
+        let k = carve(STATUE, p, n, vec3(0.0, 1.0, 0.0), bulge: 0.0, px: 0.002)
         assert(
             abs(length(k.normal) - 1.0) < 1.0e-4,
             f"the carved normal is {length(k.normal)} long",
@@ -273,7 +283,7 @@ fn carving_keeps_a_unit_normal_near_the_surface_s_own() {
         highest = max(highest, t)
     }
     assert(least > 0.6, f"the carving bends a normal {acos(least)} rad from the surface's")
-    assert(lowest > 0.15 && highest < 1.6, f"the carving's tone runs {lowest} to {highest}")
+    assert(lowest > 0.15 && highest < 1.8, f"the carving's tone runs {lowest} to {highest}")
     assert(highest - lowest > 0.2, "a carving 2 mm a pixel should vary the stone's tone")
 }
 
@@ -283,7 +293,7 @@ fn carving_fades_to_plain_stone_far_away() {
         let t = f32(i)
         let p = vec3(t * 0.31, 1.0 + t * 0.07, -t * 0.19)
         let n = normalize(vec3(0.3, 0.2, 1.0))
-        let k = carve(STATUE, p, n, vec3(0.0, 1.0, 0.0), 0.0, 1.0)
+        let k = carve(STATUE, p, n, vec3(0.0, 1.0, 0.0), bulge: 0.0, px: 1.0)
         assert(dot(k.normal, n) > 0.9999, "a swell less than a pixel should not bend the normal")
     }
 }
