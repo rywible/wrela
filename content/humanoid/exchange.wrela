@@ -669,6 +669,15 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
         held.y = min(held.y, at.y + X_RISE)
         arm_to(rig, mut w, 1, held)
     }
+    // (His fist kept driven straight from the forearm, as the take keeps it, however the arm's
+    // been moved: left as it was, it flops open toward the camera.)
+    {
+        let e = rig.find("rightLowerArm")
+        let k = rig.find("rightMiddleProximal")
+        let want = normalize(normalize(w[hand].t - w[e].t) + vec3(0.0, 0.2, 0.0))
+        let fix = humanoid::arc(w[k].t - w[hand].t, want)
+        stride::turn_below(rig, mut w, hand, fix)
+    }
     stride::store(rig, w, mut c, 0)
     c.pose(0.0)
 }
@@ -694,7 +703,7 @@ fn home_from_hit(base: Pose, ps: f32, after: f32) -> Pose {
     // on it would twist him past square.)
     let blended = humanoid::blend(base, guard, w, rig.bones.len())
     var out = base
-    for part in ["rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand"] {
+    for part in ["rightShoulder", "rightUpperArm", "rightLowerArm"] {
         let i = rig.find(part)
         if i != humanoid::NONE {
             out.turns[i] = blended.turns[i]
