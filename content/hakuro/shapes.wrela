@@ -384,7 +384,7 @@ pub const TAILS_AXIS = vec3(0.0, 0.949, -0.043)
 pub const TAILS_TOP: f32 = 0.93
 
 /// Where the long jacket's hem is (rest height): the tails carry on below it.
-pub const JACKET_HEM: f32 = 0.85
+pub const JACKET_HEM: f32 = 0.865
 
 /// How far the tails flare out for each metre they fall (the sheet's A-line).
 pub const FLARE: f32 = 0.06
@@ -440,8 +440,10 @@ pub fn tails(p: vec3) -> (f32, f32) {
     // hem, an A-line, falling in long folds. (Eased out over his hips from his belt and then
     // hanging straight read as a kilt.) Tucked in under the jacket above its hem.
     // (Out to the jacket's line well above its hem, so no ledge shows under it.)
-    let tuck = clamp((JACKET_HEM + 0.035 - p.y) / 0.03, 0.0, 1.0)
-    let rr = girth(inside) - 0.024 + 0.016 * tuck * tuck * (3.0 - 2.0 * tuck) + FLARE * max(JACKET_HEM - p.y, 0.0) + fold * clamp((JACKET_HEM - p.y) / 0.06, 0.0, 1.0)
+    // (Drawn well in above the hem: the jacket narrows to his waist above it, and the tails' top
+    // standing proud of it read as a belt.)
+    let tuck = clamp((JACKET_HEM + 0.035 - p.y) / 0.04, 0.0, 1.0)
+    let rr = girth(inside) - 0.083 + 0.06 * tuck * tuck * (3.0 - 2.0 * tuck) + FLARE * max(JACKET_HEM - p.y, 0.0) + fold * clamp((JACKET_HEM - p.y) / 0.06, 0.0, 1.0)
     var d = abs(r - rr) - 0.009
     // Its front edges: the distance round to the nearer (negative between them).
     d = max(d, max(TAILS_FROM - deg, deg - TAILS_TO) * 0.0174532925 * r)
