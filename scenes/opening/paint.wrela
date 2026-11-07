@@ -669,7 +669,9 @@ fn sea_shade(
     let v = -d
     let nv = max(dot(n, v), 0.0)
     // What reaches it of the sun: the clouds' shadow and the skiff's.
-    let near = skiff(s, p)
+    // (Far from the skiff, its distance isn't needed to know it's far: skip the march. This one
+    // distance serves the shadow here and the reflection below.)
+    let near = if length(p - s.boat - s.boat_y * 2.0) > 9.0 { 9.0 } else { skiff(s, p) }
     let boat_shadow = if near < 4.0 { skiff_shadow(s, p + vec3(0.0, 0.02, 0.0), l) } else { 1.0 }
     let sun = cloud_shadow(h.clouds, cloud, smp, p) * boat_shadow
     // The reflected sky and clouds, Fresnel's share of it (water's F0, 0.02), and the sun's glint.
@@ -726,7 +728,7 @@ fn sea_shade(
     // The skiff's own reflection beside it: the hull's own colours in the shade it hangs in,
     // its edge soft (how near the mirrored ray came to it) and broken by the ripples, and gone a
     // few metres down it.
-    let near_hull = skiff(s, p)
+    let near_hull = near
     if near_hull < 4.5 {
         let mr = mirror_skiff(s, p + vec3(0.0, 0.02, 0.0), r, 0.02, 7.0)
         // (Only its nearest metres: on a sea this rough the tall sail's mirror breaks up long before

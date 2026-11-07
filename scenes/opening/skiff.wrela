@@ -306,7 +306,13 @@ fn parts(s: Shot, q: vec3) -> vec4 {
         let ring = vec2(length(vec2(c.x, c.z)) - 0.13, c.y)
         rig = min(rig, length(ring * vec2(1.0, 1.5)) / 1.5 - 0.028)
     }
-    vec4(wood, sail, rig, hero(j, q, blow, s.held))
+    // (The rider only where he can be: a capsule from his feet past his head, as wide as his
+    // reach; outside it, its distance stands for his. Every sea pixel's reflection check calls
+    // this, and the whole rider there cost more than the hull.)
+    let feet = (j.fore_foot + j.aft_foot) * 0.5
+    let bound = sd_capsule(q, feet, j.neck + (j.neck - feet) * 0.2, 0.95)
+    let man = if bound > 0.05 { bound } else { hero(j, q, blow, s.held) }
+    vec4(wood, sail, rig, man)
 }
 
 /// The skiff at `p` (the world's): its distance.
