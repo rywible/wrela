@@ -28,13 +28,15 @@ pub const BLAST: u32 = 1
 pub const BY: u32 = 0
 pub const ON: u32 = 0
 pub const HIT_SPEED: f32 = 9.0
+/// The game's weight under it (engine::strike::weighted: 0 the bodies alone, 1 a heavy hit).
+pub const WEIGHT: f32 = 0.0
 const BYS: [strike::Striker; 4] = [strike::FIST, strike::ELBOW, strike::SHIN, strike::PALM]
 const ONS: [strike::Target; 5] = [strike::FACE, strike::RIBS, strike::BELLY, strike::GUARD, strike::STONE]
 
 /// The palette with its blow worked out from the bodies that meet.
 fn palette() -> Palette {
     var p = PALETTE
-    p.impacts[BLOW] = strike::struck(BYS[BY], ONS[ON], speed: HIT_SPEED)
+    p.impacts[BLOW] = strike::weighted(strike::struck(BYS[BY], ONS[ON], speed: HIT_SPEED), WEIGHT)
     p
 }
 
