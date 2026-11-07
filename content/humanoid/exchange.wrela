@@ -632,7 +632,7 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
     // him over two drawings, then dies away. (Arriving in the hold, it read as the freeze
     // creeping; arriving with the head's snap, it reads as the same blow.)
     let after = wall - max(t.hold, t.flash)
-    let j = smoothstep(0.0, 0.035, after) * exp(-max(after - 0.035, 0.0) / X_RECOIL_LIFE)
+    let j = smoothstep(0.0, 0.05, after) * exp(-max(after - 0.05, 0.0) / X_RECOIL_LIFE)
     let r = t.recoil * j
     if r > 0.0 {
         turn("rightShoulder", lift, r * 0.5)
@@ -706,7 +706,7 @@ fn home_from_hit(base: Pose, ps: f32, after: f32) -> Pose {
 /// How long the striker's punching arm takes to come home after the hit-stop (s), and how far
 /// toward his guard it's taken.
 pub const X_HOME: f32 = 0.2
-pub const X_HOME_SHARE: f32 = 0.85
+pub const X_HOME_SHARE: f32 = 0.4
 
 /// How near the middle of the struck one's glove may come to the striker's arms and fists, as
 /// the side-on camera sees them (m): a glove's half-width, an arm's, and a gap between. (Seen

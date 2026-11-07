@@ -101,7 +101,7 @@ fn wound(time: f32) -> f32 {
 /// a squeezed one pops).
 pub const K_SNAP: f32 = 0.11
 pub const K_HOLD: f32 = 0.06
-pub const K_PULL: f32 = 0.55
+pub const K_PULL: f32 = 0.8
 
 /// When the timed pick's snap lands, and when it's home (s from the strike's start).
 fn k_hit() -> f32 {
@@ -164,7 +164,7 @@ pub const A_THROUGH: f32 = 0.2
 pub const A_LEAN: f32 = 0.24
 pub const A_REACH: f32 = 0.06
 /// How far above the shoulder the contact drawing levels the fist (m): face height, not a body shot.
-pub const A_AIM: f32 = 0.18
+pub const A_AIM: f32 = 0.27
 
 /// The anime layer's beats (s from the strike's start).
 fn a_at() -> [f32; 7] {
