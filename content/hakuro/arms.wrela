@@ -97,7 +97,9 @@ pub fn skin_arm(
     }
     let v = verts[id]
     let (bones, weights) = arm_weights(v.pos, side)
-    let e = lattice.cell * 1.5
+    // (Over two and a half cells: nearer, his muscles' finer grooves caught the light in
+    // squiggles at the distance he's seen from.)
+    let e = lattice.cell * 2.5
     let g = vec3(
         sampled_at(lattice, slots, words, v.pos + vec3(e, 0.0, 0.0)) - sampled_at(lattice, slots, words, v.pos - vec3(e, 0.0, 0.0)),
         sampled_at(lattice, slots, words, v.pos + vec3(0.0, e, 0.0)) - sampled_at(lattice, slots, words, v.pos - vec3(0.0, e, 0.0)),
