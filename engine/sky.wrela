@@ -151,29 +151,24 @@ const FAIR_TOP: f32 = 0.42
 /// at this scale).
 const FAIR_SCALE: f32 = 0.4
 
-/// How much of fair weather's own cloud `regions` (the first `count`) have at `xz` (the
-/// world's, m): the most any of them has there, faded toward its edge as `cleared` is.
-pub fn fair_at(regions: [Region], count: u32, xz: vec2) -> f32 {
-    var k = 0.0
+/// How much of the clouds `regions` (the first `count`) pull back at `xz` (the world's, m),
+/// and how much fair weather's own cloud they have there: the most any of them does, each
+/// region's edge torn by the noise so it isn't a circle (one noise for both).
+pub fn regional(regions: [Region], count: u32, xz: vec2) -> vec2 {
+    var k = vec2(0.0)
     for i in 0..count {
         let r = regions[i]
         let torn = (fbm2(xz / 6000.0 + vec2(3.0, 17.0), 3) - 0.5) * 0.5 * r.reach
-        k = max(k, r.fair * smoothstep(r.reach, r.reach * 0.45, length(xz - r.at) + torn))
+        let within = smoothstep(r.reach, r.reach * 0.45, length(xz - r.at) + torn)
+        k = max(k, vec2(r.clear, r.fair) * within)
     }
     k
 }
 
 /// How much of the clouds `regions` (the first `count`) pull back at `xz` (the world's, m):
-/// the most any of them does there, each region's edge torn by the noise so it isn't a
-/// circle.
+/// the most any of them does there (`regional`'s first).
 pub fn cleared(regions: [Region], count: u32, xz: vec2) -> f32 {
-    var k = 0.0
-    for i in 0..count {
-        let r = regions[i]
-        let torn = (fbm2(xz / 6000.0 + vec2(3.0, 17.0), 3) - 0.5) * 0.5 * r.reach
-        k = max(k, r.clear * smoothstep(r.reach, r.reach * 0.45, length(xz - r.at) + torn))
-    }
-    k
+    regional(regions, count, xz).x
 }
 
 /// What the dome's march and the clouds' shadows read: where the eye is, which of the dome's
@@ -640,19 +635,25 @@ fn march(
             let q = vec3(p.x - c.drift.x, h + BASE, p.z - c.drift.y)
             // Pulled back where a region's own weather clears them (`Region`): less of the map's
             // cover, lower, and no storm's shade.
-            let kr = if region_count > 0 { cleared(regions, region_count, p.xz) } else { 0.0 }
-            let fair = if kr > 0.0 { fair_at(regions, region_count, p.xz) } else { 0.0 }
+            let rk = if region_count > 0 { regional(regions, region_count, p.xz) } else { vec2(0.0) }
+            let kr = rk.x
+            let fair = rk.y
+            // (How far fair weather's own clouds stand in for the map's: as far as the region
+            // reaches, so its edge fades, never a ring.)
+            let fk = if fair > 0.0 { kr } else { 0.0 }
             let wm = weather_at(weather, rep, q)
             // (In their place, fair weather's own: scattered, low, carved into heaps.)
             let w = vec4(
-                mix(wm.r * (1.0 - kr), fair, smoothstep(0.0, 0.01, fair)),
-                mix(wm.g * mix(1.0, 0.6, kr), FAIR_TOP, smoothstep(0.0, 0.01, fair) * kr),
-                wm.b * (1.0 - kr * smoothstep(0.0, 0.01, fair)),
-                mix(wm.a, 1.0, smoothstep(0.0, 0.01, fair) * kr),
+                wm.r * (1.0 - kr) + fair,
+                mix(wm.g * mix(1.0, 0.6, kr), FAIR_TOP, fk),
+                wm.b * (1.0 - fk),
+                mix(wm.a, 1.0, fk),
             )
             let gl = c.gloom * (1.0 - kr)
-            // (Fair weather's heaps broader than the storm's billows: their field read larger.)
-            let qf = if fair > 0.0 { q * FAIR_SCALE } else { q }
+            // (Fair weather's heaps broader than the storm's billows: their field read larger,
+            // more so the deeper into the region.)
+            let scale = mix(1.0, FAIR_SCALE, fk)
+            let qf = q * scale
             let dens = field_in(w, qf, h, shape, detail, rep, detailed: true)
             if dens > 0.0 {
                 // Resolve the sunlit skin before the deep shadow. Equal 150 m intervals
@@ -666,7 +667,7 @@ fn march(
                     let ql = q + c.sun * (lo + 0.5 * step)
                     // (Fair weather's clouds shade themselves: their own cover toward the sun.)
                     let f = if fair > 0.0 {
-                        field_in(w, ql * FAIR_SCALE, ql.y - BASE, shape, detail, rep, detailed: k < 2)
+                        field_in(w, ql * scale, ql.y - BASE, shape, detail, rep, detailed: k < 2)
                     } else {
                         field(ql, ql.y - BASE, weather, shape, detail, rep, detailed: k < 2) *
                             (1.0 - kr)

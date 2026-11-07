@@ -167,7 +167,8 @@ pub(package) fn heaven(
     // (Under the overcast, the deck goes on down to the horizon: its far repeats are lost in
     // its own air.)
     let lost = mix(smoothstep(LOST_LOW, LOST_HIGH, d.y), 1.0, light.storm)
-    let clear = under_the_far_deck(view, light, d, dome, smp)
+    // (Under the storm all of it's lost in the deck: not read.)
+    let clear = if lost >= 1.0 { vec3(0.0) } else { under_the_far_deck(view, light, d, dome, smp) }
     let open = vec4(mix(clear, cloudy.rgb, lost), cloudy.a * lost)
     into_the_air(open, view, light, d, dome, smp)
 }
@@ -215,7 +216,8 @@ fn mirrored_sky(
     // (Under the overcast, the deck goes on down to the horizon: its far repeats are lost in
     // its own air.)
     let lost = mix(smoothstep(LOST_LOW, LOST_HIGH, d.y), 1.0, light.storm)
-    let clear = under_the_far_deck(view, light, d, dome, smp)
+    // (Under the storm all of it's lost in the deck: not read.)
+    let clear = if lost >= 1.0 { vec3(0.0) } else { under_the_far_deck(view, light, d, dome, smp) }
     into_the_air(vec4(mix(clear, cloudy, lost), 1.0), view, light, d, dome, smp).rgb
 }
 
