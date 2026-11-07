@@ -70,8 +70,41 @@ pub fn skeleton() -> Skeleton {
     let (calf, _) = s.joint_pair("calf left", "calf right", thigh, vec3(0.114, 0.542, -0.036))
     let (foot, _) = s.joint_pair("foot left", "foot right", calf, vec3(0.114, 0.086, -0.088))
     s.joint_pair("ball left", "ball right", foot, vec3(0.114, 0.015, 0.055))
+    // Each finger's three joints, as the reference's rig has them (its skin's weights,
+    // `skinning`, are on them): bones 26 on, a pair a joint, finger by finger.
+    for f in 0..5 {
+        var parent = hand
+        for k in 0..3 {
+            let (b, _) = s.joint_pair(FINGER_NAMES[f * 3 + k], FINGER_NAMES_RIGHT[f * 3 + k], parent, FINGER_JOINTS[f * 4 + k])
+            parent = b
+        }
+    }
     s
 }
+
+/// The fingers in their bones' order: index, middle, ring, little finger, thumb.
+pub const FINGERS: u32 = 5
+
+/// Each finger's joints at rest (his left hand's): its three, and its tip.
+pub const FINGER_JOINTS: [vec3; 20] = [
+    vec3(0.8239, 1.4483, -0.0248), vec3(0.8565, 1.4471, -0.0252), vec3(0.8844, 1.4460, -0.0256), vec3(0.9085, 1.4451, -0.0260),
+    vec3(0.8219, 1.4508, -0.0503), vec3(0.8594, 1.4494, -0.0512), vec3(0.8895, 1.4482, -0.0518), vec3(0.9200, 1.4471, -0.0525),
+    vec3(0.8159, 1.4507, -0.0778), vec3(0.8519, 1.4494, -0.0776), vec3(0.8801, 1.4483, -0.0773), vec3(0.9092, 1.4472, -0.0772),
+    vec3(0.8050, 1.4495, -0.1000), vec3(0.8366, 1.4483, -0.1010), vec3(0.8640, 1.4472, -0.1019), vec3(0.8855, 1.4464, -0.1026),
+    vec3(0.7403, 1.4280, -0.0243), vec3(0.7714, 1.4088, -0.0093), vec3(0.7993, 1.3916, 0.0042), vec3(0.8265, 1.3748, 0.0173),
+]
+
+const FINGER_NAMES = [
+    "index 1 left", "index 2 left", "index 3 left", "middle 1 left", "middle 2 left", "middle 3 left",
+    "ring 1 left", "ring 2 left", "ring 3 left", "little 1 left", "little 2 left", "little 3 left",
+    "thumb 1 left", "thumb 2 left", "thumb 3 left",
+]
+
+const FINGER_NAMES_RIGHT = [
+    "index 1 right", "index 2 right", "index 3 right", "middle 1 right", "middle 2 right", "middle 3 right",
+    "ring 1 right", "ring 2 right", "ring 3 right", "little 1 right", "little 2 right", "little 3 right",
+    "thumb 1 right", "thumb 2 right", "thumb 3 right",
+]
 
 /// The body's paint at `p` (rest space), his clothes by region as the locked outfit has them.
 pub fn body_paint(p: vec3) -> Cloth {

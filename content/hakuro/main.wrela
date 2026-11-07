@@ -2,7 +2,7 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use arms::{arm, jacket, sampled_body}
+use arms::{arm, hand, jacket, sampled_body}
 use hakuro::{Cloth, body_paint, coat, hands, head, hero, skeleton}
 use engine::character::{ByChannels, colours}
 use engine::character::skin_matrix
@@ -116,14 +116,52 @@ fn posed() -> [mat4; 64] {
             }
         }
     }
+    // His hands turned about their length, palm in to his hip (the knuckles out).
+    for side in 0..2 {
+        let sign = if side == 0 { 1.0 } else { -1.0 }
+        let b = 12 + side
+        let at = (m[b] * vec4(s.rest(Bone { index: b }), 1.0)).xyz
+        let axis = normalize((m[b] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
+        let r = turn_about(axis, HIP_TWIST * sign, at)
+        for k in 0..s.len() {
+            if below(s, k, b) {
+                m[k] = r * m[k]
+            }
+        }
+    }
+    // His fingers, each joint curled toward his palm (about its own rest z, carried by his hand's
+    // turn): the hand at his hip relaxed, the fingers round over it, the thumb nearly straight.
+    for side in 0..2 {
+        let sign = if side == 0 { 1.0 } else { -1.0 }
+        for j in 0..15 {
+            let b = 26 + 2 * j + side
+            let at = (m[b] * vec4(s.rest(Bone { index: b }), 1.0)).xyz
+            let axis = normalize((m[b] * vec4(if j >= 12 { THUMB_AXIS } else { vec3(0.0, 0.0, 1.0) }, 0.0)).xyz)
+            let r = turn_about(axis, HIP_CURL[j] * sign, at)
+            for k in 0..s.len() {
+                if below(s, k, b) {
+                    m[k] = r * m[k]
+                }
+            }
+        }
+    }
     m
 }
+
+/// How far his hands turn about their length at his hip (degrees).
+const HIP_TWIST: f32 = 0.0
+
+/// How far each finger joint curls at his hip (degrees; index, middle, ring, little, thumb).
+const HIP_CURL = [28.0, 34.0, 18.0, 30.0, 36.0, 20.0, 32.0, 38.0, 20.0, 36.0, 40.0, 22.0, 4.0, 12.0, 12.0]
+
+/// The thumb's joints' axis at rest (his left's): across its pad, so it closes toward the palm.
+const THUMB_AXIS = vec3(-0.35, 0.55, 0.76)
 
 /// The sheet's five views: front, three-quarter, side, back, the other side.
 const TURNS = [0.0, -0.7853982, -1.5707963, 3.1415927, 1.5707963]
 
 pub struct State {
-    meshes: [Mesh; 8],
+    meshes: [Mesh; 10],
     colours: [GpuBuffer<Unorm8x4>; 4],
     palettes: GpuBuffer<mat4>,
     tallies: Vec<Pending<Tally>>,
@@ -166,7 +204,7 @@ pub fn init() -> State {
     let skin = sampled_body()
     tallies.push(read(skin.tally.items()))
     State {
-        meshes: [body, head_mesh, coat_mesh, hands_mesh, left_arm, right_arm, skin, jacket()],
+        meshes: [body, head_mesh, coat_mesh, hands_mesh, left_arm, right_arm, skin, jacket(), hand(0), hand(1)],
         colours: [c0, c1, c2, c3],
         palettes,
         tallies,
@@ -259,30 +297,10 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             cull: Cull::Back,
         )
     }
-    for k in 0..5 {
-        draw(
-            pass,
-            fielded.bind(
-                verts: s.meshes[3].verts.items(),
-                palettes: s.palettes.items(),
-                first: k * MAX_BONES,
-                view: v,
-            ),
-            fielded_pixel.bind(
-                field: fields.3.field(),
-                view: v,
-                lights: LIGHTS,
-                shadow: s.shadow,
-                shadow_sampler: s.smp,
-            ),
-            indices: s.meshes[3].quads.items(),
-            indirect: s.meshes[3].draw.items(),
-            cull: Cull::Back,
-        )
-    }
+    // (His hands, the old fitted ones (`meshes[3]`), are no longer drawn: `hand` samples them.)
     // (His arms and body, sampled from the reference: no fields to read, so their own normals and his
     // body's paint at their place at rest.)
-    for m in 4..8 {
+    for m in 4..10 {
         for k in 0..5 {
             draw(
                 pass,
