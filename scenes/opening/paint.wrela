@@ -991,28 +991,35 @@ fn sea_shade(
     // (Never one smooth white even where it's densest: a fresh cap's a heap of bubble domes, its
     // creases thinner, the water glinting through.)
     let heaped = 0.4 + 0.6 * smoothstep(0.15, 0.85, froth)
+    // (Old foam's not a blot but veins: as a patch ages its bubbles burst and what's left is a
+    // net of thin white filaments, ridges of froth drawn down the wind, the water between.)
+    let vein = 1.0 - abs(noise(wa * vec2(0.12, 0.45) + warp * 0.9 + warp2 * 0.5) * 2.0 - 1.0)
+    let vein2 = 1.0 - abs(noise(wa * vec2(0.35, 1.1) + warp2 * 0.9 + vec2(4.0, 7.0)) * 2.0 - 1.0)
+    let veins = max(smoothstep(0.88, 0.97, vein), smoothstep(0.9, 0.98, vein2) * 0.8)
     // (Under the lace, the thin film of old foam: a grey marbling, the water showing through.)
     let foamed = max(
-        max(mix(far_white * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.25 * age) * mix(1.0, smoothstep(0.3, 0.75, lace), age), web_k), far_white * 0.35 * (1.0 - age)),
+        max(mix(far_white * mix(1.0, smoothstep(0.35, 0.8, streak), age), eroded * (1.0 - 0.25 * age) * mix(1.0, smoothstep(0.3, 0.75, lace) * 0.5, age), web_k), far_white * 0.35 * (1.0 - age)),
         mix(blown * 0.1, lines * 0.4 * (1.0 - smoothstep(0.975, 0.995, ridge)) * mix(0.35, 1.0, smoothstep(0.05, 0.5, blown + dense)), web_k),
     ) *
         (0.7 + 0.3 * lace) *
         heaped *
         // (Thinning to its edge, the water seen through it, never a cut-out block on the sea.)
-        smoothstep(0.18, 0.3, dense + tail + (lace - 0.5) * 0.6)
+        smoothstep(0.04, 0.2, dense + tail + (lace - 0.5) * 0.3)
     // (Far off, the foam's too fine to draw, but the big swells still break: their crests read
     // white in broken caps along the ridge, a cap here and there, never a sheet.)
     let far_caps = smoothstep(12.0, 45.0, t) * (1.0 - smoothstep(0.12, 0.35, -d.y)) *
         smoothstep(0.2, 0.8, p.y) *
         smoothstep(0.5, 0.78, noise(vec2(wa.x * 0.05, wa.y * 0.12) + warp * 0.6) * 0.7 + lace * 0.3) *
         smoothstep(0.03, 0.1, whitecaps(SEA_STATE)) * 0.6
-    let white = foamed + rows * 0.0
+    // (Round the patches and behind them, the veins their old foam left, white threads.)
+    let vein_foam = veins * smoothstep(0.04, 0.2, dense + tail) * mix(0.45, 0.8, age) * web_k
+    let white = max(foamed, vein_foam)
     // (Lit as a mass of bubbles: its domes bright, its creases and thin film greyer, the older
     // the greyer.)
     // (And modelled as the wave it rides: brightest on the crest's top, greyer down its back, so a
     // whitecap's a mass on the wave, not a sheet of paper laid on it.)
-    let bright = (0.6 + 0.4 * froth) * (0.75 + 0.25 * (1.0 - age)) * (0.75 + 0.25 * eroded) *
-        (0.65 + 0.35 * clamp(wave / CREST * 2.0 + 0.5, 0.0, 1.0))
+    let bright = (0.7 + 0.3 * froth) * (0.85 + 0.15 * (1.0 - age)) * (0.8 + 0.2 * max(eroded, veins)) *
+        (0.75 + 0.25 * clamp(p.y * 0.4 + 0.5, 0.0, 1.0))
     // (A break that's breaking now is the whitest thing on the sea, its top lit full: no grey
     // pillow.)
     let fresh = 1.0 - smoothstep(0.0, 0.3, age)
