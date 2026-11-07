@@ -12,14 +12,15 @@
 //
 // `CUE` 0 the blow, 1 the blast's boom, 2 the planted foot, 3 the whoosh, 4 the sea alone, 5 the
 // wind alone, 6 the SHOW=28 exchange with the sea and wind under it (`BLAST` 1 with its blast),
-// after `PREROLL` seconds of the sea and wind alone.
+// after `PREROLL` seconds of the sea and wind alone, 7 a walk across the deck (eight steps, heel
+// and toe).
 
 use engine::sound::{Babble, Breath, Cue, Mixer, Mode, Palette, Surface, Swish, mix, mixer}
 use engine::strike
 use std::audio::{QUANTUM, RingWriter, SAMPLE_RATE, play}
 use std::math::tanh
 
-pub const CUE: u32 = 6
+pub const CUE: u32 = 7
 pub const BLAST: u32 = 1
 
 /// The blow, from first principles (engine::strike): what strikes (`BY`: 0 fist, 1 elbow,
@@ -34,7 +35,13 @@ pub const WEIGHT: f32 = 0.0
 pub const STUMBLE_SPEED: f32 = 2.5
 pub const PLANT_SPEED: f32 = 2.0
 const BYS: [strike::Striker; 4] = [strike::FIST, strike::ELBOW, strike::SHIN, strike::PALM]
-const ONS: [strike::Target; 5] = [strike::FACE, strike::RIBS, strike::BELLY, strike::GUARD, strike::STONE]
+const ONS: [strike::Target; 5] = [
+    strike::FACE,
+    strike::RIBS,
+    strike::BELLY,
+    strike::GUARD,
+    strike::STONE,
+]
 
 /// The palette with its blow worked out from the bodies that meet.
 fn palette() -> Palette {
@@ -42,8 +49,8 @@ fn palette() -> Palette {
     p.impacts[BLOW] = strike::weighted(strike::struck(BYS[BY], ONS[ON], speed: HIT_SPEED), WEIGHT)
     // The feet on the wet deck: the struck fighter's stumbling stamps, and the striker's lead
     // foot planting under the cross.
-    p.surfaces[DECK] = strike::struck(strike::HEEL, strike::DECK, speed: STUMBLE_SPEED)
-    p.impacts[PLANT] = strike::struck(strike::HEEL, strike::DECK, speed: PLANT_SPEED)
+    p.surfaces[DECK] = strike::tread(weight: 1.0)
+    p.impacts[PLANT] = strike::tread(weight: 1.0)
     p
 }
 
@@ -104,9 +111,36 @@ pub const PALETTE: Palette = Palette {
         // bed's median level, then falling away; by hand capped at about +4 dB with the slow wander
         // (critics heard full-height swells drown the fight), and the foam's spray carried up to 9 kHz. The
         // slow wander under them is shallower now the waves carry the movement.
-        Babble { lo_hz: 35.0, hi_hz: 220.0, level: 1.59 * SEA, rate: 0.15, depth: 0.15, waves: 3.3, crest: 0.8, surge: 0.6 },
-        Babble { lo_hz: 220.0, hi_hz: 1600.0, level: 0.15 * SEA, rate: 0.25, depth: 0.2, waves: 3.3, crest: 0.4, surge: 0.6 },
-        Babble { lo_hz: 1500.0, hi_hz: 9000.0, level: 0.06 * SEA, rate: 0.4, depth: 0.5, waves: 3.3, crest: 0.35, surge: 1.5 },
+        Babble {
+            lo_hz: 35.0,
+            hi_hz: 220.0,
+            level: 1.59 * SEA,
+            rate: 0.15,
+            depth: 0.15,
+            waves: 3.3,
+            crest: 0.8,
+            surge: 0.6,
+        },
+        Babble {
+            lo_hz: 220.0,
+            hi_hz: 1600.0,
+            level: 0.15 * SEA,
+            rate: 0.25,
+            depth: 0.2,
+            waves: 3.3,
+            crest: 0.4,
+            surge: 0.6,
+        },
+        Babble {
+            lo_hz: 1500.0,
+            hi_hz: 9000.0,
+            level: 0.06 * SEA,
+            rate: 0.4,
+            depth: 0.5,
+            waves: 3.3,
+            crest: 0.35,
+            surge: 1.5,
+        },
         Babble {},
     ],
     brushes: [Babble {}; 3],
@@ -210,7 +244,14 @@ pub const PALETTE: Palette = Palette {
     // the level swinging by about 1.5 times its mean; by hand stirred far less
     // (the rush goes as the gust squared, so this is still about ±3 dB): critics heard the
     // fight's 3.7 s fall in a lull and then a gust as a jump.
-    wind: Breath { rush_hz: 317.0, rush: 1.06 * WIND, leaves_hz: 1400.0, leaves: 0.0, stir: 0.2, stir_hz: 0.26 },
+    wind: Breath {
+        rush_hz: 317.0,
+        rush: 1.06 * WIND,
+        leaves_hz: 1400.0,
+        leaves: 0.0,
+        stir: 0.2,
+        stir_hz: 0.26,
+    },
     near: 2.0,
     gain: 0.17,
 }
@@ -256,6 +297,24 @@ fn bed(at: f32, flow: f32, gust: f32) -> [Line; 3] {
 /// and the whoosh as the cross leaves, the lead foot, the blow (and the blast's whoomp and
 /// spatter), the bed ducked 7 dB under the blow and let back over 0.4 s, the stumbling feet,
 /// and another wave.
+/// Eight steps across the deck at a walk, each heel then toe, past the listener left to right.
+fn walk() -> [Line; LINES] {
+    var lines = [Line { at: 1.0e9, cue: Cue::Listen { at: EARS, forward: vec2(0.0, 1.0) } }; LINES]
+    for i in 0..8 {
+        let t = 0.3 + 0.55 * f32(i)
+        let at = vec3(-1.5 + 0.4 * f32(i), 0.0, 1.5)
+        lines[2 * i] = Line {
+            at: t,
+            cue: Cue::Step { at, surface: DECK, weight: 1.0, seed: 11 + 2 * i },
+        }
+        lines[2 * i + 1] = Line {
+            at: t + strike::TOE_AFTER,
+            cue: Cue::Step { at, surface: DECK, weight: strike::TOE_WEIGHT, seed: 12 + 2 * i },
+        }
+    }
+    lines
+}
+
 fn exchange() -> [Line; LINES] {
     let start = bed(-PREROLL, flow: 1.0, gust: 0.9)
     let duck = bed(CONTACT, flow: 0.45, gust: 0.7)
@@ -392,6 +451,9 @@ pub fn init() -> Game {
     }
     if CUE == 6 {
         lines = exchange()
+    }
+    if CUE == 7 {
+        lines = walk()
     }
     play(Score { m, lines, next: 0, sample: 0 }, play_score)
     Game { cues }

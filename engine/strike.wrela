@@ -272,58 +272,42 @@ pub fn struck(by: Striker, on: Target, speed: f32) -> Surface {
     }
 }
 
-/// A footfall: not one blow but three. The heel touches; the body's weight rolls onto the
-/// foot over most of a tenth of a second, a slow push that rings only the floor's lowest modes
-/// (the hull's boom) and squeezes the water film out in bubbles; then the ball of the foot comes
-/// down `toe_after` seconds later and scuffs. (Turchet, Serafin and Nordahl's footsteps: about
-/// 70 ms heel to toe; Farnell's heel, roll and ball.)
-pub struct Footfall: Copy {
-    pub heel: Surface,
-    pub roll: Surface,
-    pub toe: Surface,
-    pub toe_after: f32,
-}
-
-/// The weight's roll: how long it loads (s), and its push against a fist's blow.
-const ROLL: f32 = 0.08
-const LOAD: f32 = 1.2
-/// The sole's scuff as the toe comes down.
-const SCUFF: f32 = 0.6
-
-/// A foot coming down on `on` at `speed` (m/s: about 1 a walk, 2 a planted foot, 3 a stamp).
-pub fn footfall(on: Target, speed: f32) -> Footfall {
-    let pace = speed / STAMP
-    // The heel's touch: a short, light knock, its splash left to the roll.
-    var heel = struck(HEEL, on, speed)
+/// A foot coming down on a plank floor, fitted to recorded footsteps (boots on the wooden walk
+/// in Work With Sounds' "Walking in the mine", Wikimedia Commons, CC BY 4.0; only these numbers
+/// were taken from it). A step is not a blow: the sole meets the floor and the body's weight
+/// rolls onto it over some 50 ms, so the floor is pushed, not struck. The push rings the
+/// floor from its 90 Hz thud up through the planks to 1.5 kHz, with barely a tick from the sole. Heel and toe are two of these, the toe softer, under 30 ms apart as measured (`TOE_AFTER`).
+pub fn tread(weight: f32) -> Surface {
+    let w = STEP * weight
+    var modes = [Mode {}; 8]
     for i in 0..8 {
-        heel.modes[i].level *= 0.5
+        modes[i] = Mode { hz: PLANK_HZ[i], t60: PLANK_T60[i], level: PLANK[i] * w }
     }
-    heel.tail *= 0.3
-    // The roll: the weight's slow push into the floor's two lowest modes, and the water
-    // squeezed out from under the sole in a spray of small bubbles (a millimetre's rings near
-    // 3 kHz), longer than a blow's splash.
-    var roll = Surface { knock: 0.0, contact: ROLL, rough: 0.05 }
-    for i in 0..2 {
-        if on.hz[i] > 0.0 {
-            roll.modes[i] = Mode {
-                hz: on.hz[i],
-                t60: min(6.91 / (PI * on.hz[i] * on.loss), 2.0),
-                level: RING * LOAD * pace * (if i == 0 { 1.0 } else { 0.4 }),
-            }
-        }
+    // Only the planks and barely a tick from the sole: every layer that starts at full (a
+    // knock, a thud of noise) made a step hit like a punch.
+    Surface {
+        grit_hz: 3200.0,
+        grit_q: 1.8,
+        grit_t60: 0.04,
+        grit: 0.04 * w,
+        modes,
+        // The weight's roll: a long, rough push, which rises over some 10 ms as a foot does.
+        contact: 0.05,
+        rough: 0.63,
     }
-    roll.tail_hz = 2800.0
-    roll.tail_q = 1.5
-    roll.tail_t60 = 0.18
-    roll.tail = SPLASH * on.wet * 1.5 * pace
-    // The toe: the ball of the foot, slower, and the sole scuffing on the wet planks.
-    var toe = struck(TOE, on, 0.6 * speed)
-    toe.grit_hz = 3500.0
-    toe.grit_q = 0.7
-    toe.grit_t60 = 0.06
-    toe.grit = SCUFF * pace
-    Footfall { heel, roll, toe, toe_after: 0.069 / sqrt(max(pace, 0.25)) }
 }
+
+/// The plank floor's modes as fitted, then set by measure against the recording (octave bands
+/// within about 4 dB from 63 Hz to 2 kHz); their ringing is shorter than the recording's, whose
+/// room rang on with them where the open deck does not.
+const PLANK_HZ: [f32; 8] = [90.0, 130.0, 205.0, 480.0, 620.0, 880.0, 1100.0, 1500.0]
+const PLANK_T60: [f32; 8] = [0.15, 0.12, 0.13, 0.14, 0.14, 0.12, 0.1, 0.07]
+const PLANK: [f32; 8] = [14.0, 28.0, 20.0, 16.0, 16.0, 16.0, 10.0, 5.0]
+/// How loud a step sits against a blow (set by ear against the fight).
+const STEP: f32 = 1.8
+/// Heel to toe (s), and how hard the toe comes down against the heel.
+pub const TOE_AFTER: f32 = 0.028
+pub const TOE_WEIGHT: f32 = 0.8
 
 /// A game's weight on a blow: a low thump under it that drops in pitch, as an animated blow
 /// lands harder than a real one (`weight` 0 none, 1 a heavy hit). Not physics: what makes a
@@ -355,12 +339,15 @@ fn a_heel_on_the_wet_deck_splashes_and_rings_the_hull() {
 }
 
 @test
-fn a_footfall_rolls_onto_the_deck_before_its_toe() {
-    let f = footfall(DECK, speed: 2.0)
-    // The roll's push is long and rings only the lowest modes; the toe follows ~70 ms on.
-    assert(f.roll.contact > 5.0 * f.heel.contact)
-    assert(f.roll.modes[0].level > 0.0 && f.roll.modes[2].level == 0.0)
-    assert(f.toe_after > 0.05 && f.toe_after < 0.1, f"{f.toe_after}")
+fn a_step_pushes_the_planks_rather_than_strikes_them() {
+    let step = tread(weight: 1.0)
+    let heel = struck(HEEL, DECK, speed: 2.0)
+    // Several times a heel's blow: the weight's roll, not a knock.
+    assert(step.contact > 5.0 * heel.contact, f"{step.contact} {heel.contact}")
+    assert(step.modes[4].hz > 500.0 && step.modes[4].level > 0.0)
+    assert(tread(weight: 0.5).modes[0].level < step.modes[0].level)
+    // Nothing that starts at full: no knock, no thud of noise.
+    assert(step.knock == 0.0 && step.tail == 0.0)
 }
 
 @test
