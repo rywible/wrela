@@ -2,7 +2,7 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use arms::{arm, follow_legs, hand, jacket, sampled_body}
+use arms::{arm, follow_legs, hand, jacket, off_legs, sampled_body}
 use hakuro::{Cloth, body_paint, coat, hands, head, hero, skeleton}
 use engine::character::{ByChannels, colours}
 use engine::character::skin_matrix
@@ -68,6 +68,10 @@ fn moved(time: f32) -> [mat4; 64] {
     for side in 0..2 {
         m[14 + side] = m[12 + side]
         m[16 + side] = m[12 + side]
+    }
+    // (The fighting moves' captures hold no fingers: his hands closed into fists.)
+    if MOVE == 1 || MOVE == 6 {
+        m = curled(m, FIST_CURL)
     }
     fists_off_mask(m)
 }
@@ -200,6 +204,37 @@ fn posed() -> [mat4; 64] {
     }
     m
 }
+
+/// `m` with each finger's joints set by its hand's, curled toward the palm by `curl` (degrees a
+/// joint, as `HIP_CURL`), each joint about its own rest z (the thumb's, `THUMB_AXIS`).
+fn curled(m: [mat4; 64], curl: [f32; 15]) -> [mat4; 64] {
+    let s = skeleton()
+    var out = m
+    for side in 0..2 {
+        for j in 0..15 {
+            out[26 + 2 * j + side] = out[12 + side]
+        }
+    }
+    for side in 0..2 {
+        let sign = if side == 0 { 1.0 } else { -1.0 }
+        for j in 0..15 {
+            let b = 26 + 2 * j + side
+            let at = (out[b] * vec4(s.rest(Bone { index: b }), 1.0)).xyz
+            let axis = normalize((out[b] * vec4(if j >= 12 { THUMB_AXIS } else { vec3(0.0, 0.0, 1.0) }, 0.0)).xyz)
+            let r = turn_about(axis, curl[j] * sign, at)
+            for k in 26..56 {
+                if below(s, k, b) {
+                    out[k] = r * out[k]
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A closed fist's curl (degrees; index, middle, ring, little, thumb): knuckles square, the
+/// thumb folded across the middle bones.
+const FIST_CURL = [80.0, 95.0, 60.0, 84.0, 98.0, 60.0, 86.0, 100.0, 60.0, 88.0, 100.0, 60.0, 20.0, 40.0, 35.0]
 
 /// How far his hands turn about their length at his hip (degrees).
 const HIP_TWIST: f32 = 0.0
@@ -343,7 +378,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     for k in 0..5 {
         draw(
             pass,
-            fielded.bind(
+            coat_fielded.bind(
                 verts: s.meshes[2].verts.items(),
                 palettes: s.palettes.items(),
                 first: k * MAX_BONES,
@@ -398,8 +433,21 @@ pub struct Fielded: Copy {
     pub hi: Flat<u32>,
 }
 
+/// His coat's tails' vertex: as `fielded`, moved out of his legs (`arms::off_legs`).
+@vertex
+pub fn coat_fielded(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, view: View) -> Fielded {
+    var f = fielded_at(v, verts, palettes, first, view)
+    f.world = off_legs(f.world, palettes, first)
+    f.clip = ClipPosition { position: view.view_proj * vec4(f.world, 1.0) }
+    f
+}
+
 @vertex
 pub fn fielded(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, view: View) -> Fielded {
+    fielded_at(v, verts, palettes, first, view)
+}
+
+fn fielded_at(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, view: View) -> Fielded {
     let sv = verts[v.index]
     let m = skin_matrix(sv, palettes, first)
     let world = (m * vec4(sv.pos, 1.0)).xyz

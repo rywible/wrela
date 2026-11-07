@@ -1,4 +1,4 @@
-// His fists kept off his mask's snout. The moves were fitted to a body with a face, not a fox's
+// His fists kept off his mask's snout and cheeks. The moves were fitted to a body with a face, not a fox's
 // snout 21 cm long: a boxer's guard holds the fists at the chin, where Hakuro's snout is, and
 // they went through it. Each fist near the snout is moved off it, the whole arm swung about its
 // shoulder (so the elbow and the grip are the move's), by how far it's in, eased so that it
@@ -13,6 +13,10 @@ const ROOT = vec3(0.0, 1.6792, 0.0783)
 const TIP = vec3(0.0, 1.6325, 0.2279)
 const R_ROOT: f32 = 0.057
 const R_TIP: f32 = 0.019
+
+/// The mask's cheeks (his left's; the right mirrored): their middles and radius, in his rest space.
+const CHEEK = vec3(0.0726, 1.6308, 0.0830)
+const R_CHEEK: f32 = 0.055
 
 /// A fist's middle in his rest space (his left; the right mirrored), and its half thickness.
 const FIST = vec3(0.765, 1.432, -0.052)
@@ -34,7 +38,7 @@ fn swung(a: vec3, b: vec3, at: vec3) -> mat4 {
     translate(at) * mat4(vec4(r[0], 0.0), vec4(r[1], 0.0), vec4(r[2], 0.0), vec4(0.0, 0.0, 0.0, 1.0)) * translate(-at)
 }
 
-/// `m` (his palette) with each fist moved off the snout.
+/// `m` (his palette) with each fist moved off the snout and cheeks.
 pub fn fists_off_mask(m: [mat4; 64]) -> [mat4; 64] {
     var out = m
     let root = (m[5] * vec4(ROOT, 1.0)).xyz
@@ -47,10 +51,20 @@ pub fn fists_off_mask(m: [mat4; 64]) -> [mat4; 64] {
             let fist = (out[12 + side] * vec4(FIST.x * sx, FIST.y, FIST.z, 1.0)).xyz
             let e = tip - root
             let h = clamp(dot(fist - root, e) / dot(e, e), 0.0, 1.0)
-            let near = root + e * h
+            var near = root + e * h
+            var reach = mix(R_ROOT, R_TIP, h) + FIST_R + 0.008
+            // (Or a cheek, whichever it's deepest in.)
+            for c in 0..2 {
+                let cx = if c == 0 { 1.0 } else { -1.0 }
+                let cheek = (m[5] * vec4(CHEEK.x * cx, CHEEK.y, CHEEK.z, 1.0)).xyz
+                let rc = R_CHEEK + FIST_R + 0.008
+                if rc - length(fist - cheek) > reach - length(fist - near) {
+                    near = cheek
+                    reach = rc
+                }
+            }
             let off = fist - near
             let d = length(off)
-            let reach = mix(R_ROOT, R_TIP, h) + FIST_R + 0.008
             // How far in, eased: nothing well clear, the full depth well in, smooth between.
             let x = reach - d
             let push = 0.5 * (x + sqrt(x * x + 0.0001)) - 0.005
