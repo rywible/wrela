@@ -41,6 +41,14 @@ pub const WATERS: u32 = 4
 pub const CUES: u32 = 64
 /// The resonant modes a struck body rings with.
 pub const MODES: u32 = 8
+/// A palette's grains; the grains heard at once; a grain's bands, its frames, their product
+/// (its cells), and its filters (two to a band).
+pub const GRAINS: u32 = 4
+pub const GRAINING: u32 = 4
+pub const GRAIN_BANDS: u32 = 40
+pub const GRAIN_FRAMES: u32 = 96
+pub const GRAIN_CELLS: u32 = 3840
+const GRAIN_FILTERS: u32 = 80
 /// Below what a struck body barely moves the air (Hz).
 const RADIATES: f32 = 40.0
 
@@ -76,6 +84,23 @@ pub struct Surface: Copy {
     pub modes: [Mode; MODES] = [Mode {}; MODES],
     pub contact: f32 = 0.003,
     pub rough: f32 = 0.3,
+    /// A recorded texture played with it: grains `grain - 1` on in the palette, `grains` of
+    /// them, one picked by the seed (0 grains, none), at `grain_level`.
+    pub grain: u32 = 0,
+    pub grains: u32 = 0,
+    pub grain_level: f32 = 1.0,
+}
+
+/// A sound's grain: how loud it is in each of `GRAIN_BANDS` bands of noise (centres `hz`, each
+/// band two band-passes of sharpness `q`, the low bands broader so they rise as fast as a heel), frame by frame, `hop` seconds apart: `level` holds
+/// each band's frames in turn. Measured off a recording by a tool, the recording itself kept
+/// out of the game: a step's grain of wood and sole, which a few tones and rung modes can't
+/// make. Each level already divides out its band's noise (a band's noise at level 1 is 1 RMS).
+pub struct Grain: Copy {
+    pub hz: [f32; GRAIN_BANDS] = [0.0; GRAIN_BANDS],
+    pub q: [f32; GRAIN_BANDS] = [2.0; GRAIN_BANDS],
+    pub hop: f32 = 0.0025,
+    pub level: [f32; GRAIN_CELLS] = [0.0; GRAIN_CELLS],
 }
 
 /// A body's resonant mode: its frequency (Hz), its seconds to fall 60 dB, and its level (the
@@ -143,6 +168,7 @@ pub struct Palette: Copy {
     pub brushes: [Babble; BRUSHES],
     pub impacts: [Surface; IMPACTS] = [Surface {}; IMPACTS],
     pub whooshes: [Swish; WHOOSHES] = [Swish {}; WHOOSHES],
+    pub grains: [Grain; GRAINS] = [Grain {}; GRAINS],
     pub wind: Breath,
     pub near: f32 = 2.0,
     pub gain: f32 = 1.0,
@@ -547,6 +573,73 @@ impl Ringing {
     }
 }
 
+/// A grain playing: its bands and their filters, the grain's levels, how far through its
+/// frames it is and its step a sample, and its gain.
+struct Graining: Copy {
+    on: bool,
+    at: vec3,
+    bands: [Band; GRAIN_BANDS],
+    svf: [Svf; GRAIN_FILTERS],
+    level: [f32; GRAIN_CELLS],
+    frame: f32,
+    step: f32,
+    gain: f32,
+    out: Placed,
+}
+
+fn graining() -> Graining {
+    Graining {
+        on: false,
+        at: vec3(0.0),
+        bands: [Band {}; GRAIN_BANDS],
+        svf: [Svf {}; GRAIN_FILTERS],
+        level: [0.0; GRAIN_CELLS],
+        frame: 0.0,
+        step: 0.0,
+        gain: 0.0,
+        out: placed(),
+    }
+}
+
+impl Graining {
+    /// Start `g` at `at`, `weight` hard; the seed moves its pitch and level a little.
+    @audio
+    fn start(mut self, g: Grain, at: vec3, weight: f32, seed: u32) {
+        var own = seeded(seed ^ 0x9e3779b9)
+        let pitch = 1.0 + 0.05 * own.next()
+        for k in 0..GRAIN_BANDS {
+            self.bands[k] = band(g.hz[k] * pitch, g.q[k])
+        }
+        self.svf = [Svf {}; GRAIN_FILTERS]
+        self.level = g.level
+        self.frame = 0.0
+        // No two the same length either: a step a fifth quicker or slower.
+        self.step = (1.0 + 0.2 * own.next()) / (max(g.hop, 1e-4) * RATE)
+        self.gain = weight * (1.0 + 0.15 * own.next())
+        self.at = at
+        self.on = true
+    }
+
+    @audio
+    fn sample(mut self, noise: mut Noise) -> f32 {
+        let i = u32(self.frame)
+        var y = 0.0
+        if i + 1 < GRAIN_FRAMES {
+            let f = self.frame - f32(i)
+            for k in 0..GRAIN_BANDS {
+                let c = k * GRAIN_FRAMES + i
+                let l = self.level[c] + f * (self.level[c + 1] - self.level[c])
+                let a = self.svf[2 * k].pass(self.bands[k], noise.next())
+                y += self.svf[2 * k + 1].pass(self.bands[k], a) * l
+            }
+            self.frame += self.step
+        } else {
+            self.on = false
+        }
+        y * self.gain
+    }
+}
+
 /// Noise through a band, swelling and falling at random: a water source, or a brush.
 struct Bed: Copy {
     band: Band,
@@ -783,6 +876,9 @@ pub struct Mixer {
     /// cuts a blow short).
     strikes: [Ringing; STRIKES],
     next_strike: u32,
+    /// The grains playing (a step's, a blow's).
+    grainings: [Graining; GRAINING],
+    next_grain: u32,
     gust: f32,
     toward: vec2,
     canopy: f32,
@@ -815,6 +911,8 @@ pub fn mixer(palette: Palette, seed: u32 = 1) -> (RingWriter<Cue>, Mixer) {
             next_step: 0,
             strikes: [ringing(); STRIKES],
             next_strike: 0,
+            grainings: [graining(); GRAINING],
+            next_grain: 0,
             gust: 0.0,
             toward: vec2(1.0, 0.0),
             canopy: 0.0,
@@ -835,6 +933,20 @@ impl Mixer {
         self.hear(c)
     }
 
+    /// A surface's grain, if it has any: one of its grains, picked by the seed.
+    @audio
+    fn grain(mut self, s: Surface, at: vec3, weight: f32, seed: u32) {
+        if s.grains > 0 && s.grain > 0 {
+            let pick = min(
+                s.grain - 1 + (seed.wrapping_mul(2654435761) >> 16) % s.grains,
+                GRAINS - 1,
+            )
+            let i = self.next_grain
+            self.next_grain = (i + 1) % GRAINING
+            self.grainings[i].start(self.palette.grains[pick], at, weight * s.grain_level, seed)
+        }
+    }
+
     @audio
     fn hear(mut self, c: Cue) {
         match c {
@@ -847,12 +959,14 @@ impl Mixer {
                 let i = self.next_step
                 self.next_step = (i + 1) % STEPS
                 self.steps[i].strike(s, at, clamp(weight, 0.0, 1.0), seed)
+                self.grain(s, at, clamp(weight, 0.0, 1.0), seed)
             },
             Cue::Impact { at, kind, strength, seed } => {
                 let s = self.palette.impacts[min(kind, IMPACTS - 1)]
                 let i = self.next_strike
                 self.next_strike = (i + 1) % STRIKES
                 self.strikes[i].strike(s, at, clamp(strength, 0.0, 1.0), seed)
+                self.grain(s, at, clamp(strength, 0.0, 1.0), seed)
             },
             Cue::Whoosh { at, kind, amount, seed } => {
                 let w = self.palette.whooshes[min(kind, WHOOSHES - 1)]
@@ -901,34 +1015,60 @@ pub fn mix(m: mut Mixer, left: mut [f32], right: mut [f32]) {
         left[i] = 0.0
         right[i] = 0.0
     }
-    let p = m.palette
+    // The palette's numbers read where they're needed, never the whole of it copied (its grains
+    // are big).
+    let near = m.palette.near
+    let gain = m.palette.gain
     let ears = m.ears
     for s in 0..STEPS {
-        sound_ringing(mut m.steps[s], ears, p, mut m.noise, mut left, mut right)
+        sound_ringing(mut m.steps[s], ears, near, gain, mut m.noise, mut left, mut right)
     }
     for s in 0..STRIKES {
-        sound_ringing(mut m.strikes[s], ears, p, mut m.noise, mut left, mut right)
+        sound_ringing(mut m.strikes[s], ears, near, gain, mut m.noise, mut left, mut right)
+    }
+    for s in 0..GRAINING {
+        sound_graining(mut m.grainings[s], ears, near, gain, mut m.noise, mut left, mut right)
     }
     // The wind comes from upwind: to the side of the ears that faces it, a little.
     let from = -m.toward
     let side = if length(from) > 1e-6 { 0.5 * dot(normalize(from), ears.right) } else { 0.0 }
-    m.wind.begin(p.wind, m.gust, m.canopy, side, p.gain)
+    m.wind.begin(m.palette.wind, m.gust, m.canopy, side, gain)
     for i in 0..left.len() {
         let w = m.wind.sample(i)
         left[i] += w.x
         right[i] += w.y
     }
     for s in 0..WATERS {
-        let level = p.gain * p.waters[m.waters[s].kind].level * m.waters[s].flow
-        sound_stream(mut m.waters[s], ears, p.near, level, mut m.bed_noise, mut left, mut right)
+        let level = gain * m.palette.waters[m.waters[s].kind].level * m.waters[s].flow
+        sound_stream(mut m.waters[s], ears, near, level, mut m.bed_noise, mut left, mut right)
     }
     for s in 0..BRUSHES {
-        let level = p.gain * p.brushes[s].level * m.brushes[s].flow
-        sound_stream(mut m.brushes[s], ears, p.near, level, mut m.bed_noise, mut left, mut right)
+        let level = gain * m.palette.brushes[s].level * m.brushes[s].flow
+        sound_stream(mut m.brushes[s], ears, near, level, mut m.bed_noise, mut left, mut right)
     }
     for i in 0..left.len() {
         left[i] = clamp(left[i], -1.0, 1.0)
         right[i] = clamp(right[i], -1.0, 1.0)
+    }
+}
+
+/// A grain's quantum, into `left` and `right`: nothing once it has played out.
+@audio
+fn sound_graining(
+    g: mut Graining,
+    ears: Ears,
+    near: f32,
+    gain: f32,
+    noise: mut Noise,
+    left: mut [f32],
+    right: mut [f32],
+) {
+    if g.on {
+        g.out.place(ears, g.at, near, gain)
+        for i in 0..left.len() {
+            let y = g.sample(mut noise)
+            g.out.add(y, i, mut left, mut right)
+        }
     }
 }
 
@@ -938,13 +1078,14 @@ pub fn mix(m: mut Mixer, left: mut [f32], right: mut [f32]) {
 fn sound_ringing(
     r: mut Ringing,
     ears: Ears,
-    p: Palette,
+    near: f32,
+    gain: f32,
     noise: mut Noise,
     left: mut [f32],
     right: mut [f32],
 ) {
     if r.on {
-        r.out.place(ears, r.at, p.near, p.gain)
+        r.out.place(ears, r.at, near, gain)
         if r.glide > 1e-3 {
             // A whoosh's band slides a step a quantum, in octaves.
             r.glide *= r.glide_fall
