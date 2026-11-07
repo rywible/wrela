@@ -150,7 +150,8 @@ pub fn tails_weights(p: vec3) -> (u32, u32) {
     let t = clamp((0.98 - p.y) / 0.36, 0.0, 1.0)
     let share = 0.75 * t * t * (3.0 - 2.0 * t)
     // Over which leg: his left (+x) or right, both across the middle of his back.
-    let lean = clamp(p.x / 0.11, -1.0, 1.0)
+    // (Sharply: the back vent parts them, each side with its own leg.)
+    let lean = clamp(p.x / 0.035, -1.0, 1.0)
     var left = share * (0.5 + 0.5 * lean)
     var right = share - left
     // (Their hem, below the knee, partly carried by the nearer shin, so a heel kicked up behind
@@ -227,6 +228,16 @@ pub fn off_legs(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
         heel[side] = (palette[first + 22 + side] * vec4(0.124 * sx, 0.065, -0.13, 1.0)).xyz
         toe[side] = (palette[first + 22 + side] * vec4(0.124 * sx, 0.055, 0.14, 1.0)).xyz
     }
+    // His forearms and hands, whose swing passes the tails' sides.
+    var elbow = [vec3(0.0); 2]
+    var wrist = [vec3(0.0); 2]
+    var knuckle = [vec3(0.0); 2]
+    for side in 0..2 {
+        let sx = if side == 0 { 1.0 } else { -1.0 }
+        elbow[side] = (palette[first + 10 + side] * vec4(0.463 * sx, 1.455, -0.073, 1.0)).xyz
+        wrist[side] = (palette[first + 12 + side] * vec4(0.706 * sx, 1.455, -0.065, 1.0)).xyz
+        knuckle[side] = (palette[first + 12 + side] * vec4(0.86 * sx, 1.45, -0.05, 1.0)).xyz
+    }
     for _ in 0..6 {
         // On its rod (only where it hangs: none up under his belt), then out of his legs, last,
         // so whatever the rod leaves undone it's never left inside one.
@@ -251,6 +262,26 @@ pub fn off_legs(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
                 let push = (0.5 * (x + sqrt(x * x + 0.0004)) - 0.002) * reach
                 if push > 0.0 {
                     q = q + dir * push
+                }
+            }
+        }
+        // Off his forearms and hands, straight out from each (they're outside the cloth: it
+        // gives way under them).
+        for side in 0..2 {
+            for k in 0..2 {
+                let a = if k == 0 { elbow[side] } else { wrist[side] }
+                let b = if k == 0 { wrist[side] } else { knuckle[side] }
+                let ra = if k == 0 { 0.055 } else { 0.042 }
+                let rb = if k == 0 { 0.042 } else { 0.045 }
+                let e = b - a
+                let h = clamp(dot(q - a, e) / dot(e, e), 0.0, 1.0)
+                let off = q - (a + e * h)
+                let d = length(off)
+                let r = mix(ra, rb, h) + 0.008
+                let x = r - d
+                let push = (0.5 * (x + sqrt(x * x + 0.0004)) - 0.002) * reach
+                if push > 0.0 && d > 1.0e-5 {
+                    q = q + off / d * push
                 }
             }
         }

@@ -383,15 +383,22 @@ pub fn boot_paint(p: vec3) -> (vec3, f32, f32) {
 pub const TAILS_AXIS = vec3(0.0, 0.949, -0.043)
 pub const TAILS_TOP: f32 = 0.965
 
+/// Where the long jacket's hem is (rest height): the tails carry on below it.
+pub const JACKET_HEM: f32 = 0.80
+
+/// The back vent's top (rest height) and half its width at the hem (m).
+pub const VENT_TOP: f32 = 0.72
+pub const VENT_HALF: f32 = 0.004
+
 /// How far round from straight ahead the tails' edges are (degrees): open in front between.
 pub const TAILS_FROM: f32 = 42.0
 pub const TAILS_TO: f32 = 318.0
 
-/// The hips' girth under the tails' top, from `TAILS_FROM` to `TAILS_TO` every 12° (m from the
-/// axis): measured round the body at the band, a coat's ease added.
+/// The tails' girth, from `TAILS_FROM` to `TAILS_TO` every 12° (m from the axis): the long
+/// jacket's outside just above its hem (measured by jacket_grid.py), so they carry on its line.
 pub const TAILS_GIRTH: [f32; 24] = [
-    0.193, 0.203, 0.208, 0.203, 0.194, 0.184, 0.176, 0.169, 0.161, 0.150, 0.136, 0.125, 0.125,
-    0.136, 0.150, 0.161, 0.169, 0.176, 0.184, 0.194, 0.203, 0.208, 0.203, 0.193,
+    0.210, 0.218, 0.218, 0.222, 0.228, 0.232, 0.228, 0.214, 0.190, 0.168, 0.152, 0.146, 0.146,
+    0.152, 0.168, 0.190, 0.214, 0.228, 0.232, 0.228, 0.222, 0.218, 0.218, 0.210,
 ]
 
 fn girth(deg: f32) -> f32 {
@@ -426,12 +433,19 @@ pub fn tails(p: vec3) -> (f32, f32) {
     // (Clear of his trousers by a couple of centimetres even in a fold's trough: his thighs
     // swing forward under it.)
     // (Tucked in at the top, under the jacket's hem, easing out to clear him below it.)
-    let tuck = clamp(tt / 0.14, 0.0, 1.0)
-    let rr = girth(inside) - 0.012 + 0.038 * tuck * tuck * (3.0 - 2.0 * tuck) + 0.058 * pow(tt, 1.3) + fold * tuck
+    // (Inside the jacket down to its hem, then out to just over its line, so the two read as
+    // one long coat.)
+    let tuck = clamp((JACKET_HEM + 0.01 - p.y) / 0.08, 0.0, 1.0)
+    // (A long coat's fall, close over his hips and straight down: flared out like a skirt
+    // straight off his belt it read as a kilt.)
+    let rr = girth(inside) - 0.012 + 0.024 * tuck * tuck * (3.0 - 2.0 * tuck) + 0.032 * pow(tt, 1.5) + fold * tuck
     var d = abs(r - rr) - 0.009
     // Its front edges: the distance round to the nearer (negative between them).
     d = max(d, max(TAILS_FROM - deg, deg - TAILS_TO) * 0.0174532925 * r)
     d = max(d, max(p.y - TAILS_TOP, low - p.y))
+    // Its vent: split up the middle of the back from the hem, so each side follows its own leg.
+    let vent = max(abs(deg - 180.0) * 0.0174532925 * r - VENT_HALF, p.y - VENT_TOP)
+    d = max(d, -vent)
     (d, r - rr)
 }
 
