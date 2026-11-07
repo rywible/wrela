@@ -1,16 +1,24 @@
 // What the fight needs of the idol's shape: a player strikes its heads and its hands, so each is
 // a part of its own that no other touches. The heads are 3 cm apart or more; a hand meets the
-// body only at its wrist, where the reference was cut (the side hands below y 2.45, the middle
-// one below y 2.40).
+// body only at its wrist, where the reference was cut (the side hands below y 3.15, the middle
+// one, held out in front, beyond z 1.54).
 
 use engine::sampled::Samples
 
-/// The height the side hands were cut from the arms at, and the middle hand's.
-const SIDE_CUT: f32 = 2.45
-const MIDDLE_CUT: f32 = 2.40
+/// The height the side hands were cut from the arms at, and how far forward the middle hand was.
+const SIDE_CUT: f32 = 3.15
+const MIDDLE_CUT: f32 = 1.54
 
-/// The least the larger of two parts' distances gets over a grid of `step` from `lo` to `hi`:
-/// how far apart they are (negative where they overlap).
+/// Whether `p` is in hand `k` clear of its wrist (10 cm past the cut).
+fn past_wrist(k: u32, p: vec3) -> bool {
+    if k == 2 {
+        return p.z > MIDDLE_CUT + 0.1
+    }
+    p.y < SIDE_CUT - 0.1
+}
+
+/// How far apart two parts are over a grid of `step` from `lo` to `hi` (negative where they
+/// overlap): twice the least the larger of their distances gets, which is half the gap, midway.
 fn apart(a: Samples, b: Samples, lo: vec3, hi: vec3, step: f32) -> f32 {
     var least = 1.0e9
     var x = lo.x
@@ -27,7 +35,7 @@ fn apart(a: Samples, b: Samples, lo: vec3, hi: vec3, step: f32) -> f32 {
         }
         x += step
     }
-    least
+    2.0 * least
 }
 
 /// The heads: the middle, the left and the right. Each pair is checked where they come nearest,
@@ -37,9 +45,9 @@ fn heads_apart() {
     let middle = head_middle_grid::samples(0)
     let left = head_left_grid::samples(0)
     let right = head_right_grid::samples(0)
-    let ml = apart(middle, left, lo: vec3(0.2, 5.2, -1.2), hi: vec3(0.55, 6.6, 0.9), step: 0.03)
-    let mr = apart(middle, right, lo: vec3(-0.55, 5.2, -1.2), hi: vec3(-0.2, 6.6, 0.9), step: 0.03)
-    let lr = apart(left, right, lo: vec3(-0.3, 5.2, -1.2), hi: vec3(0.3, 6.6, 0.9), step: 0.05)
+    let ml = apart(middle, left, lo: vec3(0.3, 5.45, -0.8), hi: vec3(0.65, 6.7, 0.9), step: 0.03)
+    let mr = apart(middle, right, lo: vec3(-0.65, 5.45, -0.8), hi: vec3(-0.3, 6.7, 0.9), step: 0.03)
+    let lr = apart(left, right, lo: vec3(-0.4, 5.45, -0.8), hi: vec3(0.4, 6.7, 0.9), step: 0.05)
     assert(ml > 0.03, f"the middle and left heads come within {ml} m of each other")
     assert(mr > 0.03, f"the middle and right heads come within {mr} m of each other")
     assert(lr > 0.03, f"the side heads come within {lr} m of each other")
@@ -58,8 +66,8 @@ fn hands_apart() {
             let d = apart(
                 hands[a],
                 hands[b],
-                lo: vec3(-3.2, 0.6, -1.2),
-                hi: vec3(3.2, 2.7, 2.4),
+                lo: vec3(-2.8, 2.0, -0.8),
+                hi: vec3(2.8, 5.6, 2.5),
                 step: 0.06,
             )
             assert(d > 0.3, f"hands {a} and {b} come within {d} m of each other")
@@ -68,7 +76,6 @@ fn hands_apart() {
     let body = body_grid::samples(0)
     var worst = 1.0e9
     for k in 0..3 {
-        let cut = if k == 2 { MIDDLE_CUT } else { SIDE_CUT }
         let l = hands[k].lattice
         let hi = l.origin + vec3(l.size * 4) * l.cell
         var x = l.origin.x
@@ -78,7 +85,7 @@ fn hands_apart() {
                 var z = l.origin.z
                 while z <= hi.z {
                     let p = vec3(x, y, z)
-                    if p.y < cut - 0.1 && hands[k].distance(p) < 0.0 {
+                    if past_wrist(k, p) && hands[k].distance(p) < 0.0 {
                         worst = min(worst, body.distance(p))
                     }
                     z += 0.04
@@ -88,6 +95,5 @@ fn hands_apart() {
             x += 0.04
         }
     }
-    // The nearest is the left thumb by the thigh, about 1.7 cm off.
-    assert(worst > 0.01, f"a hand comes within {worst} m of the body away from its wrist")
+    assert(worst > 0.02, f"a hand comes within {worst} m of the body away from its wrist")
 }
