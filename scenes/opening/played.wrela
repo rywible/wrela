@@ -16,7 +16,8 @@ use sail::{Rig, key, let_go, rest, step}
 use std::collections::swap
 use std::input::Event
 use std::gpu::{
-    ClipPosition, Rgba16Float, Rgba8, Texture, VertexIndex, begin_pass, begin_pass3, draw, texture,
+    ClipPosition, Rgba16Float, Rgba8, Texture, VertexIndex, begin_pass, begin_pass3, draw, label,
+    texture,
 }
 
 /// How finely a live page meets the scene (`Shot::fine`): the rock and the cathedral four times
@@ -227,6 +228,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         s: s.ocean.s,
     }
     let width = s.width
+    label("yonder")
     let f = begin_pass3(mut s.yon_colour, mut s.yon_marks, mut s.yon_normal, keep: true)
     f.scissor(0, from, width, to - from)
     draw(
@@ -249,6 +251,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         vertices: 3,
     )
     f.end()
+    label("paint")
     let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, keep: true)
     p.scissor(0, from, width, to - from)
     draw(
@@ -276,6 +279,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
 /// The weather laid over the painted scene (`weather`), into `aired`, for the ink.
 pub(package) fn weathered(s: mut State, shot: Shot) {
     borrow hv = s.heavens
+    label("weather")
     let p = begin_pass(mut s.aired, clear: vec4(0.0, 0.0, 0.0, 1.0))
     if (OFF & 256) != 0 {
         p.end()
@@ -353,6 +357,7 @@ pub fn play(
     }
     weathered(mut s, shot)
     borrow hv = s.heavens
+    label("ink")
     let p = begin_pass(mut s.spare, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         p,
