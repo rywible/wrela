@@ -1,0 +1,177 @@
+// The hero aboard, as a likeness at the scene's distance: a broad, bare-armed figure in a long
+// black coat lined in gold and edged with gold, black trousers and boots, the white fox mask
+// (Hakuro: tall ears, a long muzzle, vermilion marks), and black hair swept back in spikes. Drawn
+// from where its joints stand (`Joints`), in the skiff's frame; the coat's tails blown along
+// `blow` and flapping at time `t`.
+
+use look::noise
+
+/// Where the hero's joints stand (the skiff's frame).
+pub struct Joints: Copy {
+    pub hips: vec3,
+    pub neck: vec3,
+    pub fore_hand: vec3,
+    pub aft_hand: vec3,
+    pub fore_foot: vec3,
+    pub aft_foot: vec3,
+    /// 1 sat (knees drawn up, the coat's skirts over the seat behind), 0 standing.
+    pub sit: f32,
+    /// Where the mask faces.
+    pub gaze: vec3,
+}
+
+fn capsule(p: vec3, a: vec3, b: vec3, r: f32) -> f32 {
+    let pa = p - a
+    let ba = b - a
+    let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0)
+    length(pa - ba * h) - r
+}
+
+/// A capsule `ra` across at `a` narrowing (or swelling) to `rb` at `b`: close enough to a cone
+/// for limbs and cloth.
+fn taper(p: vec3, a: vec3, b: vec3, ra: f32, rb: f32) -> f32 {
+    let pa = p - a
+    let ba = b - a
+    let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0)
+    (length(pa - ba * h) - mix(ra, rb, h)) * 0.9
+}
+
+fn blend(a: f32, b: f32, k: f32) -> f32 {
+    let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0)
+    mix(b, a, h) - k * h * (1.0 - h)
+}
+
+/// The hero's frame from its joints: up its spine, square across its shoulders (toward its fore
+/// hand's side) and the way it faces.
+fn frame(j: Joints) -> (vec3, vec3, vec3) {
+    let spine = normalize(j.neck - j.hips)
+    let mid = (j.fore_hand + j.aft_hand) * 0.5
+    let side0 = cross(normalize(mid - j.neck), spine)
+    var side = normalize(side0 + vec3(0.0001))
+    if dot(side, j.fore_hand - j.aft_hand) < 0.0 {
+        side = -side
+    }
+    let face = normalize(cross(spine, side))
+    let facing = if dot(face, mid - j.neck) < 0.0 { -face } else { face }
+    (spine, side, facing)
+}
+
+/// Where the coat's skirts end: below the hips (or back over the seat), blown along `blow` and
+/// flapping.
+fn hem_at(j: Joints, spine: vec3, face: vec3, q: vec3, blow: vec3, t: f32) -> vec3 {
+    let up = vec3(y: 1.0)
+    let flap = 0.05 * sin(t * 15.0 + dot(q, spine) * 5.0) + 0.03 * sin(t * 23.0 + dot(q, face) * 9.0)
+    j.hips - spine * 0.42 * (1.0 - 0.7 * j.sit) - face * 0.25 * j.sit + blow * 0.32 + up * flap
+}
+
+/// The way the mask faces, and square across it, from the gaze held level to the spine.
+fn facing(j: Joints, spine: vec3) -> (vec3, vec3) {
+    let gz = normalize(j.gaze - spine * dot(j.gaze, spine) + vec3(0.0001))
+    (gz, normalize(cross(spine, gz)))
+}
+
+/// The hero's parts at `q`: (skin and body, the coat, the mask, the hair), each a distance.
+pub fn parts(j: Joints, q: vec3, blow: vec3, t: f32) -> vec4 {
+    let (spine, side, face) = frame(j)
+    let up = vec3(y: 1.0)
+    // Legs, bent at the knee out toward the face, into heavy boots.
+    // (Each knee out as far as the leg's two halves, 0.46 m each, leave it: the lower the hips
+    // sink, the deeper the bend.)
+    let la = length(j.hips - j.fore_foot) * 0.5
+    let lb = length(j.hips - j.aft_foot) * 0.5
+    let knee_a = mix(j.fore_foot, j.hips, 0.5) + face * max(sqrt(max(0.2116 - la * la, 0.0)), 0.06) + up * 0.22 * j.sit
+    let knee_b = mix(j.aft_foot, j.hips, 0.5) + face * max(sqrt(max(0.2116 - lb * lb, 0.0)), 0.05) + up * 0.22 * j.sit
+    let hip_a = j.hips + side * 0.1
+    let hip_b = j.hips - side * 0.1
+    var body = min(
+        min(taper(q, j.fore_foot + up * 0.06, knee_a, 0.065, 0.07), taper(q, knee_a, hip_a, 0.075, 0.095)),
+        min(taper(q, j.aft_foot + up * 0.06, knee_b, 0.065, 0.07), taper(q, knee_b, hip_b, 0.075, 0.095)),
+    )
+    body = min(body, min(capsule(q, j.fore_foot, j.fore_foot + face * 0.12, 0.055), capsule(q, j.aft_foot, j.aft_foot + face * 0.12, 0.055)))
+    // A broad chest over a narrow waist.
+    body = blend(body, taper(q, j.hips + spine * 0.05, j.neck - spine * 0.1, 0.13, 0.19), 0.06)
+    // Bare arms, heavy at the shoulder, bent a little at the elbow.
+    let sh_a = j.neck - spine * 0.07 + side * 0.22
+    let sh_b = j.neck - spine * 0.07 - side * 0.22
+    // (Elbows bent out and down as far as the arm's halves, 0.3 m each, leave them.)
+    let ea = length(j.fore_hand - sh_a) * 0.5
+    let eb = length(j.aft_hand - sh_b) * 0.5
+    let el_a = mix(sh_a, j.fore_hand, 0.5) - (spine * 0.8 + side * 0.4) * max(sqrt(max(0.09 - ea * ea, 0.0)), 0.03)
+    let el_b = mix(sh_b, j.aft_hand, 0.5) - (spine * 0.8 - side * 0.4) * max(sqrt(max(0.09 - eb * eb, 0.0)), 0.03)
+    let arms = min(
+        min(taper(q, sh_a, el_a, 0.068, 0.05), taper(q, el_a, j.fore_hand, 0.05, 0.04)),
+        min(taper(q, sh_b, el_b, 0.068, 0.05), taper(q, el_b, j.aft_hand, 0.05, 0.04)),
+    )
+    body = blend(body, arms, 0.04)
+    // The coat: from the shoulders, open down the front, its skirts to the knee and its tails
+    // streaming on the wind.
+    let hem = hem_at(j, spine, face, q, blow, t)
+    var coat = taper(q, j.neck - spine * 0.04, j.hips, 0.235, 0.19)
+    coat = blend(coat, taper(q, j.hips, hem, 0.19, 0.12), 0.05)
+    // (Its front open: the chest shows between its edges.)
+    let open = dot(q - j.hips, face) - 0.08 - 0.06 * abs(dot(q - j.hips, side)) / 0.2
+    coat = max(coat, -max(open, abs(dot(q - j.hips, side)) - 0.09))
+    // The head: the mask's face plate and its long muzzle, its ears tall above it.
+    let head = j.neck + spine * 0.17
+    let (face, side) = facing(j, spine)
+    var mask = length((q - head - face * 0.03) / vec3(1.0)) - 0.12
+    mask = blend(mask, taper(q, head + face * 0.05, head + face * 0.22 - spine * 0.04, 0.08, 0.025), 0.04)
+    let ear_a = head + side * 0.07 + spine * 0.08
+    let ear_b = head - side * 0.07 + spine * 0.08
+    mask = min(mask, min(taper(q, ear_a, ear_a + spine * 0.15 + side * 0.03, 0.04, 0.006), taper(q, ear_b, ear_b + spine * 0.15 - side * 0.03, 0.04, 0.006)))
+    // Black hair swept back in spikes behind the mask.
+    var hair = length(q - head + face * 0.04 - spine * 0.03) - 0.125
+    for k in 0..5 {
+        let a = f32(k) * 0.9 - 1.8
+        let dir = normalize(-face * 0.9 + spine * (0.55 - 0.08 * abs(a)) + side * (a * 0.35) + blow * 0.3)
+        let root = head - face * 0.05 + spine * 0.05
+        hair = min(hair, taper(q, root, root + dir * (0.24 - 0.025 * abs(a)), 0.05, 0.004))
+    }
+    vec4(body, coat, mask, hair)
+}
+
+/// The hero at `q`: its distance.
+pub fn hero(j: Joints, q: vec3, blow: vec3, t: f32) -> f32 {
+    let k = parts(j, q, blow, t)
+    min(min(k.x, k.y), min(k.z, k.w))
+}
+
+/// What the hero's made of at `q`: its albedo and roughness. The coat black, gold along its
+/// edges and hem and lining its skirts; skin a warm tan; trousers and boots black; the mask white
+/// lacquer with vermilion flames and its ears red inside; the hair black.
+pub fn hero_material(j: Joints, q: vec3, blow: vec3, t: f32) -> (vec3, f32) {
+    let k = parts(j, q, blow, t)
+    let (spine, side, face) = frame(j)
+    if k.z <= min(min(k.x, k.y), k.w) + 0.001 {
+        let head = j.neck + spine * 0.17
+        let (face, side) = facing(j, spine)
+        let r = q - head
+        let marks = smoothstep(0.62, 0.72, noise(vec2(dot(r, spine) * 30.0, dot(r, side) * 14.0))) *
+            step(0.0, dot(r, face)) *
+            step(0.02, dot(r, spine))
+        let inner = step(0.1, dot(r, spine)) * step(dot(r, face), 0.0)
+        return (mix(vec3(0.86, 0.84, 0.78), vec3(0.62, 0.06, 0.03), max(marks, inner)), 0.25)
+    }
+    if k.w <= min(k.x, k.y) + 0.001 {
+        return (vec3(0.03, 0.03, 0.04), 0.6)
+    }
+    if k.y <= k.x + 0.001 {
+        // Gold along the coat's open edges and round its hem, and its lining inside.
+        let h = dot(q - j.hips, spine)
+        let edge = smoothstep(0.075, 0.09, abs(dot(q - j.hips, side))) * (1.0 - smoothstep(0.1, 0.115, abs(dot(q - j.hips, side))))
+        let front = step(0.05, dot(q - j.hips, face))
+        let hem = hem_at(j, spine, face, q, blow, t)
+        let down = hem - j.hips
+        let u = dot(q - j.hips, down) / dot(down, down)
+        let hemline = smoothstep(0.93, 0.95, u)
+        let gold = max(edge * front, hemline)
+        return (mix(vec3(0.025, 0.025, 0.03), vec3(0.85, 0.62, 0.18), gold), mix(0.55, 0.3, gold))
+    }
+    // Skin on the arms and chest, black below the waist and on the forearms' guards.
+    let h = dot(q - j.hips, spine)
+    let to_fore = length(q - j.fore_hand)
+    let to_aft = length(q - j.aft_hand)
+    let guard = 1.0 - smoothstep(0.14, 0.16, min(to_fore, to_aft))
+    let skin = step(0.05, h) * (1.0 - guard)
+    (mix(vec3(0.04, 0.04, 0.045), vec3(0.72, 0.42, 0.27), skin), mix(0.7, 0.55, skin))
+}

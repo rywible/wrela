@@ -1,6 +1,6 @@
 // The opening played by another program: wrela.dev's front page plays it live behind its own
 // screen, and its Play hands the skiff to the player. The page makes the scene (`scene`), passes
-// it the keys while the player rows (`input`), and each frame draws it into its `image` (`play`),
+// it the keys while the player sails (`input`), and each frame draws it into its `image` (`play`),
 // which it lays on its own screen.
 
 use main::{KINETIC, LANTERN, LOOK, START, STYLE}
@@ -12,7 +12,7 @@ use paint::paint
 use yonder::{Yon, yonder}
 use ink::ink
 use weather::weather
-use row::{Rig, key, let_go, rest, step}
+use sail::{Rig, key, let_go, rest, step}
 use std::collections::swap
 use std::input::Event
 use std::gpu::{
@@ -49,7 +49,7 @@ pub struct State {
     pub(package) yon_seq: u32,
     pub(package) width: u32,
     pub(package) height: u32,
-    /// The skiff as the player rows it.
+    /// The skiff as the player sails it.
     pub(package) rig: Rig,
     /// The last drawing finished, inked, for a program that plays the scene behind its own
     /// screen (`play`), and its size; and the texture the next is inked into before they swap,
@@ -174,7 +174,7 @@ pub(package) fn sized(s: mut State, width: u32, height: u32) {
 }
 
 /// The scene stepped on to `time` and painted (the first pass) from view `view`, the camera swung
-/// `orbit` radians round the skiff from where the rowing puts it and stood at `framing`
+/// `orbit` radians round the skiff from where the sailing puts it and stood at `framing`
 /// (`Rig::framing`), met `fine`ly (`Shot::fine`): the shot it was painted from.
 pub(package) fn painted(
     s: mut State,
@@ -184,7 +184,7 @@ pub(package) fn painted(
     framing: f32,
     fine: f32,
 ) -> Shot {
-    step(mut s.rig, START + time)
+    step(mut s.rig, START + time, s.ocean.swell)
     let shot = prepared(mut s, time, view, orbit, framing, fine)
     paint_rows(mut s, shot, from: 0, to: s.height)
     shot
@@ -319,7 +319,7 @@ pub fn play(
     framing: f32,
     bands: u32,
 ) -> bool {
-    step(mut s.rig, START + time)
+    step(mut s.rig, START + time, s.ocean.swell)
     if width != s.width || height != s.height {
         sized(mut s, width, height)
         s.band = 0
@@ -367,13 +367,14 @@ pub fn ready(s: State) -> bool {
     s.heavens.whole()
 }
 
-/// The player's input event `e`, for the skiff: W or Up paddles, S or Down backs water, A and D
-/// (or Left and Right) steer.
+/// The player's input event `e`, for the skiff: W or Up sheets the sail in (held, harder), S or
+/// Down lets it fly, A and D (or Left and Right) steer.
 pub fn input(s: mut State, e: Event) {
     key(mut s.rig, e)
 }
 
-/// The player's hands off the paddle: every key let go (the page took the keys away).
+/// The player's hands off the keys: every key let go (the page took the keys away); the sail
+/// stays as it's trimmed.
 pub fn release(s: mut State) {
     let_go(mut s.rig)
 }

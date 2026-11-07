@@ -1,0 +1,125 @@
+// What stands on the horizon besides the cathedral rock: the archipelago's other islands, many
+// kilometres off. That far, an island is a few pixels to a few dozen high, and all an eye takes
+// from it is its outline, its light side and its dark, and its air. So each is drawn as a
+// silhouette: an outline across the line of sight (`outline`, in metres across and up), stood at
+// its place on the chart, sunk by the earth's curve, its faces turned as its outline's slopes
+// turn them, lit by the one light and seen through the one air, as the rock is.
+
+use look::noise
+
+/// The earth's radius (m): what the curve sinks the far islands by.
+const EARTH: f32 = 6.371e6
+
+const MESA: u32 = 0
+const NEEDLE: u32 = 1
+const RING: u32 = 2
+const ARCH: u32 = 3
+
+/// One island as the horizon shows it: where it stands (the world's x, z), its kind, its
+/// half-width across and its height (m), its seed.
+struct Far: Copy {
+    at: vec2,
+    kind: u32,
+    half: f32,
+    tall: f32,
+    seed: f32,
+}
+
+/// A place on the chart at bearing `b` (rad, from +z toward +x, as the skiff's heading) and `km`
+/// out from the skiff's start.
+fn placed(b: f32, km: f32) -> vec2 {
+    vec2(sin(b), cos(b)) * km * 1000.0
+}
+
+/// The islands round the opening's waters (none in front of the cathedral rock).
+const CHARTED: u32 = 3
+
+fn charted(i: u32) -> Far {
+    if i == 0 {
+        // The Still Ring: a low wall of black cliffs round a lagoon, its mouth a notch.
+        Far { at: placed(0.75, 6.0), kind: RING, half: 520.0, tall: 62.0, seed: 1.3 }
+    } else if i == 1 {
+        // A long table of an island, its cliffs a wall along the horizon.
+        Far { at: placed(-1.25, 8.5), kind: MESA, half: 1500.0, tall: 110.0, seed: 7.7 }
+    } else if i == 2 {
+        // A leaning needle, taller than anything near it.
+        Far { at: placed(1.55, 5.5), kind: NEEDLE, half: 70.0, tall: 280.0, seed: 5.5 }
+    } else {
+        // A sea arch, the sky through it.
+        Far { at: placed(-0.85, 4.8), kind: ARCH, half: 260.0, tall: 120.0, seed: 2.9 }
+    }
+}
+
+/// How far a point `u` m across and `y` m up (the sea's) is outside island `f`'s outline (m; < 0
+/// inside).
+fn outline(f: Far, u: f32, y: f32) -> f32 {
+    let w = f.half
+    let h = f.tall
+    let s = f.seed
+    if f.kind == MESA || f.kind == RING {
+        // A flat top in a few steps, cliffs at either end, talus at their feet; a ring's wall
+        // broken by its mouth.
+        let rise = noise(vec2(u / w * 2.5 + s, 0.5))
+        let top = h * (0.7 + 0.3 * (floor(rise * 4.0) + smoothstep(0.8, 1.0, fract(rise * 4.0))) / 4.0)
+        let side = w * (1.0 - 0.3 * y / h) + w * 0.03 * (noise(vec2(y / 18.0 + s, 3.0)) - 0.5)
+        let talus = max(abs(u) - side - w * 0.15 * max(1.0 - y / (h * 0.5), 0.0), y - h * 0.5)
+        var body = min(max(abs(u) - side, y - top), talus)
+        if f.kind == RING {
+            body = max(body, -(abs(u - w * 0.15) - w * 0.09))
+        }
+        return body
+    }
+    if f.kind == NEEDLE {
+        let v = u - y * 0.18
+        let half = w * pow(max(1.0 - y / h, 0.0), 0.7) + w * 0.12 * (noise(vec2(y / 12.0 + s, 1.0)) - 0.5)
+        return max(abs(v) - max(half, 0.0), max(y - h, -y - 5.0))
+    }
+    // An arch.
+    let side = w * (1.0 - 0.1 * y / h)
+    let top = h * (0.85 + 0.15 * noise(vec2(u / w * 2.0 + s, 0.0)))
+    let body = max(abs(u) - side, y - top)
+    let hole = 1.0 - length(vec2((u - w * 0.1) / (w * 0.42), y / (h * 0.62)))
+    max(body, hole * min(w * 0.42, h * 0.62))
+}
+
+/// What the ray `o` + `d` meets of the far islands nearer than `limit`: how far along the ray
+/// (or `limit`) and the face's normal. `k` a pixel's width per metre out.
+pub fn far_off(o: vec3, d: vec3, limit: f32, k: f32) -> (f32, vec3) {
+    var best = limit
+    var bn = vec3(y: 1.0)
+    let hl = length(vec2(d.x, d.z))
+    // (Nothing far off stands high over the horizon: a ray climbing past 8° misses it all.)
+    if hl < 1.0e-4 || d.y / hl > 0.14 {
+        return (best, bn)
+    }
+    let dh = vec2(d.x, d.z) / hl
+    for i in 0..CHARTED {
+        let f = charted(i)
+        let v = f.at - vec2(o.x, o.z)
+        let along = dot(v, dh)
+        let reach = f.half * 1.7 + 20.0
+        // Across: the ray's offset from its middle at its range; up: the ray's height there,
+        // the earth's curve under it.
+        let u = -(dh.x * v.y - dh.y * v.x)
+        if along > reach && along / hl < best && abs(u) < reach {
+            let y = o.y + d.y / hl * along + along * along / (2.0 * EARTH)
+            if outline(f, u, y) < 0.0 {
+                // Its faces as its outline turns them, round toward the eye, read a few pixels
+                // wide (finer is its material, not its form).
+                let e = max(along * k * 8.0, 4.0)
+                let g = normalize(
+                    vec2(
+                        outline(f, u + e, y) - outline(f, u - e, y),
+                        outline(f, u, y + e) - outline(f, u, y - e),
+                    ) +
+                        vec2(1.0e-5, 0.0),
+                )
+                let side = vec3(-dh.y, 0.0, dh.x)
+                let toward = -vec3(dh.x, 0.0, dh.y)
+                best = along / hl
+                bn = normalize(side * g.x * 0.9 + vec3(y: 1.0) * g.y * 0.9 + toward * 0.7)
+            }
+        }
+    }
+    (best, bn)
+}

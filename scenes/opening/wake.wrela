@@ -1,0 +1,317 @@
+// What the skiff does to the water: the slick its hull leaves and the ripples it rocks out; its
+// wake (two arms spreading at the Kelvin angle, the churned trail straight astern, the bow's
+// wave); the lip of broken water along its waterline; and the spray its bow throws as it runs,
+// torn downwind by the gale. The sea itself is `engine::ocean` and `paint::sea_shade`, which
+// calls these.
+
+use look::{Shot, cells, fbm, hash2, noise}
+use sea::SEA
+use skiff::hull_off
+
+/// How far the skiff's way has it from drifting (0) to running (1): its wake whitens, lengthens
+/// and its bow throws spray.
+fn running(s: Shot) -> f32 {
+    smoothstep(1.5, 8.5, s.speed)
+}
+
+/// How far aft of the bow its wave peels off (m, along the hull from its middle), and how far out
+/// the wave's crest stands from the centreline `from` m aft of there: close along the forward
+/// sections, then spreading away. Running, the water lets go further aft, where the hull's lifted
+/// onto it.
+fn bow_at(s: Shot) -> f32 {
+    1.95 - 0.6 * running(s)
+}
+
+fn crest_out(s: Shot, from: f32) -> f32 {
+    // (Wavering as it runs aft: a ruled line of crest glints like a laser.)
+    0.2 + from * (0.42 - 0.12 * running(s)) + 0.08 * sqrt(from) + 0.06 * from * (noise(vec2(from * 1.3 - s.held * 1.7, 2.0)) - 0.5)
+}
+
+/// How the skiff heaps the sea at `p` (the world's): the water piled against its bow and peeled
+/// off either side as a wave that spreads aft, the hollow along its quarters where the water's
+/// drawn down, and the hump that closes behind its transom. Its rise there (m).
+pub fn lifted(s: Shot, p: vec3) -> f32 {
+    let rel = p - s.boat
+    let along = dot(rel, s.boat_z)
+    let across = abs(dot(rel, s.boat_x))
+    if along > 2.8 || along < -6.0 || across > 3.5 {
+        return 0.0
+    }
+    let way = clamp(abs(s.speed) / 3.0, 0.0, 1.0)
+    let run = running(s)
+    let bow = bow_at(s)
+    let from = bow - along
+    // (The pile-up at the stem, the water shoved ahead of it.)
+    let stem = vec2(across / 0.35, (along - bow - 0.05) / 0.3)
+    let pile = 0.05 * way * (1.0 - 0.4 * run) * exp(-dot(stem, stem))
+    // (The wave off each bow: a steep ridge hard by the hull, lowering and broadening aft.)
+    let f = max(from, 0.0)
+    let out = across - crest_out(s, f)
+    let wide = 0.02 + 0.035 * f
+    let rise = (0.07 * way + 0.06 * run) * smoothstep(-0.15, 0.25, from) * exp(-f / (1.4 + 1.6 * run))
+    let ridge = rise * (0.6 + 0.8 * noise(vec2(f * 1.7 - s.held * 2.0, across * 2.0))) * exp(-out * out / wide) * (1.0 + 0.6 * smoothstep(0.0, -0.2, out) * (1.0 - smoothstep(0.0, 1.0, f)))
+    // (The water drawn down along the quarters, and filling back in behind the transom.)
+    let quarter = -0.05 * way * exp(-pow(across - 0.5, 2.0) / 0.06) * smoothstep(0.6, -0.2, along) * smoothstep(-2.8, -1.8, along)
+    let behind = -along - 2.1
+    let hump = (0.05 * way + 0.03 * run) * (exp(-pow(behind - 1.1 - 0.5 * run, 2.0) / 0.5) - 0.6 * exp(-behind * behind / 0.12)) *
+        exp(-across * across / (0.18 + 0.04 * max(behind, 0.0)))
+    pile + ridge + quarter + hump * step(0.0, behind + 0.3)
+}
+
+/// Foam's lace at `w` (m, where the water rests): clots of froth and the bubbles round them,
+/// in drifts, warped and broken so it's never a net's mesh. In [0, 1].
+pub fn lace_at(w: vec2) -> f32 {
+    let warp = vec2(noise(w * 0.9 + vec2(2.1, 8.3)), noise(w * 0.9 + vec2(6.7, 3.9))) - vec2(0.5)
+    let c = cells(w * 9.0 + warp * 4.0)
+    // (A bubble's blot round each cell's point, sized by a noise, so they clot and scatter.)
+    let size = 0.08 + 0.35 * noise(w * 6.0 + vec2(5.0)) * noise(w * 1.7)
+    let blots = 1.0 - smoothstep(size * 0.4, size, c.x)
+    let drifts = smoothstep(0.4, 0.7, fbm(w * 0.6 + warp, 3))
+    blots * drifts
+}
+
+/// The water the hull has smoothed and rocked at `xz` (`n` its normal there, `rest` where its
+/// water rests): astern, its slick, a lane of smoother water as wide as the hull, widening and
+/// fading, longer the faster it runs; round it, the ripples it rocks out, the more as it slaps
+/// down. The normal as it leaves it, and the foam of the spray falling back either side of the
+/// bow as it runs.
+pub fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
+    let bx = normalize(vec2(s.boat_x.x, s.boat_x.z))
+    let bz = normalize(vec2(s.boat_z.x, s.boat_z.z))
+    let rel = xz - vec2(s.boat.x, s.boat.z)
+    let q = vec2(dot(rel, bx), dot(rel, bz))
+    let way = clamp(abs(s.speed) / 3.0, 0.0, 1.0)
+    let run = running(s)
+    let astern = q.y < -1.5 && q.y > -40.0 && abs(q.x) < 4.0
+    if dot(q, q) > 64.0 && !astern {
+        return (n, 0.0)
+    }
+    var tilt = vec2(0.0)
+    let behind = max(-q.y - 1.6, 0.0)
+    let lane = 0.45 + 0.06 * behind
+    let calm = (1.0 - smoothstep(lane * 0.5, lane, abs(q.x))) *
+        smoothstep(0.0, 1.0, behind) *
+        exp(-behind / (5.0 + 8.0 * way + 6.0 * run)) *
+        smoothstep(0.0, 0.4, way) *
+        // (In patches, and less at a run: a slick ruled straight astern mirrors the sky as a
+        // glowing bar.)
+        (0.35 + 0.65 * noise(rest * 0.6)) *
+        (1.0 - 0.6 * run) *
+        // (Faint: smooth enough to mirror the sky, a lane astern read as a beam of light.)
+        0.15
+    let along = q.y - clamp(q.y, -1.7, 1.7)
+    let out = vec2(q.x, along)
+    let off_hull = length(out) - 0.5
+    let away = out / max(length(out), 1.0e-3)
+    for k in 0..3 {
+        let r_k = 0.1 + fract(s.held * 0.3 + f32(k) / 3.0) * 2.6
+        let x = off_hull - r_k
+        let train = exp(-x * x / 0.003) * sin(x * 80.0)
+        tilt += away * (train * (0.05 + 0.1 * s.slap) * smoothstep(2.7, 0.3, r_k))
+    }
+    tilt *= step(0.0, off_hull) * (1.0 - 0.7 * run)
+    // Where the bow's spray falls back, either side and a little aft of it: a scatter of white
+    // that's left astern as it runs.
+    let fall = vec2(abs(q.x) - 1.1 - 0.5 * run, q.y - 0.2 + 1.2 * run)
+    // (Small and torn: soft and broad, it lay on the water as white tubes.)
+    let splash = exp(-dot(fall, fall) / (0.12 + 0.2 * run)) *
+        smoothstep(
+            0.5,
+            0.8,
+            lace_at(rest * 1.9) + 0.25 * noise(rest * 3.0 + vec2(s.held * 2.0)),
+        ) *
+        run *
+        0.45
+    let world_tilt = bx * tilt.x + bz * tilt.y
+    // (The water the hull heaps up turned to face the light as its slopes do.)
+    let at3 = vec3(xz.x, s.boat.y, xz.y)
+    let e = 0.06
+    let gx = (lifted(s, at3 + vec3(e, 0.0, 0.0)) - lifted(s, at3 - vec3(e, 0.0, 0.0))) / (2.0 * e)
+    let gz = (lifted(s, at3 + vec3(0.0, 0.0, e)) - lifted(s, at3 - vec3(0.0, 0.0, e))) / (2.0 * e)
+    let m = normalize(n + vec3(world_tilt.x - gx, 0.0, world_tilt.y - gz))
+    (normalize(mix(m, vec3(y: 1.0), calm * 0.55)), splash)
+}
+
+/// Froth of density `k` (0 to 1) and `age` (0 fresh to 1 old) over a froth's height (`billow`
+/// fresh, `walls` old, `lace` over both), as `paint::sea_shade` erodes the whitecaps: a
+/// billowing mass of bubble domes with holes, thinning to lace as it ages. Its cover.
+fn eroded(k: f32, age: f32, lace: f32, billow: f32, walls: f32) -> f32 {
+    let froth_h = mix(billow, walls, smoothstep(0.05, 0.45, age))
+    // (Softer edged than a whitecap's: hard, its clots read as flat decals.)
+    let feather = 0.16 + 0.3 * age
+    let e = clamp((k * (0.62 + 0.3 * lace) - (1.0 - froth_h)) / feather + k * k * 0.1, 0.0, 1.0)
+    // (Never one flat white even at its thickest: its domes brighter, its creases greyer.)
+    e * (1.0 - 0.5 * age) * (0.55 + 0.45 * smoothstep(0.2, 0.85, froth_h))
+}
+
+/// The skiff's marks at `p` on the sea (`xz`, `rest` where its water rests): its wake (white),
+/// the lip of broken water at its waterline (foam), how far `p` is out from the hull's side, and
+/// how full of bubbles the water under its trail is.
+pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32, f32) {
+    let rel = p - s.boat
+    let along = dot(rel, s.boat_z)
+    let across = dot(rel, s.boat_x)
+    // Under way, the wake runs longer and whiter, and the bow throws a wave off each side. The
+    // wake lies along the way the skiff came: turning, an arc (its centre `bend` m to the side the
+    // bow swings), read as how far back along it (`back`) and how far off it (`off`).
+    let way = clamp(abs(s.speed) / 3.0, 0.0, 1.0)
+    let run = running(s)
+    // (Bent smoothly by the turn, as an arc's sag behind it: a curve switched on past some
+    // turn rate jumped the whole trail sideways a metre and it pulsed on and off.)
+    let bend_k = clamp(s.turn / max(abs(s.speed), 1.0), -0.04, 0.04)
+    let back = -along
+    let off = across - 0.5 * bend_k * back * back
+    let behind_ = max(back - 2.0, 0.0)
+    // Its froth drawn as the sea's whitecaps are (`paint::sea_shade`): a density, eroded against
+    // a froth's height, so fresh it's a billowing mass of bubble domes with holes, and as it ages
+    // the holes open and it thins to a lace of cell walls. One foam on the whole sea. Laid where
+    // the water rests, on the sea's own axes along the opening's course, streaked out along it.
+    // (Not on the skiff's axes: every touch of the helm swung the pattern round the world's
+    // origin and the trail pulsed.)
+    let course = vec2(sin(-0.22), cos(-0.22))
+    let wa = vec2(dot(rest, course), dot(rest, vec2(course.y, -course.x)))
+    let lace = noise(wa * vec2(1.0, 2.4) + vec2(3.0, 9.0)) * 0.5 +
+        noise(wa * vec2(4.0, 9.0) + vec2(7.0, 1.0)) * 0.32 +
+        noise(wa * vec2(13.0, 24.0)) * 0.18
+    let wq = wa * vec2(0.55, 2.0)
+    let warp = vec2(noise(wq * 0.5 + vec2(2.1, 8.3)), noise(wq * 0.5 + vec2(6.7, 3.9))) - vec2(0.5)
+    let warp2 = vec2(noise(wa * 1.7 + vec2(4.4, 1.2)), noise(wa * 1.7 + vec2(9.1, 6.6))) - vec2(0.5)
+    let c1 = cells(wq * 1.6 + warp * 3.5 + warp2 * 1.2 + vec2(0.3, 5.1))
+    let c2 = cells(wa * vec2(3.0, 6.0) + warp * 3.0 + vec2(8.2, 1.7))
+    let billow = clamp(1.0 - c1.x * 1.25, 0.0, 1.0) * 0.45 + clamp(1.0 - c2.x * 1.3, 0.0, 1.0) * 0.2 + lace * 0.35
+    let gap = min(c1.y - c1.x, (c2.y - c2.x) * 1.6 + 0.15 * (1.0 - lace))
+    let walls = (1.0 - smoothstep(0.0, 0.35 + 0.5 * lace, gap)) * (0.25 + 0.3 * lace) + lace * 0.4
+    // Its arms: the bow wave's own crests carried on aft, one V from the stem, each a broken
+    // line of froth riding the crest, ageing to lace and gone a few lengths astern.
+    let from_b = max(back + bow_at(s) - 0.6, 0.0)
+    let arm_w = 0.02 + from_b * 0.012
+    let arm_d = abs(off) - crest_out(s, from_b + 0.6)
+    let arm_fade = exp(-from_b / (2.5 + 3.0 * way + 5.0 * run))
+    let arm_k = exp(-arm_d * arm_d / arm_w) * smoothstep(1.0, 2.5, from_b) * arm_fade * (0.75 + 0.25 * run)
+    let arms = eroded(arm_k, 1.0 - arm_fade, lace, billow, walls)
+    // Straight astern, the churned water it leaves: as wide as the transom where it's left, a
+    // mass of froth close astern, then thinning to lace that widens and fades; running, longer.
+    let width = 0.34 + 0.05 * behind_ + 0.1 * run
+    let core = exp(-pow(abs(off) / width, 2.0))
+    let fresh = exp(-behind_ / (2.5 + 4.0 * way + 7.0 * run))
+    let trail_k = core * smoothstep(-0.3, 0.4, behind_) * fresh * smoothstep(0.0, 0.4, way) * 0.85
+    let trail = eroded(trail_k, 1.0 - fresh, lace, billow, walls)
+    // (Under it, the water's paler and greener, full of the bubbles the hull and its wash drove
+    // down: broader and longer than the froth on top, the trail's after-image.)
+    let aer = exp(-pow(abs(off) / (width * 1.5 + 0.2), 2.0)) *
+        smoothstep(-0.5, 0.5, back + 1.0) *
+        exp(-behind_ / (5.0 + 10.0 * way + 16.0 * run)) *
+        way
+    // The bow's wave, peeling off either side; running, it breaks white along the forward third
+    // of the hull where it lifts onto the plane.
+    let from_bow = max(bow_at(s) - along, 0.0)
+    // (White on the crest of the wave the hull heaps (`lifted`), in froth: torn, never soft.)
+    let crest_d = abs(across) - crest_out(s, from_bow)
+    let bow_k = exp(-pow(crest_d + 0.02, 2.0) / (0.004 + 0.006 * from_bow + 0.008 * run)) *
+        (0.7 + 0.3 * smoothstep(0.3, 0.0, from_bow)) *
+        smoothstep(0.0, 0.15, from_bow) *
+        smoothstep(2.4, 1.2, from_bow) *
+        way
+    let bow_wave = eroded(bow_k, 0.15 * smoothstep(0.0, 2.0, from_bow), lace, billow, walls)
+    // (Thinned only right under the eye, where a pixel's footprint is a hand across.)
+    let near_eye = smoothstep(1.5, 3.5, length(p - s.eye))
+    let wake = max(max(arms * step(-2.5, back), trail * step(-0.2, back)), bow_wave * (0.7 + 0.3 * run)) * near_eye
+    // Where the sea meets the hull: a lip of churned water along its waterline, out past the
+    // gunwale's flare so the eye above sees it, wider and whiter as the skiff makes way or slaps
+    // down.
+    let wl = hull_off(s, p)
+    let fore = clamp(dot(p - s.boat, s.boat_z) / 2.2, 0.0, 1.0)
+    let lip_w = (0.04 + 0.06 * way + 0.1 * s.slap + 0.12 * fore * fore * (0.3 + way) + 0.04 * run) *
+        (0.55 + 0.9 * noise(xz * 2.2 + vec2(s.held * 0.4, 0.0)))
+    let ragged = wl + 0.06 * (noise(xz * 5.0 + vec2(s.held * 0.7)) - 0.5)
+    let lip = (1.0 - smoothstep(lip_w * 0.35, lip_w, ragged)) *
+        step(-0.05, wl) *
+        // (Soft-edged froth, not a cut-out camouflage of black and white.)
+        smoothstep(
+            0.3 - 0.2 * fore - 0.15 * run,
+            0.85,
+            noise(xz * 9.0 + vec2(s.held * 2.0, -s.held * 1.5)) * 0.55 +
+                noise(xz * 26.0 + vec2(-s.held, s.held * 0.8)) * 0.3 +
+                noise(xz * 60.0) * 0.15,
+        )
+    // (A thin wash amidships, whitest toward the bow: a full-length skirt of froth read as a
+    // cloud the hull sat in.)
+    (wake, lip * (0.6 + 0.4 * max(way, s.slap)) * (0.45 + 0.55 * fore), wl, aer)
+}
+
+/// The bow's spray, in front of what the ray met at `hit`: as the skiff runs, a sheet of water
+/// peeled off either side of its forward sections (the lee one the higher, where the hull's
+/// pressed into the sea), flung up and out and aft, thin and glassy where it leaves the hull,
+/// tearing into streaks and then drops at its crest, and the drops it tears torn downwind by the
+/// gale. Each drop streaked by its flight through the frame. In the light `lit`. Its light
+/// (premultiplied) and cover.
+pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
+    let run = running(s)
+    let thrown = max(
+        max(run * (0.1 + 0.9 * s.power), s.slap * smoothstep(0.5, 2.0, s.speed) * (0.3 + 0.7 * s.power)),
+        s.jolt,
+    )
+    if thrown <= 0.0 {
+        return vec4(0.0)
+    }
+    // (Only for rays that pass near the skiff's bow.)
+    let bow = s.boat + s.boat_z * 1.0 + vec3(y: 0.4) - o
+    let tc = dot(bow, d)
+    if tc <= 0.0 || length(bow - d * tc) > 3.5 {
+        return vec4(0.0)
+    }
+    let up = vec3(y: 1.0)
+    let lee_side = if s.boom.x > 0.0 { 1.0 } else { -1.0 }
+    var acc = vec4(0.0)
+    // The sheets: each a surface leaning out from the hull's side, read where the ray crosses
+    // it as (how far aft along it, how high up it).
+    for k in 0..2 {
+        let side = if k == 0 { lee_side } else { -lee_side }
+        // (Pulsing as the bow meets each wave, never one steady card.)
+        let pulse = 0.55 + 0.7 * noise(vec2(s.held * 2.6 + f32(k) * 5.0, 1.0))
+        let strong = thrown * (if k == 0 { 1.0 } else { 0.5 }) * (0.75 + 0.35 * s.gust) * pulse
+        let root = s.boat + s.boat_x * (side * 0.34) + s.boat_z * 1.55 - s.boat_y * 0.12
+        let aft = normalize(-s.boat_z + s.boat_x * (side * 0.55))
+        let rise = normalize(up + s.boat_x * (side * 0.4))
+        let n = normalize(cross(aft, rise))
+        let dn = dot(d, n)
+        if abs(dn) > 1.0e-4 {
+            let t = dot(root - o, n) / dn
+            if t > 0.0 && t < hit {
+                let rel = o + d * t - root
+                let a = dot(rel, aft)
+                let b = dot(rel, rise)
+                let long = 1.2 + 2.6 * strong
+                let x = a / long
+                // (Its crest an arc: up from the hull, falling back aft.)
+                let crest = (0.25 + 0.6 * strong) * 3.2 * x * (1.0 - x) * (1.0 - 0.3 * x)
+                if x > 0.0 && x < 1.0 && b > -0.05 && b < crest + 0.1 {
+                    // (Streaked along its flight, as a sheet of water thrown fast is.)
+                    let flow = vec2(a * 1.6 - s.held * s.speed * 0.6, b * 4.0 + a * 1.5)
+                    let streaks = noise(flow) * 0.55 +
+                        noise(flow * vec2(2.3, 2.9) + vec2(4.0)) * 0.45
+                    let up_k = clamp(b / max(crest, 0.02), 0.0, 1.2)
+                    // (Glassy and whole near the hull, streaked higher, in drops at its crest.)
+                    let torn = smoothstep(0.3 + 0.4 * up_k, 0.85 + 0.4 * up_k, streaks)
+                    let edge = 1.0 - smoothstep(0.45, 1.0, up_k + 0.3 * (streaks - 0.5))
+                    let ends = smoothstep(0.0, 0.25, x) * smoothstep(1.0, 0.45, x)
+                    let cover = torn *
+                        edge *
+                        ends *
+                        smoothstep(-0.05, 0.35, b) *
+                        smoothstep(s.boat.y - 0.3, s.boat.y + 0.35, o.y + d.y * t) *
+                        0.22 *
+                        min(strong * 1.6, 1.0) *
+                        // (Seen edge on, a sheet's streaks crowd into a comb of white ticks.)
+                        smoothstep(0.12, 0.4, abs(dn))
+                    // (Glassy where it's whole, the sea's dark showing through; white only where
+                    // it tears.)
+                    let white = mix(0.45, 1.0, smoothstep(0.2, 0.8, up_k))
+                    acc = acc * (1.0 - cover) + vec4(lit * white * (0.85 + 0.3 * streaks) * cover, cover)
+                }
+            }
+        }
+    }
+    // (No flying drops: at this size they read as cheap white dots.)
+    vec4(acc.rgb, min(acc.a, 1.0))
+}

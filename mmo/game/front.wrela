@@ -60,7 +60,7 @@ const CONTROLS_AFTER: f32 = 0.55
 const WORDS_GIVE_UP: f32 = 12.0
 /// Seconds the name takes to come up over the black.
 const NAME_IN: f32 = 1.4
-/// Seconds the words take to go as the player takes the paddle, and to come back.
+/// Seconds the words take to go as the player takes the helm, and to come back.
 const LEAVE: f32 = 0.45
 const RETURN: f32 = 0.6
 /// Seconds the camera takes to rise from the page's shot to the player's, and to come back down.
@@ -554,7 +554,7 @@ pub fn frame<A: Account>(
     Next::Stay { hand }
 }
 
-/// Paused: the hands off the paddle, where the skiff is saved, the menu's focus on Resume.
+/// Paused: the hands off the keys, where the skiff is saved, the menu's focus on Resume.
 fn pause(f: mut Front) {
     release(mut f.scene)
     save(mut f)
@@ -812,8 +812,8 @@ fn draw_menu(f: mut Front, w: f32, h: f32, k: f32) -> bool {
     let gap = round(10.0 * k)
     let row = round(34.0 * k)
     let controls: [(Text, Text, Text); 4] = [
-        ("Row", "W", "Up"),
-        ("Back water", "S", "Down"),
+        ("Sheet in", "W", "Up"),
+        ("Let the sail fly", "S", "Down"),
         ("Steer", "A", "D"),
         ("Pause", "Esc", ""),
     ]
@@ -897,7 +897,7 @@ fn draw_menu(f: mut Front, w: f32, h: f32, k: f32) -> bool {
     y += round(10.0 * k)
     for line in [
         "On a gamepad: the left stick or the D-pad",
-        "rows and steers, and Start pauses.",
+        "sails and steers, and Start pauses.",
     ] {
         let _ = f.list.text(f.fonts, Face::Sans, line, 12.5 * k, vec2(px + pad, y), MUTED)
         y += round(18.0 * k)

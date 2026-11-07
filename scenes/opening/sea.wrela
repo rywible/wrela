@@ -17,7 +17,7 @@ pub fn held(time: f32) -> f32 {
 /// breaking into spindrift, foam blown in streaks) blowing across 300 km, over a heavy swell
 /// from the storm, 5.5 m every 10.5 s, running the way the eye looks.
 pub const SEA = SeaState {
-    wind: vec2(-0.55007, 0.83511),
+    wind: vec2(-0.96858, 0.24869),
     speed: 19.0,
     fetch: 300000.0,
     swell: vec2(0.17007, 0.98543),
@@ -126,7 +126,9 @@ pub fn bob(t: f32, at: vec2, steer: f32, swell: Swell) -> (vec3, vec3, vec3, vec
     let port = swell.height(c - across0 * 0.5, t)
     let star = swell.height(c + across0 * 0.5, t)
     let mid = swell.height(c, t)
-    let y = (bow + stern + port + star + mid * 2.0) / 6.0 + 0.2
+    // (Its deck a hand and a half over the water, its bottom a good way under: set higher, it
+    // sat on the sea, not in it, and read as floating.)
+    let y = (bow + stern + port + star + mid * 2.0) / 6.0 + 0.03
     // Pitched and rolled as those points lie, but not all the way: the hull's weight steadies it.
     let along_ = normalize(vec3(along0.x, (bow - stern) / 3.0 * 0.8, along0.y))
     let across_ = normalize(vec3(across0.x, (star - port) / 1.0 * 0.6, across0.y))
