@@ -1214,7 +1214,7 @@ impl Orchestra {
                 let wr = 0.6 * wl + 0.8 * self.white()
                 v.felt += FELT * (wl - v.felt)
                 v.thwack += FELT * (wr - v.thwack)
-                let shaped = vec2(0.2 * wl + 1.8 * v.felt, 0.2 * wr + 1.8 * v.thwack)
+                let shaped = vec2(0.05 * wl + 1.95 * v.felt, 0.05 * wr + 1.95 * v.thwack)
                 // Two one-pole high-passes near the note: the rosin is heard above the pitch.
                 v.hiss += cut * (shaped - v.hiss)
                 let once = shaped - v.hiss
@@ -1543,20 +1543,20 @@ pub const VIOLINS: Instrument = Instrument {
     vibrato_wake: 0.3,
     detune_cents: 12.0,
     wander_cents: 6.0,
-    spread: 0.03,
+    spread: 0.045,
     width: 0.35,
     attack: 0.12,
     release: 0.3,
-    bright_lo: 3000.0,
-    bright_hi: 9000.0,
+    bright_lo: 3800.0,
+    bright_hi: 10000.0,
     peak_hz: [280.0, 420.0, 950.0, 1700.0, 3800.0, 14000.0],
     peak_q: [3.0, 1.5, 2.0, 1.2, 2.0, 0.7],
     peak_db: [4.0, 9.0, -4.0, 1.0, 1.0, 4.0],
     noise: 0.36,
     range_db: 26.0,
     level: 0.5,
-    body: 0.8,
-    body_lo: 250.0,
+    body: 0.7,
+    body_lo: 180.0,
     body_hi: 7000.0,
 }
 
