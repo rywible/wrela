@@ -46,7 +46,7 @@
 // Everything on the audio thread is f32 arithmetic in a fixed order and the noise is seeded, so
 // both hosts give the same samples.
 
-use score::{ACCENT, FERMATA, Level, STACCATO, Score, TENUTO, TICKS, TREMOLO}
+use score::{ACCENT, FERMATA, Level, NO_SLUR, STACCATO, Score, TENUTO, TICKS, TREMOLO}
 use std::audio::{SAMPLE_RATE, decay_rate}
 use std::collections::Vec
 use std::math::{PI, TAU}
@@ -158,6 +158,11 @@ const FERMATA_HOLD: f32 = 1.6
 const STACCATO_SHARE: f32 = 0.45
 /// Seconds a sustained note overlaps the next, as players join notes.
 const LEGATO: f32 = 0.04
+/// A slurred glide's share per quantum (128 samples): a time constant near 40 ms.
+/// A slurred note's finger change (seconds, the glide's time constant).
+const GLIDE: f32 = 0.012
+/// How long a bow change takes (seconds, either side of the turn).
+const BOW_TURN: f32 = 0.04
 
 // ---- the program's thread ---------------------------------------------------------------------
 
@@ -170,6 +175,9 @@ struct Event: Copy {
     held: u32,
     accent: f32,
     tremolo: bool,
+    /// Slurred from the part's note before, of this key: the voice glides on, not re-bowed.
+    glide: bool,
+    from_key: u32,
 }
 
 /// A point of a part's intensity: at a sample, how intense.
@@ -350,7 +358,7 @@ impl Biquad {
 
 /// A body's modes, and the gain that makes their sum about as loud as what drives them.
 const BODY_MODES: u32 = 32
-const BODY_GAIN: f32 = 0.35
+const BODY_GAIN: f32 = 0.54
 
 /// The felt's noise's low-pass: 1 - e^(-2π 1200 / 48000).
 const FELT: f32 = 0.325
@@ -369,6 +377,10 @@ struct Voice: Copy {
     family: Family,
     key: u32,
     hz: f32,
+    /// Where a slurred note's glide is going (0 when not gliding).
+    target_hz: f32,
+    // Each player's bow pressure this quantum: a slow drift about 1.
+    press: [f32; 8],
     /// Samples since it started, and samples it is held for.
     t: u32,
     held: u32,
@@ -411,8 +423,10 @@ struct Voice: Copy {
     thwack_fall: f32,
     /// The felt's noise, darkened (a one-pole low-pass near 1.2 kHz).
     felt: f32,
-    /// The brass's DC blocker (each sub-section's mean).
+    /// The brass's DC blocker (each sub-section's mean); the rosin noise's lows, taken out.
     dc: vec2,
+    hiss: vec2,
+    hiss2: vec2,
 }
 
 const SILENT: Voice = Voice {
@@ -421,6 +435,8 @@ const SILENT: Voice = Voice {
     family: Family::Bowed,
     key: 0,
     hz: 0.0,
+    target_hz: 0.0,
+    press: [1.0; 8],
     t: 0,
     held: 0,
     accent: 0.0,
@@ -453,6 +469,8 @@ const SILENT: Voice = Voice {
     thwack_fall: 0.0,
     felt: 0.0,
     dc: vec2(0.0),
+    hiss: vec2(0.0),
+    hiss2: vec2(0.0),
 }
 
 /// The most notes sounding at once.
@@ -589,7 +607,27 @@ pub fn orchestra(parts: Vec<Part>, tempo: [Tempo], hall: Hall, master: f32) -> O
         let sustained = i.family == Family::Bowed ||
             i.family == Family::Brass ||
             i.family == Family::Voices
-        for n in part.score.notes {
+        borrow notes = part.score.notes
+        for k in 0..notes.len() {
+            let n = notes[k]
+            // A slurred note follows the one before it in its voice without a new bow (or
+            // tongue, or breath), when both are single notes under the same slur and meet.
+            var glide = false
+            var from_key = 0
+            if sustained && n.slur != NO_SLUR && k > 0 {
+                let before = notes[k - 1]
+                let chord = (k + 1 < notes.len() &&
+                    notes[k + 1].start == n.start &&
+                    notes[k + 1].voice == n.voice) ||
+                    (k > 1 && notes[k - 2].start == before.start && notes[k - 2].voice == n.voice)
+                if before.voice == n.voice &&
+                    before.slur == n.slur &&
+                    before.end() == n.start &&
+                    !chord {
+                    glide = true
+                    from_key = before.key
+                }
+            }
             let on = seconds_at(clock, n.start)
             var off = seconds_at(clock, n.end())
             if n.has(STACCATO) {
@@ -609,6 +647,8 @@ pub fn orchestra(parts: Vec<Part>, tempo: [Tempo], hall: Hall, master: f32) -> O
                     held: max(samples(off - on), 1),
                     accent,
                     tremolo: n.has(TREMOLO),
+                    glide,
+                    from_key,
                 },
             )
             last = max(last, off + f64(i.release))
@@ -758,6 +798,22 @@ impl Orchestra {
     /// Starts event `e` in a free voice (or the quietest, if none is free).
     @audio
     fn start(mut self, e: Event) {
+        // A slurred note: the voice playing the note before it glides on to this one.
+        if e.glide {
+            for n in 0..VOICES {
+                if self.voices[n].active &&
+                    self.voices[n].part == e.part &&
+                    self.voices[n].key == e.from_key &&
+                    self.voices[n].t < self.voices[n].held + u32(0.1 * RATE) {
+                    var v = self.voices[n]
+                    v.key = e.key
+                    v.target_hz = key_hz(e.key)
+                    v.held = v.t + e.held
+                    self.voices[n] = v
+                    return
+                }
+            }
+        }
         var best = 0
         var quietest = 1000000.0
         for v in 0..VOICES {
@@ -798,7 +854,12 @@ impl Orchestra {
             v.vib_rate[p] = TAU * i.vibrato_hz * (0.85 + 0.3 * r(5)) * 128.0 / RATE
             v.delay[p] = u32(i.spread * RATE * r(6) * (1.0 - 0.7 * e.accent))
             v.bow[p] = r(7)
-            v.bow_rate[p] = (13.0 + 4.0 * r(8)) / RATE
+            // Tremolo strokes 13 to 17 a second; a held note's whole bows, 2.5 to 4 s each.
+            v.bow_rate[p] = if e.tremolo {
+                (13.0 + 4.0 * r(8)) / RATE
+            } else {
+                1.0 / ((2.5 + 1.5 * r(8)) * RATE)
+            }
             let at = clamp(self.seats[e.part].pan + i.width * place, -1.0, 1.0)
             // Equal power, and each player as loud as the section's share.
             let g = 1.0 / sqrt(f32(players))
@@ -958,7 +1019,7 @@ impl Orchestra {
     /// Voice `v`'s pitch for this quantum: each player's vibrato, wander and detune, and a lip's
     /// scoop up to the note.
     @audio
-    fn steer(mut self, v: mut Voice) {
+    fn steer(mut self, v: mut Voice, n: u32) {
         let i = self.seats[v.part].instrument
         let x = self.seats[v.part].now
         let age = f32(v.t) / RATE
@@ -966,6 +1027,14 @@ impl Orchestra {
         let depth = i.vibrato_cents * wake * (0.7 + 0.6 * x)
         let scoop = if v.family == Family::Brass { -28.0 * exp(-age / 0.035) } else { 0.0 }
         let players = clamp(i.players, 1, PLAYERS)
+        // A slurred note's glide: the finger changes, about 30 ms to settle.
+        if v.target_hz > 0.0 {
+            v.hz *= pow(v.target_hz / v.hz, 1.0 - exp(-f32(n) / (GLIDE * RATE)))
+            if abs(v.target_hz / v.hz - 1.0) < 0.0005 {
+                v.hz = v.target_hz
+                v.target_hz = 0.0
+            }
+        }
         for p in 0..players {
             var phase = v.vib_phase[p] + v.vib_rate[p]
             if phase > TAU {
@@ -977,6 +1046,9 @@ impl Orchestra {
             v.wander[p] = 0.996 * v.wander[p] + 0.12 * i.wander_cents * kick
             let c = v.detune[p] + v.wander[p] + depth * sin(phase) + scoop
             v.step[p] = v.hz * cents(c) / RATE
+            // Bow pressure drifts, each player at their own slow rate (about ±1 dB).
+            let rate = 0.3 + 1.2 * scatter(v.seed, p, 43)
+            v.press[p] = 1.0 + 0.12 * sin(TAU * (rate * age + scatter(v.seed, p, 44)))
         }
     }
 
@@ -1009,6 +1081,8 @@ impl Orchestra {
         let rise = 1.0 - exp(-1.0 / (attack * RATE))
         let fall = 1.0 - exp(-1.0 / (max(i.release, 0.01) * RATE))
         let level = loudness(i, x)
+        // The rosin's noise starts a little under the note: nothing rasps below the string.
+        let cut = 1.0 - exp(-TAU * 0.85 * v.hz / RATE)
         let bowed = v.family == Family::Bowed
         let brass = v.family == Family::Brass
         // Each player bows at their own place on the string, and each brass player's lips open
@@ -1075,7 +1149,17 @@ impl Orchestra {
                         y *= stroke
                         bowing += stroke
                     } else {
-                        bowing += 1.0
+                        y *= v.press[p]
+                        // Each player changes bow on their own: a brief dip and a scrape.
+                        var b = v.bow[p] + v.bow_rate[p]
+                        if b >= 1.0 {
+                            b -= 1.0
+                        }
+                        v.bow[p] = b
+                        let from_turn = min(b, 1.0 - b) / (v.bow_rate[p] * RATE)
+                        let turn = exp(-(from_turn * from_turn) / (BOW_TURN * BOW_TURN))
+                        y *= 1.0 - 0.4 * turn
+                        bowing += 1.0 + 1.5 * turn
                     }
                 }
                 l += y * v.gain_l[p]
@@ -1119,12 +1203,26 @@ impl Orchestra {
                 self.seats[s].left[k] += g * (ya * v.gain_l[0] + yb * v.gain_l[second])
                 self.seats[s].right[k] += g * (ya * v.gain_r[0] + yb * v.gain_r[second])
             } else {
-                // Rosin or breath: noise, as much as the bow (or the voice) is moving.
-                let rasp = i.noise * self.white() * (if bowed { bowing / f32(players) } else {
-                    1.0
-                })
-                self.seats[s].left[k] += amp * (l + rasp)
-                self.seats[s].right[k] += amp * (r + rasp)
+                // Rosin or breath: noise, as much as the bow (or the voice) is moving; each side
+                // its own, and weighted to the lows (a one-pole near 3 kHz under the white).
+                // The bow bites as it starts: a scrape over the first ~30 ms (not on a slur,
+                // which carries on).
+                let bite = 1.0 + 3.0 * (0.6 + 0.8 * scatter(v.seed, b: 0, c: 42)) * exp(-age / 0.03)
+                let moving = i.noise * bite * (if bowed { bowing / f32(players) } else { 1.0 })
+                // The two sides share most of their noise: one section, heard from two places.
+                let wl = self.white()
+                let wr = 0.6 * wl + 0.8 * self.white()
+                v.felt += FELT * (wl - v.felt)
+                v.thwack += FELT * (wr - v.thwack)
+                let shaped = vec2(0.2 * wl + 1.8 * v.felt, 0.2 * wr + 1.8 * v.thwack)
+                // Two one-pole high-passes near the note: the rosin is heard above the pitch.
+                v.hiss += cut * (shaped - v.hiss)
+                let once = shaped - v.hiss
+                v.hiss2 += cut * (once - v.hiss2)
+                let rl = moving * (once.x - v.hiss2.x)
+                let rr = moving * (once.y - v.hiss2.y)
+                self.seats[s].left[k] += amp * (l + rl)
+                self.seats[s].right[k] += amp * (r + rr)
             }
             v.t += 1
         }
@@ -1375,7 +1473,10 @@ pub fn play_orchestra(o: mut Orchestra, left: mut [f32], right: mut [f32]) {
     let start = o.sample
     for s in 0..o.seats.len() {
         let was = o.seats[s].now
-        o.seats[s].now = o.intensity_at(s, start)
+        // A new dynamic arrives over about 120 ms, as a player's arm does it.
+        let want = o.intensity_at(s, start)
+        let ease = if start == 0 { 1.0 } else { 1.0 - exp(-f32(left.len()) / (0.12 * RATE)) }
+        o.seats[s].now = was + ease * (want - was)
         if abs(o.seats[s].now - was) > 0.0005 {
             o.set_bright(s)
         }
@@ -1386,7 +1487,7 @@ pub fn play_orchestra(o: mut Orchestra, left: mut [f32], right: mut [f32]) {
             if voice.family == Family::Bowed ||
                 voice.family == Family::Brass ||
                 voice.family == Family::Voices {
-                o.steer(mut voice)
+                o.steer(mut voice, u32(left.len()))
             }
             o.voices[v] = voice
         }
@@ -1435,28 +1536,28 @@ pub fn play_orchestra(o: mut Orchestra, left: mut [f32], right: mut [f32]) {
 /// the bridge's hill near 2.5 kHz, and a dip between.
 pub const VIOLINS: Instrument = Instrument {
     family: Family::Bowed,
-    players: 6,
+    players: 8,
     bow: 0.11,
     vibrato_hz: 5.6,
-    vibrato_cents: 14.0,
+    vibrato_cents: 22.0,
     vibrato_wake: 0.3,
-    detune_cents: 7.0,
-    wander_cents: 3.0,
+    detune_cents: 12.0,
+    wander_cents: 6.0,
     spread: 0.03,
     width: 0.35,
     attack: 0.12,
     release: 0.3,
-    bright_lo: 2500.0,
-    bright_hi: 12000.0,
-    peak_hz: [280.0, 470.0, 1200.0, 2600.0, 4300.0, 0.0],
-    peak_q: [3.0, 3.0, 2.0, 1.2, 2.0, 1.0],
-    peak_db: [4.0, 4.0, -3.0, 5.0, -3.0, 0.0],
-    noise: 0.03,
+    bright_lo: 3000.0,
+    bright_hi: 9000.0,
+    peak_hz: [280.0, 420.0, 950.0, 1700.0, 3800.0, 14000.0],
+    peak_q: [3.0, 1.5, 2.0, 1.2, 2.0, 0.7],
+    peak_db: [4.0, 9.0, -4.0, 1.0, 1.0, 4.0],
+    noise: 0.36,
     range_db: 26.0,
     level: 0.5,
-    body: 0.6,
+    body: 0.8,
     body_lo: 250.0,
-    body_hi: 6000.0,
+    body_hi: 7000.0,
 }
 
 /// A viola section: the violin's body, larger, its resonances lower than its strings want.
