@@ -139,7 +139,8 @@ fn eroded(k: f32, age: f32, lace: f32, billow: f32, walls: f32) -> f32 {
     let froth_h = mix(billow, walls, smoothstep(0.05, 0.45, age))
     let feather = 0.09 + 0.3 * age
     let e = clamp((k * (0.62 + 0.3 * lace) - (1.0 - froth_h)) / feather + k * k * 0.1, 0.0, 1.0)
-    e * (1.0 - 0.5 * age) * (0.75 + 0.25 * e)
+    // (Never one flat white even at its thickest: its domes brighter, its creases greyer.)
+    e * (1.0 - 0.5 * age) * (0.55 + 0.45 * smoothstep(0.2, 0.85, froth_h))
 }
 
 /// The skiff's marks at `p` on the sea (`xz`, `rest` where its water rests): its wake (white),
@@ -199,7 +200,7 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32, f32) {
     let width = 0.34 + 0.05 * behind_ + 0.1 * run
     let core = exp(-pow(abs(off) / width, 2.0))
     let fresh = exp(-behind_ / (2.5 + 4.0 * way + 7.0 * run))
-    let trail_k = core * smoothstep(-0.3, 0.4, behind_) * fresh * smoothstep(0.0, 0.4, way)
+    let trail_k = core * smoothstep(-0.3, 0.4, behind_) * fresh * smoothstep(0.0, 0.4, way) * 0.85
     let trail = eroded(trail_k, 1.0 - fresh, lace, billow, walls)
     // (Under it, the water's paler and greener, full of the bubbles the hull and its wash drove
     // down: broader and longer than the froth on top, the trail's after-image.)
