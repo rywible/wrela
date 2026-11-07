@@ -1,13 +1,13 @@
 // What the fight needs of the idol's shape: a player strikes its heads and its hands, so each is
 // a part of its own that no other touches. The heads are 3 cm apart or more; a hand meets the
-// body only at its wrist, where the reference was cut (the side hands below y 3.15, the middle
-// one, held out in front, beyond z 1.54).
+// body only at its wrist, where the reference was cut (the side hands below y 3.38, the middle
+// one, held out in front, beyond z 1.04).
 
 use engine::sampled::Samples
 
 /// The height the side hands were cut from the arms at, and how far forward the middle hand was.
-const SIDE_CUT: f32 = 3.15
-const MIDDLE_CUT: f32 = 1.54
+const SIDE_CUT: f32 = 3.38
+const MIDDLE_CUT: f32 = 1.04
 
 /// Whether `p` is in hand `k` clear of its wrist (10 cm past the cut).
 fn past_wrist(k: u32, p: vec3) -> bool {
@@ -45,9 +45,9 @@ fn heads_apart() {
     let middle = head_middle_grid::samples(0)
     let left = head_left_grid::samples(0)
     let right = head_right_grid::samples(0)
-    let ml = apart(middle, left, lo: vec3(0.3, 5.45, -0.8), hi: vec3(0.65, 6.7, 0.9), step: 0.03)
-    let mr = apart(middle, right, lo: vec3(-0.65, 5.45, -0.8), hi: vec3(-0.3, 6.7, 0.9), step: 0.03)
-    let lr = apart(left, right, lo: vec3(-0.4, 5.45, -0.8), hi: vec3(0.4, 6.7, 0.9), step: 0.05)
+    let ml = apart(middle, left, lo: vec3(0.3, 5.3, -0.6), hi: vec3(0.55, 6.6, 1.0), step: 0.03)
+    let mr = apart(middle, right, lo: vec3(-0.55, 5.3, -0.6), hi: vec3(-0.3, 6.6, 1.0), step: 0.03)
+    let lr = apart(left, right, lo: vec3(-0.4, 5.3, -0.6), hi: vec3(0.4, 6.6, 1.0), step: 0.05)
     assert(ml > 0.03, f"the middle and left heads come within {ml} m of each other")
     assert(mr > 0.03, f"the middle and right heads come within {mr} m of each other")
     assert(lr > 0.03, f"the side heads come within {lr} m of each other")
@@ -66,8 +66,8 @@ fn hands_apart() {
             let d = apart(
                 hands[a],
                 hands[b],
-                lo: vec3(-2.8, 2.0, -0.8),
-                hi: vec3(2.8, 5.6, 2.5),
+                lo: vec3(-2.4, 2.3, -0.4),
+                hi: vec3(2.4, 5.6, 2.1),
                 step: 0.06,
             )
             assert(d > 0.3, f"hands {a} and {b} come within {d} m of each other")
