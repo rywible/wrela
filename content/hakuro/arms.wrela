@@ -138,3 +138,43 @@ pub fn jacket() -> Mesh {
     // samples would reach through it to its other face.)
     weighted(jacket_grid::samples(0), body_weights::weights(), 0.8)
 }
+
+// ---- his coat's tails ----------------------------------------------------------------------
+
+/// Each of the tails' vertices on his hips and thighs: a coat's skirt hangs from the hips but
+/// its lower part goes where his legs push it, the side over each leg mostly with that leg.
+/// (The tails' field binds them to the pelvis whole; under a stride or a fighting stance his
+/// thighs went through the cloth.)
+pub fn tails_weights(p: vec3) -> (u32, u32) {
+    // How far down the tails (from their top under the jacket's hem to about the knee).
+    let t = clamp((0.92 - p.y) / 0.42, 0.0, 1.0)
+    let share = 0.75 * t * t * (3.0 - 2.0 * t)
+    // Over which leg: his left (+x) or right, both across the middle of his back.
+    let lean = clamp(p.x / 0.11, -1.0, 1.0)
+    let left = share * (0.5 + 0.5 * lean)
+    let right = share - left
+    let wl = u32(round(left * 255.0))
+    let wr = u32(round(right * 255.0))
+    let w0 = 255 - min(wl + wr, 255)
+    (0 | (18 << 8) | (19 << 16), w0 | (wl << 8) | (wr << 16))
+}
+
+@compute(64)
+pub fn skin_tails(tally: [Tally], verts: mut Slots<SkinVertex>, id: GlobalId) {
+    if id.x >= tally[0].vertices {
+        return
+    }
+    let v = verts[id]
+    let (bones, weights) = tails_weights(v.pos)
+    verts[id] = SkinVertex { pos: v.pos, bones, normal: v.normal, weights, mask: v.mask }
+}
+
+/// His coat's tails (`hakuro::coat`, realized) made to follow his legs (`tails_weights`).
+pub fn follow_legs(mesh: take Mesh) -> Mesh {
+    var m = take mesh
+    dispatch(
+        skin_tails.bind(tally: m.tally.items(), verts: m.verts.items_mut()),
+        groups: m.skin.items(),
+    )
+    m
+}

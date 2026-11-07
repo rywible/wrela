@@ -9,7 +9,7 @@
 // as fine as his fields, however coarse his mesh. He's lit as the skiff is (`paint::lit_solid`,
 // its sea bounce and its rim), shadowed by the rig and the clouds.
 
-use hakuro::arms::{arm, hand, jacket, sampled_body}
+use hakuro::arms::{arm, follow_legs, hand, jacket, sampled_body}
 use hakuro::hakuro::{Cloth, FINGER_JOINTS, body_paint, coat, head, hero}
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
 use engine::character::skin_matrix
@@ -76,7 +76,7 @@ pub fn aboard() -> Aboard {
     Aboard {
         body: realize_once(hero(), BODY),
         head: realize_once(head(), HEAD),
-        coat: realize_once(coat(), COAT),
+        coat: follow_legs(realize_once(coat(), COAT)),
         // (His arms and body are sampled from the reference's own surface: `hakuro::arms`.)
         arms: [arm(0), arm(1), sampled_body(), jacket(), hand(0), hand(1)],
         palette: buffer(MAX_BONES),

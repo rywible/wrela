@@ -2,7 +2,7 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use arms::{arm, hand, jacket, sampled_body}
+use arms::{arm, follow_legs, hand, jacket, sampled_body}
 use hakuro::{Cloth, body_paint, coat, hands, head, hero, skeleton}
 use engine::character::{ByChannels, colours}
 use engine::character::skin_matrix
@@ -18,6 +18,58 @@ use std::gpu::{
 }
 use std::io::{Pending, print}
 use std::transform::{rotate_y, translate}
+use reference_rig::{HAKURO_BONE, reference_rig}
+use engine::humanoid::{Clip, Pose, Rig, palette}
+use moves::idle::IDLE
+use moves::punch::PUNCH
+use moves::rest::REST
+use moves::roll::ROLL
+use moves::run::RUN
+use moves::stance::STANCE
+use moves::start::START
+use moves::stop::STOP
+use moves::walk::WALK
+
+/// A move to play on him, as the game's moves are written (content/moves, fitted to the
+/// reference's rig, whose joints are his): 0 none (the sheet's pose), 1 the fighting stance's
+/// bounce, 2 the loose idle out of a fight, 3 the idle, 4 the walk, 5 the run, 6 the cross,
+/// 7 the roll, 8 setting off, 9 stopping (`--set MOVE=1`). Each plays in place.
+pub const MOVE: u32 = 0
+
+/// The rig the moves are fitted to, and the move `MOVE` names as a clip.
+const RIG: Rig = reference_rig()
+const PLAYED: Clip = match MOVE {
+    1 => STANCE.clip(RIG.clone(), 30.0),
+    2 => REST.clip(RIG.clone(), 30.0),
+    3 => IDLE.clip(RIG.clone(), 30.0),
+    4 => WALK.clip(RIG.clone(), 30.0),
+    5 => RUN.clip(RIG.clone(), 30.0),
+    6 => PUNCH.clip(RIG.clone(), 30.0),
+    7 => ROLL.clip(RIG.clone(), 30.0),
+    8 => START.clip(RIG.clone(), 30.0),
+    9 => STOP.clip(RIG.clone(), 30.0),
+    _ => STANCE.clip(RIG.clone(), 30.0),
+}
+
+/// His palette as the move has him at `time`: each of the rig's bones' matrix to his, the
+/// fingers he has that it doesn't (none) left with their hand, his walk kept in place.
+fn moved(time: f32) -> [mat4; 64] {
+    var pose = PLAYED.smooth_pose(time)
+    // (In place: a walk's travel taken off, its sway kept.)
+    let loops = if PLAYED.looped { floor(time * PLAYED.fps / f32(PLAYED.frames - 1)) } else { 0.0 }
+    pose.hips = pose.hips - PLAYED.travel_local * loops - PLAYED.travel_local * fract(time * PLAYED.fps / f32(max(PLAYED.frames, 2) - 1))
+    let rig_m = palette(RIG.clone(), pose, translate(vec3(0.0)))
+    var m = [translate(vec3(0.0)); 64]
+    for b in 0..52 {
+        m[HAKURO_BONE[b]] = rig_m[b]
+    }
+    // His old single finger and thumb bones (14 to 17), unused by his skin, with his hands.
+    for side in 0..2 {
+        m[14 + side] = m[12 + side]
+        m[16 + side] = m[12 + side]
+    }
+    m
+}
 
 /// 1 to stand him in the sheet's pose; 0 at rest, a T-pose (`--set POSED=0`).
 pub const POSED: f32 = 1.0
@@ -177,7 +229,7 @@ pub fn init() -> State {
     let head_mesh = realize_once(hd, HOW_HEAD)
     let c1 = colours(head_mesh, hd.field(), ByChannels {}, cell: 0.002)
     let ct = coat()
-    let coat_mesh = realize_once(ct, HOW_COAT)
+    let coat_mesh = follow_legs(realize_once(ct, HOW_COAT))
     let c2 = colours(coat_mesh, ct.field(), ByChannels {}, cell: 0.003)
     let ar = hands()
     let hands_mesh = realize_once(ar, HOW_HANDS)
@@ -214,6 +266,17 @@ pub fn init() -> State {
 }
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if MOVE > 0 {
+        let pose = moved(time)
+        for v in 0..5 {
+            let place = translate(vec3(f32(v) * 1.15 - 2.3, 0.0, 0.0)) * rotate_y(TURNS[v])
+            var m = pose
+            for k in 0..64 {
+                m[k] = place * pose[k]
+            }
+            write(mut s.palettes, v * MAX_BONES, m)
+        }
+    }
     for i in 0..s.tallies.len() {
         if let Some(Ok(v)) = s.tallies[i].poll() {
             let t = v[0]
