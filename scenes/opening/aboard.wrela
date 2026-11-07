@@ -1,0 +1,851 @@
+// Hakuro aboard: the hero (content/hakuro, written as fields on his skeleton) realized once as the
+// engine realizes a character (`engine::realize`), stood to the skiff as the sailing holds its
+// traveller (`Shot`'s hips, neck, hands and feet), and drawn into the painted scene.
+//
+// The scene is traced and he's a mesh, so the two meet by depth: he's drawn into his own targets
+// where he's nearer than what was painted there (`hero`, reading the paint's distance), then laid
+// over the paint's (`laid`), so the ink treats him as it treats the skiff. His colours and his
+// normal are his fields' own, read again at each pixel from where the pixel is on him at rest:
+// as fine as his fields, however coarse his mesh. He's lit as the skiff is (`paint::lit_solid`,
+// its sea bounce and its rim), shadowed by the rig and the clouds.
+
+use hakuro::arms::{arm, follow_legs, hand, jacket, sampled_body}
+use hakuro::hakuro::{Cloth, FINGER_JOINTS, body_paint, coat, head, hero}
+use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
+use engine::character::skin_matrix
+use engine::look::CreatureLook
+use engine::look::Mesh as Tolerance
+use engine::light::{Light, Lit, world}
+use engine::realize::{Mesh, SkinVertex, realize_once}
+use engine::sky::{Clouds, cloud_shadow, sky_uv}
+use heavens::Heavens
+use look::{OVERCAST, SKIFF, Shot}
+use main::INKED
+use paint::{Heaven, lit_solid, storm_sky}
+use played::cover
+use skiff::vessel_shadow
+use std::gpu::{
+    ClipPosition, DepthTexture, Flat, FragCoord, GpuBuffer, Rgba16Float, Rgba8, Sampler, Targets3,
+    Texture, Texture3d, VertexIndex, begin_pass3, begin_pass3_with_depth, buffer, depth_texture,
+    Cull, discard, draw, texture, write,
+}
+use std::math::PI
+
+// ---- his meshes ----------------------------------------------------------------------------
+
+/// His body's grid (cells of about 13 mm: what a realization's scratch has room for over a
+/// T-pose's span), his head's (5 mm: the mask's ears and the hair's spikes), his coat's tails'
+/// (7 mm: thin cloth) and his hands' (6 mm: thin fingers).
+const BODY = CreatureLook {
+    surface: Tolerance { tolerance: 1.0e-3, radius: 0.021, largest: 0.013 },
+}
+const HEAD = CreatureLook {
+    surface: Tolerance { tolerance: 0.5e-3, radius: 0.007, largest: 0.005 },
+}
+const COAT = CreatureLook {
+    surface: Tolerance { tolerance: 0.5e-3, radius: 0.012, largest: 0.007 },
+}
+
+/// Hakuro realized, his palette, and the targets he's drawn into before he's laid over the
+/// paint's.
+pub struct Aboard {
+    body: Mesh,
+    head: Mesh,
+    coat: Mesh,
+    arms: [Mesh; 6],
+    palette: GpuBuffer<mat4>,
+    colour: Texture<Rgba16Float>,
+    marks: Texture<Rgba16Float>,
+    normal: Texture<Rgba8>,
+    depth: DepthTexture,
+    // The paint's own targets as they were before he's laid over them (his edges blend with
+    // them).
+    under_colour: Texture<Rgba16Float>,
+    under_marks: Texture<Rgba16Float>,
+    under_normal: Texture<Rgba8>,
+    width: u32,
+    height: u32,
+}
+
+/// He's drawn at this many times the screen's resolution each way, and his samples averaged
+/// down to each pixel as he's laid over the paint: his edges smooth as the paint's are.
+const FINER: u32 = 2
+
+/// Hakuro realized from his fields.
+pub fn aboard() -> Aboard {
+    Aboard {
+        body: realize_once(hero(), BODY),
+        head: realize_once(head(), HEAD),
+        coat: follow_legs(realize_once(coat(), COAT)),
+        // (His arms and body are sampled from the reference's own surface: `hakuro::arms`.)
+        arms: [arm(0), arm(1), sampled_body(), jacket(), hand(0), hand(1)],
+        palette: buffer(MAX_BONES),
+        colour: texture(width: 1, height: 1),
+        marks: texture(width: 1, height: 1),
+        normal: texture(width: 1, height: 1),
+        depth: depth_texture(width: 1, height: 1),
+        under_colour: texture(width: 1, height: 1),
+        under_marks: texture(width: 1, height: 1),
+        under_normal: texture(width: 1, height: 1),
+        width: 1,
+        height: 1,
+    }
+}
+
+// ---- standing him to the sail --------------------------------------------------------------
+
+/// His joints at rest (his skeleton's, by bone number: `hakuro::skeleton`).
+const PELVIS = vec3(0.0, 0.949, -0.043)
+const SPINE1 = vec3(0.0, 1.072, -0.007)
+const SPINE2 = vec3(0.0, 1.178, 0.004)
+const SPINE3 = vec3(0.0, 1.311, 0.007)
+const NECK = vec3(0.0, 1.52, -0.041)
+const HEAD_AT = vec3(0.0, 1.6, -0.017)
+const CLAVICLE = vec3(0.031, 1.495, 0.033)
+const UPPER = vec3(0.212, 1.455, -0.065)
+const FORE = vec3(0.463, 1.455, -0.073)
+const HAND = vec3(0.706, 1.455, -0.065)
+/// How far each finger's joints close round the boom (radians, knuckle first), and the thumb's.
+const GRIP = [0.95, 1.15, 0.7]
+const THUMB_GRIP = [0.0, 0.45, 0.45]
+
+/// The thumb's joints' axis at rest (his left's): across its pad, so it closes toward the palm.
+const THUMB_AXIS = vec3(-0.35, 0.55, 0.76)
+const THIGH = vec3(0.114, 0.971, -0.036)
+const CALF = vec3(0.114, 0.542, -0.036)
+const FOOT = vec3(0.114, 0.086, -0.088)
+const BALL = vec3(0.114, 0.015, 0.055)
+
+/// The skeleton's bone numbers (`hakuro::skeleton` adds them in this order: the trunk, then
+/// each pair left then right).
+const B_PELVIS: u32 = 0
+const B_SPINE1: u32 = 1
+const B_SPINE2: u32 = 2
+const B_SPINE3: u32 = 3
+const B_NECK: u32 = 4
+const B_HEAD: u32 = 5
+const B_CLAVICLE: u32 = 6
+const B_UPPER: u32 = 8
+const B_FORE: u32 = 10
+const B_HAND: u32 = 12
+const B_DIGITS: u32 = 26
+const B_THIGH: u32 = 18
+const B_CALF: u32 = 20
+const B_FOOT: u32 = 22
+const B_BALL: u32 = 24
+
+/// An axis of turning mirrored with his body (a turn's axis reflects as a pseudovector).
+fn mirrored_axis(a: vec3, side: f32) -> vec3 {
+    vec3(a.x, a.y * side, a.z * side)
+}
+
+fn mirrored(p: vec3, side: f32) -> vec3 {
+    vec3(p.x * side, p.y, p.z)
+}
+
+/// The turn that takes the frame (`a`, `b` made square to it) at rest to (`c`, `d` made square
+/// to it).
+fn aim(a: vec3, b: vec3, c: vec3, d: vec3) -> mat3 {
+    let a0 = normalize(a)
+    let b0 = normalize(b - a0 * dot(b, a0))
+    let c0 = normalize(c)
+    let d0 = normalize(d - c0 * dot(d, c0))
+    let e0 = cross(a0, b0)
+    let to = mat3(c0, d0, cross(c0, d0))
+    // (`to` times the inverse of the rest frame, which is its transpose: rows a0, b0, e0.)
+    let from_t = mat3(vec3(a0.x, b0.x, e0.x), vec3(a0.y, b0.y, e0.y), vec3(a0.z, b0.z, e0.z))
+    to * from_t
+}
+
+/// A turn of `angle` about `axis` (unit).
+fn about(axis: vec3, angle: f32) -> mat3 {
+    let c = cos(angle)
+    let s = sin(angle)
+    let t = 1.0 - c
+    let x = axis.x
+    let y = axis.y
+    let z = axis.z
+    mat3(
+        vec3(t * x * x + c, t * x * y + s * z, t * x * z - s * y),
+        vec3(t * x * y - s * z, t * y * y + c, t * y * z + s * x),
+        vec3(t * x * z + s * y, t * y * z - s * x, t * z * z + c),
+    )
+}
+
+/// A bone's palette matrix: its rest point `rest` to `at`, turned by `turn`.
+fn placed(turn: mat3, at: vec3, rest: vec3) -> mat4 {
+    let m = mat4(
+        vec4(turn[0], 0.0),
+        vec4(turn[1], 0.0),
+        vec4(turn[2], 0.0),
+        vec4(at - turn * rest, 1.0),
+    )
+    m
+}
+
+/// Where a two-bone limb's middle joint goes: from `root` to reach `goal`, its bones `l1` and
+/// `l2` long, bent toward `pole`.
+fn bend(root: vec3, goal: vec3, l1: f32, l2: f32, pole: vec3) -> vec3 {
+    let to = goal - root
+    let reach = clamp(length(to), abs(l1 - l2) + 0.001, (l1 + l2) * 0.999)
+    let dir = normalize(to)
+    let a = (l1 * l1 + reach * reach - l2 * l2) / (2.0 * reach)
+    let h = sqrt(max(l1 * l1 - a * a, 0.0))
+    let side = normalize(pole - dir * dot(pole, dir))
+    root + dir * a + side * h
+}
+
+/// His palette as the shot holds the traveller (in the skiff's frame), into the world: each of
+/// his bones' matrices, rest space to world.
+pub fn bones(s: Shot) -> [mat4; 64] {
+    var m = [mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    ); 64]
+    let up = vec3(0.0, 1.0, 0.0)
+    // Which way he faces: from his hips toward his hands, level.
+    let mid = (s.fore_hand + s.aft_hand) * 0.5
+    let facing = normalize(vec3(mid.x - s.hips.x, 0.0, mid.z - s.hips.z) + vec3(0.0, 0.0, 1.0e-4))
+    let left = cross(up, facing)
+    // He hangs back from the boom on near straight arms, as a sailor of a board does, but never
+    // locked: his chest goes toward or away from his hands till they're a little short of a
+    // straight arm's reach from it (back by 45 cm at most), his hips a third as far.
+    let chest = s.hips + (s.neck - s.hips) * 0.8
+    let toward = vec3(mid.x - chest.x, 0.0, mid.z - chest.z)
+    let over = clamp(length(mid - chest) - 0.97 * length(HAND - UPPER), -0.45, 1.0)
+    let lean = toward / max(length(toward), 1.0e-4) * over
+    // Sunk a little into his knees, braced against the sea.
+    let hips = s.hips + lean * 0.35 - vec3(0.0, 0.04, 0.0)
+    let neck_at = s.neck + lean * 1.15
+    // His trunk: the pelvis half way to the spine's lean, the chest along it.
+    let spine = normalize(neck_at - hips)
+    let r_pelvis = aim(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), normalize(up + spine), facing)
+    let r_chest = aim(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), spine, facing)
+    let r_spine1 = aim(
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        normalize(up + spine * 2.0),
+        facing,
+    )
+    let r_spine2 = aim(
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        normalize(up + spine * 4.0),
+        facing,
+    )
+    let pelvis = hips
+    let spine1 = pelvis + r_pelvis * (SPINE1 - PELVIS)
+    let spine2 = spine1 + r_spine1 * (SPINE2 - SPINE1)
+    let spine3 = spine2 + r_spine2 * (SPINE3 - SPINE2)
+    let neck = spine3 + r_chest * (NECK - SPINE3)
+    m[B_PELVIS] = placed(r_pelvis, pelvis, PELVIS)
+    m[B_SPINE1] = placed(r_spine1, spine1, SPINE1)
+    m[B_SPINE2] = placed(r_spine2, spine2, SPINE2)
+    m[B_SPINE3] = placed(r_chest, spine3, SPINE3)
+    // His head along the sailing's gaze: ahead over the bow, into turns.
+    let look = normalize(s.gaze)
+    let r_head = aim(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), look, up + spine)
+    let r_neck = aim(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), normalize(spine + up), look)
+    m[B_NECK] = placed(r_neck, neck, NECK)
+    let head = neck + r_neck * (HEAD_AT - NECK)
+    m[B_HEAD] = placed(r_head, head, HEAD_AT)
+    // His arms: each hand on the wishbone (the hand nearer the bow is the one on that side), the
+    // elbows down and out.
+    let left_fore = dot(left, s.fore_hand - s.aft_hand) > 0.0
+    for k in 0..2 {
+        let side = if k == 0 { 1.0 } else { -1.0 }
+        let grip = if (k == 0) == left_fore { s.fore_hand } else { s.aft_hand }
+        // The wrist short of the boom by the palm's length, a little above it, so the closed
+        // hand is round it.
+        let goal = grip - normalize(grip - spine3) * 0.07 + up * 0.025
+        let clav = spine3 + r_chest * (mirrored(CLAVICLE, side) - SPINE3)
+        let shoulder = spine3 + r_chest * (mirrored(UPPER, side) - SPINE3)
+        let l1 = length(FORE - UPPER)
+        let l2 = length(HAND - FORE)
+        let out = left * side
+        let pole = -up + out * 0.25 - facing * 0.15
+        let elbow = bend(shoulder, goal, l1, l2, pole)
+        let wrist = elbow + normalize(goal - elbow) * l2
+        let along = vec3(side, 0.0, 0.0)
+        // The upper arm and forearm turned so the elbow's crease faces the hand's way.
+        // (At rest his arms are straight out, the inside of each elbow ahead, +z: bent, it faces
+        // the forearm's way; the forearm's own +z, back along the upper arm. Straight, it faces
+        // down.)
+        let crook = (wrist - elbow) + pole * 0.05
+        // (Each bone along its own rest axis, a degree or two off straight out.)
+        let r_upper = aim(
+            normalize(mirrored(FORE, side) - mirrored(UPPER, side)),
+            vec3(0.0, 0.0, 1.0),
+            elbow - shoulder,
+            crook,
+        )
+        let r_fore = aim(
+            normalize(mirrored(HAND, side) - mirrored(FORE, side)),
+            vec3(0.0, 0.0, 1.0),
+            wrist - elbow,
+            (shoulder - elbow) + pole * 0.05,
+        )
+        // The hand round the boom: the palm down onto it, the knuckles on along the forearm.
+        let r_hand = aim(along, vec3(0.0, -1.0, 0.0), wrist - elbow, -up + facing * 0.5)
+        let i = u32(k)
+        m[B_CLAVICLE + i] = placed(r_chest, clav, mirrored(CLAVICLE, side))
+        m[B_UPPER + i] = placed(r_upper, shoulder, mirrored(UPPER, side))
+        m[B_FORE + i] = placed(r_fore, elbow, mirrored(FORE, side))
+        m[B_HAND + i] = placed(r_hand, wrist, mirrored(HAND, side))
+        // Each finger round the boom, joint by joint (the reference's: `hakuro::FINGER_JOINTS`),
+        // the thumb closing over from the other side.
+        for f in 0..5 {
+            var r = r_hand
+            if f == 4 {
+                r = r_hand * about(vec3(1.0, 0.0, 0.0), 0.9)
+            }
+            var at = wrist + r_hand * (mirrored(FINGER_JOINTS[f * 4], side) - mirrored(HAND, side))
+            for j in 0..3 {
+                let bend = if f == 4 { THUMB_GRIP[j] } else { GRIP[j] }
+                let axis = if f == 4 { mirrored_axis(THUMB_AXIS, side) } else { vec3(0.0, 0.0, 1.0) }
+                r = r * about(axis, -bend * side)
+                let rest = mirrored(FINGER_JOINTS[f * 4 + j], side)
+                m[B_DIGITS + 2 * (f * 3 + j) + i] = placed(r, at, rest)
+                at = at + r * (mirrored(FINGER_JOINTS[f * 4 + j + 1], side) - rest)
+            }
+        }
+    }
+    // His legs: each foot planted on the deck where the sailing sets it (the fore foot the one
+    // on the bow's side of him), the knees sprung forward and out.
+    let left_fore_foot = dot(left, s.fore_foot - s.aft_foot) > 0.0
+    for k in 0..2 {
+        let side = if k == 0 { 1.0 } else { -1.0 }
+        let planted = if (k == 0) == left_fore_foot { s.fore_foot } else { s.aft_foot }
+        let hip = pelvis + r_pelvis * (mirrored(THIGH, side) - PELVIS)
+        let ankle = planted + vec3(0.0, FOOT.y + 0.02, 0.0)
+        let l1 = length(CALF - THIGH)
+        let l2 = length(FOOT - CALF)
+        let pole = facing + left * side * 0.3
+        let knee = bend(hip, ankle, l1, l2, pole)
+        let foot = knee + normalize(ankle - knee) * l2
+        let down = vec3(0.0, -1.0, 0.0)
+        let r_thigh = aim(down, vec3(0.0, 0.0, 1.0), knee - hip, pole)
+        // (The shin leans back a little at rest, its bone from knee to ankle.)
+        let r_calf = aim(normalize(FOOT - CALF), vec3(0.0, 0.0, 1.0), foot - knee, pole)
+        // The foot flat on the deck, its toes turned out a little from where he faces.
+        let toes = normalize(facing + left * side * 0.35)
+        let r_foot = aim(vec3(0.0, 0.0, 1.0), up, toes, up)
+        let i = u32(k)
+        m[B_THIGH + i] = placed(r_thigh, hip, mirrored(THIGH, side))
+        m[B_CALF + i] = placed(r_calf, knee, mirrored(CALF, side))
+        m[B_FOOT + i] = placed(r_foot, foot, mirrored(FOOT, side))
+        let ball = foot + r_foot * (mirrored(BALL, side) - mirrored(FOOT, side))
+        m[B_BALL + i] = placed(r_foot, ball, mirrored(BALL, side))
+    }
+    // From the skiff's frame into the world.
+    let world = mat4(
+        vec4(s.boat_x, 0.0),
+        vec4(s.boat_y, 0.0),
+        vec4(s.boat_z, 0.0),
+        vec4(s.boat, 1.0),
+    )
+    for i in 0..26 {
+        m[i] = world * m[i]
+    }
+    m
+}
+
+// ---- drawing him ---------------------------------------------------------------------------
+
+/// What his vertex passes on: where it is (clip and world), where it is on him at rest, its
+/// skin's turn (to bring his fields' normal into the world) and which of his parts are near.
+pub struct HeroVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub rest: vec3,
+    pub tx: vec3,
+    pub ty: vec3,
+    pub tz: vec3,
+    pub normal: vec3,
+    pub lo: Flat<u32>,
+    pub hi: Flat<u32>,
+}
+
+/// The near and far planes of his depth (m).
+const NEAR: f32 = 0.05
+const FAR: f32 = 400.0
+
+/// A point of the world in the shot's clip space: as `look::ray` casts its pixels.
+pub fn clip_of(s: Shot, p: vec3) -> vec4 {
+    let r = p - s.eye
+    let x = dot(r, s.right)
+    let y = dot(r, s.up)
+    let z = dot(r, s.forward)
+    vec4(
+        s.focal * x * s.resolution.y / s.resolution.x,
+        s.focal * y,
+        (z - NEAR) * FAR / (FAR - NEAR),
+        z,
+    )
+}
+
+@vertex
+pub fn hero_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: Shot) -> HeroVertex {
+    let sv = verts[v.index]
+    let m = skin_matrix(sv, palette, 0)
+    let world = (m * vec4(sv.pos, 1.0)).xyz
+    HeroVertex {
+        clip: ClipPosition { position: clip_of(shot, world) },
+        world,
+        rest: sv.pos,
+        tx: m[0].xyz,
+        ty: m[1].xyz,
+        tz: m[2].xyz,
+        normal: mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal,
+        lo: Flat { value: sv.mask.lo },
+        hi: Flat { value: sv.mask.hi },
+    }
+}
+
+/// His pixel: drawn where he's nearer than what the paint met there, lit as the skiff is.
+@fragment
+pub fn hero_pixel<F: Parts<Cloth>>(
+    v: HeroVertex,
+    field: F,
+    shot: Shot,
+    light: Light,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    painted: Texture<Rgba16Float>,
+    pixel: FragCoord,
+) -> Targets3<vec4, vec4, vec4> {
+    let s = shot
+    let t = length(v.world - s.eye)
+    let behind = painted.load(u32(pixel.position.x) / FINER, u32(pixel.position.y) / FINER)
+    // (Compared as stored, in log2 of the distance at half precision: a step there is about
+    // 0.3% of it at the boat's range, so the margin is a little more than one.)
+    if behind.x < log2(t) - 0.006 {
+        discard()
+    }
+    // His fields at this point of him at rest: his normal (their gradient) and what he's made of.
+    let fp = t * 1.5 / (s.focal * s.resolution.y)
+    let mask = PartMask { lo: v.lo.value, hi: v.hi.value }
+    let (_, grad, c) = field.sample_masked(v.rest, mask, fp)
+    let turn = mat3(v.tx, v.ty, v.tz)
+    let d = normalize(v.world - s.eye)
+    var n = normalize(turn * grad)
+    if dot(n, d) > 0.0 {
+        n = normalize(n - d * (dot(n, d) + 0.05))
+    }
+    // How much of the sky his own folds hide (the skiff's way): his distance a little out along
+    // his normal, at rest, short of how far out it was stepped.
+    let out = normalize(grad)
+    var hidden = 0.0
+    for i in 1..3 {
+        let step = 0.03 * f32(i * i)
+        let (e, _, _) = field.sample_masked(v.rest + out * step, mask, fp)
+        hidden += max(step - e, 0.0) / step * (if i == 1 { 1.0 } else { 0.6 })
+    }
+    let ao = clamp(1.0 - hidden * 0.6, 0.0, 1.0)
+    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, v.world, n, d, t, c, ao)
+}
+
+/// His sampled arms' pixel: as `hero_pixel`, but with no fields behind them, their own normal
+/// and his body's paint where they are on him at rest.
+@fragment
+pub fn arm_pixel(
+    v: HeroVertex,
+    shot: Shot,
+    light: Light,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    painted: Texture<Rgba16Float>,
+    pixel: FragCoord,
+) -> Targets3<vec4, vec4, vec4> {
+    let s = shot
+    let t = length(v.world - s.eye)
+    let behind = painted.load(u32(pixel.position.x) / FINER, u32(pixel.position.y) / FINER)
+    if behind.x < log2(t) - 0.006 {
+        discard()
+    }
+    let d = normalize(v.world - s.eye)
+    var n = normalize(v.normal)
+    if dot(n, d) > 0.0 {
+        n = normalize(n - d * (dot(n, d) + 0.05))
+    }
+    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, v.world, n, d, t, body_paint(v.rest), 0.9)
+}
+
+/// His light, illustrated: the world's own sky and sun, but the sky's light taken from fixed
+/// directions over him (the deck's overhead and toward the sun) and stepped by how far each face
+/// turns up, so the clouds' detail never mottles his forms (`lit_solid` looks the sky up along
+/// each normal, and across his muscles that drew the clouds on him in squiggles); his skin and
+/// cloth matte, his gold keeping a mirror of the sky overhead.
+fn illustrated(
+    s: Shot,
+    light: Light,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    smp: Sampler,
+    p: vec3,
+    n: vec3,
+    c: Cloth,
+    sun: f32,
+    ao: f32,
+) -> vec3 {
+    let up = vec3(0.0, 1.0, 0.0)
+    let side = normalize(vec3(light.sun.x, 0.35, light.sun.z))
+    let deck = (storm_sky(view, light, up, dome, smp, disc: false).rgb +
+        storm_sky(view, light, side, dome, smp, disc: false).rgb) * 0.5
+    // Two values of shade: the faces turned up, and the rest, a soft step between.
+    let open = 0.20 + 0.20 * smoothstep(0.15, 0.35, n.y)
+    let under = max(-n.y, 0.0)
+    let below = light.sun_colour * vec3(0.085, 0.07, 0.055) * under
+    let sky = (deck * PI * open + below) * (0.25 + 0.75 * ao * ao)
+    let metal = c.metal > 0.5
+    let lit = Lit {
+        albedo: c.albedo,
+        n,
+        sun,
+        sky,
+        through: vec3(0.0),
+        rough: if metal { c.rough } else { max(c.rough, 0.92) },
+        metallic: c.metal,
+        reflected: if metal { deck * ao * 0.6 } else { vec3(0.0) },
+        glint: if metal { 0.6 } else { 0.0 },
+    }
+    // A key from the sky's bright quarter, set to a hard edge: his forms' lit side and shade side,
+    // two tones as an illustrator lays them.
+    let key = smoothstep(0.05, 0.15, dot(n, side))
+    let keyed = deck * c.albedo * (1.0 - c.metal) * key * 1.1
+    world(light, lit, p, s.eye) + keyed
+}
+
+/// His pixel lit, from its normal `n`, cloth `c` and how open it is to the sky `ao`: as the skiff
+/// is, a character's way.
+fn lit_hero(
+    s: Shot,
+    light: Light,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    p: vec3,
+    n: vec3,
+    d: vec3,
+    t: f32,
+    c: Cloth,
+    ao: f32,
+) -> Targets3<vec4, vec4, vec4> {
+    let h = Heaven { light, clouds }
+    let cast = vessel_shadow(s, p + n * 0.01, light.sun)
+    let sun = cast * cloud_shadow(clouds, cloud, smp, p)
+    var col = if INKED > 0.5 {
+        illustrated(s, light, view, dome, smp, p, n, c, sun, ao)
+    } else {
+        lit_solid(
+            s,
+            h,
+            view,
+            aerial,
+            dome,
+            smp,
+            p,
+            n,
+            d,
+            c.albedo,
+            c.rough,
+            c.metal,
+            vec3(0.0),
+            sun,
+            ao: ao,
+            haze: 0.0,
+            glint: 1.0,
+        )
+    }
+    // Lit as the skiff is, a character's way: the sea's light thrown up under him, and a rim of
+    // the sun (its numbers, for the clean look).
+    let sea_light = storm_sky(
+        view,
+        light,
+        normalize(vec3(light.sun.x, 0.25, light.sun.z)),
+        dome,
+        smp,
+        disc: false,
+    ).rgb
+    let toward = max(dot(n, normalize(vec3(light.sun.x, -0.4, light.sun.z))), 0.0)
+    let bounce = sea_light *
+        PI *
+        0.13 *
+        mix(1.0, 2.2, OVERCAST) *
+        (0.4 + 0.6 * ao) *
+        (0.5 + 0.5 * toward)
+    let edge_k = pow(1.0 - max(dot(n, -d), 0.0), 3.0) *
+        max(dot(n, normalize(vec3(light.sun.x, 0.3, light.sun.z))), 0.0)
+    // (Illustrated, his rim is the sky's, below: this one lit his muscles' creases in streaks.)
+    let rim = light.sun_colour * vec3(1.0, 0.85, 0.6) * (0.6 * edge_k) * (1.0 - INKED)
+    col += c.albedo * bounce + rim * sun
+    if INKED > 0.5 {
+        // Illustrated: the sky's light round his form, from the side away from the eye, so his
+        // black reads against the dark sea; brightest where his form turns up to the sky.
+        // A narrow band with a hard edge, as an illustrator lays it: his blacks stay deep inside.
+        let edge = 1.0 - max(dot(n, -d), 0.0)
+        let band = clamp((edge - 0.62) / 0.08, 0.0, 1.0)
+        let sky = storm_sky(view, light, normalize(vec3(0.0, 0.6, 0.0) + n), dome, smp, disc: false).rgb
+        // (Not on his bare skin: its muscles turn from the eye inside his outline, and the band
+        // drew their contours in squiggles there.)
+        let cloth = if c.albedo.r > 0.3 && c.metal < 0.5 { 0.0 } else { 1.0 }
+        col += sky * band * (0.45 + 0.35 * max(n.y, 0.0)) * 0.45 * cloth
+        // His gold's trim kept bright under the storm.
+        col += c.albedo * c.metal * 0.05
+    }
+    Targets3 {
+        first: vec4(col, 1.0),
+        second: vec4(log2(max(t, 0.01)), SKIFF, 1.0, 0.5),
+        third: vec4(n * 0.5 + 0.5, 0.0),
+    }
+}
+
+/// The paint's targets copied as they are.
+@fragment
+pub fn copied(
+    pixel: FragCoord,
+    colour: Texture<Rgba16Float>,
+    marks: Texture<Rgba16Float>,
+    normal: Texture<Rgba8>,
+) -> Targets3<vec4, vec4, vec4> {
+    let x = u32(pixel.position.x)
+    let y = u32(pixel.position.y)
+    Targets3 { first: colour.load(x, y), second: marks.load(x, y), third: normal.load(x, y) }
+}
+
+/// His targets laid over the paint's where he was drawn: his finer samples in each pixel
+/// averaged with the paint's colour where they missed him, his marks and normal where most hit
+/// him.
+@fragment
+pub fn laid(
+    pixel: FragCoord,
+    colour: Texture<Rgba16Float>,
+    marks: Texture<Rgba16Float>,
+    normal: Texture<Rgba8>,
+    under_colour: Texture<Rgba16Float>,
+    under_marks: Texture<Rgba16Float>,
+    under_normal: Texture<Rgba8>,
+) -> Targets3<vec4, vec4, vec4> {
+    let x = u32(pixel.position.x)
+    let y = u32(pixel.position.y)
+    var sum = vec4(0.0)
+    var hits = 0.0
+    var m = vec4(0.0)
+    var n = vec4(0.0)
+    for k in 0..FINER * FINER {
+        let sx = x * FINER + k % FINER
+        let sy = y * FINER + k / FINER
+        let mk = marks.load(sx, sy)
+        if mk.y != 0.0 {
+            sum += colour.load(sx, sy)
+            hits += 1.0
+            m = mk
+            n = normal.load(sx, sy)
+        }
+    }
+    if hits == 0.0 {
+        discard()
+    }
+    let all = f32(FINER * FINER)
+    if INKED > 0.5 {
+        // His ink: where, a finer sample or two off, he ends (his outline) or his surface jumps
+        // back (where an arm crosses his body, the coat over his legs).
+        var ink = 0.0
+        for k in 0..FINER * FINER {
+            let sx = i32(x * FINER + k % FINER)
+            let sy = i32(y * FINER + k / FINER)
+            let here = marks.load(u32(sx), u32(sy))
+            if here.y != 0.0 {
+                // (Three finer samples out, eight ways: a line about a pixel and a half wide.)
+                for j in 0..8 {
+                    let ox = if j == 0 || j == 4 || j == 5 { 3 } else if j == 1 || j == 6 || j == 7 { -3 } else { 0 }
+                    let oy = if j == 2 || j == 4 || j == 6 { 3 } else if j == 3 || j == 5 || j == 7 { -3 } else { 0 }
+                    let o = marks.load(u32(max(sx + ox, 0)), u32(max(sy + oy, 0)))
+                    if o.y == 0.0 || o.x - here.x > 0.03 {
+                        ink += 1.0
+                    }
+                }
+            }
+        }
+        let a = clamp(ink / (all * 2.0), 0.0, 1.0)
+        sum = mix(sum, vec4(0.012, 0.012, 0.018, 1.0) * hits, a)
+    }
+    let under = under_colour.load(x, y)
+    let most = hits * 2.0 >= all
+    Targets3 {
+        first: (sum + under * (all - hits)) / all,
+        second: if most { m } else { under_marks.load(x, y) },
+        third: if most { n } else { under_normal.load(x, y) },
+    }
+}
+
+impl Aboard {
+    /// Him drawn into the painted scene (`colour`, `marks`, `normal`, which the paint has just
+    /// filled), as `shot` holds him.
+    pub fn draw(
+        mut self,
+        shot: Shot,
+        hv: Heavens,
+        colour: mut Texture<Rgba16Float>,
+        marks: mut Texture<Rgba16Float>,
+        normal: mut Texture<Rgba8>,
+        width: u32,
+        height: u32,
+    ) {
+        if width != self.width || height != self.height {
+            let (w, h) = (width * FINER, height * FINER)
+            self.colour = texture(width: w, height: h)
+            self.marks = texture(width: w, height: h)
+            self.normal = texture(width: w, height: h)
+            self.depth = depth_texture(width: w, height: h)
+            self.under_colour = texture(width: width, height: height)
+            self.under_marks = texture(width: width, height: height)
+            self.under_normal = texture(width: width, height: height)
+            self.width = width
+            self.height = height
+        }
+        write(mut self.palette, 0, bones(shot))
+        let p = begin_pass3_with_depth(
+            mut self.colour,
+            mut self.marks,
+            mut self.normal,
+            mut self.depth,
+            clear: vec4(0.0),
+        )
+        let hb = hero()
+        let hh = head()
+        let hc = coat()
+        // (His faces wind the other way on screen here: `clip_of` keeps the camera's forward as
+        // +z, a mirror of the usual view, so it's the front-wound faces that face away.)
+        draw(
+            p,
+            hero_vertex.bind(
+                verts: self.body.verts.items(),
+                palette: self.palette.items(),
+                shot: shot,
+            ),
+            hero_pixel.bind(
+                field: hb.field(),
+                shot: shot,
+                light: hv.light,
+                clouds: hv.clouds,
+                view: hv.tables.view,
+                aerial: hv.tables.aerial,
+                dome: hv.sky.dome,
+                cloud: hv.sky.shadow,
+                smp: hv.linear,
+                painted: marks,
+            ),
+            indices: self.body.quads.items(),
+            indirect: self.body.draw.items(),
+            cull: Cull::Front,
+        )
+        draw(
+            p,
+            hero_vertex.bind(
+                verts: self.head.verts.items(),
+                palette: self.palette.items(),
+                shot: shot,
+            ),
+            hero_pixel.bind(
+                field: hh.field(),
+                shot: shot,
+                light: hv.light,
+                clouds: hv.clouds,
+                view: hv.tables.view,
+                aerial: hv.tables.aerial,
+                dome: hv.sky.dome,
+                cloud: hv.sky.shadow,
+                smp: hv.linear,
+                painted: marks,
+            ),
+            indices: self.head.quads.items(),
+            indirect: self.head.draw.items(),
+            cull: Cull::Front,
+        )
+        draw(
+            p,
+            hero_vertex.bind(
+                verts: self.coat.verts.items(),
+                palette: self.palette.items(),
+                shot: shot,
+            ),
+            hero_pixel.bind(
+                field: hc.field(),
+                shot: shot,
+                light: hv.light,
+                clouds: hv.clouds,
+                view: hv.tables.view,
+                aerial: hv.tables.aerial,
+                dome: hv.sky.dome,
+                cloud: hv.sky.shadow,
+                smp: hv.linear,
+                painted: marks,
+            ),
+            indices: self.coat.quads.items(),
+            indirect: self.coat.draw.items(),
+            cull: Cull::Front,
+        )
+        for a in 0..6 {
+            draw(
+                p,
+                hero_vertex.bind(
+                    verts: self.arms[a].verts.items(),
+                    palette: self.palette.items(),
+                    shot: shot,
+                ),
+                arm_pixel.bind(
+                    shot: shot,
+                    light: hv.light,
+                    clouds: hv.clouds,
+                    view: hv.tables.view,
+                    aerial: hv.tables.aerial,
+                    dome: hv.sky.dome,
+                    cloud: hv.sky.shadow,
+                    smp: hv.linear,
+                    painted: marks,
+                ),
+                indices: self.arms[a].quads.items(),
+                indirect: self.arms[a].draw.items(),
+                cull: Cull::Front,
+            )
+        }
+        p.end()
+        let c = begin_pass3(
+            mut self.under_colour,
+            mut self.under_marks,
+            mut self.under_normal,
+            clear: vec4(0.0),
+        )
+        draw(c, cover, copied.bind(colour: colour, marks: marks, normal: normal), vertices: 3)
+        c.end()
+        let q = begin_pass3(mut colour, mut marks, mut normal, keep: true)
+        draw(
+            q,
+            cover,
+            laid.bind(
+                colour: self.colour,
+                marks: self.marks,
+                normal: self.normal,
+                under_colour: self.under_colour,
+                under_marks: self.under_marks,
+                under_normal: self.under_normal,
+            ),
+            vertices: 3,
+        )
+        q.end()
+    }
+}

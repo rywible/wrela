@@ -1,0 +1,210 @@
+// Hakuro's sampled pieces, made as the idol's parts are: the reference body's own surface sampled
+// into distance grids (his arms, hands, body and jacket: `*_grid`, engine::sampled), so the
+// elbow, the shoulder, the fingers and the muscle between are the sculpt's, not pieces fitted
+// to it. Each is realized from its samples, then skinned by the reference rig's own weights
+// round it (`*_weights`, `skinning`), every finger joint, so he bends where and as it does.
+
+use arm_left_grid
+use arm_left_weights
+use arm_right_grid
+use arm_right_weights
+use body_grid
+use body_weights
+use hand_left_grid
+use hand_left_weights
+use hand_right_grid
+use hand_right_weights
+use jacket_grid
+use skinning::{WeightTables, Weights, weights_at}
+use engine::realize::{BLOCK, Mesh, SkinVertex, Tally}
+use engine::realize::corner_offset
+use engine::sampled::{BLOCK_WORDS, Lattice, STORED, Samples, realize_sampled}
+use std::gpu::{GlobalId, Slots, dispatch}
+
+/// The skeleton's bone numbers (`hakuro::skeleton` adds them in this order: the trunk, then
+/// each pair left and right).
+const B_UPPER: u32 = 8
+const B_HAND: u32 = 12
+
+/// The samples' distance at `p` (as `engine::sampled::Samples::distance`, on the GPU).
+fn sampled_at(l: Lattice, slots: [u32], words: [u32], p: vec3) -> f32 {
+    let n = vec3(l.size * BLOCK)
+    let q = clamp((p - l.origin) / l.cell, vec3(0.0), n - vec3(0.001))
+    let c = vec3u(q)
+    let f = q - vec3(c)
+    let b = c / BLOCK
+    let slot = slots[b.x + l.size.x * (b.y + l.size.y * b.z)]
+    if slot < STORED {
+        return if slot == 0 { l.band } else { -l.band }
+    }
+    let base = (slot - STORED) * BLOCK_WORDS
+    let lc = c - b * BLOCK
+    var v = [0.0; 8]
+    for j in 0..8 {
+        let k = lc + corner_offset(j)
+        let i = (k.x * 5 + k.y) * 5 + k.z
+        let byte = (words[base + i / 4] >> ((i % 4) * 8)) & 255
+        v[j] = (f32(byte) / 255.0 - 0.5) * 2.0 * l.band
+    }
+    mix(
+        mix(mix(v[0], v[1], f.x), mix(v[2], v[3], f.x), f.y),
+        mix(mix(v[4], v[5], f.x), mix(v[6], v[7], f.x), f.y),
+        f.z,
+    )
+}
+
+/// His arm on `side` (0 left, 1 right) realized from its samples and skinned by the reference's
+/// own weights round it.
+pub fn arm(side: u32) -> Mesh {
+    if side == 0 {
+        weighted(arm_left_grid::samples(B_UPPER), arm_left_weights::weights(), 1.5)
+    } else {
+        weighted(arm_right_grid::samples(B_UPPER + 1), arm_right_weights::weights(), 1.5)
+    }
+}
+
+/// His hand on `side`, from inside the forearm's wrap to the fingertips: sampled finer, each
+/// finger's joints weighted as the reference's are.
+pub fn hand(side: u32) -> Mesh {
+    if side == 0 {
+        weighted(hand_left_grid::samples(B_HAND), hand_left_weights::weights(), 1.5)
+    } else {
+        weighted(hand_right_grid::samples(B_HAND + 1), hand_right_weights::weights(), 1.5)
+    }
+}
+
+/// Each of a sampled shape's vertices skinned by a weight lattice (`skinning::weights_at`: the
+/// reference rig's own), its normal taken over `reach` cells each way.
+@compute(64)
+pub fn skin_weighted(
+    grid: Weights,
+    wslots: [u32],
+    wwords: [u32],
+    reach: f32,
+    lattice: Lattice,
+    slots: [u32],
+    words: [u32],
+    tally: [Tally],
+    verts: mut Slots<SkinVertex>,
+    id: GlobalId,
+) {
+    if id.x >= tally[0].vertices {
+        return
+    }
+    let v = verts[id]
+    let (bones, weights) = weights_at(grid, wslots, wwords, v.pos)
+    let e = lattice.cell * reach
+    let g = vec3(
+        sampled_at(lattice, slots, words, v.pos + vec3(e, 0.0, 0.0)) - sampled_at(lattice, slots, words, v.pos - vec3(e, 0.0, 0.0)),
+        sampled_at(lattice, slots, words, v.pos + vec3(0.0, e, 0.0)) - sampled_at(lattice, slots, words, v.pos - vec3(0.0, e, 0.0)),
+        sampled_at(lattice, slots, words, v.pos + vec3(0.0, 0.0, e)) - sampled_at(lattice, slots, words, v.pos - vec3(0.0, 0.0, e)),
+    )
+    let normal = if length(g) > 1.0e-6 { normalize(g) } else { v.normal }
+    verts[id] = SkinVertex { pos: v.pos, bones, normal, weights, mask: v.mask }
+}
+
+/// A sampled shape of his realized and skinned by a weight lattice.
+fn weighted(samples: Samples, tables: WeightTables, reach: f32) -> Mesh {
+    let shape = samples.upload()
+    let w = tables.upload()
+    var mesh = realize_sampled(shape)
+    dispatch(
+        skin_weighted.bind(
+            grid: w.grid,
+            wslots: w.slots.items(),
+            wwords: w.words.items(),
+            reach: reach,
+            lattice: shape.lattice,
+            slots: shape.slots.items(),
+            words: shape.samples.items(),
+            tally: mesh.tally.items(),
+            verts: mesh.verts.items_mut(),
+        ),
+        groups: mesh.skin.items(),
+    )
+    mesh
+}
+
+// ---- his body ------------------------------------------------------------------------------
+
+/// His trunk, legs and head (`body_grid`) realized from their samples and skinned.
+pub fn sampled_body() -> Mesh {
+    weighted(body_grid::samples(0), body_weights::weights(), 1.5)
+}
+
+/// His jacket (`jacket_grid`): its own shell over his shirt, skinned as his body is.
+pub fn jacket() -> Mesh {
+    // (Its normal taken nearer: the shell is only a cell or two thick, and further off the
+    // samples would reach through it to its other face.)
+    weighted(jacket_grid::samples(0), body_weights::weights(), 0.8)
+}
+
+// ---- his coat's tails ----------------------------------------------------------------------
+
+/// Each of the tails' vertices on his hips and thighs: a coat's skirt hangs from the hips but
+/// its lower part goes where his legs push it, the side over each leg mostly with that leg.
+/// (The tails' field binds them to the pelvis whole; under a stride or a fighting stance his
+/// thighs went through the cloth.)
+pub fn tails_weights(p: vec3) -> (u32, u32) {
+    // How far down the tails (from their top under the jacket's hem to about the knee).
+    let t = clamp((0.92 - p.y) / 0.42, 0.0, 1.0)
+    let share = 0.75 * t * t * (3.0 - 2.0 * t)
+    // Over which leg: his left (+x) or right, both across the middle of his back.
+    let lean = clamp(p.x / 0.11, -1.0, 1.0)
+    let left = share * (0.5 + 0.5 * lean)
+    let right = share - left
+    let wl = u32(round(left * 255.0))
+    let wr = u32(round(right * 255.0))
+    let w0 = 255 - min(wl + wr, 255)
+    (0 | (18 << 8) | (19 << 16), w0 | (wl << 8) | (wr << 16))
+}
+
+@compute(64)
+pub fn skin_tails(tally: [Tally], verts: mut Slots<SkinVertex>, id: GlobalId) {
+    if id.x >= tally[0].vertices {
+        return
+    }
+    let v = verts[id]
+    let (bones, weights) = tails_weights(v.pos)
+    verts[id] = SkinVertex { pos: v.pos, bones, normal: v.normal, weights, mask: v.mask }
+}
+
+/// His coat's tails (`hakuro::coat`, realized) made to follow his legs (`tails_weights`).
+pub fn follow_legs(mesh: take Mesh) -> Mesh {
+    var m = take mesh
+    dispatch(
+        skin_tails.bind(tally: m.tally.items(), verts: m.verts.items_mut()),
+        groups: m.skin.items(),
+    )
+    m
+}
+
+/// `p` (a point of his coat's tails, posed) moved out of his legs, posed as `palette` (from
+/// `first`) has them: each thigh and shin a tapered capsule round his trousers, the cloth kept
+/// a centimetre off it. (Skinning the tails to his thighs follows a leg's swing, but where both
+/// legs pull at one panel, a knee or the back of a thigh still came through.)
+pub fn off_legs(p: vec3, palette: [mat4], first: u32) -> vec3 {
+    var q = p
+    for side in 0..2 {
+        let sx = if side == 0 { 1.0 } else { -1.0 }
+        let hip = (palette[first + 18 + side] * vec4(0.114 * sx, 0.971, -0.036, 1.0)).xyz
+        let knee = (palette[first + 20 + side] * vec4(0.114 * sx, 0.542, -0.036, 1.0)).xyz
+        let ankle = (palette[first + 22 + side] * vec4(0.114 * sx, 0.086, -0.088, 1.0)).xyz
+        for k in 0..2 {
+            let a = if k == 0 { hip } else { knee }
+            let b = if k == 0 { knee } else { ankle }
+            let ra = if k == 0 { 0.115 } else { 0.085 }
+            let rb = if k == 0 { 0.085 } else { 0.07 }
+            let e = b - a
+            let h = clamp(dot(q - a, e) / dot(e, e), 0.0, 1.0)
+            let c = a + e * h
+            let off = q - c
+            let d = length(off)
+            let r = mix(ra, rb, h) + 0.012
+            if d < r && d > 1.0e-5 {
+                q = c + off / d * r
+            }
+        }
+    }
+    q
+}

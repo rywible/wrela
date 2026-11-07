@@ -226,6 +226,14 @@ pub fn shot_at(
         // (Close on the rider from off the starboard bow.)
         let near = vec3(r.shown_at.x, boat.y, r.shown_at.y)
         (near + bx * 2.4 + vec3(y: 1.5) + bz * 1.8, near + vec3(y: 0.9) + bz * 0.2, 1.7)
+    } else if view == 9 {
+        // (The traveller close, from off the starboard quarter: to judge the hero by.)
+        let near = vec3(r.shown_at.x, boat.y, r.shown_at.y)
+        (near + bx * 2.6 + vec3(y: 1.9) - bz * 1.6, near + vec3(y: 1.0) - bz * 0.2, 1.7)
+    } else if view == 10 {
+        // (The traveller close, from off the port bow.)
+        let near = vec3(r.shown_at.x, boat.y, r.shown_at.y)
+        (near - bx * 2.2 + vec3(y: 1.7) + bz * 1.4, near + vec3(y: 1.2) - bz * 0.1, 1.9)
     } else if view == 7 {
         let near = vec3(r.shown_at.x, boat.y, r.shown_at.y)
         (near - bx * 5.0 + vec3(y: 1.5) + bz * 5.0, near + vec3(y: 1.5), 1.4)

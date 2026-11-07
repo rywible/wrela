@@ -1,0 +1,76 @@
+// How his clothes sit on him: a few millimetres of relief added to his body's distance after his
+// shapes and their finer form (`Tailoring`, a creature `Modifier`), so the jacket reads as a layer
+// over him and not as paint.
+//
+// - The armholes' edges stand a little proud, with a slight hollow on the skin just past them.
+// - Inside the jacket's open front, the top under it sits back from the jacket's edges.
+// - The trousers crumple in soft, uneven creases, bunched where they tuck into the boots.
+//
+// All of it is in his rest space, as the paint is (`hakuro::body_paint`), so the edges it raises
+// are the paint's own.
+
+use engine::creature::Modifier
+use engine::noise::noise3
+use std::derive::{Box3, Interval}
+
+/// The most it moves his surface (m), and the steepest it is (its gradient's length).
+const MOST: f32 = 0.009
+const STEEPEST: f32 = 2.5
+
+/// A soft bump: 1 at `c`, nothing beyond `w` either side.
+fn bump(v: f32, c: f32, w: f32) -> f32 {
+    let t = max(1.0 - (v - c) * (v - c) / (w * w), 0.0)
+    t * t
+}
+
+fn ramp(v: f32, lo: f32, hi: f32) -> f32 {
+    let t = clamp((v - lo) / (hi - lo), 0.0, 1.0)
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// How far out his surface stands from his shapes' at `p` (m; in his rest space).
+pub fn tailored(p: vec3) -> f32 {
+    var out = 0.0
+    // The armholes (as the paint cuts them): a lip on the jacket's side, a hollow on the arm's.
+    let e = (p.y - 1.40) / 0.10
+    let f = (p.z + 0.04) / 0.08
+    let hole = 0.16 + 0.045 * min(e * e + f * f, 4.0)
+    let past = abs(p.x) - hole
+    let shoulders = ramp(p.y, lo: 1.26, hi: 1.30) * (1.0 - ramp(hole, lo: 0.30, hi: 0.34))
+    out += shoulders * (0.004 * bump(past, c: -0.006, w: 0.009) - 0.0015 * bump(past, c: 0.005, w: 0.006))
+    // The open front: the top under the jacket set back; the gold edges a touch proud.
+    let t = clamp((1.50 - p.y) / 0.50, 0.0, 1.0)
+    let edge = abs(p.x + 0.05 * t) - (0.040 + 0.070 * sqrt(t))
+    let front = ramp(p.z, lo: 0.0, hi: 0.04) * (1.0 - ramp(p.y, lo: 1.47, hi: 1.52)) * ramp(p.y, lo: 0.97, hi: 1.01)
+    out += front * (-0.008 * (1.0 - ramp(edge, lo: -0.010, hi: 0.0)) + 0.003 * bump(edge, c: 0.006, w: 0.009))
+    // The trousers' folds: slanting, wandering creases, bunched where they tuck into the boots
+    // and gone in patches (cloth hangs smooth between its creases).
+    let legs = 1.0 - ramp(p.y, lo: 0.90, hi: 0.96)
+    let wander = noise3(p * 3.0)
+    let fold = sin(6.2831853 * (p.y * 10.0 + abs(p.x) * 3.0 + p.z * 2.0 + 2.2 * wander))
+    let patch = ramp(noise3(p * 5.0 + vec3(3.1, 7.7, 1.3)), lo: 0.3, hi: 0.75)
+    let bunched = 1.0 + 1.2 * bump(p.y, c: 0.66, w: 0.08)
+    out += legs * 0.0022 * fold * patch * bunched
+    out
+}
+
+/// His clothes' relief, after his body's pieces and their finer form (`.then(Tailoring {})`).
+pub struct Tailoring: Copy + GpuData {}
+
+impl Modifier for Tailoring {
+    fn apply(self, d: f32, p: vec3) -> f32 {
+        d - tailored(p)
+    }
+
+    fn lipschitz(self, inner: f32, near: f32) -> f32 {
+        inner + STEEPEST
+    }
+
+    fn widen(self, near: f32) -> f32 {
+        near + MOST
+    }
+
+    fn interval(self, d: Interval, b: Box3) -> Interval {
+        Interval { lo: d.lo - MOST, hi: d.hi + MOST }
+    }
+}

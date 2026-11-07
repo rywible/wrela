@@ -3,6 +3,7 @@
 // and its traveller standing to it; where the sea holds it (`Shot::boat` and its axes).
 
 use look::{Shot, fbm, hash2, noise}
+use main::HERO
 use sail::{BOOM, BOW_OUT, FOOT, LASHED}
 use main::{PLANING, SAIL}
 use hero::{Joints, hero, hero_material}
@@ -298,6 +299,26 @@ fn parts(s: Shot, q: vec3) -> vec4 {
     vec4(wood, sail, rig, hero(j, q, blow, s.held))
 }
 
+/// The skiff without its traveller at `p` (the world's): the hull, the sail and the spars, as
+/// the eye meets them where the hero is drawn himself (`main::HERO`), and as they shadow him.
+pub fn vessel(s: Shot, p: vec3) -> f32 {
+    let k = parts(s, local(s, p))
+    min(min(k.x, k.y), k.z)
+}
+
+/// How much of the sun reaches `p` past the hull, the sail and the spars (1 all of it), toward
+/// `l`: the hero's shadows from the rig.
+pub fn vessel_shadow(s: Shot, p: vec3, l: vec3) -> f32 {
+    var t = 0.02
+    var lit = 1.0
+    for _ in 0..24 {
+        let h = vessel(s, p + l * t)
+        lit = min(lit, 12.0 * h / t)
+        t += clamp(h, 0.02, 0.4)
+    }
+    clamp(lit, 0.0, 1.0)
+}
+
 /// The skiff at `p` (the world's): its distance.
 pub fn skiff(s: Shot, p: vec3) -> f32 {
     let k = parts(s, local(s, p))
@@ -306,10 +327,15 @@ pub fn skiff(s: Shot, p: vec3) -> f32 {
 
 pub fn skiff_normal(s: Shot, p: vec3) -> vec3 {
     let e = 0.004
-    let dx = skiff(s, p + vec3(e, 0.0, 0.0)) - skiff(s, p - vec3(e, 0.0, 0.0))
-    let dy = skiff(s, p + vec3(0.0, e, 0.0)) - skiff(s, p - vec3(0.0, e, 0.0))
-    let dz = skiff(s, p + vec3(0.0, 0.0, e)) - skiff(s, p - vec3(0.0, 0.0, e))
+    let dx = seen(s, p + vec3(e, 0.0, 0.0)) - seen(s, p - vec3(e, 0.0, 0.0))
+    let dy = seen(s, p + vec3(0.0, e, 0.0)) - seen(s, p - vec3(0.0, e, 0.0))
+    let dz = seen(s, p + vec3(0.0, 0.0, e)) - seen(s, p - vec3(0.0, 0.0, e))
     normalize(vec3(dx, dy, dz))
+}
+
+/// What the camera sees of the skiff: the vessel alone where the hero stands in for the figure.
+fn seen(s: Shot, p: vec3) -> f32 {
+    if HERO > 0.5 { vessel(s, p) } else { skiff(s, p) }
 }
 
 /// What the skiff is made of at `p` (the world's), facing `n`: its albedo, roughness and the
@@ -358,7 +384,9 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
         rough = r
         seam = sm
     }
-    let k = parts(s, q)
+    // (The figure left out where the hero stands in for it.)
+    let all = parts(s, q)
+    let k = if HERO > 0.5 { vec4(all.xyz, 1.0e3) } else { all }
     // The sail: a heavy cloth, bone-pale and weathered, its panels seamed across, a broad band
     // of the cloak's madder through it and a dark leech tape; lit through when the light's
     // behind it.

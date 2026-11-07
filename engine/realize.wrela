@@ -210,7 +210,7 @@ pub fn cull_blocks<C, F: Parts<C>>(
 
 /// A cell's corner `j` (0 to 7), from its low corner: bit 0 along x, bit 1 along y, bit 2
 /// along z.
-fn corner_offset(j: u32) -> vec3u {
+pub fn corner_offset(j: u32) -> vec3u {
     vec3u(j & 1, (j >> 1) & 1, (j >> 2) & 1)
 }
 
@@ -288,7 +288,7 @@ fn det3(a: vec3, b: vec3, c: vec3) -> f32 {
 }
 
 /// The solution of `(a0 a1 a2) x = b` by Cramer's rule; 0 where the matrix is singular.
-fn solve3(a0: vec3, a1: vec3, a2: vec3, b: vec3) -> vec3 {
+pub fn solve3(a0: vec3, a1: vec3, a2: vec3, b: vec3) -> vec3 {
     let det = det3(a0, a1, a2)
     if abs(det) < 1.0e-12 {
         return vec3(0.0)
@@ -987,7 +987,7 @@ pub fn record_finish<C, F: Parts<C>>(
 
 /// A realization's mesh finished from its placed vertices: its quads, and its tally and draw's
 /// arguments.
-fn record_mesh(grid: Grid, scratch: mut Scratch, mesh: mut Mesh) {
+pub fn record_mesh(grid: Grid, scratch: mut Scratch, mesh: mut Mesh) {
     let room = mesh.room()
     if grid.blocks <= GROUPS_MOST {
         // Every live block, in one dispatch: its count is the group count.
