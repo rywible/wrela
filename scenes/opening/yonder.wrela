@@ -17,7 +17,7 @@ use far::far_off
 use stacks::{march_stacks, stacks_albedo, stacks_ao, stacks_normal, stacks_shadow}
 use paint::{Heaven, aired, hazed_far, heaven, lit_solid, sphere}
 use engine::far::foot
-use engine::light::Light
+use engine::light::{Light, sky as clear_sky}
 use engine::sky::{Clouds, cloud_shadow}
 use std::gpu::{FragCoord, Rgba16Float, Rgba8, Sampler, Targets3, Texture, Texture3d}
 
@@ -276,9 +276,21 @@ fn isle_shade(
 /// toward the sky behind it, the sky the eye sees there (the storm's own air on the horizon); and
 /// never brighter than that sky: a stack against the light is its shadow side, and a pale sliver
 /// of it toward the sun reads as a white spark on the horizon.
-fn pushed_back(h: Heaven, view: Texture<Rgba16Float>, dome: Texture<Rgba16Float>, smp: Sampler, c: vec3, d: vec3, k: f32) -> vec3 {
-    let sky = heaven(view, h.light, normalize(vec3(d.x, max(d.y, 0.0), d.z)), dome, smp).rgb
-    min(mix(c, sky, k), sky * 0.9)
+fn pushed_back(
+    h: Heaven,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    smp: Sampler,
+    c: vec3,
+    d: vec3,
+    k: f32,
+) -> vec3 {
+    let stormy = heaven(view, h.light, normalize(vec3(d.x, max(d.y, 0.0), d.z)), dome, smp).rgb
+    // (Under an open sky, less, and toward the open sky's own colour, not the clouds' behind
+    // it: the far clouds' pattern, capped into a stack, showed through it as if it were glass.)
+    let open = clear_sky(view, smp, h.light, normalize(vec3(d.x, max(d.y, 0.02), d.z)))
+    let sky = mix(open, stormy, h.light.storm)
+    min(mix(c, sky, k * mix(0.45, 1.0, h.light.storm)), sky * 0.9)
 }
 
 /// A stack where the ray met it at `p`, a pixel `px` m across there: its light in its air, and
@@ -306,7 +318,25 @@ fn stacks_shade(
     // the rock is pushed back: so a stack two kilometres off stands paler than one at three
     // hundred metres, and the eye reads how far each is.)
     let t = length(p - s.eye)
-    let c = lit_solid(s, h, view, aerial, dome, smp, p, n, d, albedo, 0.85, 0.0, vec3(0.0), sun, ao, 1.0, 0.0)
+    let c = lit_solid(
+        s,
+        h,
+        view,
+        aerial,
+        dome,
+        smp,
+        p,
+        n,
+        d,
+        albedo,
+        0.85,
+        0.0,
+        vec3(0.0),
+        sun,
+        ao,
+        1.0,
+        0.0,
+    )
     (pushed_back(h, view, dome, smp, c, d, 0.1 + 0.7 * pow(smoothstep(60.0, 2200.0, t), 0.7)), n)
 }
 
@@ -350,7 +380,19 @@ pub fn yonder(
     var marks = vec4(log2(far), SKY, 1.0, 0.0)
     var n = -d
     if ts < t {
-        let (sc, sn) = stacks_shade(s, h, clouds, view, aerial, dome, cloud, smp, o + d * ts, d, ts * k)
+        let (sc, sn) = stacks_shade(
+            s,
+            h,
+            clouds,
+            view,
+            aerial,
+            dome,
+            cloud,
+            smp,
+            o + d * ts,
+            d,
+            ts * k,
+        )
         c = sc
         cover = 1.0
         marks = vec4(log2(ts), ROCK, 1.0, 0.5)
@@ -363,7 +405,25 @@ pub fn yonder(
             let sun = mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, h.light.storm))
             let albedo = vec3(0.07, 0.072, 0.08) * (0.85 + 0.3 * noise(vec2(p.x + p.z, p.y) * 0.02))
             // (Pushed back past their air toward the deck's colour, as the rock is.)
-            let lit = lit_solid(s, h, view, aerial, dome, smp, p, fnn, d, albedo, 0.9, 0.0, vec3(0.0), sun, 1.0, 1.0, 0.0)
+            let lit = lit_solid(
+                s,
+                h,
+                view,
+                aerial,
+                dome,
+                smp,
+                p,
+                fnn,
+                d,
+                albedo,
+                0.9,
+                0.0,
+                vec3(0.0),
+                sun,
+                1.0,
+                1.0,
+                0.0,
+            )
             c = pushed_back(h, view, dome, smp, lit, d, 0.4 * smoothstep(3000.0, 10000.0, tf))
             cover = 1.0
             marks = vec4(log2(tf), ROCK, 1.0, 0.3)

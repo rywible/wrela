@@ -175,7 +175,8 @@ fn spring3(x: vec3, v: vec3, to: vec3, w: f32, z: f32, dt: f32) -> (vec3, vec3) 
 /// A smooth wander in about [-1, 1] at time `t`, never repeating soon: for what's forced by the
 /// chop and the wind's turbulence.
 fn wander(t: f32, seed: f32) -> f32 {
-    (sin(t * 1.93 + seed) + sin(t * 3.17 + seed * 2.3) * 0.6 + sin(t * 5.71 + seed * 4.1) * 0.35) / 1.95
+    (sin(t * 1.93 + seed) + sin(t * 3.17 + seed * 2.3) * 0.6 + sin(t * 5.71 + seed * 4.1) * 0.35) /
+        1.95
 }
 
 fn hashed(x: f32) -> f32 {
@@ -531,7 +532,9 @@ fn rigged(off: f32, turn: f32, p: f32, phi: f32, jolt: f32) -> Pose {
     let fore_foot = stance + fwd * 0.3
     let aft_foot = stance - fwd * 0.28
     // (Looking ahead over the bow, a little across past the luff and into a turn.)
-    let gaze = normalize(vec3(0.0, 0.04, 1.0) + vec3(belly.x, 0.0, belly.z) * 0.35 + vec3(turn * 0.8, 0.0, 0.0))
+    let gaze = normalize(
+        vec3(0.0, 0.04, 1.0) + vec3(belly.x, 0.0, belly.z) * 0.35 + vec3(turn * 0.8, 0.0, 0.0),
+    )
     Pose {
         mast,
         boom,
@@ -604,10 +607,24 @@ fn moved(r: mut Rig, time: f32, dt: f32, swell: Swell, off: f32) {
         let (a1, v1) = spring(m.fill, m.fill_v, fill_to, 6.5, 0.3, h)
         m.fill = a1
         m.fill_v = v1
-        let (a2, v2) = spring(m.twist, m.twist_v, twist_to + 0.05 * wander(ti * 0.8, 3.0) * r.gust, 5.0, 0.55, h)
+        let (a2, v2) = spring(
+            m.twist,
+            m.twist_v,
+            twist_to + 0.05 * wander(ti * 0.8, 3.0) * r.gust,
+            5.0,
+            0.55,
+            h,
+        )
         m.twist = a2
         m.twist_v = v2
-        let (a3, v3) = spring(m.bubble, m.bubble_v, bubble_to * (0.8 + 0.3 * wander(ti * 1.7, 9.0)), 9.0, 0.4, h)
+        let (a3, v3) = spring(
+            m.bubble,
+            m.bubble_v,
+            bubble_to * (0.8 + 0.3 * wander(ti * 1.7, 9.0)),
+            9.0,
+            0.4,
+            h,
+        )
         m.bubble = a3
         m.bubble_v = v3
         // (The leech flutters, more the faster the air and the looser the cloth.)
@@ -616,7 +633,9 @@ fn moved(r: mut Rig, time: f32, dt: f32, swell: Swell, off: f32) {
         m.flutter = a4
         m.flutter_v = v4
         // (The old mast whips: knocked by the heave and a slammed boom, rung by the belly's pop.)
-        let kick = vec2(r.jolt * 1.5 * (if r.boom > 0.0 { 1.0 } else { -1.0 }), -lift * 0.03 - m.fill_v * 0.1)
+        let kick = vec2(r.jolt * 1.5 * (if r.boom > 0.0 { 1.0 } else {
+            -1.0
+        }), -lift * 0.03 - m.fill_v * 0.1)
         let wx = m.whip_v.x + (kick.x - 100.0 * m.whip.x - 2.0 * 0.12 * 10.0 * m.whip_v.x) * h
         let wz = m.whip_v.y + (kick.y - 100.0 * m.whip.y - 2.0 * 0.12 * 10.0 * m.whip_v.y) * h
         m.whip_v = vec2(wx, wz)
@@ -627,19 +646,29 @@ fn moved(r: mut Rig, time: f32, dt: f32, swell: Swell, off: f32) {
     m.whip = clamp(m.whip, vec2(-0.025), vec2(0.025))
     // The traveller. Its knees give as the hull's lifted and spring back as it drops, deeper at
     // a run and the harder it hangs on the sail; the chop working at them under way.
-    let sink_to = 0.02 + 0.03 * r.power + 0.03 * run + 0.03 * lift + 0.03 * run * wander(time * 1.6, 5.0)
+    let sink_to = 0.02 +
+        0.03 * r.power +
+        0.03 * run +
+        0.03 * lift +
+        0.03 * run * wander(time * 1.6, 5.0)
     let (sk, skv) = spring(m.sink, m.sink_v, clamp(sink_to, 0.0, 0.3), 8.5, 0.5, dt)
     m.sink = sk
     m.sink_v = skv
     // It hangs further out as a gust comes on and the skiff heels, its weight thrown aft as the
     // skiff surges and forward as it's brought up; the body lags where the sail's pull wants
     // it, and swings past a little.
-    let away = normalize(vec3(g.neck.x - g.fore_hand.x, 0.0, g.neck.z - g.fore_hand.z) + vec3(0.0001))
+    let away = normalize(
+        vec3(g.neck.x - g.fore_hand.x, 0.0, g.neck.z - g.fore_hand.z) + vec3(0.0001),
+    )
     let hang = 0.1 * clamp(r.gust - 1.0, -0.3, 0.6) * r.power + 0.15 * abs(r.heel) * r.power
     let surge = clamp((r.speed - r.rush) * 0.04, -0.12, 0.12)
     // (Its upper body sways against the hull's roll, keeping its head over its feet, and
     // rocks with the chop.)
-    let sway = vec3(-r.heel * 0.55 + 0.04 * run * wander(time * 0.9, 11.0), 0.0, 0.03 * wander(time * 0.7, 13.0))
+    let sway = vec3(
+        -r.heel * 0.55 + 0.04 * run * wander(time * 0.9, 11.0),
+        0.0,
+        0.03 * wander(time * 0.7, 13.0),
+    )
     let to_neck = g.neck + away * hang + vec3(0.0, 0.0, -surge) + sway
     let to_hips = g.hips + away * (hang * 0.5) + vec3(0.0, 0.0, -surge * 0.6)
     let (nk, nkv) = spring3(m.neck, m.neck_v, to_neck, 4.2, 0.55, dt)
@@ -664,12 +693,14 @@ fn moved(r: mut Rig, time: f32, dt: f32, swell: Swell, off: f32) {
     if m.fore_step < 1.0 {
         m.fore_step = min(m.fore_step + dt / STRIDE, 1.0)
         let e = smoothstep(0.0, 1.0, m.fore_step)
-        m.fore_foot = mix(m.fore_from, g.fore_foot, e) + vec3(0.0, 0.1 * sin(3.1415927 * m.fore_step), 0.0)
+        m.fore_foot = mix(m.fore_from, g.fore_foot, e) +
+            vec3(0.0, 0.1 * sin(3.1415927 * m.fore_step), 0.0)
     }
     if m.aft_step < 1.0 {
         m.aft_step = min(m.aft_step + dt / STRIDE, 1.0)
         let e = smoothstep(0.0, 1.0, m.aft_step)
-        m.aft_foot = mix(m.aft_from, g.aft_foot, e) + vec3(0.0, 0.1 * sin(3.1415927 * m.aft_step), 0.0)
+        m.aft_foot = mix(m.aft_from, g.aft_foot, e) +
+            vec3(0.0, 0.1 * sin(3.1415927 * m.aft_step), 0.0)
     }
     // Its head glances round every few seconds: mostly ahead, up at the sail's luff, across at
     // the rock, back over its shoulder at the sea coming up; up at the sail when it's just

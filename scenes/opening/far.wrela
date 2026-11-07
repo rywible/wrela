@@ -60,7 +60,8 @@ fn outline(f: Far, u: f32, y: f32) -> f32 {
         // A flat top in a few steps, cliffs at either end, talus at their feet; a ring's wall
         // broken by its mouth.
         let rise = noise(vec2(u / w * 2.5 + s, 0.5))
-        let top = h * (0.7 + 0.3 * (floor(rise * 4.0) + smoothstep(0.8, 1.0, fract(rise * 4.0))) / 4.0)
+        let top = h *
+            (0.7 + 0.3 * (floor(rise * 4.0) + smoothstep(0.8, 1.0, fract(rise * 4.0))) / 4.0)
         let side = w * (1.0 - 0.3 * y / h) + w * 0.03 * (noise(vec2(y / 18.0 + s, 3.0)) - 0.5)
         let talus = max(abs(u) - side - w * 0.15 * max(1.0 - y / (h * 0.5), 0.0), y - h * 0.5)
         var body = min(max(abs(u) - side, y - top), talus)
@@ -71,7 +72,8 @@ fn outline(f: Far, u: f32, y: f32) -> f32 {
     }
     if f.kind == NEEDLE {
         let v = u - y * 0.18
-        let half = w * pow(max(1.0 - y / h, 0.0), 0.7) + w * 0.12 * (noise(vec2(y / 12.0 + s, 1.0)) - 0.5)
+        let half = w * pow(max(1.0 - y / h, 0.0), 0.7) +
+            w * 0.12 * (noise(vec2(y / 12.0 + s, 1.0)) - 0.5)
         return max(abs(v) - max(half, 0.0), max(y - h, -y - 5.0))
     }
     // An arch.

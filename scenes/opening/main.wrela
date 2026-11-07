@@ -66,6 +66,10 @@ pub const SAIL: u32 = 1
 /// (`Rig::framing`; `--set FRAMING=1`).
 pub const FRAMING: f32 = 0.0
 
+/// Clear weather over the opening itself (`--set CLEAR=1`): the clear region moved onto the
+/// skiff and the rock, so every view can be checked in a sea day's light.
+pub const CLEAR: f32 = 0.0
+
 pub fn init() -> State {
     targets(heavens(SUN, 3.0), 640, 360)
 }

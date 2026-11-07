@@ -79,14 +79,19 @@ const GLOOM: f32 = 1.0
 /// The share of the sun's light that comes through the overcast's deck.
 const UNDER_DECK: f32 = 0.1
 
+/// How the world under an open sky is exposed (`Light::exposure`).
+const CLEAR_EXPOSURE: f32 = 0.48
+
 /// The light under `storm` of the storm (0 open, 1 the deck): exposed for the dimmer world under
 /// it, the sun's light only as far as it comes through it.
 fn lit(open: Light, storm: f32) -> Light {
     Light {
-        exposure: (0.66 + 0.75 * storm) * mix(1.0, LIFT, storm),
+        // (Under an open sky, a sea day's: a little lower than the storm's first grade, so a
+        // sunlit stack keeps its stone and the sky its blue.)
+        exposure: mix(CLEAR_EXPOSURE, (0.66 + 0.75 * storm) * mix(1.0, LIFT, storm), storm),
         sun_colour: open.sun_colour * mix(1.0, mix(UNDER_DECK, 0.3, THIN), storm),
         storm,
-        ..open
+        ..open,
     }
 }
 
