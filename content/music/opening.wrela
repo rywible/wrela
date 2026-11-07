@@ -1,19 +1,19 @@
 // "Toward the Cathedral": the opening's cue. You wake on a skiff in a storm; far off, a rock hangs
 // in the sky with a cathedral on it, shining. Original music, written here, by Claude for Ryan.
 //
-// D minor, 4/4, 28 bars, about two minutes:
-// - bars 1-6, the storm: the basses' and cellos' tremolo on a low D, the timpani rolling, and
-//   under it all the deep motif, D rising a half step to E flat and falling a tritone to A, in
-//   the trombones and the tuba. A tam-tam blooms behind it.
-// - bars 7-14, the sea: the horns sing its theme (A, D, F, E, D...) over the strings, and the
-//   first violins take it an octave up; the harmony slips to E flat (the Neapolitan), the
-//   world tilting.
-// - bars 15-22, the cathedral: B flat with the choir and the violins high and soft, then D
-//   major, the light: the trumpets give the cathedral's theme (D, F sharp, A), it falls through
-//   C and B flat to A, and the whole orchestra lands on D major, fortissimo; then E flat crashes
-//   over the D: the deep motif's half step, as a chord.
-// - bars 23-28, the dark returns: the deep motif in all the brass, the strings fall in
-//   tremolo, and it ebbs to the low D, the choir's half step D and E flat the last thing heard
+// D minor, 4/4, 28 bars, about two and a quarter minutes:
+// - bars 1-6, the storm: the basses' tremolo on a low D and the first violins' high A, the wind;
+//   between them the violas churn in sixteenth triplets and the cellos heave in eighths, the
+//   harmony lurching to E flat; the second violins' runs are gusts. Twice, forte, the trombones
+//   and tuba give the deep motif: D rising a half step to E flat, falling a tritone to A.
+// - bars 7-14, the sea: the horns sing its theme (A, D, E flat...) over the violas' rocking
+//   eighths; the second time, louder and climbing, the first violins take it an octave up.
+// - bars 15-22, the cathedral: B flat and G minor, high and soft in the violins and the choir,
+//   then B minor, F sharp, G and A under the trumpets' theme, to D major, the light, held two
+//   bars, fortissimo, the first violins at the top of their range.
+// - bars 23-28, the dark returns: E flat crashes over the D, the deep motif in all the brass,
+//   with the tam-tam; the strings fall in tremolo through A and B flat minor, and it ebbs to
+//   the low D, the horns' call and the choir's half step D and E flat the last things heard
 //   before a bare fifth.
 
 use engine::orchestra::{
@@ -31,13 +31,14 @@ pub fn violins_1() -> Score {
     part(
         "violins 1",
         [
-            "r/1 !pp | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "a5/1 !pp !trem | a5/1 !trem | a5/1 !< !trem | a5/1 !p !> !trem | a5/1 !pp !< !trem |",
+            "a5/1 !p !trem |",
             "r/1 | r/1 | r/1 | r/1 |",
-            "a4/2. !mf d5/4 | f5/2. g5/8 f5/8 | eb5/2 !< d5/4 bb4/4 | a4/2 !f c#5/2 |",
-            "d6/1 !pp !< | d6/1 | <a5 d6>/1 !mp | <g5 c6>/1 | <f5 bb5>/1 !< | <e5 a5>/1 |",
-            "a5/2 !ff f#5/4 a5/4 | bb5/1 !accent |",
-            "d5/4 !ff !trem c#5/4 !trem c5/4 !trem b4/4 !trem | bb4/2 !> !trem a4/2 !trem |",
-            "g4/2 !mp !trem f4/2 !trem | r/1 !p | r/1 | r/1 |",
+            "a4/4. !mf d5/8 d5/2 | eb5/2. f5/8 g5/8 | g5/2 !< f5/4 eb5/4 | d5/4 !f c#5/4 a4/2 |",
+            "d6/1 !pp !< | d6/1 | <b5 d6>/1 !mp | <a#5 c#6>/1 | <b5 d6>/1 !< | <a5 e6>/1 |",
+            "f#6/4 !ff a6/4 d7/2 | <a6 d7>/1 |",
+            "d5/2 !ff !trem eb5/2 !trem | d5/2 !> !trem c#5/2 !trem | bb4/2 !mp !trem db5/2 !trem |",
+            "a4/1 !pp | r/1 | r/1 |",
         ],
     )
 }
@@ -46,14 +47,15 @@ pub fn violins_2() -> Score {
     part(
         "violins 2",
         [
-            "r/1 !pp | r/1 | r/1 | r/1 | r/1 | r/1 |",
-            "<a4 d5>/1 !mp | <g4 c5>/2 <f4 bb4>/2 | <g4 bb4>/1 | <e4 a4>/2 <e4 c#5>/2 |",
-            "<a4 d5>/1 !mf | <f4 bb4>/1 | <g4 bb4>/1 !< | <e4 a4>/2 !f <g4 c#5>/2 |",
-            "<f5 bb5>/1 !pp !< | <g5 bb5>/1 | <f#5 a5>/1 !mp | <e5 g5>/1 | <f5 bb5>/1 !< |",
-            "<e5 a5>/1 |",
-            "<f#5 a5>/1 !ff | <g5 bb5>/1 |",
-            "<a4 d5>/1 !ff !trem | <g4 bb4>/1 !> !trem | <f4 bb4>/1 !mp !trem | <f4 a4>/1 !pp |",
-            "r/1 | r/1 |",
+            "r/1 !pp | r/1 |",
+            "r/2 a4/32 !p !< bb4 c5 d5 e5 f5 g5 a5 bb5/4 !f !> | a5/2 r/2 !pp |",
+            "r/2 d5/32 !p !< e5 f5 g5 a5 bb5 c6 d6 d6/4 !f !> | bb5/2 !mp !trem a5/2 !trem |",
+            "r/1 !p | r/1 | r/1 | r/1 |",
+            "<f4 a4>/1 !mf | <eb4 g4>/1 | <g4 bb4>/1 !< | <e4 a4>/2 !f <g4 c#5>/2 |",
+            "<f5 bb5>/1 !pp !< | <g5 bb5>/1 | <f#5 b5>/1 !mp | <f#5 a#5>/1 | <g5 b5>/1 !< | <e5 a5>/1 |",
+            "<a4 d5 f#5>/1 !ff | <a4 d5 f#5>/1 |",
+            "<a4 d5>/2 !ff !trem <bb4 eb5>/2 !trem | <a4 d5>/2 !> !trem <a4 c#5>/2 !trem |",
+            "<f4 bb4>/1 !mp !trem | <f4 a4>/1 !pp | r/1 | r/1 |",
         ],
     )
 }
@@ -62,15 +64,20 @@ pub fn violas() -> Score {
     part(
         "violas",
         [
-            "r/1 !pp | r/1 | r/1 | r/1 |",
-            "<f3 a3>/1 !pp !< !trem | <g3 bb3>/2 !mp !trem <a3 c#4>/2 !trem |",
-            "<f3 a3>/1 !mp | <e3 g3>/2 <d3 f3>/2 | <d3 g3>/1 | <e3 a3>/1 |",
-            "<f3 a3>/1 !mf | <d3 f3>/1 | <eb3 g3>/1 !< | <e3 c#4>/1 !f |",
-            "<d4 f4>/1 !p !< | <d4 g4>/1 | <f#4 a4>/1 !mf | <e4 g4>/1 | <d4 f4>/1 !< |",
-            "<c#4 e4>/1 |",
-            "<f#4 a4>/1 !ff | <g4 bb4>/1 |",
-            "<f3 a3>/1 !ff !trem | <g3 bb3>/1 !> !trem | <f3 db4>/1 !mp !trem | <f3 a3>/1 !p |",
-            "r/1 | r/1 |",
+            "r/1 !pp |",
+            "d4/16t !p !< a3 d4 c4 a3 d4 d4 a3 d4 f4 a3 d4 d4 a3 d4 c4 a3 d4 d4 a3 d4 f4 a3 d4 |",
+            "d4/16t !mf bb3 d4 c4 bb3 d4 d4 bb3 d4 g4 bb3 d4 d4 bb3 d4 c4 bb3 d4 d4 bb3 d4 g4 bb3 d4 |",
+            "eb4/16t !f !> bb3 eb4 d4 bb3 eb4 eb4 bb3 eb4 g4 bb3 eb4 eb4 bb3 eb4 d4 bb3 eb4 eb4 bb3 eb4 g4 bb3 eb4 |",
+            "f4/16t !mp !< d4 a3 a4 f4 d4 f4 d4 a3 d5 a4 f4 f4 d4 a3 a4 f4 d4 f4 d4 a3 d5 a4 f4 |",
+            "g3/16t !f d4 g3 bb3 d4 bb3 g3 d4 g3 bb3 d4 g4 a3 e4 a3 c#4 e4 c#4 a3 e4 a3 c#4 e4 a4 |",
+            "d3/8 !p f3 a3 f3 d3 f3 a3 f3 | c3 eb3 g3 eb3 d3 f3 bb3 f3 | d3 g3 bb3 g3 d3 g3 bb3 g3 |",
+            "c#3 e3 a3 e3 c#3 e3 a3 e3 |",
+            "d3 !mp f3 a3 f3 d3 f3 a3 f3 | c3 eb3 g3 eb3 c3 eb3 g3 eb3 | eb3 !< g3 bb3 g3 eb3 g3 bb3 g3 |",
+            "c#3 e3 a3 e3 c#3 e3 g3 e3 |",
+            "<d4 f4>/1 !p !< | <d4 g4>/1 | <f#4 b4>/1 !mf | <f#4 a#4>/1 | <d4 g4>/1 !< | <c#4 e4>/1 |",
+            "<f#4 a4>/1 !ff | <f#4 a4>/1 |",
+            "<f3 a3>/2 !ff !trem <g3 bb3>/2 !trem | <e3 a3>/1 !> !trem | <f3 db4>/1 !mp !trem |",
+            "<f3 a3>/1 !p | r/1 | r/1 |",
         ],
     )
 }
@@ -79,15 +86,16 @@ pub fn celli() -> Score {
     part(
         "cellos",
         [
-            "r/1 !pp | <d2 a2>/1 !pp !< !trem | <d2 a2>/1 !p !trem | <d2 a2>/1 !> !trem |",
-            "<d2 a2>/1 !p !< !trem | <d2 bb2>/2 !mp !trem <e2 a2>/2 !trem |",
-            "<d3 a3>/1 !mp | <c3 a3>/2 <bb2 f3>/2 | <g2 d3>/1 | <a2 e3>/2 <a2 c#3>/2 |",
-            "<d3 a3>/1 !mf | <bb2 f3>/1 | <eb3 bb3>/1 !< | <a2 e3>/2 !f <a2 c#3>/2 |",
-            "<bb2 f3>/1 !p !< | <g2 d3>/1 | <d3 a3>/1 !mf | <c3 g3>/1 | <bb2 f3>/1 !< |",
-            "<a2 e3>/1 |",
-            "<d3 a3>/1 !ff | <eb3 bb3>/1 |",
-            "<d2 d3>/1 !ff !trem | <d2 g2>/1 !> !trem | <d2 f2>/1 !mp !trem | <d2 a2>/1 !p |",
-            "<d2 a2>/1 !pp | <d2 a2>/1 !ppp !fermata |",
+            "r/1 !pp |",
+            "d2/8 !p !< a2 d3 a2 d2 a2 d3 a2 | d2 !mf bb2 d3 bb2 d2 bb2 g3 bb2 |",
+            "eb2 !f !> bb2 eb3 bb2 eb2 bb2 g3 bb2 | d2 !mp !< a2 f3 a2 d2 a2 d3 a2 |",
+            "<bb2 d3>/2 !f !trem <a2 e3>/2 !trem |",
+            "<d3 f3>/1 !mp | <c3 eb3>/2 <bb2 d3>/2 | <g2 d3>/1 | <a2 c#3>/2 <a2 e3>/2 |",
+            "<d3 f3>/1 !mf | <c3 eb3>/1 | <eb3 g3>/1 !< | <e3 a3>/2 <e3 g3>/2 |",
+            "<bb2 f3>/1 !p !< | <g2 d3>/1 | <b2 f#3>/1 !mf | <f#2 c#3>/1 | <g2 d3>/1 !< | <a2 e3>/1 |",
+            "<d3 a3>/1 !ff | <d2 d3>/1 |",
+            "<d2 d3>/2 !ff !trem <eb2 eb3>/2 !trem | <a2 e3>/1 !> !trem | <f2 db3>/1 !mp !trem |",
+            "<d2 a2>/1 !p | <d2 a2>/1 !pp | <d2 a2>/1 !ppp !fermata |",
         ],
     )
 }
@@ -96,13 +104,13 @@ pub fn basses() -> Score {
     part(
         "basses",
         [
-            "d1/1 !pp !< !trem | d1/1 !mp !> !trem | d1/1 !p !trem | d1/1 !trem |",
-            "d1/1 !< !trem | bb1/2 !mp a1/2 |",
+            "d1/1 !pp !< !trem | d1/1 !mp !trem | d1/1 !mf !trem | eb1/1 !f !> !trem |",
+            "d1/1 !mp !< !trem | bb1/2 !f !trem a1/2 !trem |",
             "d2/1 !mp | c2/2 bb1/2 | g1/1 | a1/1 |",
-            "d2/1 !mf | bb1/1 | eb2/1 !< | a1/1 !f |",
-            "bb1/1 !p !< | g1/1 | d2/1 !mf | c2/1 | bb1/1 !< | a1/1 |",
+            "d2/1 !mf | c2/1 | eb2/1 !< | a1/1 |",
+            "bb1/1 !p !< | g1/1 | b1/1 !mf | f#1/1 | g1/1 !< | a1/1 |",
             "d2/1 !ff | d2/1 |",
-            "d1/1 !ff !trem | d1/1 !> !trem | d1/1 !mp !trem | d1/1 !p !trem |",
+            "d1/2 !ff !trem eb1/2 !trem | a1/1 !> !trem | bb1/1 !mp !trem | d1/1 !p !trem |",
             "d1/1 !pp !trem | d1/1 !ppp !trem !fermata |",
         ],
     )
@@ -113,13 +121,12 @@ pub fn horns() -> Score {
         "horns",
         [
             "r/1 !mp | r/1 | r/1 | r/1 | r/1 | r/1 |",
-            "a3/2. !mf d4/4 | f4/2. e4/8 d4/8 | d4/2 c4/4 bb3/4 | a3/1 |",
-            "a3/2. !f d4/4 | f4/2. g4/8 f4/8 | eb4/2 d4/4 bb3/4 | a3/2 c#4/2 |",
-            "r/1 | r/1 | <d4 f#4 a4>/1 !p !< | <c4 e4 g4>/1 | <bb3 d4 f4>/1 !< |",
-            "<a3 c#4 e4>/1 |",
-            "d4/4 !ff f#4/4 a4/2 | <bb3 eb4 g4>/1 |",
-            "d4/2 !ff !accent eb4/2 | d4/1 !> | <db4 f4>/1 !mp | a3/2. !pp d4/4 |",
-            "f4/2 e4/2 | d4/1 !ppp !fermata |",
+            "a3/4. !mf d4/8 d4/2 | eb4/2. d4/8 c4/8 | bb3/4 c4/8 d4/8 g3/2 | c#4/2 a3/2 |",
+            "a3/4. !f d4/8 d4/2 | eb4/2. f4/8 g4/8 | g4/2 f4/4 eb4/4 | d4/4 c#4/4 a3/2 |",
+            "r/1 | r/1 | <d4 f#4 b4>/1 !p !< | <c#4 f#4 a#4>/1 | <b3 d4 g4>/1 !mf !< | <a3 c#4 e4>/1 |",
+            "<d4 f#4 a4>/1 !ff | <d4 f#4 a4>/1 |",
+            "d4/2 !fff !accent eb4/2 !accent | <a3 c#4>/1 !> | <db4 f4>/1 !mp | a3/2. !pp d4/4 |",
+            "a3/1~ | a3/1 !ppp !fermata |",
         ],
     )
 }
@@ -130,9 +137,10 @@ pub fn trumpets() -> Score {
         [
             "r/1 !p | r/1 | r/1 | r/1 | r/1 | r/1 |",
             "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
-            "d5/4 !p !< f#5/4 a5/2 | g5/2. e5/4 | f5/2 d5/4 bb4/4 | a4/1 !mf !< |",
-            "a5/2 !ff f#5/4 a5/4 | <g5 bb5>/1 !accent |",
-            "<d5 a5>/2 !fff !accent <eb5 bb5>/2 !accent | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "d5/4 !mf f#5/4 b5/2 | c#6/2. a#5/4 | b5/2 !< g5/4 d5/4 | e5/2 c#5/2 |",
+            "f#5/4 !ff a5/4 d6/2 | <f#5 d6>/1 |",
+            "<d5 a5>/2 !fff !accent <eb5 bb5>/2 !accent | <c#5 e5>/1 !> | <db5 f5>/1 !mp | r/1 | r/1 |",
+            "r/1 |",
         ],
     )
 }
@@ -141,12 +149,13 @@ pub fn trombones() -> Score {
     part(
         "trombones",
         [
-            "r/1 !p | r/1 | d3/2 !p !< eb3/2 | a2/1 !mf !> | r/1 | <g2 d3>/2 !p <a2 e3>/2 |",
-            "r/1 | r/1 | <g2 d3 bb3>/1 !p | <a2 e3 c#4>/1 |",
+            "r/1 !p | r/1 | d3/2 !f !accent eb3/2 !accent | a2/1 !> | d3/2 !f !accent eb3/2 !accent |",
+            "<g2 d3>/2 !p <a2 e3>/2 |",
+            "r/1 | r/1 | <g2 d3>/1 !p | <a2 e3>/1 |",
             "r/1 | r/1 | <eb3 g3 bb3>/1 !mp !< | <a2 e3 c#4>/1 !mf |",
-            "r/1 | r/1 | r/1 | r/1 | <bb2 d3 f3>/1 !p !< | <a2 e3 a3>/1 !f |",
-            "<d3 f#3 a3>/1 !ff | <eb3 g3 bb3>/1 !ff |",
-            "d3/2 !fff !accent eb3/2 !accent | a2/1 !> | <bb2 db3 f3>/1 !mp | r/1 | r/1 | r/1 |",
+            "r/1 | r/1 | r/1 | r/1 | <g2 d3 b3>/1 !p !< | <a2 e3 a3>/1 |",
+            "<d3 f#3 a3>/1 !ff | <d3 f#3 a3>/1 |",
+            "d3/2 !fff !accent eb3/2 !accent | <a2 e3>/1 !> | <bb2 f3 db4>/1 !mp | r/1 | r/1 | r/1 |",
         ],
     )
 }
@@ -155,12 +164,13 @@ pub fn tuba() -> Score {
     part(
         "tuba",
         [
-            "r/1 !p | r/1 | d2/2 !p !< eb2/2 | a1/1 !mf !> | r/1 | g1/2 !p a1/2 |",
+            "r/1 !p | r/1 | d2/2 !f !accent eb2/2 !accent | a1/1 !> | d2/2 !f !accent eb2/2 !accent |",
+            "bb1/2 !p a1/2 |",
             "r/1 | r/1 | g1/1 !p | a1/1 |",
-            "r/1 | r/1 | eb1/1 !mp | a1/1 |",
-            "r/1 | r/1 | r/1 | r/1 | bb1/1 !p !< | a1/1 !f |",
-            "d1/1 !ff | eb1/1 |",
-            "d1/2 !fff !accent eb1/2 !accent | a1/1 !> | bb1/1 !mp | r/1 | r/1 | r/1 |",
+            "r/1 | r/1 | eb2/1 !mp | a1/1 |",
+            "r/1 | r/1 | r/1 | r/1 | g1/1 !p !< | a1/1 |",
+            "d2/1 !ff | d2/1 |",
+            "d2/2 !fff !accent eb2/2 !accent | a1/1 !> | bb1/1 !mp | r/1 | r/1 | r/1 |",
         ],
     )
 }
@@ -171,9 +181,9 @@ pub fn choir() -> Score {
         [
             "r/1 !pp | r/1 | r/1 | r/1 | r/1 | r/1 |",
             "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
-            "<bb3 d4 f4 bb4>/1 !pp !< | <bb3 d4 g4 bb4>/1 | <a3 d4 f#4 a4>/1 !mp | <g3 c4 e4 g4>/1 |",
-            "<f3 bb3 d4 f4>/1 !< | <e3 a3 c#4 e4>/1 !mf |",
-            "<f#3 a3 d4 f#4 a4>/1 !f | <eb3 g3 bb3 eb4 g4>/1 !ff |",
+            "<d4 f4 bb4 d5>/1 !pp !< | <d4 g4 bb4 d5>/1 | <d4 f#4 b4 d5>/1 !mp | <c#4 f#4 a#4 c#5>/1 |",
+            "<d4 g4 b4 d5>/1 !< | <e4 a4 c#5 e5>/1 !mf |",
+            "<d4 f#4 a4 d5 f#5>/1 !f | <d4 f#4 a4 d5 f#5>/1 !ff |",
             "r/1 | r/1 | r/1 | r/1 | <d4 eb4>/1 !ppp !< | <d4 a4>/2~ !pp !> <d4 a4>/2 !ppp !fermata |",
         ],
     )
@@ -183,12 +193,13 @@ pub fn timpani() -> Score {
     part(
         "timpani",
         [
-            "d2/1 !pp !< !trem | d2/1 !mp !> !trem | r/1 | a1/2 !mf r/2 | d2/1 !p !< !trem |",
-            "r/2 a1/2 !mf !trem |",
-            "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | a1/2 !mp !trem a1/2 !< !trem |",
-            "r/1 | r/1 | r/1 | r/1 | r/1 | a1/1 !p !< !trem |",
-            "d2/4 !ff !accent r/4 d2/4 a1/4 | d2/1 !< !trem |",
-            "d2/2 !fff !accent r/2 | a1/2 !f r/2 | r/1 | d2/1 !pp !> !trem | r/1 | d2/1 !ppp !trem |",
+            "d2/1 !pp !< !trem | d2/1 !mp !trem | d2/4 !f !accent r/4 r/2 | a2/2 !mf r/2 |",
+            "d2/4 !f !accent r/4 d2/2 !p !< !trem |",
+            "r/2 a2/2 !mf !trem |",
+            "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | a2/2 !mp !< !trem a2/2 !trem |",
+            "r/1 !p | r/1 | r/1 | r/1 | r/1 | a2/1 !p !< !trem |",
+            "d2/4 !ff !accent r/4 d2/4 a2/4 | d2/1 !< !trem |",
+            "d2/2 !fff !accent r/2 | a2/2 !f r/2 | r/1 | d2/1 !pp !> !trem | r/1 | d2/1 !ppp !trem |",
         ],
     )
 }
@@ -213,8 +224,8 @@ pub fn tam_tam() -> Score {
             "r/1 !p | r/1 | c2/1 !p | r/1 | r/1 | r/1 |",
             "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
             "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
-            "r/1 | c2/1 !ff |",
-            "r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |",
+            "r/1 | r/1 |",
+            "c2/1 !ff | r/1 | r/1 | r/1 | r/1 | r/1 |",
         ],
     )
 }
