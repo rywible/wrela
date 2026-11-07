@@ -1,0 +1,1741 @@
+// An orchestra that plays scores: sections of strings, brass and voices, timpani, drums and
+// metal, seated on a stage in a concert hall, every sound made from how the instrument makes it.
+// Nothing is sampled: each instrument is a few numbers (`Instrument`) and the physics below.
+//
+// Each part is an engine::score `Score` of its own, so each has its own dynamics and hairpins, as
+// a conductor's score does. `orchestra` reads the parts and a tempo on the program's thread, and
+// `play_orchestra` plays them on the audio thread, a quantum at a time.
+//
+// What it models:
+// - A bowed string's Helmholtz motion: the string bends at one corner that runs round it, so the
+//   bridge feels a sawtooth, missing the harmonics with a node at the bow (every nth, bowed at
+//   1/n of the string). That is a pulse wave of width 1/n: a sawtooth less itself delayed by 1/n
+//   of a period. A section is several players, each a little out of tune with the others, with
+//   a vibrato of their own (that wakes after the note starts), a wandering pitch, and a start a
+//   few milliseconds apart: the chorus that makes a section sound like many. A tremolo is each
+//   player changing bow fast, out of step with the rest. The bow's rosin rasps (noise).
+// - A wooden body: the sum of a section's players is shaped by the body's resonances (peaks,
+//   `Instrument::peaks`) and by how hard the bow presses: a louder section is brighter (a
+//   low-pass that opens with the dynamic).
+// - A lip reed in a brass tube: the lips buzz at the note (a sawtooth), and the louder they are
+//   blown the more of the high harmonics escape the bell, steeply: a horn played softly is
+//   almost a sine; played loudly its spectrum spreads far up, and at the loudest the wave in the
+//   tube steepens (it brasses: a soft saturation). So each note has its own low-pass, at a
+//   multiple of its pitch that rises with how loud the note is now, within its attack too: a
+//   brass note starts dark and blooms. The lips find the note from a little below, and the
+//   tongue starts it with a puff. The bell's colour is the part's peaks.
+// - Voices: vocal folds (a sawtooth, darkened) shaped by the vowel's formants, many singers to a
+//   note, each with a wider, freer vibrato than a string player.
+// - Membranes and metal: a struck drum or plate rings in its modes, each a decaying resonance
+//   (as engine::strike's are). A timpani's modes are tuned by the air in its kettle to nearly
+//   harmonic ratios over the note it is tuned to, plus a thud that dies at once; a bass drum's
+//   are a free membrane's (Bessel's ratios); a tam-tam's are dense, and its energy climbs from
+//   the low modes to the high ones for a second after it is struck (the swell it is known for);
+//   a suspended cymbal's are denser still and high. A mallet's contact time sets how bright a
+//   blow is (a softer blow stays on the head longer: fewer highs). A roll is strokes about 15 a
+//   second, each a little different in time and strength.
+// - A hall: each part has a seat (`Part::pan`, and `Part::depth`, how far back: farther is
+//   quieter, darker and more reverberant). The hall is 16 delay lines, mixed by a Hadamard
+//   matrix, after a predelay and four all-pass diffusers, each line's length swaying slowly, so
+//   the tail is dense and smooth. Lows ring longer than highs.
+//
+// A dynamic (`!p`, `!ff`) is a part's intensity, from 0 to 1: how loud and how bright it plays.
+// A hairpin moves it evenly from the dynamic before it to the one after. Accents push a note's
+// start; staccato shortens it; a fermata holds it; `!trem` bows it tremolo, or rolls a drum.
+//
+// Everything on the audio thread is f32 arithmetic in a fixed order and the noise is seeded, so
+// both hosts give the same samples.
+
+use score::{ACCENT, FERMATA, Level, NO_SLUR, STACCATO, Score, TENUTO, TICKS, TREMOLO}
+use std::audio::{SAMPLE_RATE, decay_rate}
+use std::collections::Vec
+use std::math::{PI, TAU}
+
+/// The audio thread's rate.
+const RATE: f32 = f32(SAMPLE_RATE)
+
+/// What makes an instrument's sound.
+pub enum Family: Copy + Eq {
+    /// Bowed strings.
+    Bowed,
+    /// Lip reeds: horns, trumpets, trombones, tubas.
+    Brass,
+    /// Singers.
+    Voices,
+    /// A tuned kettledrum.
+    Timpani,
+    /// A bass drum.
+    Drum,
+    /// A tam-tam (a gong).
+    TamTam,
+    /// A suspended cymbal.
+    Cymbal,
+}
+
+/// How many peaks an instrument's body (or bell, or vowel) has.
+pub const PEAKS: u32 = 6
+
+/// One instrument, as a section of `players`.
+pub struct Instrument: Copy {
+    pub family: Family,
+    /// Players to a note (a section in unison; for voices, singers to a note).
+    pub players: u32 = 1,
+    /// Where the bow is, as a fraction of the string (a pulse's width): 1/8 to 1/12. For the
+    /// other families, unused.
+    pub bow: f32 = 0.11,
+    /// The players' vibrato: its rate (Hz) and depth (cents), and seconds after a note starts
+    /// that it has woken fully.
+    pub vibrato_hz: f32 = 5.4,
+    pub vibrato_cents: f32 = 0.0,
+    pub vibrato_wake: f32 = 0.35,
+    /// How far out of tune the players are from each other (cents), how far each one's pitch
+    /// wanders (cents), and how far apart they start (seconds, at most).
+    pub detune_cents: f32 = 6.0,
+    pub wander_cents: f32 = 3.0,
+    pub spread: f32 = 0.025,
+    /// How wide the section sits, across the two channels (0: a point; 1: its whole width).
+    pub width: f32 = 0.3,
+    /// Seconds a note takes to come in, and to die away when it is let go.
+    pub attack: f32 = 0.08,
+    pub release: f32 = 0.25,
+    /// Brightness: the low-pass (Hz) at intensity 0 and at 1: a bowed or sung section's, or
+    /// each brass note's own (two poles: the bell passes the lips' harmonics up to about here,
+    /// and a quarter as much each octave above). A trumpet at mezzo-forte reaches
+    /// about 2 kHz, at any pitch (Commons recordings of F4 and D5, CC0).
+    pub bright_lo: f32 = 2000.0,
+    pub bright_hi: f32 = 8000.0,
+    /// The highest the brass's low-pass goes (Hz).
+    pub bright_most: f32 = 9000.0,
+    /// How hard the brass saturates at intensity 1 (0: not at all).
+    pub blare: f32 = 0.0,
+    /// The body's (or bell's, or vowel's) peaks: frequency (Hz), Q and gain (dB). A gain of 0
+    /// is no peak.
+    pub peak_hz: [f32; 6] = [0.0; 6],
+    pub peak_q: [f32; 6] = [1.0; 6],
+    pub peak_db: [f32; 6] = [0.0; 6],
+    /// Rosin, breath or a felt's noise: its share of the sound.
+    pub noise: f32 = 0.0,
+    /// The decibels between intensity 0 and 1.
+    pub range_db: f32 = 30.0,
+    /// The level at intensity 1.
+    pub level: f32 = 1.0,
+    /// For drums and metal: seconds the lowest mode takes to fall 60 dB, and the mallet's
+    /// contact (seconds) at the softest and the hardest blow.
+    pub ring: f32 = 2.0,
+    pub contact_soft: f32 = 0.004,
+    pub contact_hard: f32 = 0.0015,
+    /// For a tam-tam: seconds its highest modes take to swell in.
+    pub swell: f32 = 1.0,
+    /// A wooden body's own modes, dense and sharp, between `body_lo` and `body_hi` Hz: their
+    /// share of the sound (0: none). A vibrato sweeps each harmonic across them, so its level
+    /// trembles with the pitch, as a real string section's does.
+    pub body: f32 = 0.0,
+    pub body_lo: f32 = 200.0,
+    pub body_hi: f32 = 5000.0,
+}
+
+/// A part: its name, its instrument, its music, and its seat: across the stage (`pan`, -1 left
+/// to 1 right), how far back (`depth`, 0 front to 1 back), and its share of the mix (`gain`).
+pub struct Part: Clone {
+    pub name: Text,
+    pub instrument: Instrument,
+    pub score: Score,
+    pub pan: f32 = 0.0,
+    pub depth: f32 = 0.3,
+    pub gain: f32 = 1.0,
+}
+
+/// The tempo from bar `bar` (from 1): `bpm` beats a minute there, moving evenly to the next
+/// point's.
+pub struct Tempo: Copy {
+    pub bar: u32,
+    pub bpm: f32,
+}
+
+/// How long a fermata holds its note, as a share of the note.
+const FERMATA_HOLD: f32 = 1.6
+/// How much of a staccato note sounds.
+const STACCATO_SHARE: f32 = 0.45
+/// Seconds a sustained note overlaps the next, as players join notes.
+const LEGATO: f32 = 0.04
+/// A slurred glide's share per quantum (128 samples): a time constant near 40 ms.
+/// A slurred note's finger change (seconds, the glide's time constant).
+const GLIDE: f32 = 0.012
+/// How long a bow change takes (seconds, either side of the turn).
+const BOW_TURN: f32 = 0.04
+
+// ---- the program's thread ---------------------------------------------------------------------
+
+/// A note to play: when (sample), which part, which key, how long it is held (samples), and how
+/// it is played.
+struct Event: Copy {
+    at: u32,
+    part: u32,
+    key: u32,
+    held: u32,
+    accent: f32,
+    tremolo: bool,
+    /// Slurred from the part's note before, of this key: the voice glides on, not re-bowed.
+    glide: bool,
+    from_key: u32,
+}
+
+/// A point of a part's intensity: at a sample, how intense.
+struct Point: Copy {
+    at: u32,
+    value: f32,
+}
+
+/// Each written dynamic's intensity.
+fn intensity(level: Level) -> f32 {
+    match level {
+        Level::PPP => 0.06,
+        Level::PP => 0.13,
+        Level::P => 0.23,
+        Level::MP => 0.36,
+        Level::MF => 0.5,
+        Level::F => 0.66,
+        Level::FF => 0.82,
+        Level::FFF => 1.0,
+    }
+}
+
+/// Ticks between the points a tempo and an intensity are worked out at: a 64th note.
+const STEP: u32 = 60
+
+/// The score's time, in seconds, at each `STEP` ticks, for a score of `ticks` with `tempo`.
+fn clock(meter_beat: u32, bar_ticks: u32, ticks: u32, tempo: [Tempo]) -> Vec<f64> {
+    assert(tempo.len() > 0, "a tempo has at least one point")
+    var out: Vec<f64> = Vec::with_capacity(ticks / STEP + 2)
+    var t = 0.0
+    var tick = 0
+    while tick <= ticks + STEP {
+        out.push(t)
+        let bar = f32(tick) / f32(bar_ticks) + 1.0
+        var bpm = tempo[0].bpm
+        for i in 0..tempo.len() {
+            if f32(tempo[i].bar) <= bar {
+                bpm = tempo[i].bpm
+                if i + 1 < tempo.len() {
+                    let a = f32(tempo[i].bar)
+                    let b = f32(tempo[i + 1].bar)
+                    let u = clamp((bar - a) / max(b - a, 0.001), 0.0, 1.0)
+                    bpm = tempo[i].bpm + (tempo[i + 1].bpm - tempo[i].bpm) * u
+                }
+            }
+        }
+        // A beat of the meter's unit is `bpm` a minute.
+        t += f64(STEP) / f64(meter_beat) * 60.0 / f64(bpm)
+        tick += STEP
+    }
+    out
+}
+
+/// Tick `t` in seconds, by `clock`.
+fn seconds_at(clock: Vec<f64>, t: u32) -> f64 {
+    let i = t / STEP
+    let u = f64(t % STEP) / f64(STEP)
+    if i + 1 >= clock.len() {
+        return clock[clock.len() - 1]
+    }
+    clock[i] + (clock[i + 1] - clock[i]) * u
+}
+
+fn samples(seconds: f64) -> u32 {
+    u32(max(seconds, 0.0) * f64(SAMPLE_RATE) + 0.5)
+}
+
+/// A part's intensity over the score, as points every `STEP` ticks: the dynamic written last,
+/// or, under a hairpin, moving evenly from the dynamic before it to the one where it ends (one
+/// step of the table on if none is written there).
+fn intensities(s: Score, clock: Vec<f64>) -> Vec<Point> {
+    var out: Vec<Point> = Vec::new()
+    let length = s.length()
+    var t = 0
+    while t <= length {
+        var v = intensity(s.level_at(t))
+        for h in s.hairpins {
+            if h.from <= t && t < h.to {
+                let from = intensity(s.level_at(h.from))
+                var to = from + (if h.louder { 0.16 } else { -0.16 })
+                for d in s.dynamics {
+                    if d.at == h.to {
+                        to = intensity(d.level)
+                    }
+                }
+                let u = f32(t - h.from) / f32(max(h.to - h.from, 1))
+                v = from + (to - from) * u
+            }
+        }
+        out.push(Point { at: samples(seconds_at(clock, t)), value: clamp(v, 0.02, 1.0) })
+        t += STEP
+    }
+    out
+}
+
+/// The orchestra's parts as played: what the audio thread owns for each.
+struct Seat {
+    instrument: Instrument,
+    gain: f32,
+    pan: f32,
+    depth: f32,
+    curve: Vec<Point>,
+    cursor: u32,
+    /// The intensity now, and at the next quantum's start.
+    now: f32,
+    // The body's peaks and its brightness, each channel's (left, then right), as biquads.
+    peaks: [Biquad; 12],
+    bright: [Biquad; 4],
+    /// The farther back, the darker: a one-pole low-pass, each channel's.
+    far: vec2,
+    far_a: f32,
+    /// The body's modes (`BODY_MODES`, four to a vec4): y = a1 y₁ + a2 y₂ + g x, each channel's
+    /// state its own.
+    body_a1: [vec4; 8],
+    body_a2: [vec4; 8],
+    body_g: [vec4; 8],
+    body_l1: [vec4; 8],
+    body_l2: [vec4; 8],
+    body_r1: [vec4; 8],
+    body_r2: [vec4; 8],
+    /// This quantum's sound, before the body.
+    left: [f32; 128],
+    right: [f32; 128],
+    /// Whether any voice of the part sounds, or its body still rings.
+    busy: u32,
+}
+
+/// A biquad, in transposed direct form II.
+struct Biquad: Copy {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    z1: f32,
+    z2: f32,
+}
+
+const FLAT: Biquad = Biquad { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0, z1: 0.0, z2: 0.0 }
+
+impl Biquad {
+    @audio
+    fn run(mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.z1
+        self.z1 = self.b1 * x - self.a1 * y + self.z2
+        self.z2 = self.b2 * x - self.a2 * y
+        y
+    }
+
+    /// A peak at `hz`, `q` sharp, `db` high (RBJ's peaking filter), keeping the state.
+    @audio
+    fn set_peak(mut self, hz: f32, q: f32, db: f32) {
+        let a = pow(10.0, db / 40.0)
+        let w = TAU * min(hz, 0.45 * RATE) / RATE
+        let alpha = sin(w) / (2.0 * q)
+        let a0 = 1.0 + alpha / a
+        self.b0 = (1.0 + alpha * a) / a0
+        self.b1 = -2.0 * cos(w) / a0
+        self.b2 = (1.0 - alpha * a) / a0
+        self.a1 = -2.0 * cos(w) / a0
+        self.a2 = (1.0 - alpha / a) / a0
+    }
+
+    /// A low-pass at `hz`, `q` sharp (RBJ's), keeping the state.
+    @audio
+    fn set_low(mut self, hz: f32, q: f32) {
+        let w = TAU * clamp(hz, 20.0, 0.45 * RATE) / RATE
+        let alpha = sin(w) / (2.0 * q)
+        let c = cos(w)
+        let a0 = 1.0 + alpha
+        self.b0 = 0.5 * (1.0 - c) / a0
+        self.b1 = (1.0 - c) / a0
+        self.b2 = 0.5 * (1.0 - c) / a0
+        self.a1 = -2.0 * c / a0
+        self.a2 = (1.0 - alpha) / a0
+    }
+}
+
+/// A body's modes, and the gain that makes their sum about as loud as what drives them.
+const BODY_MODES: u32 = 32
+const BODY_GAIN: f32 = 0.54
+
+/// The felt's noise's low-pass: 1 - e^(-2π 1200 / 48000).
+const FELT: f32 = 0.325
+
+/// How long a brass player's lips are open, as a share of each cycle.
+
+/// The most players a voice has, and the most modes a struck voice rings.
+const PLAYERS: u32 = 8
+const MODES: u32 = 48
+
+/// One note sounding: its part, its pitch, how long it has sounded, and its players' or modes'
+/// state.
+struct Voice: Copy {
+    active: bool,
+    part: u32,
+    family: Family,
+    key: u32,
+    hz: f32,
+    /// Where a slurred note's glide is going (0 when not gliding).
+    target_hz: f32,
+    // Each player's bow pressure this quantum: a slow drift about 1.
+    press: [f32; 8],
+    /// Samples since it started, and samples it is held for.
+    t: u32,
+    held: u32,
+    accent: f32,
+    tremolo: bool,
+    /// Its loudness now (0 to 1), as it comes in and dies away.
+    env: f32,
+    seed: u32,
+    // Each player: its phase, its pitch's ratio over the note's this quantum, its own detune
+    // (cents), its pitch's wander (cents), its vibrato's phase and rate (radians a quantum),
+    // when it comes in (samples), its tremolo's phase (bow strokes) and rate (strokes a sample),
+    // its gains into the channels.
+    phase: [f32; 8],
+    step: [f32; 8],
+    detune: [f32; 8],
+    wander: [f32; 8],
+    vib_phase: [f32; 8],
+    vib_rate: [f32; 8],
+    delay: [u32; 8],
+    bow: [f32; 8],
+    bow_rate: [f32; 8],
+    gain_l: [f32; 8],
+    gain_r: [f32; 8],
+    // Brass: the note's own low-pass, two biquads, set every 32 samples.
+    lip: [Biquad; 2],
+    // Struck: each mode's state, rotation (decay included), its swell's rate (a tam-tam's) and
+    // the swell now; the next stroke of a roll (samples from the start); how long it rings.
+    re: [f32; 48],
+    im: [f32; 48],
+    rc: [f32; 48],
+    rs: [f32; 48],
+    shares: [f32; 48],
+    pull: [f32; 48],
+    swelled: [f32; 48],
+    modes: u32,
+    next_stroke: u32,
+    rings: u32,
+    /// A blow's noise: its level now, and its fall per sample.
+    thwack: f32,
+    thwack_fall: f32,
+    /// The felt's noise, darkened (a one-pole low-pass near 1.2 kHz).
+    felt: f32,
+    /// The brass's DC blocker (each sub-section's mean); the rosin noise's lows, taken out.
+    dc: vec2,
+    hiss: vec2,
+    hiss2: vec2,
+}
+
+const SILENT: Voice = Voice {
+    active: false,
+    part: 0,
+    family: Family::Bowed,
+    key: 0,
+    hz: 0.0,
+    target_hz: 0.0,
+    press: [1.0; 8],
+    t: 0,
+    held: 0,
+    accent: 0.0,
+    tremolo: false,
+    env: 0.0,
+    seed: 1,
+    phase: [0.0; 8],
+    step: [0.0; 8],
+    detune: [0.0; 8],
+    wander: [0.0; 8],
+    vib_phase: [0.0; 8],
+    vib_rate: [0.0; 8],
+    delay: [0; 8],
+    bow: [0.0; 8],
+    bow_rate: [0.0; 8],
+    gain_l: [0.0; 8],
+    gain_r: [0.0; 8],
+    lip: [FLAT; 2],
+    re: [0.0; 48],
+    im: [0.0; 48],
+    rc: [0.0; 48],
+    rs: [0.0; 48],
+    shares: [0.0; 48],
+    pull: [0.0; 48],
+    swelled: [0.0; 48],
+    modes: 0,
+    next_stroke: 0,
+    rings: 0,
+    thwack: 0.0,
+    thwack_fall: 0.0,
+    felt: 0.0,
+    dc: vec2(0.0),
+    hiss: vec2(0.0),
+    hiss2: vec2(0.0),
+}
+
+/// The most notes sounding at once.
+pub const VOICES: u32 = 64
+
+/// The hall: 16 delay lines (four vec4s of four), each `HALL_SPAN` samples of memory, their
+/// longest lengths (primes, 29 to 97 ms), and how far each sways round its mean.
+const HALL_GROUPS: u32 = 4
+const HALL_SPAN: u32 = 8192
+const HALL_LENGTHS: [f32; 16] = [
+    1399.0, 1559.0, 1709.0, 1873.0, 2027.0, 2203.0, 2381.0, 2557.0, 2729.0, 2903.0, 3083.0, 3271.0,
+    3461.0, 3659.0, 3851.0, 4651.0,
+]
+const HALL_SWAY: f32 = 9.0
+const HALL_IN: [f32; 16] = [
+    1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0,
+]
+const HALL_LEFT: [f32; 16] = [
+    1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
+]
+const HALL_RIGHT: [f32; 16] = [
+    1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0,
+]
+/// The diffusers before the lines: all-passes of these lengths (samples), each channel's own.
+const DIFFUSE: [u32; 4] = [142, 107, 379, 277]
+const DIFFUSE_SPAN: u32 = 512
+const DIFFUSE_GAIN: f32 = 0.62
+/// The predelay (samples): the first reflection's lag behind the direct sound.
+const PREDELAY: u32 = 480
+const PREDELAY_SPAN: u32 = 4096
+/// The early reflections: taps on the sends (samples, about 7 to 45 ms), their levels, and
+/// which side each comes back on (+1 left, -1 right).
+const EARLY_AT: [u32; 7] = [336, 528, 768, 1056, 1392, 1776, 2160]
+const EARLY_GAIN: [f32; 7] = [0.5, 0.42, 0.36, 0.3, 0.24, 0.19, 0.15]
+const EARLY_SIDE: [f32; 7] = [1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0]
+/// The diffusers' own sound in the hall's return, and the share of its sides kept (above a
+/// high-pass near 250 Hz, so the lows stay in the middle).
+const DIFFUSE_OUT: f32 = 0.3
+const HALL_SIDE: f32 = 0.6
+const SIDE_CUT: f32 = 0.0322
+/// The air: highs above about 9 kHz at half their level (a one-pole's share), on the whole mix.
+const AIR: f32 = 0.692
+/// One-pole shares for taking out DC: a voice's (about 20 Hz) and the mix's (about 6 Hz).
+const DC_CUT: f32 = 0.0026
+const MIX_DC_CUT: f32 = 0.0008
+
+/// The hall's character: seconds its lows and its highs take to fall 60 dB, how much of each
+/// part goes to it (at the front; the back sends more), and how loud it comes back.
+pub struct Hall: Copy {
+    pub time: f32 = 2.6,
+    pub highs: f32 = 0.35,
+    pub send: f32 = 0.5,
+    pub back_send: f32 = 0.9,
+    pub wet: f32 = 1.0,
+}
+
+/// An orchestra playing parts: what the audio thread owns.
+pub struct Orchestra {
+    seats: Vec<Seat>,
+    events: Vec<Event>,
+    next: u32,
+    sample: u32,
+    voices: [Voice; 64],
+    noise: u32,
+    hall: Hall,
+    send_l: [f32; 128],
+    send_r: [f32; 128],
+    pre: [f32; 8192],
+    side_low: f32,
+    air: vec2,
+    dc: vec2,
+    pre_at: u32,
+    diffuse: [f32; 4096],
+    diffuse_at: u32,
+    room: [f32; 131072],
+    room_at: u32,
+    room_low: [vec4; 4],
+    room_a: [vec4; 4],
+    room_b: [vec4; 4],
+    room_delay: [f32; 16],
+    room_step: [f32; 16],
+    room_phase: [f32; 16],
+    room_rate: [f32; 16],
+    /// The whole piece's length in seconds, with its last sound's ring.
+    pub seconds: f64,
+    /// The level the mix is scaled by, and the soft limit it goes through.
+    pub master: f32,
+}
+
+/// An orchestra to play `parts` at `tempo`, in `hall`. Every part's score must have the same
+/// meter and bars. Builds its tables, so call it on the program's thread, before
+/// `std::audio::play`.
+pub fn orchestra(parts: Vec<Part>, tempo: [Tempo], hall: Hall, master: f32) -> Orchestra {
+    assert(parts.len() > 0, "an orchestra has at least one part")
+    let meter = parts[0].score.meter
+    let ticks = parts[0].score.length()
+    let clock = clock(meter.beat(), meter.bar(), ticks, tempo)
+    var seats: Vec<Seat> = Vec::with_capacity(parts.len())
+    var events: Vec<Event> = Vec::new()
+    var last = 0.0
+    for p in 0..parts.len() {
+        borrow part = parts[p]
+        assert(part.score.meter == meter, f"part `{part.name}` is in another meter")
+        assert(part.score.length() == ticks, f"part `{part.name}` has other bars than the first")
+        let i = part.instrument
+        let curve = intensities(part.score, clock)
+        seats.push(
+            Seat {
+                instrument: i,
+                gain: part.gain,
+                pan: part.pan,
+                depth: part.depth,
+                now: curve[0].value,
+                curve,
+                cursor: 0,
+                peaks: [FLAT; 12],
+                bright: [FLAT; 4],
+                far: vec2(0.0),
+                // The back of the stage is darker: a one-pole low-pass from 16 kHz at the front to
+                // 5 kHz at the back.
+                far_a: exp(-TAU * (16000.0 - 11000.0 * part.depth) / RATE),
+                body_a1: [vec4(0.0); 8],
+                body_a2: [vec4(0.0); 8],
+                body_g: [vec4(0.0); 8],
+                body_l1: [vec4(0.0); 8],
+                body_l2: [vec4(0.0); 8],
+                body_r1: [vec4(0.0); 8],
+                body_r2: [vec4(0.0); 8],
+                left: [0.0; 128],
+                right: [0.0; 128],
+                busy: 0,
+            },
+        )
+        let sustained = i.family == Family::Bowed ||
+            i.family == Family::Brass ||
+            i.family == Family::Voices
+        borrow notes = part.score.notes
+        for k in 0..notes.len() {
+            let n = notes[k]
+            // A slurred note follows the one before it in its voice without a new bow (or
+            // tongue, or breath), when both are single notes under the same slur and meet.
+            var glide = false
+            var from_key = 0
+            if sustained && n.slur != NO_SLUR && k > 0 {
+                let before = notes[k - 1]
+                let chord = (k + 1 < notes.len() &&
+                    notes[k + 1].start == n.start &&
+                    notes[k + 1].voice == n.voice) ||
+                    (k > 1 && notes[k - 2].start == before.start && notes[k - 2].voice == n.voice)
+                if before.voice == n.voice &&
+                    before.slur == n.slur &&
+                    before.end() == n.start &&
+                    !chord {
+                    glide = true
+                    from_key = before.key
+                }
+            }
+            let on = seconds_at(clock, n.start)
+            var off = seconds_at(clock, n.end())
+            if n.has(STACCATO) {
+                off = on + (off - on) * f64(STACCATO_SHARE)
+            } else if sustained && !n.has(TENUTO) {
+                off += f64(LEGATO)
+            }
+            if n.has(FERMATA) {
+                off = on + (off - on) * f64(FERMATA_HOLD)
+            }
+            let accent = if n.has(ACCENT) { 1.0 } else { 0.0 }
+            events.push(
+                Event {
+                    at: samples(on),
+                    part: p,
+                    key: n.key,
+                    held: max(samples(off - on), 1),
+                    accent,
+                    tremolo: n.has(TREMOLO),
+                    glide,
+                    from_key,
+                },
+            )
+            last = max(last, off + f64(i.release))
+        }
+    }
+    events.sort_by(|a, b| a.at < b.at)
+    var o = Orchestra {
+        seats,
+        events,
+        next: 0,
+        sample: 0,
+        voices: [SILENT; 64],
+        noise: 0x2545f491,
+        hall,
+        send_l: [0.0; 128],
+        send_r: [0.0; 128],
+        pre: [0.0; 8192],
+        side_low: 0.0,
+        air: vec2(0.0),
+        dc: vec2(0.0),
+        pre_at: 0,
+        diffuse: [0.0; 4096],
+        diffuse_at: 0,
+        room: [0.0; 131072],
+        room_at: 0,
+        room_low: [vec4(0.0); 4],
+        room_a: [vec4(0.0); 4],
+        room_b: [vec4(0.0); 4],
+        room_delay: [0.0; 16],
+        room_step: [0.0; 16],
+        room_phase: [0.0; 16],
+        room_rate: [0.0; 16],
+        seconds: last + f64(hall.time) + 2.0,
+        master,
+    }
+    for s in 0..o.seats.len() {
+        o.set_body(s)
+    }
+    for i in 0..4 * HALL_GROUPS {
+        let (g, lane) = (i / 4, i % 4)
+        let length = HALL_LENGTHS[i] - HALL_SWAY
+        let g0 = pow(10.0, -3.0 * length / RATE / hall.time)
+        let gp = pow(10.0, -3.0 * length / RATE / (hall.time * hall.highs))
+        let b = (g0 - gp) / (g0 + gp)
+        o.room_a[g][lane] = g0 * (1.0 - b)
+        o.room_b[g][lane] = b
+        o.room_rate[i] = TAU * (0.1 + 0.35 * scatter(i, b: 0, c: 11)) * 128.0 / RATE
+        o.room_phase[i] = TAU * scatter(i, b: 0, c: 12)
+    }
+    o.sway()
+    o
+}
+
+/// A number in [0, 1) for `a`, `b` and `c`, the same every run.
+fn scatter(a: u32, b: u32, c: u32) -> f32 {
+    var h = a.wrapping_mul(0x9e3779b1) ^ b.wrapping_mul(0x85ebca77) ^ c.wrapping_mul(0xc2b2ae3d)
+    h = (h ^ (h >> 15)).wrapping_mul(0x2c1b3c6d)
+    h = (h ^ (h >> 12)).wrapping_mul(0x297a2d39)
+    h = h ^ (h >> 15)
+    f32(h >> 8) / 16777216.0
+}
+
+/// A key's frequency in equal temperament, A4 = 440 Hz.
+fn key_hz(key: u32) -> f32 {
+    440.0 * pow(2.0, (f32(key) - 69.0) / 12.0)
+}
+
+/// The level of an instrument at intensity `x`: `range_db` below its level at 0.
+fn loudness(i: Instrument, x: f32) -> f32 {
+    i.level * pow(10.0, i.range_db * (clamp(x, 0.0, 1.0) - 1.0) / 20.0)
+}
+
+// ---- the audio thread -------------------------------------------------------------------------
+
+impl Orchestra {
+    /// Seat `s`'s body's peaks, and its brightness at its intensity now.
+    @audio
+    fn set_body(mut self, s: u32) {
+        let i = self.seats[s].instrument
+        for k in 0..PEAKS {
+            for c in 0..2 {
+                if i.peak_db[k] != 0.0 {
+                    self.seats[s].peaks[2 * k + c].set_peak(i.peak_hz[k], i.peak_q[k], i.peak_db[k])
+                }
+            }
+        }
+        // The body's modes: evenly in log frequency, each a little off its place, Q 15 to 40,
+        // each with its own sign (a mode's phase at the bridge), seeded by the seat.
+        for m in 0..BODY_MODES {
+            let (g, lane) = (m / 4, m % 4)
+            let u = (f32(m) + 0.9 * (scatter(s, m, 50) - 0.5)) / f32(BODY_MODES)
+            let hz = i.body_lo * pow(i.body_hi / i.body_lo, u)
+            let q = 15.0 + 25.0 * scatter(s, m, 51)
+            let w = TAU * hz / RATE
+            let r = exp(-w / (2.0 * q))
+            self.seats[s].body_a1[g][lane] = 2.0 * r * cos(w)
+            self.seats[s].body_a2[g][lane] = -r * r
+            let sign = if scatter(s, m, 52) < 0.5 { -1.0 } else { 1.0 }
+            let level = 0.5 + scatter(s, m, 53)
+            self.seats[s].body_g[g][lane] = sign * level * (1.0 - r) * 2.0 * sin(w)
+        }
+        self.set_bright(s)
+    }
+
+    @audio
+    fn set_bright(mut self, s: u32) {
+        let i = self.seats[s].instrument
+        if i.family != Family::Bowed && i.family != Family::Voices {
+            return
+        }
+        let x = self.seats[s].now
+        // Pressing harder (or singing louder) opens the highs, faster near the top.
+        let hz = i.bright_lo * pow(i.bright_hi / i.bright_lo, x * sqrt(x))
+        for k in 0..2 {
+            self.seats[s].bright[k].set_low(hz, 0.7)
+        }
+    }
+
+    @audio
+    fn white(mut self) -> f32 {
+        var x = self.noise
+        x = x ^ (x << 13)
+        x = x ^ (x >> 17)
+        x = x ^ (x << 5)
+        self.noise = x
+        f32(x >> 8) / 8388608.0 - 1.0
+    }
+
+    /// The intensity of seat `s` at sample `at`.
+    @audio
+    fn intensity_at(mut self, s: u32, at: u32) -> f32 {
+        var c = self.seats[s].cursor
+        let n = self.seats[s].curve.len()
+        while c + 1 < n && self.seats[s].curve[c + 1].at <= at {
+            c += 1
+        }
+        self.seats[s].cursor = c
+        let a = self.seats[s].curve[c]
+        if c + 1 >= n {
+            return a.value
+        }
+        let b = self.seats[s].curve[c + 1]
+        let u = f32(at - min(at, a.at)) / f32(max(b.at - a.at, 1))
+        a.value + (b.value - a.value) * clamp(u, 0.0, 1.0)
+    }
+
+    /// Starts event `e` in a free voice (or the quietest, if none is free).
+    @audio
+    fn start(mut self, e: Event) {
+        // A slurred note: the voice playing the note before it glides on to this one.
+        if e.glide {
+            for n in 0..VOICES {
+                if self.voices[n].active &&
+                    self.voices[n].part == e.part &&
+                    self.voices[n].key == e.from_key &&
+                    self.voices[n].t < self.voices[n].held + u32(0.1 * RATE) {
+                    var v = self.voices[n]
+                    v.key = e.key
+                    v.target_hz = key_hz(e.key)
+                    v.held = v.t + e.held
+                    self.voices[n] = v
+                    return
+                }
+            }
+        }
+        var best = 0
+        var quietest = 1000000.0
+        for v in 0..VOICES {
+            if !self.voices[v].active {
+                best = v
+                quietest = -1.0
+                break
+            }
+            let held = self.voices[v].t < self.voices[v].held
+            let q = self.voices[v].env + (if held { 10.0 } else { 0.0 })
+            if q < quietest {
+                quietest = q
+                best = v
+            }
+        }
+        let i = self.seats[e.part].instrument
+        let seed = self.sample.wrapping_mul(31) ^ e.key.wrapping_mul(7919) ^ e.part
+        var v = SILENT
+        v.active = true
+        v.part = e.part
+        v.family = i.family
+        v.key = e.key
+        v.hz = key_hz(e.key)
+        v.held = e.held
+        v.accent = e.accent
+        v.tremolo = e.tremolo
+        v.seed = seed
+        let players = clamp(i.players, 1, PLAYERS)
+        for p in 0..players {
+            let r = |c: u32| -> f32 { scatter(seed, p, c) }
+            v.phase[p] = r(1)
+            // Spread the detunes evenly across the section, each a little off its place, so no
+            // two players sit together.
+            let place = if players == 1 { 0.0 } else { f32(p) / f32(players - 1) - 0.5 }
+            v.detune[p] = i.detune_cents * (2.0 * place + 0.5 * (r(2) - 0.5))
+            v.wander[p] = i.wander_cents * (r(3) - 0.5)
+            v.vib_phase[p] = TAU * r(4)
+            v.vib_rate[p] = TAU * i.vibrato_hz * (0.85 + 0.3 * r(5)) * 128.0 / RATE
+            v.delay[p] = u32(i.spread * RATE * r(6) * (1.0 - 0.7 * e.accent))
+            v.bow[p] = r(7)
+            // Tremolo strokes 13 to 17 a second; a held note's whole bows, 2.5 to 4 s each.
+            v.bow_rate[p] = if e.tremolo {
+                (13.0 + 4.0 * r(8)) / RATE
+            } else {
+                1.0 / ((2.5 + 1.5 * r(8)) * RATE)
+            }
+            let at = clamp(self.seats[e.part].pan + i.width * place, -1.0, 1.0)
+            // Equal power, and each player as loud as the section's share.
+            let g = 1.0 / sqrt(f32(players))
+            v.gain_l[p] = g * cos(0.25 * PI * (at + 1.0))
+            v.gain_r[p] = g * sin(0.25 * PI * (at + 1.0))
+        }
+        if i.family == Family::Timpani ||
+            i.family == Family::Drum ||
+            i.family == Family::TamTam ||
+            i.family == Family::Cymbal {
+            self.tune_modes(mut v, i)
+            v.next_stroke = 0
+        }
+        self.voices[best] = v
+    }
+
+    /// Lays out a struck voice's modes.
+    @audio
+    fn tune_modes(mut self, v: mut Voice, i: Instrument) {
+        // A timpani's modes, over its (1,1) mode (the note): (1,1) to (6,1), then (1,2), (2,2)
+        // and (3,2), then the (0,1) thud below; their seconds to fall 60 dB, as shares of the
+        // (1,1)'s; and their share of a blow a quarter of the way in from the rim. After
+        // Rossing, The Science of Sound, ch. 18 (timpani).
+        let tim_ratio = [1.0, 1.5, 1.98, 2.44, 2.89, 3.33, 1.7, 2.22, 2.75, 0.62]
+        let tim_ring = [1.0, 0.75, 0.6, 0.5, 0.42, 0.35, 0.22, 0.2, 0.17, 0.04]
+        let tim_share = [1.0, 0.8, 0.62, 0.45, 0.3, 0.2, 0.22, 0.18, 0.12, 0.6]
+        // A free membrane's modes (zeros of Bessel's functions, over the first): a bass drum's.
+        let drum_ratio = [
+            1.0, 1.59, 2.14, 2.3, 2.65, 2.92, 3.16, 3.5, 3.6, 4.06, 4.6, 5.13, 0.7,
+        ]
+        if i.family == Family::Timpani {
+            v.modes = 10
+            for m in 0..10 {
+                self.set_mode(mut v, m, v.hz * tim_ratio[m], i.ring * tim_ring[m], tim_share[m])
+            }
+        } else if i.family == Family::Drum {
+            v.modes = 13
+            for m in 0..13 {
+                let hz = v.hz * drum_ratio[m] * (1.0 + 0.01 * (scatter(v.seed, m, 20) - 0.5))
+                let ring = i.ring / (1.0 + 0.35 * f32(m))
+                let share = if m == 12 { 1.2 } else { 1.0 / (1.0 + 0.25 * f32(m)) }
+                self.set_mode(mut v, m, hz, ring, share)
+            }
+        } else {
+            // Metal: dense modes, evenly in log frequency from the note up (a tam-tam's five
+            // octaves and a half; a cymbal's from 300 Hz, four and a half), each a little off its
+            // place. The lows ring longest; a cymbal's highs are loud, a tam-tam's soft.
+            let tam = i.family == Family::TamTam
+            v.modes = MODES
+            let top = if tam { 45.0 } else { 23.0 }
+            for m in 0..MODES {
+                // A tam-tam's modes near even steps; a cymbal's anywhere (a wash, not a chord).
+                let u = if tam {
+                    (f32(m) + 0.8 * (scatter(v.seed, m, 21) - 0.5)) / f32(MODES)
+                } else {
+                    scatter(v.seed, m, 21)
+                }
+                let hz = v.hz * pow(top, u)
+                let ring = i.ring * (if tam { 1.0 - 0.6 * u } else { 1.0 - 0.75 * u })
+                let share = (if tam { pow(1.0 - 0.8 * u, 2.0) } else {
+                    0.4 + 0.6 * u
+                }) * (0.6 + 0.8 * scatter(v.seed, m, 22)) * (if !tam && hz < 1500.0 { 0.4 } else {
+                    1.0
+                })
+                self.set_mode(mut v, m, hz, ring, share)
+                // A tam-tam's high modes swell in over up to `swell` seconds; its lows at once.
+                v.pull[m] = if tam {
+                    1.0 - exp(-128.0 / (RATE * (0.01 + i.swell * u * u)))
+                } else { 1.0 }
+                v.swelled[m] = if tam { 0.0 } else { 1.0 }
+            }
+        }
+        v.rings = u32(RATE * i.ring * 1.2)
+    }
+
+    /// Mode `m` of voice `v`: a rotation at `hz`, falling 60 dB in `ring` seconds, which takes
+    /// `share` of a blow.
+    @audio
+    fn set_mode(mut self, v: mut Voice, m: u32, hz: f32, ring: f32, share: f32) {
+        let r = exp(-decay_rate(max(ring, 0.02)))
+        let w = TAU * min(hz, 0.45 * RATE) / RATE
+        v.rc[m] = r * cos(w)
+        v.rs[m] = r * sin(w)
+        v.re[m] = 0.0
+        v.im[m] = 0.0
+        v.swelled[m] = 1.0
+        v.pull[m] = 1.0
+        // Above the top of hearing, nothing.
+        v.shares[m] = if hz < 0.45 * RATE { share } else { 0.0 }
+    }
+
+    /// A blow of `strength` (0 to 1) on voice `v`, with the mallet on the head `contact`
+    /// seconds: each mode takes its share, less what a half-sine pulse that long has at its
+    /// frequency.
+    @audio
+    fn blow(mut self, v: mut Voice, strength: f32, contact: f32) {
+        for m in 0..v.modes {
+            let w = atan2(v.rs[m], v.rc[m])
+            let hz = w * RATE / TAU
+            // A half-sine pulse of length T, at f: |cos(π f T) / (1 - (2 f T)²)|.
+            let x = 2.0 * hz * contact
+            let pulse = if abs(1.0 - x * x) < 0.001 {
+                PI / 4.0
+            } else {
+                abs(cos(0.5 * PI * x) / (1.0 - x * x))
+            }
+            let sign = if scatter(v.seed + v.t, m, 23) < 0.5 { -1.0 } else { 1.0 }
+            let kick = strength * v.shares[m] * pulse * (0.8 + 0.4 * scatter(v.seed + v.t, m, 24))
+            v.re[m] += sign * kick
+        }
+        // The stick on the head; a cymbal's sizzle, which lasts.
+        let cymbal = v.family == Family::Cymbal
+        let stick = if cymbal { 0.6 } else if v.family == Family::Timpani { 0.8 } else { 0.18 }
+        v.thwack = max(v.thwack, stick * strength)
+        v.thwack_fall = exp(-1.0 / (RATE * (if cymbal { 1.0 } else { max(contact * 2.0, 0.001) })))
+    }
+}
+
+/// A sawtooth's step, smoothed over a sample either side (PolyBLEP), at phase `t` (0 to 1)
+/// moving `dt` a sample: what is taken from a naive sawtooth so it doesn't alias.
+@audio
+fn blep(t: f32, dt: f32) -> f32 {
+    if t < dt {
+        let x = t / dt
+        return x + x - x * x - 1.0
+    }
+    if t > 1.0 - dt {
+        let x = (t - 1.0) / dt
+        return x * x + x + x + 1.0
+    }
+    0.0
+}
+
+/// A sawtooth without aliasing, from -1 to 1, at phase `t` moving `dt` a sample.
+@audio
+fn saw(t: f32, dt: f32) -> f32 {
+    2.0 * t - 1.0 - blep(t, dt)
+}
+
+/// Cents as a ratio of frequencies.
+@audio
+fn cents(c: f32) -> f32 {
+    exp(c * 0.000577623)
+}
+
+/// The mix's soft limit: even below 0.8, then rounding off toward 1.
+@audio
+fn limit(x: f32) -> f32 {
+    let a = abs(x)
+    if a < 0.8 {
+        return x
+    }
+    sign(x) * (0.8 + 0.2 * tanh((a - 0.8) / 0.2))
+}
+
+impl Orchestra {
+    /// Voice `v`'s pitch for this quantum: each player's vibrato, wander and detune, and a lip's
+    /// scoop up to the note.
+    @audio
+    fn steer(mut self, v: mut Voice, n: u32) {
+        let i = self.seats[v.part].instrument
+        let x = self.seats[v.part].now
+        let age = f32(v.t) / RATE
+        let wake = smoothstep(0.0, 1.0, age / max(i.vibrato_wake, 0.01))
+        let depth = i.vibrato_cents * wake * (0.7 + 0.6 * x)
+        let scoop = if v.family == Family::Brass { -28.0 * exp(-age / 0.035) } else { 0.0 }
+        let players = clamp(i.players, 1, PLAYERS)
+        // A slurred note's glide: the finger changes, about 30 ms to settle.
+        if v.target_hz > 0.0 {
+            v.hz *= pow(v.target_hz / v.hz, 1.0 - exp(-f32(n) / (GLIDE * RATE)))
+            if abs(v.target_hz / v.hz - 1.0) < 0.0005 {
+                v.hz = v.target_hz
+                v.target_hz = 0.0
+            }
+        }
+        for p in 0..players {
+            var phase = v.vib_phase[p] + v.vib_rate[p]
+            if phase > TAU {
+                phase -= TAU
+            }
+            v.vib_phase[p] = phase
+            // A slow wander: a random walk, pulled back to the note.
+            let kick = scatter(v.seed + v.t / 128, p, 30) - 0.5
+            v.wander[p] = 0.996 * v.wander[p] + 0.12 * i.wander_cents * kick
+            let c = v.detune[p] + v.wander[p] + depth * sin(phase) + scoop
+            v.step[p] = v.hz * cents(c) / RATE
+            // Bow pressure drifts, each player at their own slow rate (about ±1 dB).
+            let rate = 0.3 + 1.2 * scatter(v.seed, p, 43)
+            v.press[p] = 1.0 + 0.12 * sin(TAU * (rate * age + scatter(v.seed, p, 44)))
+        }
+    }
+
+    /// Voice `v`'s sound for samples `from` to `to` of this quantum, into its seat's buffers.
+    @audio
+    fn sound(mut self, n: u32, from: u32, to: u32) {
+        var v = self.voices[n]
+        if !v.active || from >= to {
+            return
+        }
+        let s = v.part
+        let i = self.seats[s].instrument
+        let x = self.seats[s].now
+        if v.family == Family::Bowed || v.family == Family::Brass || v.family == Family::Voices {
+            self.sustain(mut v, i, x, from, to)
+        } else {
+            self.strike(mut v, i, x, from, to)
+        }
+        self.voices[n] = v
+    }
+
+    @audio
+    fn sustain(mut self, v: mut Voice, i: Instrument, x: f32, from: u32, to: u32) {
+        let s = v.part
+        let players = clamp(i.players, 1, PLAYERS)
+        // A short note speaks quicker: its attack is at most a third of its length, so a run of
+        // sixteenths is heard as notes, not a swell.
+        let short = 0.3 * f32(v.held) / RATE
+        let attack = max(min(i.attack * (if v.accent > 0.0 { 0.35 } else { 1.0 }), short), 0.004)
+        let rise = 1.0 - exp(-1.0 / (attack * RATE))
+        let fall = 1.0 - exp(-1.0 / (max(i.release, 0.01) * RATE))
+        let level = loudness(i, x)
+        // The rosin's noise starts a little under the note: nothing rasps below the string.
+        let cut = 1.0 - exp(-TAU * 0.85 * v.hz / RATE)
+        let bowed = v.family == Family::Bowed
+        let brass = v.family == Family::Brass
+        // Each player bows at their own place on the string, and each brass player's lips open
+        // their own share of the cycle: wider when soft, narrower when loud.
+        var widths = [0.0; 8]
+        for p in 0..players {
+            let jitter = scatter(v.seed, b: p, c: 31)
+            widths[p] = if brass {
+                (0.2 - 0.12 * clamp(x, 0.0, 1.0)) * (0.9 + 0.2 * jitter)
+            } else {
+                i.bow * (0.85 + 0.3 * jitter)
+            }
+        }
+        for k in from..to {
+            let held = v.t < v.held
+            v.env += ((if held { 1.0 } else { 0.0 }) - v.env) * (if held { rise } else { fall })
+            let age = f32(v.t) / RATE
+            let bump = 1.0 + 0.8 * v.accent * exp(-age / 0.09)
+            var l = 0.0
+            var r = 0.0
+            var mono = 0.0
+            var other = 0.0
+            var breath = 0.0
+            var bowing = 0.0
+            for p in 0..players {
+                if v.t < v.delay[p] {
+                    continue
+                }
+                let dt = v.step[p]
+                var ph = v.phase[p] + dt
+                if ph >= 1.0 {
+                    ph -= 1.0
+                }
+                v.phase[p] = ph
+                var y = saw(ph, dt)
+                if brass {
+                    // The lips open briefly each cycle: a narrow pulse, its low harmonics even.
+                    let open = widths[p]
+                    var ph2 = ph + open
+                    if ph2 >= 1.0 {
+                        ph2 -= 1.0
+                    }
+                    y = (y - saw(ph2, dt)) / (4.0 * open)
+                    // Air through the lips while they're open.
+                    if ph < open {
+                        breath += if p % 2 == 0 { 1.0 } else { -1.0 }
+                    }
+                }
+                if bowed {
+                    // Helmholtz motion bowed at `width` of the string: a pulse of that width.
+                    var ph2 = ph + widths[p]
+                    if ph2 >= 1.0 {
+                        ph2 -= 1.0
+                    }
+                    y = 0.5 * (y - saw(ph2, dt))
+                    if v.tremolo {
+                        var b = v.bow[p] + v.bow_rate[p]
+                        if b >= 1.0 {
+                            b -= 1.0
+                        }
+                        v.bow[p] = b
+                        // Each stroke swells and eases, never quite silent at the turn.
+                        let stroke = 0.7 - 0.3 * cos(TAU * b)
+                        y *= stroke
+                        bowing += stroke
+                    } else {
+                        y *= v.press[p]
+                        // Each player changes bow on their own: a brief dip and a scrape.
+                        var b = v.bow[p] + v.bow_rate[p]
+                        if b >= 1.0 {
+                            b -= 1.0
+                        }
+                        v.bow[p] = b
+                        let from_turn = min(b, 1.0 - b) / (v.bow_rate[p] * RATE)
+                        let turn = exp(-(from_turn * from_turn) / (BOW_TURN * BOW_TURN))
+                        y *= 1.0 - 0.4 * turn
+                        bowing += 1.0 + 1.5 * turn
+                    }
+                }
+                l += y * v.gain_l[p]
+                r += y * v.gain_r[p]
+                if p % 2 == 0 {
+                    mono += y
+                } else {
+                    other += y
+                }
+            }
+            let amp = v.env * bump * level
+            if brass {
+                // The tongue's puff, then the lips' buzz through the note's own low-pass, which
+                // opens as the note grows louder; at the top, the wave in the tube steepens.
+                if (v.t & 31) == 0 {
+                    let e = pow(
+                        clamp(x * v.env * (1.0 + 0.35 * v.accent * exp(-age / 0.12)), 0.0, 1.3),
+                        1.2,
+                    )
+                    let hz = min(i.bright_lo * pow(i.bright_hi / i.bright_lo, e), i.bright_most)
+                    v.lip[0].set_low(hz, 0.6)
+                    v.lip[1].set_low(hz, 0.6)
+                }
+                let puff = 0.35 * self.white() * exp(-age / 0.015)
+                let air = i.noise * self.white() * breath
+                let root = sqrt(f32(players))
+                let a_in = (mono + air) / root + puff
+                let b_in = (other - air) / root + puff
+                let drive = 1.0 + 6.0 * i.blare * x * x * x
+                // The tube saturates, but louder is still louder: the gain falls only as the
+                // root of the drive. The lips' pulse is one-sided, so its mean is taken out.
+                let y2 = vec2(
+                    tanh(drive * v.lip[0].run(a_in)) / sqrt(drive),
+                    if players > 1 { tanh(drive * v.lip[1].run(b_in)) / sqrt(drive) } else { 0.0 },
+                )
+                v.dc += DC_CUT * (y2 - v.dc)
+                let ya = y2.x - v.dc.x
+                let yb = y2.y - v.dc.y
+                let g = amp * root
+                let second = if players > 1 { 1 } else { 0 }
+                self.seats[s].left[k] += g * (ya * v.gain_l[0] + yb * v.gain_l[second])
+                self.seats[s].right[k] += g * (ya * v.gain_r[0] + yb * v.gain_r[second])
+            } else {
+                // Rosin or breath: noise, as much as the bow (or the voice) is moving; each side
+                // its own, and weighted to the lows (a one-pole near 3 kHz under the white).
+                // The bow bites as it starts: a scrape over the first ~30 ms (not on a slur,
+                // which carries on).
+                let bite = 1.0 + 3.0 * (0.6 + 0.8 * scatter(v.seed, b: 0, c: 42)) * exp(-age / 0.03)
+                let moving = i.noise * bite * (if bowed { bowing / f32(players) } else { 1.0 })
+                // The two sides share most of their noise: one section, heard from two places.
+                let wl = self.white()
+                let wr = 0.6 * wl + 0.8 * self.white()
+                v.felt += FELT * (wl - v.felt)
+                v.thwack += FELT * (wr - v.thwack)
+                let shaped = vec2(0.05 * wl + 1.95 * v.felt, 0.05 * wr + 1.95 * v.thwack)
+                // Two one-pole high-passes near the note: the rosin is heard above the pitch.
+                v.hiss += cut * (shaped - v.hiss)
+                let once = shaped - v.hiss
+                v.hiss2 += cut * (once - v.hiss2)
+                let rl = moving * (once.x - v.hiss2.x)
+                let rr = moving * (once.y - v.hiss2.y)
+                self.seats[s].left[k] += amp * (l + rl)
+                self.seats[s].right[k] += amp * (r + rr)
+            }
+            v.t += 1
+        }
+        if v.t > v.held && v.env < 0.0003 {
+            v.active = false
+        }
+    }
+
+    @audio
+    fn strike(mut self, v: mut Voice, i: Instrument, x: f32, from: u32, to: u32) {
+        let s = v.part
+        let contact = i.contact_soft + (i.contact_hard - i.contact_soft) * pow(x, 0.7)
+        for k in from..to {
+            if v.t == v.next_stroke && (v.t == 0 || (v.tremolo && v.t < v.held)) {
+                let jitter = scatter(v.seed, v.t, 40)
+                let strength = loudness(i, x) * (0.82 + 0.18 * jitter) * (1.0 + 0.5 * v.accent)
+                self.blow(mut v, strength, contact)
+                // A roll: about 15 strokes a second, each a little early or late.
+                let gap = RATE / (15.0 * (0.85 + 0.3 * scatter(v.seed, v.t, 41)))
+                v.next_stroke = v.t + u32(gap)
+                v.accent = 0.0
+            }
+            var even = 0.0
+            var odd = 0.0
+            var m = 0
+            while m < v.modes {
+                let re = v.re[m] * v.rc[m] - v.im[m] * v.rs[m]
+                let im = v.re[m] * v.rs[m] + v.im[m] * v.rc[m]
+                v.re[m] = re
+                v.im[m] = im
+                if (m & 1) == 0 {
+                    even += im * v.swelled[m]
+                } else {
+                    odd += im * v.swelled[m]
+                }
+                m += 1
+            }
+            let white = self.white()
+            v.felt += FELT * (white - v.felt)
+            let thwack = v.thwack * (if v.family == Family::Cymbal { white } else { v.felt })
+            v.thwack *= v.thwack_fall
+            let l = 0.65 * even + 0.35 * odd + thwack
+            let r = 0.35 * even + 0.65 * odd + thwack
+            self.seats[s].left[k] += l * v.gain_l[0]
+            self.seats[s].right[k] += r * v.gain_r[0]
+            v.t += 1
+        }
+        // A tam-tam's highs swell in.
+        if v.family == Family::TamTam {
+            for m in 0..v.modes {
+                v.swelled[m] += (1.0 - v.swelled[m]) * v.pull[m]
+            }
+        }
+        let end = v.rings + (if v.tremolo { v.held } else { 0 })
+        if v.t > end {
+            v.active = false
+        }
+    }
+
+    /// The seats' bodies and the hall, over this quantum, into the channels.
+    @audio
+    fn mix_down(mut self, left: mut [f32], right: mut [f32]) {
+        let hall = self.hall
+        for n in 0..128 {
+            self.send_l[n] = 0.0
+            self.send_r[n] = 0.0
+        }
+        for s in 0..self.seats.len() {
+            if self.seats[s].busy == 0 {
+                continue
+            }
+            self.seats[s].busy -= 1
+            let i = self.seats[s].instrument
+            let shaped = i.family == Family::Bowed || i.family == Family::Voices
+            let depth = self.seats[s].depth
+            let dry = self.seats[s].gain * (1.0 - 0.45 * depth)
+            let send = self.seats[s].gain * (hall.send + (hall.back_send - hall.send) * depth)
+            let a = self.seats[s].far_a
+            for n in 0..128 {
+                var l = self.seats[s].left[n]
+                var r = self.seats[s].right[n]
+                self.seats[s].left[n] = 0.0
+                self.seats[s].right[n] = 0.0
+                for k in 0..PEAKS {
+                    if i.peak_db[k] != 0.0 {
+                        l = self.seats[s].peaks[2 * k].run(l)
+                        r = self.seats[s].peaks[2 * k + 1].run(r)
+                    }
+                }
+                if i.body > 0.0 {
+                    var bl = vec4(0.0)
+                    var br = vec4(0.0)
+                    for g in 0..BODY_MODES / 4 {
+                        let a1 = self.seats[s].body_a1[g]
+                        let a2 = self.seats[s].body_a2[g]
+                        let gain = self.seats[s].body_g[g]
+                        let l1 = self.seats[s].body_l1[g]
+                        let r1 = self.seats[s].body_r1[g]
+                        let yl = a1 * l1 + a2 * self.seats[s].body_l2[g] + gain * l
+                        let yr = a1 * r1 + a2 * self.seats[s].body_r2[g] + gain * r
+                        self.seats[s].body_l2[g] = l1
+                        self.seats[s].body_l1[g] = yl
+                        self.seats[s].body_r2[g] = r1
+                        self.seats[s].body_r1[g] = yr
+                        bl = bl + yl
+                        br = br + yr
+                    }
+                    let wood = i.body * BODY_GAIN
+                    l = (1.0 - i.body) * l + wood * ((bl.x + bl.y) + (bl.z + bl.w))
+                    r = (1.0 - i.body) * r + wood * ((br.x + br.y) + (br.z + br.w))
+                }
+                if shaped {
+                    l = self.seats[s].bright[0].run(l)
+                    r = self.seats[s].bright[1].run(r)
+                }
+                let far = (1.0 - a) * vec2(l, r) + a * self.seats[s].far
+                self.seats[s].far = far
+                left[n] += dry * far.x
+                right[n] += dry * far.y
+                self.send_l[n] += send * far.x
+                self.send_r[n] += send * far.y
+            }
+        }
+        for n in 0..128 {
+            let wet = self.reverberate(n)
+            var mix = vec2(left[n] + hall.wet * wet.x, right[n] + hall.wet * wet.y)
+            self.dc += MIX_DC_CUT * (mix - self.dc)
+            mix -= self.dc
+            let low = self.air + AIR * (mix - self.air)
+            self.air = low
+            let aired = low + 0.5 * (mix - low)
+            left[n] = limit(self.master * aired.x)
+            right[n] = limit(self.master * aired.y)
+        }
+        self.sway()
+    }
+
+    /// Each hall line's length over the next quantum, swaying slowly round its mean.
+    @audio
+    fn sway(mut self) {
+        for i in 0..4 * HALL_GROUPS {
+            let now = HALL_LENGTHS[i] - HALL_SWAY * (1.0 + sin(self.room_phase[i]))
+            var phase = self.room_phase[i] + self.room_rate[i]
+            if phase > TAU {
+                phase -= TAU
+            }
+            self.room_phase[i] = phase
+            let next = HALL_LENGTHS[i] - HALL_SWAY * (1.0 + sin(phase))
+            self.room_delay[i] = now
+            self.room_step[i] = (next - now) / 128.0
+        }
+    }
+
+    /// The hall's sound at sample `n` of this quantum: the sends, delayed, diffused, then 16
+    /// lines mixed by a Hadamard matrix (as engine::piano's room, larger).
+    @audio
+    fn reverberate(mut self, n: u32) -> vec2 {
+        // The predelay.
+        let p = self.pre_at
+        let pl = self.pre[2 * ((p + PREDELAY_SPAN - PREDELAY) & (PREDELAY_SPAN - 1))]
+        let pr = self.pre[2 * ((p + PREDELAY_SPAN - PREDELAY) & (PREDELAY_SPAN - 1)) + 1]
+        // The early reflections, from the walls nearest the stage.
+        var early = vec2(0.0)
+        for k in 0..7 {
+            let at = 2 * ((p + PREDELAY_SPAN - EARLY_AT[k]) & (PREDELAY_SPAN - 1))
+            let tap = EARLY_GAIN[k] * (if EARLY_SIDE[k] > 0.0 { self.pre[at] } else {
+                self.pre[at + 1]
+            })
+            early += if EARLY_SIDE[k] > 0.0 { vec2(tap, 0.35 * tap) } else {
+                vec2(0.35 * tap, tap)
+            }
+        }
+        self.pre[2 * p] = self.send_l[n]
+        self.pre[2 * p + 1] = self.send_r[n]
+        self.pre_at = (p + 1) & (PREDELAY_SPAN - 1)
+        // The diffusers: four all-passes a channel.
+        var io = vec2(pl, pr)
+        let d = self.diffuse_at
+        for k in 0..4 {
+            for c in 0..2 {
+                let base = (2 * k + c) * DIFFUSE_SPAN
+                let delayed = self.diffuse[base +
+                    ((d + DIFFUSE_SPAN - DIFFUSE[k]) & (DIFFUSE_SPAN - 1))]
+                let w = io[c] + DIFFUSE_GAIN * delayed
+                io[c] = delayed - DIFFUSE_GAIN * w
+                self.diffuse[base + d] = w
+            }
+        }
+        self.diffuse_at = (d + 1) & (DIFFUSE_SPAN - 1)
+        let l = io.x
+        let r = io.y
+        let at = self.room_at
+        var y = [vec4(0.0); 4]
+        for i in 0..4 * HALL_GROUPS {
+            let dl = self.room_delay[i] + self.room_step[i] * f32(n)
+            let whole = u32(dl)
+            let part = dl - f32(whole)
+            let base = i * HALL_SPAN
+            let a = self.room[base + ((at + HALL_SPAN - whole) & (HALL_SPAN - 1))]
+            let b = self.room[base + ((at + HALL_SPAN - whole - 1) & (HALL_SPAN - 1))]
+            y[i / 4][i % 4] = a + (b - a) * part
+        }
+        var h = [vec4(0.0); 4]
+        var wet = vec2(0.0)
+        for g in 0..HALL_GROUPS {
+            let low = self.room_a[g] * y[g] + self.room_b[g] * self.room_low[g]
+            self.room_low[g] = low
+            h[g] = vec4(
+                (low.x + low.y) + (low.z + low.w),
+                (low.x - low.y) + (low.z - low.w),
+                (low.x + low.y) - (low.z + low.w),
+                (low.x - low.y) - (low.z - low.w),
+            )
+            for lane in 0..4 {
+                let i = 4 * g + lane
+                wet += low[lane] * vec2(HALL_LEFT[i], HALL_RIGHT[i])
+            }
+        }
+        let mixed = [
+            0.25 * ((h[0] + h[1]) + (h[2] + h[3])),
+            0.25 * ((h[0] - h[1]) + (h[2] - h[3])),
+            0.25 * ((h[0] + h[1]) - (h[2] + h[3])),
+            0.25 * ((h[0] - h[1]) - (h[2] - h[3])),
+        ]
+        for i in 0..4 * HALL_GROUPS {
+            let input = HALL_IN[i] * (if i % 2 == 0 { l } else { r })
+            self.room[i * HALL_SPAN + at] = mixed[i / 4][i % 4] + 0.35 * input
+        }
+        self.room_at = (at + 1) & (HALL_SPAN - 1)
+        // Its return: the lines, the diffusers, the early reflections; its sides narrowed and
+        // their lows taken out.
+        let all = 0.5 * wet + DIFFUSE_OUT * vec2(l, r) + 0.5 * early
+        let mid = 0.5 * (all.x + all.y)
+        let side = 0.5 * (all.x - all.y)
+        self.side_low += SIDE_CUT * (side - self.side_low)
+        let narrow = HALL_SIDE * (side - self.side_low)
+        vec2(mid + narrow, mid - narrow)
+    }
+}
+
+/// The orchestra's voice: one quantum of `orchestra`, into the channels.
+@audio
+pub fn play_orchestra(o: mut Orchestra, left: mut [f32], right: mut [f32]) {
+    for n in 0..left.len() {
+        left[n] = 0.0
+        right[n] = 0.0
+    }
+    let start = o.sample
+    for s in 0..o.seats.len() {
+        let was = o.seats[s].now
+        // A new dynamic arrives over about 120 ms, as a player's arm does it.
+        let want = o.intensity_at(s, start)
+        let ease = if start == 0 { 1.0 } else { 1.0 - exp(-f32(left.len()) / (0.12 * RATE)) }
+        o.seats[s].now = was + ease * (want - was)
+        if abs(o.seats[s].now - was) > 0.0005 {
+            o.set_bright(s)
+        }
+    }
+    for v in 0..VOICES {
+        if o.voices[v].active {
+            var voice = o.voices[v]
+            if voice.family == Family::Bowed ||
+                voice.family == Family::Brass ||
+                voice.family == Family::Voices {
+                o.steer(mut voice, u32(left.len()))
+            }
+            o.voices[v] = voice
+        }
+    }
+    var from = 0
+    loop {
+        var until = 128
+        if o.next < o.events.len() {
+            let at = o.events[o.next].at
+            if at < start + 128 {
+                until = if at > start { at - start } else { 0 }
+            }
+        }
+        if until < from {
+            until = from
+        }
+        for v in 0..VOICES {
+            o.sound(v, from, until)
+        }
+        if until == 128 {
+            break
+        }
+        let e = o.events[o.next]
+        o.next += 1
+        o.start(e)
+        from = until
+    }
+    for v in 0..VOICES {
+        if o.voices[v].active {
+            // Its seat's body and the hall ring on a little after it stops: half a second.
+            o.seats[o.voices[v].part].busy = 188
+        }
+    }
+    o.mix_down(mut left, mut right)
+    o.sample += 128
+}
+
+// ---- the sections -------------------------------------------------------------------------------
+//
+// Each from how the instrument works, and what's known of its sound: bodies' and bells'
+// resonances after Meyer, Acoustics and the Performance of Music (5th ed., 2009), chs. 2-3, and
+// Fletcher and Rossing, The Physics of Musical Instruments (1998); vowels' formants after
+// Peterson and Barney (1952) and Sundberg, The Science of the Singing Voice (1987).
+
+/// A violin section: a body with its air (A0, 280 Hz) and wood (B1, 460 to 560 Hz) resonances,
+/// the bridge's hill near 2.5 kHz, and a dip between.
+pub const VIOLINS: Instrument = Instrument {
+    family: Family::Bowed,
+    players: 8,
+    bow: 0.11,
+    vibrato_hz: 5.6,
+    vibrato_cents: 22.0,
+    vibrato_wake: 0.3,
+    detune_cents: 12.0,
+    wander_cents: 6.0,
+    spread: 0.045,
+    width: 0.35,
+    attack: 0.12,
+    release: 0.3,
+    bright_lo: 3800.0,
+    bright_hi: 10000.0,
+    peak_hz: [280.0, 420.0, 950.0, 1700.0, 3800.0, 14000.0],
+    peak_q: [3.0, 1.5, 2.0, 1.2, 2.0, 0.7],
+    peak_db: [4.0, 9.0, -4.0, 1.0, 1.0, 4.0],
+    noise: 0.36,
+    range_db: 26.0,
+    level: 0.5,
+    body: 0.7,
+    body_lo: 180.0,
+    body_hi: 7000.0,
+}
+
+/// A viola section: the violin's body, larger, its resonances lower than its strings want.
+pub const VIOLAS: Instrument = Instrument {
+    players: 5,
+    bow: 0.1,
+    vibrato_hz: 5.3,
+    bright_lo: 2000.0,
+    bright_hi: 9000.0,
+    peak_hz: [230.0, 380.0, 900.0, 2000.0, 3500.0, 0.0],
+    peak_db: [4.0, 3.0, -2.0, 4.0, -3.0, 0.0],
+    body_lo: 180.0,
+    body_hi: 4500.0,
+    ..VIOLINS,
+}
+
+/// A cello section.
+pub const CELLI: Instrument = Instrument {
+    players: 5,
+    bow: 0.1,
+    vibrato_hz: 5.2,
+    vibrato_cents: 13.0,
+    bright_lo: 1500.0,
+    bright_hi: 7000.0,
+    peak_hz: [100.0, 200.0, 600.0, 1500.0, 3000.0, 0.0],
+    peak_db: [3.0, 4.0, -2.0, 3.0, -3.0, 0.0],
+    level: 0.35,
+    body_lo: 90.0,
+    body_hi: 3500.0,
+    ..VIOLINS,
+}
+
+/// A double-bass section.
+pub const BASSES: Instrument = Instrument {
+    players: 4,
+    bow: 0.1,
+    vibrato_hz: 4.8,
+    vibrato_cents: 10.0,
+    bright_lo: 800.0,
+    bright_hi: 4000.0,
+    peak_hz: [60.0, 120.0, 400.0, 900.0, 0.0, 35.0],
+    peak_q: [2.0, 3.0, 2.0, 1.0, 1.0, 0.7],
+    peak_db: [3.0, 4.0, -2.0, 2.0, 0.0, -9.0],
+    release: 0.4,
+    level: 0.25,
+    body_lo: 45.0,
+    body_hi: 2000.0,
+    ..VIOLINS,
+}
+
+/// Four horns: no vibrato, a hand in the bell (dark: a formant near 400 Hz, the highs cut).
+pub const HORNS: Instrument = Instrument {
+    family: Family::Brass,
+    players: 4,
+    vibrato_cents: 0.0,
+    detune_cents: 4.0,
+    wander_cents: 2.5,
+    spread: 0.015,
+    width: 0.25,
+    attack: 0.03,
+    release: 0.18,
+    bright_lo: 350.0,
+    bright_hi: 2800.0,
+    bright_most: 8000.0,
+    blare: 0.5,
+    peak_hz: [380.0, 1100.0, 0.0, 0.0, 0.0, 0.0],
+    peak_q: [1.5, 2.0, 1.0, 1.0, 1.0, 1.0],
+    peak_db: [4.0, -3.0, 0.0, 0.0, 0.0, 0.0],
+    noise: 0.5,
+    range_db: 34.0,
+    level: 0.1,
+}
+
+/// Two trumpets: a bright bell (formants near 1.3 and 2.6 kHz).
+pub const TRUMPETS: Instrument = Instrument {
+    players: 2,
+    attack: 0.012,
+    bright_lo: 800.0,
+    bright_hi: 8000.0,
+    bright_most: 7000.0,
+    blare: 0.8,
+    peak_hz: [1300.0, 2600.0, 0.0, 0.0, 0.0, 0.0],
+    peak_db: [6.0, 6.0, 0.0, 0.0, 0.0, 0.0],
+    level: 0.1,
+    ..HORNS,
+}
+
+/// Three trombones.
+pub const TROMBONES: Instrument = Instrument {
+    players: 3,
+    attack: 0.018,
+    bright_lo: 500.0,
+    bright_hi: 4500.0,
+    bright_most: 6000.0,
+    blare: 0.9,
+    peak_hz: [520.0, 1200.0, 0.0, 0.0, 0.0, 0.0],
+    peak_q: [1.2, 2.0, 1.0, 1.0, 1.0, 1.0],
+    peak_db: [4.0, 3.0, 0.0, 0.0, 0.0, 0.0],
+    level: 0.09,
+    ..HORNS,
+}
+
+/// A tuba.
+pub const TUBA: Instrument = Instrument {
+    players: 1,
+    attack: 0.03,
+    bright_lo: 200.0,
+    bright_hi: 1500.0,
+    bright_most: 4000.0,
+    blare: 0.4,
+    peak_hz: [230.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    peak_q: [1.2, 1.0, 1.0, 1.0, 1.0, 1.0],
+    peak_db: [4.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    level: 0.075,
+    ..HORNS,
+}
+
+/// A choir on "ah": its five formants.
+pub const CHOIR: Instrument = Instrument {
+    family: Family::Voices,
+    players: 8,
+    vibrato_hz: 5.5,
+    vibrato_cents: 25.0,
+    vibrato_wake: 0.25,
+    detune_cents: 10.0,
+    wander_cents: 6.0,
+    spread: 0.07,
+    width: 0.7,
+    attack: 0.3,
+    release: 0.45,
+    bright_lo: 2000.0,
+    bright_hi: 6000.0,
+    peak_hz: [750.0, 1150.0, 2800.0, 3500.0, 4950.0, 0.0],
+    peak_q: [5.0, 6.0, 8.0, 9.0, 9.0, 1.0],
+    peak_db: [9.0, 8.0, 10.0, 6.0, 3.0, 0.0],
+    noise: 0.06,
+    range_db: 26.0,
+    level: 0.1,
+}
+
+/// Timpani: the note is the (1,1) mode; felt mallets.
+pub const TIMPANI: Instrument = Instrument {
+    family: Family::Timpani,
+    width: 0.1,
+    ring: 3.0,
+    contact_soft: 0.006,
+    contact_hard: 0.0012,
+    range_db: 32.0,
+    level: 0.15,
+}
+
+/// A bass drum: its note is its lowest mode (C2 is about 65 Hz; play it near G1).
+pub const BASS_DRUM: Instrument = Instrument {
+    family: Family::Drum,
+    ring: 2.0,
+    contact_soft: 0.012,
+    contact_hard: 0.005,
+    range_db: 32.0,
+    level: 0.12,
+}
+
+/// A tam-tam: its note is its lowest mode.
+pub const TAM_TAM: Instrument = Instrument {
+    family: Family::TamTam,
+    ring: 9.0,
+    contact_soft: 0.02,
+    contact_hard: 0.008,
+    swell: 1.4,
+    range_db: 30.0,
+    level: 0.15,
+}
+
+/// A suspended cymbal: its note is its lowest mode (near C4 to C5).
+pub const CYMBAL: Instrument = Instrument {
+    family: Family::Cymbal,
+    ring: 3.5,
+    contact_soft: 0.0006,
+    contact_hard: 0.0002,
+    range_db: 30.0,
+    level: 0.14,
+}

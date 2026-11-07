@@ -18,6 +18,7 @@
 //   !< !> !!          a crescendo or a diminuendo from the note before it; `!!` ends it there,
 //                     and so does the next dynamic or hairpin
 //   !accent !staccato !tenuto !fermata       a mark on the note (or chord) before it
+//   !trem             a tremolo (bowed) or a roll (struck) on the note before it
 //   !ped !unped       the sustain pedal, down or up at the note before it
 //
 // Dynamics, hairpins and the pedal are the whole score's, as they are between a piano's
@@ -60,6 +61,7 @@ pub const ACCENT: u32 = 1
 pub const STACCATO: u32 = 2
 pub const TENUTO: u32 = 4
 pub const FERMATA: u32 = 8
+pub const TREMOLO: u32 = 16
 
 /// `Note::slur` of a note under no slur.
 pub const NO_SLUR: u32 = 4294967295
@@ -709,6 +711,8 @@ impl Reader {
             self.mark_last(TENUTO)
         } else if word == "fermata" {
             self.mark_last(FERMATA)
+        } else if word == "trem" {
+            self.mark_last(TREMOLO)
         } else if word == "ped" {
             self.pedal.push(PedalMark { at: t, down: true })
         } else if word == "unped" {

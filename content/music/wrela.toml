@@ -1,0 +1,6 @@
+# Music: the game's score, written as Wrela notation (engine::score) and played by engine::orchestra.
+[package]
+name = "music"
+
+[dependencies]
+engine = { workspace = true }

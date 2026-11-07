@@ -1,0 +1,52 @@
+// A sketch from a hummed session (tools: /mnt/project-files/music/hum/hum_session.py).
+// The recording was a reference only; these parts are its transcription, to arrange from.
+
+use engine::orchestra::{CELLI, CHOIR, VIOLINS, Part, Tempo}
+use engine::score::{Score, meter, score}
+use std::collections::Vec
+
+fn part(name: Text, lines: [Text]) -> Score {
+    score("Sketch", meter(beats: 4, unit: 4)).voice(name, lines)
+}
+
+pub fn idea_1() -> Score {
+    part(
+        "violins 1",
+        [
+            "d5/4 !mf a5/4. bb5/8 a5/4 | f5/4 !f g5/2 e5/4 | d5/4 d5/4 a5/4. c6/8 | d6/2 !mp bb5/4 a5/4~ |",
+            "a5/2 r/2 |",
+        ],
+    )
+}
+
+pub fn idea_2() -> Score {
+    part(
+        "cellos",
+        [
+            "d3/8 !mf d3/8 a3/8 d3/8 eb3/8 d3/8 a2/4 | d3/8 d3/8 a3/8 d3/8 eb3/8 d3/8 a2/4 | d3/8 d3/8 a3/8 d3/8 eb3/8 d3/8 a2/4 | r/1 |",
+            "r/1 |",
+        ],
+    )
+}
+
+pub fn idea_3() -> Score {
+    part(
+        "choir",
+        [
+            "a3/1 !mf | bb3/1 | a3/2 !f db4/2 | d4/1 |",
+            "r/1 |",
+        ],
+    )
+}
+
+pub fn parts() -> Vec<Part> {
+    Vec::from(
+        [
+            Part { name: "violins 1", instrument: VIOLINS, score: idea_1(), pan: -0.6, depth: 0.1 },
+            Part { name: "cellos", instrument: CELLI, score: idea_2(), pan: 0.4, depth: 0.15 },
+            Part { name: "choir", instrument: CHOIR, score: idea_3(), pan: 0.0, depth: 0.85 },
+        ],
+    )
+}
+
+pub const TEMPO: [Tempo; 1] = [Tempo { bar: 1, bpm: 76.7 }]
