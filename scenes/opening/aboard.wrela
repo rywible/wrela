@@ -20,6 +20,7 @@ use engine::realize::{Mesh, SkinVertex, realize_once}
 use engine::sky::{Clouds, cloud_shadow, sky_uv}
 use heavens::Heavens
 use look::{OVERCAST, SKIFF, Shot}
+use main::INKED
 use paint::{Heaven, lit_solid, storm_sky}
 use played::cover
 use skiff::vessel_shadow
@@ -500,13 +501,15 @@ fn lit_hero(
         n,
         d,
         c.albedo,
-        c.rough,
+        // (Illustrated, his skin and cloth matte: no wet streaks of light.)
+        if INKED > 0.5 && c.metal < 0.5 { max(c.rough, 0.92) } else { c.rough },
         c.metal,
         vec3(0.0),
         sun,
         ao: ao,
         haze: 0.0,
-        glint: 1.0,
+        // (Illustrated, his cloth and skin matte: the sky's mirror in them read as smears.)
+        glint: if INKED > 0.5 { 0.35 } else { 1.0 },
     )
     // Lit as the skiff is, a character's way: the sea's light thrown up under him, and a rim of
     // the sun (its numbers, for the clean look).
@@ -529,6 +532,17 @@ fn lit_hero(
         max(dot(n, normalize(vec3(light.sun.x, 0.3, light.sun.z))), 0.0)
     let rim = light.sun_colour * vec3(1.0, 0.85, 0.6) * (0.6 * edge_k)
     col += c.albedo * bounce + rim * sun
+    if INKED > 0.5 {
+        // Illustrated: the sky's light round his form, from the side away from the eye, so his
+        // black reads against the dark sea; brightest where his form turns up to the sky.
+        // A narrow band with a hard edge, as an illustrator lays it: his blacks stay deep inside.
+        let edge = 1.0 - max(dot(n, -d), 0.0)
+        let band = clamp((edge - 0.62) / 0.08, 0.0, 1.0)
+        let sky = storm_sky(view, light, normalize(vec3(0.0, 0.6, 0.0) + n), dome, smp, disc: false).rgb
+        col += sky * band * (0.45 + 0.55 * max(n.y, 0.0)) * 0.7
+        // His gold's trim kept bright under the storm.
+        col += c.albedo * c.metal * 0.05
+    }
     Targets3 {
         first: vec4(col, 1.0),
         second: vec4(log2(max(t, 0.01)), SKIFF, 1.0, 0.5),
@@ -583,6 +597,29 @@ pub fn laid(
         discard()
     }
     let all = f32(FINER * FINER)
+    if INKED > 0.5 {
+        // His ink: where, a finer sample or two off, he ends (his outline) or his surface jumps
+        // back (where an arm crosses his body, the coat over his legs).
+        var ink = 0.0
+        for k in 0..FINER * FINER {
+            let sx = i32(x * FINER + k % FINER)
+            let sy = i32(y * FINER + k / FINER)
+            let here = marks.load(u32(sx), u32(sy))
+            if here.y != 0.0 {
+                // (Three finer samples out, eight ways: a line about a pixel and a half wide.)
+                for j in 0..8 {
+                    let ox = if j == 0 || j == 4 || j == 5 { 3 } else if j == 1 || j == 6 || j == 7 { -3 } else { 0 }
+                    let oy = if j == 2 || j == 4 || j == 6 { 3 } else if j == 3 || j == 5 || j == 7 { -3 } else { 0 }
+                    let o = marks.load(u32(max(sx + ox, 0)), u32(max(sy + oy, 0)))
+                    if o.y == 0.0 || o.x - here.x > 0.03 {
+                        ink += 1.0
+                    }
+                }
+            }
+        }
+        let a = clamp(ink / (all * 2.0), 0.0, 1.0)
+        sum = mix(sum, vec4(0.012, 0.012, 0.018, 1.0) * hits, a)
+    }
     let under = under_colour.load(x, y)
     let most = hits * 2.0 >= all
     Targets3 {

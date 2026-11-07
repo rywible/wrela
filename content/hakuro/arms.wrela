@@ -129,11 +129,12 @@ pub fn arm(side: u32) -> Mesh {
 // ---- his body ------------------------------------------------------------------------------
 
 /// Each of his sampled body's vertices skinned by his rig (`hakuro::rig`: its pieces' weights,
-/// falling off over `falloff`), its normal taken over a cell and a half each way.
+/// falling off over `falloff`), its normal taken over `reach` cells each way.
 @compute(64)
 pub fn skin_by_rig<C, F: Parts<C>>(
     field: F,
     falloff: f32,
+    reach: f32,
     lattice: Lattice,
     slots: [u32],
     words: [u32],
@@ -146,7 +147,7 @@ pub fn skin_by_rig<C, F: Parts<C>>(
     }
     let v = verts[id]
     let (bones, weights) = field.skin_at(v.pos, ALL, lattice.cell, falloff)
-    let e = lattice.cell * 1.5
+    let e = lattice.cell * reach
     let g = vec3(
         sampled_at(lattice, slots, words, v.pos + vec3(e, 0.0, 0.0)) - sampled_at(lattice, slots, words, v.pos - vec3(e, 0.0, 0.0)),
         sampled_at(lattice, slots, words, v.pos + vec3(0.0, e, 0.0)) - sampled_at(lattice, slots, words, v.pos - vec3(0.0, e, 0.0)),
@@ -158,22 +159,25 @@ pub fn skin_by_rig<C, F: Parts<C>>(
 
 /// His trunk, legs and head (`body_grid`) realized from their samples and skinned by his rig.
 pub fn sampled_body() -> Mesh {
-    by_rig(body_grid::samples(0))
+    by_rig(body_grid::samples(0), 1.5)
 }
 
 /// His jacket (`jacket_grid`): its own shell over his shirt, skinned by his rig as his body is.
 pub fn jacket() -> Mesh {
-    by_rig(jacket_grid::samples(0))
+    // (Its normal taken nearer: the shell is only a cell or two thick, and further off the
+    // samples would reach through it to its other face.)
+    by_rig(jacket_grid::samples(0), 0.8)
 }
 
 /// A sampled shape of his realized and skinned by his rig.
-fn by_rig(samples: Samples) -> Mesh {
+fn by_rig(samples: Samples, reach: f32) -> Mesh {
     let shape = samples.upload()
     var mesh = realize_sampled(shape)
     dispatch(
         skin_by_rig.bind(
             field: rig().field(),
             falloff: 0.05,
+            reach: reach,
             lattice: shape.lattice,
             slots: shape.slots.items(),
             words: shape.samples.items(),
