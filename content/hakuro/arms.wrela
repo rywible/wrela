@@ -1,0 +1,123 @@
+// Hakuro's arms, made as the idol's parts are: the reference body's own surface sampled into a
+// distance grid (`arm_left_grid`, `arm_right_grid`, engine::sampled), so the elbow, the shoulder
+// and the muscle between are the sculpt's, not pieces fitted to it. Each is realized from its
+// samples, then skinned here the way the reference's rig is weighted: the shoulder from the
+// collarbone into the upper arm, the elbow blended over about 10 cm round its joint,
+// the wrist into the hand.
+
+use arm_left_grid
+use arm_right_grid
+use engine::realize::{BLOCK, Mesh, SkinVertex, Tally}
+use engine::realize::corner_offset
+use engine::sampled::{BLOCK_WORDS, Lattice, STORED, realize_sampled}
+use std::gpu::{GlobalId, Slots, dispatch}
+
+/// The skeleton's bone numbers (`hakuro::skeleton` adds them in this order: the trunk, then
+/// each pair left and right).
+const B_CLAVICLE: u32 = 6
+const B_UPPER: u32 = 8
+const B_FORE: u32 = 10
+const B_HAND: u32 = 12
+
+fn ramp(v: f32, lo: f32, hi: f32) -> f32 {
+    let t = clamp((v - lo) / (hi - lo), 0.0, 1.0)
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// A weight in [0, 1] as a byte.
+fn byte(w: f32) -> u32 {
+    u32(round(clamp(w, 0.0, 1.0) * 255.0))
+}
+
+/// The bones and weights at `p` (rest space) of the arm on side `side` (0 left, 1 right), as the
+/// reference's rig has them: along the arm, by how far out it is.
+pub fn arm_weights(p: vec3, side: u32) -> (u32, u32) {
+    let out = abs(p.x)
+    // The shoulder: as his body's shoulder pieces split, so the two move as one at the armhole.
+    let t1 = clamp((out - 0.10) / 0.16, 0.0, 1.0)
+    // The elbow: the reference's weights pass from upper arm to forearm between about 40 and
+    // 47.5 cm out (its joint is at 46); a little wider here, for a softer crease.
+    let t2 = ramp(out, lo: 0.385, hi: 0.49)
+    // The wrist.
+    let t3 = ramp(out, lo: 0.64, hi: 0.73)
+    let w1 = byte(t1 * (1.0 - t2))
+    let w2 = byte(t2 * (1.0 - t3))
+    let w3 = byte(t3)
+    let w0 = 255 - min(w1 + w2 + w3, 255)
+    let bones = (B_CLAVICLE + side) | ((B_UPPER + side) << 8) | ((B_FORE + side) << 16) |
+        ((B_HAND + side) << 24)
+    (bones, w0 | (w1 << 8) | (w2 << 16) | (w3 << 24))
+}
+
+/// The samples' distance at `p` (as `engine::sampled::Samples::distance`, on the GPU).
+fn sampled_at(l: Lattice, slots: [u32], words: [u32], p: vec3) -> f32 {
+    let n = vec3(l.size * BLOCK)
+    let q = clamp((p - l.origin) / l.cell, vec3(0.0), n - vec3(0.001))
+    let c = vec3u(q)
+    let f = q - vec3(c)
+    let b = c / BLOCK
+    let slot = slots[b.x + l.size.x * (b.y + l.size.y * b.z)]
+    if slot < STORED {
+        return if slot == 0 { l.band } else { -l.band }
+    }
+    let base = (slot - STORED) * BLOCK_WORDS
+    let lc = c - b * BLOCK
+    var v = [0.0; 8]
+    for j in 0..8 {
+        let k = lc + corner_offset(j)
+        let i = (k.x * 5 + k.y) * 5 + k.z
+        let byte = (words[base + i / 4] >> ((i % 4) * 8)) & 255
+        v[j] = (f32(byte) / 255.0 - 0.5) * 2.0 * l.band
+    }
+    mix(
+        mix(mix(v[0], v[1], f.x), mix(v[2], v[3], f.x), f.y),
+        mix(mix(v[4], v[5], f.x), mix(v[6], v[7], f.x), f.y),
+        f.z,
+    )
+}
+
+/// Each of the arm's vertices skinned (`arm_weights`), and its normal taken over a cell and a
+/// half each way (the samples' own gradient turns cell by cell: the arm looked cut in facets).
+@compute(64)
+pub fn skin_arm(
+    side: u32,
+    lattice: Lattice,
+    slots: [u32],
+    words: [u32],
+    tally: [Tally],
+    verts: mut Slots<SkinVertex>,
+    id: GlobalId,
+) {
+    if id.x >= tally[0].vertices {
+        return
+    }
+    let v = verts[id]
+    let (bones, weights) = arm_weights(v.pos, side)
+    let e = lattice.cell * 1.5
+    let g = vec3(
+        sampled_at(lattice, slots, words, v.pos + vec3(e, 0.0, 0.0)) - sampled_at(lattice, slots, words, v.pos - vec3(e, 0.0, 0.0)),
+        sampled_at(lattice, slots, words, v.pos + vec3(0.0, e, 0.0)) - sampled_at(lattice, slots, words, v.pos - vec3(0.0, e, 0.0)),
+        sampled_at(lattice, slots, words, v.pos + vec3(0.0, 0.0, e)) - sampled_at(lattice, slots, words, v.pos - vec3(0.0, 0.0, e)),
+    )
+    let normal = if length(g) > 1.0e-6 { normalize(g) } else { v.normal }
+    verts[id] = SkinVertex { pos: v.pos, bones, normal, weights, mask: v.mask }
+}
+
+/// His arm on `side` (0 left, 1 right) realized from its samples and skinned.
+pub fn arm(side: u32) -> Mesh {
+    let samples = if side == 0 { arm_left_grid::samples(B_UPPER) } else { arm_right_grid::samples(B_UPPER + 1) }
+    let shape = samples.upload()
+    var mesh = realize_sampled(shape)
+    dispatch(
+        skin_arm.bind(
+            side: side,
+            lattice: shape.lattice,
+            slots: shape.slots.items(),
+            words: shape.samples.items(),
+            tally: mesh.tally.items(),
+            verts: mesh.verts.items_mut(),
+        ),
+        groups: mesh.skin.items(),
+    )
+    mesh
+}

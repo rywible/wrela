@@ -9,7 +9,8 @@
 // as fine as his fields, however coarse his mesh. He's lit as the skiff is (`paint::lit_solid`,
 // its sea bounce and its rim), shadowed by the rig and the clouds.
 
-use hakuro::hakuro::{Cloth, coat, hands, head, hero}
+use hakuro::arms::arm
+use hakuro::hakuro::{Cloth, body_paint, coat, hands, head, hero}
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
 use engine::character::skin_matrix
 use engine::look::CreatureLook
@@ -54,6 +55,7 @@ pub struct Aboard {
     head: Mesh,
     coat: Mesh,
     hands: Mesh,
+    arms: [Mesh; 2],
     palette: GpuBuffer<mat4>,
     colour: Texture<Rgba16Float>,
     marks: Texture<Rgba16Float>,
@@ -79,6 +81,8 @@ pub fn aboard() -> Aboard {
         head: realize_once(head(), HEAD),
         coat: realize_once(coat(), COAT),
         hands: realize_once(hands(), HANDS),
+        // (His arms are sampled from the reference's own surface: `hakuro::arms`.)
+        arms: [arm(0), arm(1)],
         palette: buffer(MAX_BONES),
         colour: texture(width: 1, height: 1),
         marks: texture(width: 1, height: 1),
@@ -347,6 +351,7 @@ pub struct HeroVertex: Copy {
     pub tx: vec3,
     pub ty: vec3,
     pub tz: vec3,
+    pub normal: vec3,
     pub lo: Flat<u32>,
     pub hi: Flat<u32>,
 }
@@ -381,6 +386,7 @@ pub fn hero_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: S
         tx: m[0].xyz,
         ty: m[1].xyz,
         tz: m[2].xyz,
+        normal: mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal,
         lo: Flat { value: sv.mask.lo },
         hi: Flat { value: sv.mask.hi },
     }
@@ -420,9 +426,6 @@ pub fn hero_pixel<F: Parts<Cloth>>(
     if dot(n, d) > 0.0 {
         n = normalize(n - d * (dot(n, d) + 0.05))
     }
-    let h = Heaven { light, clouds }
-    let p = v.world
-    let sun = vessel_shadow(s, p + n * 0.01, light.sun) * cloud_shadow(clouds, cloud, smp, p)
     // How much of the sky his own folds hide (the skiff's way): his distance a little out along
     // his normal, at rest, short of how far out it was stepped.
     let out = normalize(grad)
@@ -433,6 +436,59 @@ pub fn hero_pixel<F: Parts<Cloth>>(
         hidden += max(step - e, 0.0) / step * (if i == 1 { 1.0 } else { 0.6 })
     }
     let ao = clamp(1.0 - hidden * 0.6, 0.0, 1.0)
+    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, v.world, n, d, t, c, ao)
+}
+
+/// His sampled arms' pixel: as `hero_pixel`, but with no fields behind them, their own normal
+/// and his body's paint where they are on him at rest.
+@fragment
+pub fn arm_pixel(
+    v: HeroVertex,
+    shot: Shot,
+    light: Light,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    painted: Texture<Rgba16Float>,
+    pixel: FragCoord,
+) -> Targets3<vec4, vec4, vec4> {
+    let s = shot
+    let t = length(v.world - s.eye)
+    let behind = painted.load(u32(pixel.position.x) / FINER, u32(pixel.position.y) / FINER)
+    if behind.x < log2(t) - 0.006 {
+        discard()
+    }
+    let d = normalize(v.world - s.eye)
+    var n = normalize(v.normal)
+    if dot(n, d) > 0.0 {
+        n = normalize(n - d * (dot(n, d) + 0.05))
+    }
+    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, v.world, n, d, t, body_paint(v.rest), 0.9)
+}
+
+/// His pixel lit, from its normal `n`, cloth `c` and how open it is to the sky `ao`: as the skiff
+/// is, a character's way.
+fn lit_hero(
+    s: Shot,
+    light: Light,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    p: vec3,
+    n: vec3,
+    d: vec3,
+    t: f32,
+    c: Cloth,
+    ao: f32,
+) -> Targets3<vec4, vec4, vec4> {
+    let h = Heaven { light, clouds }
+    let sun = vessel_shadow(s, p + n * 0.01, light.sun) * cloud_shadow(clouds, cloud, smp, p)
     var col = lit_solid(
         s,
         h,
@@ -667,6 +723,30 @@ impl Aboard {
             indirect: self.hands.draw.items(),
             cull: Cull::Front,
         )
+        for a in 0..2 {
+            draw(
+                p,
+                hero_vertex.bind(
+                    verts: self.arms[a].verts.items(),
+                    palette: self.palette.items(),
+                    shot: shot,
+                ),
+                arm_pixel.bind(
+                    shot: shot,
+                    light: hv.light,
+                    clouds: hv.clouds,
+                    view: hv.tables.view,
+                    aerial: hv.tables.aerial,
+                    dome: hv.sky.dome,
+                    cloud: hv.sky.shadow,
+                    smp: hv.linear,
+                    painted: marks,
+                ),
+                indices: self.arms[a].quads.items(),
+                indirect: self.arms[a].draw.items(),
+                cull: Cull::Front,
+            )
+        }
         p.end()
         let c = begin_pass3(
             mut self.under_colour,

@@ -2,7 +2,8 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use hakuro::{Cloth, coat, hands, head, hero, skeleton}
+use arms::arm
+use hakuro::{Cloth, body_paint, coat, hands, head, hero, skeleton}
 use engine::character::{ByChannels, colours}
 use engine::character::skin_matrix
 use engine::creature::{Bone, Creature, MAX_BONES, PartMask, Parts, Skeleton}
@@ -122,7 +123,7 @@ fn posed() -> [mat4; 64] {
 const TURNS = [0.0, -0.7853982, -1.5707963, 3.1415927, 1.5707963]
 
 pub struct State {
-    meshes: [Mesh; 4],
+    meshes: [Mesh; 6],
     colours: [GpuBuffer<Unorm8x4>; 4],
     palettes: GpuBuffer<mat4>,
     tallies: Vec<Pending<Tally>>,
@@ -158,8 +159,12 @@ pub fn init() -> State {
     tallies.push(read(head_mesh.tally.items()))
     tallies.push(read(coat_mesh.tally.items()))
     tallies.push(read(hands_mesh.tally.items()))
+    let left_arm = arm(0)
+    let right_arm = arm(1)
+    tallies.push(read(left_arm.tally.items()))
+    tallies.push(read(right_arm.tally.items()))
     State {
-        meshes: [body, head_mesh, coat_mesh, hands_mesh],
+        meshes: [body, head_mesh, coat_mesh, hands_mesh, left_arm, right_arm],
         colours: [c0, c1, c2, c3],
         palettes,
         tallies,
@@ -273,6 +278,25 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             cull: Cull::Back,
         )
     }
+    // (His arms, sampled from the reference: no fields to read, so their own normals and his
+    // body's paint at their place at rest.)
+    for m in 4..6 {
+        for k in 0..5 {
+            draw(
+                pass,
+                fielded.bind(
+                    verts: s.meshes[m].verts.items(),
+                    palettes: s.palettes.items(),
+                    first: k * MAX_BONES,
+                    view: v,
+                ),
+                painted_pixel.bind(view: v, lights: LIGHTS, shadow: s.shadow, shadow_sampler: s.smp),
+                indices: s.meshes[m].quads.items(),
+                indirect: s.meshes[m].draw.items(),
+                cull: Cull::Back,
+            )
+        }
+    }
     pass.present()
 }
 
@@ -285,6 +309,7 @@ pub struct Fielded: Copy {
     pub tx: vec3,
     pub ty: vec3,
     pub tz: vec3,
+    pub normal: vec3,
     pub lo: Flat<u32>,
     pub hi: Flat<u32>,
 }
@@ -301,6 +326,7 @@ pub fn fielded(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32
         tx: m[0].xyz,
         ty: m[1].xyz,
         tz: m[2].xyz,
+        normal: mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal,
         lo: Flat { value: sv.mask.lo },
         hi: Flat { value: sv.mask.hi },
     }
@@ -320,6 +346,26 @@ pub fn fielded_pixel<F: Parts<Cloth>>(
     let mask = PartMask { lo: v.lo.value, hi: v.hi.value }
     let (_, grad, c) = field.sample_masked(v.rest, mask, 0.002)
     var n = normalize(mat3(v.tx, v.ty, v.tz) * grad)
+    let d = normalize(v.world - view.eye)
+    if dot(n, d) > 0.0 {
+        n = normalize(n - d * (dot(n, d) + 0.05))
+    }
+    let lit = lights.shadow(view, v.world, n, shadow, shadow_sampler)
+    vec4(lights.light(c.albedo, c.rough, n, v.world, view, lit), 1.0)
+}
+
+/// A pixel of a mesh with no fields behind it (his sampled arms), in plain light: its own
+/// normal, and his body's paint where it is on him at rest.
+@fragment
+pub fn painted_pixel(
+    v: Fielded,
+    view: View,
+    lights: Lights,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+) -> vec4 {
+    let c = body_paint(v.rest)
+    var n = normalize(v.normal)
     let d = normalize(v.world - view.eye)
     if dot(n, d) > 0.0 {
         n = normalize(n - d * (dot(n, d) + 0.05))
