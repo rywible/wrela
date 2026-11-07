@@ -8,6 +8,7 @@ use engine::sampled::realize_sampled
 use std::derive::Box3
 use engine::character::{ByChannels, colours}
 use engine::creature::MAX_BONES
+use engine::carving::{STATUE, carved, skin_carved}
 use engine::plain::{LIGHTS, coloured, skin_coloured, unlit_shadow, view}
 use engine::realize::{Mesh, Tally, realize_once, solid}
 use std::gpu::{
@@ -16,6 +17,9 @@ use std::gpu::{
 }
 use std::io::{Pending, print}
 use std::transform::{rotate_y, translate}
+
+/// Whether the stone is carved pixel by pixel (`engine::carving`), or plain (`--set CARVED=0`).
+pub const CARVED: u32 = 1
 
 /// A box round the idol (m), for its paint.
 const BOUNDS = Box3 { lo: vec3(-3.5, -0.5, -2.0), hi: vec3(3.5, 7.0, 3.3) }
@@ -111,20 +115,43 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let first = if shot == 0 { 0 } else { 5 }
     for k in 0..s.meshes.len() * n {
         let m = k / n
-        draw(
-            pass,
-            skin_coloured.bind(
-                verts: s.meshes[m].verts.items(),
-                colours: s.colours[m].items(),
-                palettes: s.palettes.items(),
-                first: (first + k % n) * MAX_BONES,
-                view: v,
-            ),
-            coloured.bind(view: v, lights: LIGHTS, shadow: s.shadow, shadow_sampler: s.smp),
-            indices: s.meshes[m].quads.items(),
-            indirect: s.meshes[m].draw.items(),
-            cull: Cull::Back,
-        )
+        if CARVED == 0 {
+            draw(
+                pass,
+                skin_coloured.bind(
+                    verts: s.meshes[m].verts.items(),
+                    colours: s.colours[m].items(),
+                    palettes: s.palettes.items(),
+                    first: (first + k % n) * MAX_BONES,
+                    view: v,
+                ),
+                coloured.bind(view: v, lights: LIGHTS, shadow: s.shadow, shadow_sampler: s.smp),
+                indices: s.meshes[m].quads.items(),
+                indirect: s.meshes[m].draw.items(),
+                cull: Cull::Back,
+            )
+        } else {
+            draw(
+                pass,
+                skin_carved.bind(
+                    verts: s.meshes[m].verts.items(),
+                    colours: s.colours[m].items(),
+                    palettes: s.palettes.items(),
+                    first: (first + k % n) * MAX_BONES,
+                    view: v,
+                ),
+                carved.bind(
+                    view: v,
+                    lights: LIGHTS,
+                    carving: STATUE,
+                    shadow: s.shadow,
+                    shadow_sampler: s.smp,
+                ),
+                indices: s.meshes[m].quads.items(),
+                indirect: s.meshes[m].draw.items(),
+                cull: Cull::Back,
+            )
+        }
     }
     pass.present()
 }

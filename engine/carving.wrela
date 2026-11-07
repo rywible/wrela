@@ -1,0 +1,289 @@
+// Carved stone, pixel by pixel: the marks a mason and the weather leave on a statue, finer than
+// any mesh realized from a field or a grid can hold (a few centimetres a cell). Worked out in
+// the fragment shader from the surface's point at rest, so the marks stay on the stone as it
+// moves:
+// - the granite: dark and light flecks in its colour, a broad warm-and-cool tone over a metre or
+//   so, and a soft swell in its shape;
+// - pitting: worn round hollows, many small and a few large, gathered in patches;
+// - hairline cracks: thin dark lines tapering along a few of a coarse Voronoi's edges;
+// - weathering, by the surface's curvature: edges and ridges worn lighter, grime in the grooves,
+//   streaking down the sides and darkening the undersides.
+// Each fades as it shrinks below a pixel (`fwidth` of the point), so far stone is plain stone
+// rather than noise. `skin_carved` and `carved` draw a mesh with its cooked colours in plain
+// light (`engine::plain`), carved.
+
+use character::skin_matrix
+use noise::{hash3, noise3}
+use plain::{Lights, View}
+use realize::SkinVertex
+use rock::worley_edge
+use std::gpu::{ClipPosition, ComparisonSampler, DepthTexture, Unorm8x4, VertexIndex}
+
+/// How a stone is carved and weathered (m, unless said).
+pub struct Carving: Copy + GpuData {
+    /// The surface's soft unevenness: its size, and its slope at most.
+    pub swell: f32,
+    pub slope: f32,
+    /// The granite's grain: the size of its flecks, and how far they lighten or darken it.
+    pub fleck: f32,
+    pub flecked: f32,
+    /// The pits: the small ones' size, how deep the large ones are, and the share of the stone
+    /// they gather on.
+    pub pit: f32,
+    pub pitting: f32,
+    pub pitted: f32,
+    /// The cracks: the size of the cells they run round, their width at most, and the share of
+    /// the stone they cross.
+    pub crack: f32,
+    pub crack_width: f32,
+    pub cracked: f32,
+    /// How strongly the edges wear and grime gathers (0 none).
+    pub weathering: f32,
+    pub seed: u32,
+}
+
+/// A big statue's: a soft swell, granite flecks, a few clusters of pits, a few hairline cracks.
+pub const STATUE = Carving {
+    swell: 0.09,
+    slope: 0.05,
+    fleck: 0.007,
+    flecked: 0.22,
+    pit: 0.014,
+    pitting: 0.004,
+    pitted: 0.25,
+    crack: 0.6,
+    crack_width: 0.0016,
+    cracked: 0.12,
+    weathering: 1.0,
+    seed: 7,
+}
+
+/// What the carving makes of a surface: its normal, its colour's scale (each channel), and what
+/// its roughness gains.
+pub struct Carved: Copy {
+    pub normal: vec3,
+    pub tone: vec3,
+    pub rough: f32,
+}
+
+/// `v`'s part along the surface whose normal is `n`.
+fn along(v: vec3, n: vec3) -> vec3 {
+    v - n * dot(n, v)
+}
+
+/// A lattice cell's three draws in [-0.5, 0.5), seeded.
+fn draws(c: vec3, seed: u32) -> vec3 {
+    let (x, y, z) = (i32(c.x), i32(c.y), i32(c.z) + i32(seed % 1024) * 977)
+    vec3(hash3(x, y, z), hash3(x + 7919, y, z), hash3(x, y + 6271, z)) - vec3(0.5)
+}
+
+/// A pit at `p`, in cells of `cell`, `share` of which have one: round but squashed a little its
+/// own way, at most a quarter of its cell across, so only `p`'s own cell can hold one. How deep
+/// it is there (0 to 1, deepest at its middle, its rim worn soft) and that depth's slope (per m).
+fn pit_at(p: vec3, cell: f32, share: f32, seed: u32) -> (f32, vec3) {
+    let q = p / cell
+    let c = floor(q)
+    let d = draws(c, seed)
+    if d.x + 0.5 >= share {
+        return (0.0, vec3(0.0))
+    }
+    let r = 0.08 + 0.16 * (d.y + 0.5) * (d.y + 0.5)
+    let squash = vec3(1.0) + 0.6 * vec3(d.z, -d.z, d.y)
+    let off = (q - (c + vec3(0.5) + 0.5 * vec3(d.z, d.x, d.y))) * squash
+    let t = dot(off, off) / (r * r)
+    if t >= 1.0 {
+        return (0.0, vec3(0.0))
+    }
+    // (1 - t)², so the rim slopes in gently.
+    let u = 1.0 - t
+    (u * u, off * squash * (-4.0 * u / (r * r * cell)))
+}
+
+/// How much of a feature `size` across shows in a pixel `px` across: all of it when it's four
+/// pixels or more, none when it's under one.
+fn shows(size: f32, px: f32) -> f32 {
+    smoothstep(1.0, 4.0, size / max(px, 1.0e-6))
+}
+
+/// Value noise's slope at `p` (per unit of `p`), by differences `e` apart.
+fn slope_of(p: vec3, e: f32) -> vec3 {
+    let h = noise3(p)
+    vec3(
+        noise3(p + vec3(e, 0.0, 0.0)) - h,
+        noise3(p + vec3(0.0, e, 0.0)) - h,
+        noise3(p + vec3(0.0, 0.0, e)) - h,
+    ) /
+        e
+}
+
+/// The carving `c` at `p` (at rest), where the surface's normal is `n` and `up` is the way up
+/// (both at rest), and it bulges by `bulge` (its curvature, per m: more than 0 on a ridge or an
+/// edge, less in a hollow or a groove); a pixel there is `px` across.
+pub fn carve(c: Carving, p: vec3, n: vec3, up: vec3, bulge: f32, px: f32) -> Carved {
+    var tone = 1.0
+    var rough = 0.0
+    var bend = vec3(0.0)
+    // A soft swell, two sizes: the stone isn't quite smooth.
+    let swell = shows(c.swell * 0.5, px)
+    if swell > 0.0 {
+        let g = slope_of(p / c.swell + vec3(3.0), 0.2) + 0.5 * slope_of(p / (0.4 * c.swell), 0.2)
+        bend -= along(g, n) * (c.slope * swell)
+    }
+    // The granite's flecks: dark and light crystals in a mid grey, mostly colour, not shape.
+    let flecks = shows(c.fleck, px)
+    if flecks > 0.0 {
+        // Two sizes of crystal, the larger rarer; their faces catch the light a little.
+        let f = noise3(p / c.fleck)
+        let big = noise3(p / (2.5 * c.fleck) + vec3(19.0))
+        let dark = max(smoothstep(0.62, 0.72, f), 0.8 * smoothstep(0.7, 0.78, big))
+        let light = max(1.0 - smoothstep(0.28, 0.38, f), 0.6 * (1.0 - smoothstep(0.2, 0.26, big)))
+        tone *= 1.0 + flecks * c.flecked * (light - 1.4 * dark)
+        rough += flecks * 0.08 * (light - dark)
+        bend -= along(slope_of(p / c.fleck, 0.25), n) * (0.015 * flecks)
+    }
+    // Pits, gathered in a few places, a few large among many small: their slope bends the
+    // surface into them, and they're darker inside.
+    let small = shows(c.pit * 0.5, px)
+    if small > 0.0 {
+        let large = shows(c.pit * 1.5, px)
+        let gather = smoothstep(1.0 - c.pitted, 1.0 - c.pitted + 0.15, noise3(p * 3.0 + vec3(41.0)))
+        let (h1, g1) = pit_at(p, c.pit * 2.0, 0.5 * gather, c.seed + 11)
+        let (h2, g2) = pit_at(p, c.pit * 5.0, 0.25 * gather, c.seed + 23)
+        let h = min(small * h1 + large * h2, 1.0)
+        let g = (small * g1 * 2.0 + large * g2 * 5.0) * (c.pitting / 5.0)
+        bend += along(g, n)
+        tone *= 1.0 - 0.4 * h
+        rough += 0.06 * h
+    }
+    // Hairline cracks on a few of a coarser Voronoi's edges, wandering, tapering out at their
+    // ends.
+    let warp = vec3(noise3(p * 6.0), noise3(p * 6.0 + vec3(31.0)), noise3(p * 6.0 + vec3(57.0)))
+    let q = (p + (warp - vec3(0.5)) * (0.3 * c.crack)) / c.crack
+    let gap = 0.5 * worley_edge(q, c.seed + 3) * c.crack
+    let some = smoothstep(1.0 - c.cracked, 1.0 - c.cracked + 0.1, noise3(p / (0.6 * c.crack)))
+    let w = 0.5 * c.crack_width * some
+    let line = (1.0 - smoothstep(w, w + px, gap)) * min(1.0, 2.0 * w / max(px, 1.0e-6))
+    tone *= 1.0 - 0.6 * line
+    // Wear: the edges and ridges lighter and smoother (but not the creases between the mesh's
+    // faces, where the curvature jumps), grime in the grooves and under overhangs, streaking
+    // down the sides.
+    let edge = smoothstep(4.0, 16.0, bulge) * (1.0 - smoothstep(60.0, 120.0, bulge))
+    let groove = smoothstep(3.0, 12.0, -bulge) * (1.0 - smoothstep(60.0, 120.0, -bulge))
+    let facing = dot(n, up)
+    let streak = smoothstep(0.45, 0.8, noise3(vec3(p.x * 7.0, p.y * 0.6, p.z * 7.0)))
+    let side = 1.0 - abs(facing)
+    tone *= 1.0 + c.weathering * (0.16 * edge + 0.1 * max(facing, 0.0))
+    tone *= 1.0 - c.weathering * (0.4 * groove + 0.22 * streak * side + 0.15 * max(-facing, 0.0))
+    rough += c.weathering * (0.08 * groove - 0.08 * edge)
+    // Broad tone, a metre or so across, a little warm or cool, so a big statue isn't one grey.
+    let broad = noise3(p * 0.9 + vec3(13.0))
+    let warmth = noise3(p * 0.6 + vec3(71.0)) - 0.5
+    let tint = vec3(1.0 + 0.12 * warmth, 1.0, 1.0 - 0.12 * warmth) * (0.82 + 0.36 * broad)
+    // A grime's tint in the grooves: a little green-brown.
+    let grime = mix(vec3(1.0), vec3(1.0, 0.97, 0.92), c.weathering * groove)
+    Carved { normal: normalize(n + bend), tone: tint * grime * tone, rough }
+}
+
+/// What a carved mesh's vertex passes on: its clip position, its world point and its point at
+/// rest, its normal at rest and the columns of its turn from rest to the world, and its cooked
+/// albedo and roughness.
+pub struct CarvedVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub rest: vec3,
+    pub normal: vec3,
+    pub x: vec3,
+    pub y: vec3,
+    pub z: vec3,
+    pub albedo: vec3,
+    pub rough: f32,
+}
+
+/// A mesh's vertex, skinned by the palette from `first`, seen from `view`'s camera, with its
+/// cooked colour (`character::colours`), for `carved`. Its parts should be rigid: the turn is
+/// its matrix's, uninterpolated where bones blend.
+@vertex
+pub fn skin_carved(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    colours: [Unorm8x4],
+    palettes: [mat4],
+    first: u32,
+    view: View,
+) -> CarvedVertex {
+    let sv = verts[v.index]
+    let m = skin_matrix(sv, palettes, first)
+    let world = (m * vec4(sv.pos, 1.0)).xyz
+    let c = colours[v.index].decode()
+    CarvedVertex {
+        clip: ClipPosition { position: view.view_proj * vec4(world, 1.0) },
+        world,
+        rest: sv.pos,
+        normal: sv.normal,
+        x: m[0].xyz,
+        y: m[1].xyz,
+        z: m[2].xyz,
+        albedo: c.rgb * c.rgb,
+        rough: c.a,
+    }
+}
+
+/// A carved mesh's pixel, in plain light (`plain::coloured`'s), carved as `carving` says.
+@fragment
+pub fn carved(
+    c: CarvedVertex,
+    view: View,
+    lights: Lights,
+    carving: Carving,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+) -> vec4 {
+    let width = fwidth(c.rest)
+    let px = 0.6 * length(width)
+    let n0 = normalize(c.normal)
+    // How it bulges: how its normal turns as the point moves across the screen, along the move.
+    let (dpx, dpy) = (dpdx(c.rest), dpdy(c.rest))
+    let turn = dot(dpdx(n0), dpx) + dot(dpdy(n0), dpy)
+    let bulge = turn / max(dot(dpx, dpx) + dot(dpy, dpy), 1.0e-10)
+    let k = carve(carving, c.rest, n0, vec3(0.0, 1.0, 0.0), bulge, px)
+    let turned = c.x * k.normal.x + c.y * k.normal.y + c.z * k.normal.z
+    let n = normalize(turned)
+    let lit = lights.shadow(view, c.world, n, shadow, shadow_sampler)
+    let rough = clamp(c.rough + k.rough, 0.05, 1.0)
+    vec4(lights.light(c.albedo * k.tone, rough, n, c.world, view, lit), 1.0)
+}
+
+@test
+fn carving_keeps_a_unit_normal_near_the_surface_s_own() {
+    var least = 1.0
+    var lowest = 10.0
+    var highest = 0.0
+    for i in 0..400 {
+        let t = f32(i)
+        let p = vec3(sin(t * 1.7) * 2.0, t * 0.013, cos(t * 0.9) * 1.3)
+        let n = normalize(vec3(sin(t), cos(t * 2.3), 0.4))
+        let k = carve(STATUE, p, n, vec3(0.0, 1.0, 0.0), 0.0, 0.002)
+        assert(
+            abs(length(k.normal) - 1.0) < 1.0e-4,
+            f"the carved normal is {length(k.normal)} long",
+        )
+        least = min(least, dot(k.normal, n))
+        let t = dot(k.tone, vec3(1.0 / 3.0))
+        lowest = min(lowest, t)
+        highest = max(highest, t)
+    }
+    assert(least > 0.6, f"the carving bends a normal {acos(least)} rad from the surface's")
+    assert(lowest > 0.15 && highest < 1.6, f"the carving's tone runs {lowest} to {highest}")
+    assert(highest - lowest > 0.2, "a carving 2 mm a pixel should vary the stone's tone")
+}
+
+@test
+fn carving_fades_to_plain_stone_far_away() {
+    for i in 0..50 {
+        let t = f32(i)
+        let p = vec3(t * 0.31, 1.0 + t * 0.07, -t * 0.19)
+        let n = normalize(vec3(0.3, 0.2, 1.0))
+        let k = carve(STATUE, p, n, vec3(0.0, 1.0, 0.0), 0.0, 1.0)
+        assert(dot(k.normal, n) > 0.9999, "a swell less than a pixel should not bend the normal")
+    }
+}
