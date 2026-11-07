@@ -137,7 +137,8 @@ pub fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
 /// billowing mass of bubble domes with holes, thinning to lace as it ages. Its cover.
 fn eroded(k: f32, age: f32, lace: f32, billow: f32, walls: f32) -> f32 {
     let froth_h = mix(billow, walls, smoothstep(0.05, 0.45, age))
-    let feather = 0.09 + 0.3 * age
+    // (Softer edged than a whitecap's: hard, its clots read as flat decals.)
+    let feather = 0.16 + 0.3 * age
     let e = clamp((k * (0.62 + 0.3 * lace) - (1.0 - froth_h)) / feather + k * k * 0.1, 0.0, 1.0)
     // (Never one flat white even at its thickest: its domes brighter, its creases greyer.)
     e * (1.0 - 0.5 * age) * (0.55 + 0.45 * smoothstep(0.2, 0.85, froth_h))
@@ -155,18 +156,11 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32, f32) {
     // bow swings), read as how far back along it (`back`) and how far off it (`off`).
     let way = clamp(abs(s.speed) / 3.0, 0.0, 1.0)
     let run = running(s)
-    let bend = s.speed / (if abs(s.turn) < 1.0e-4 { 1.0e-4 } else { s.turn })
-    var back = -along
-    var off = across
-    // (Only a hard, held turn bends it: on every touch of the helm the whole wake swung to a new
-    // arc, and the trail astern pulsed from frame to frame.)
-    if abs(bend) < 60.0 && abs(bend) > 3.0 {
-        let u = vec2(across - bend, along)
-        let b = vec2(-sign(bend), 0.0)
-        let phi = sign(bend) * atan2(b.x * u.y - b.y * u.x, dot(b, u))
-        back = abs(bend) * phi
-        off = length(u) - abs(bend)
-    }
+    // (Bent smoothly by the turn, as an arc's sag behind it: a curve switched on past some
+    // turn rate jumped the whole trail sideways a metre and it pulsed on and off.)
+    let bend_k = clamp(s.turn / max(abs(s.speed), 1.0), -0.04, 0.04)
+    let back = -along
+    let off = across - 0.5 * bend_k * back * back
     let behind_ = max(back - 2.0, 0.0)
     // Its froth drawn as the sea's whitecaps are (`paint::sea_shade`): a density, eroded against
     // a froth's height, so fresh it's a billowing mass of bubble domes with holes, and as it ages
