@@ -56,13 +56,13 @@ pub fn fists_off_mask(m: [mat4; 64]) -> [mat4; 64] {
             let e = tip - root
             let h = clamp(dot(fist - root, e) / dot(e, e), 0.0, 1.0)
             var near = root + e * h
-            var reach = mix(R_ROOT, R_TIP, h) + FIST_R + 0.025
+            var reach = mix(R_ROOT, R_TIP, h) + FIST_R + 0.045
             // (Or a cheek or the chin, whichever it's deepest in.)
             for c in 0..3 {
                 let cx = if c == 0 { 1.0 } else { -1.0 }
                 let at = if c < 2 { vec3(CHEEK.x * cx, CHEEK.y, CHEEK.z) } else { CHIN }
                 let cheek = (m[5] * vec4(at, 1.0)).xyz
-                let rc = (if c < 2 { R_CHEEK } else { R_CHIN }) + FIST_R + 0.025
+                let rc = (if c < 2 { R_CHEEK } else { R_CHIN }) + FIST_R + 0.045
                 if rc - length(fist - cheek) > reach - length(fist - near) {
                     near = cheek
                     reach = rc
@@ -79,6 +79,55 @@ pub fn fists_off_mask(m: [mat4; 64]) -> [mat4; 64] {
             // Out from the snout's axis; straight out sideways if the fist is on it.
             let dir = if d > 1.0e-4 { off / d } else { vec3(sx, 0.0, 0.0) }
             let r = swung(fist - shoulder, fist + dir * push - shoulder, shoulder)
+            for i in 0..20 {
+                let b = arm_bone(i, side)
+                out[b] = r * out[b]
+            }
+        }
+    }
+    out
+}
+
+/// His hips and belt, with the coat on (his rest space): an upright elliptic cylinder, its half
+/// widths across and front to back, between two heights.
+const HIPS_HALF = vec2(0.205, 0.135)
+const HIPS_LO: f32 = 0.84
+const HIPS_HI: f32 = 1.2
+
+/// Two points of a hand, his left's at rest (the palm's middle, the fingers' middle), and how
+/// thick a hand is about them.
+const PALM = vec3(0.78, 1.44, -0.06)
+const FINGERS_MID = vec3(0.86, 1.445, -0.05)
+const HAND_R: f32 = 0.035
+
+/// `m` (his palette) with each hand moved out of his hips and belt (a hand resting at his side
+/// sank its fingers in), the arm swung about its shoulder as `fists_off_mask` does.
+pub fn hands_off_hips(m: [mat4; 64]) -> [mat4; 64] {
+    var out = m
+    let o = m[0][3].xyz
+    let ax = m[0][0].xyz
+    let ay = m[0][1].xyz
+    let az = m[0][2].xyz
+    for side in 0..2 {
+        let sx = if side == 0 { 1.0 } else { -1.0 }
+        let shoulder = (out[8 + side] * vec4(SHOULDER.x * sx, SHOULDER.y, SHOULDER.z, 1.0)).xyz
+        for pt in 0..2 {
+            let rest = if pt == 0 { PALM } else { FINGERS_MID }
+            let p = (out[12 + side] * vec4(rest.x * sx, rest.y, rest.z, 1.0)).xyz
+            // Where it is on him at rest, by his hips' turn.
+            let d = p - o
+            let q = vec3(dot(d, ax), dot(d, ay), dot(d, az))
+            if q.y < HIPS_LO || q.y > HIPS_HI {
+                continue
+            }
+            let e = length(vec2(q.x / HIPS_HALF.x, q.z / HIPS_HALF.y))
+            let want = 1.0 + HAND_R / min(HIPS_HALF.x, HIPS_HALF.y)
+            if e >= want || e < 1.0e-4 {
+                continue
+            }
+            let moved = vec3(q.x * want / e, q.y, q.z * want / e)
+            let shift = ax * (moved.x - q.x) + az * (moved.z - q.z)
+            let r = swung(p - shoulder, p + shift - shoulder, shoulder)
             for i in 0..20 {
                 let b = arm_bone(i, side)
                 out[b] = r * out[b]

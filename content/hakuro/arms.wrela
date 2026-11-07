@@ -156,7 +156,7 @@ pub fn tails_weights(p: vec3) -> (u32, u32) {
     // (Their hem, below the knee, partly carried by the nearer shin, so a heel kicked up behind
     // him lifts it rather than coming out through it.)
     let u = clamp((0.74 - p.y) / 0.24, 0.0, 1.0)
-    let low = 0.8 * u * u * (3.0 - 2.0 * u)
+    let low = 0.6 * u * u * (3.0 - 2.0 * u)
     var shin = 0.0
     if p.x >= 0.0 {
         shin = left * low

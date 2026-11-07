@@ -373,7 +373,17 @@ fn tails_paint(p: vec3) -> Cloth {
         deg += 360.0
     }
     let low = shapes::hem(clamp(deg, 42.0, 318.0))
-    if through < -0.004 || q.y < low + 0.022 { GOLD } else { BLACK }
+    if q.y < low + 0.022 {
+        return GOLD
+    }
+    if through >= -0.004 {
+        return BLACK
+    }
+    // (The lining in the coat's shade further up inside it: lit gold all the way up, a run's
+    // lifted hem showed it as a flat slab.)
+    let t = clamp((q.y - low - 0.05) / 0.3, 0.0, 1.0)
+    let shade = 1.0 - 0.8 * t * t * (3.0 - 2.0 * t)
+    Cloth { albedo: GOLD.albedo * shade, rough: GOLD.rough, metal: GOLD.metal }
 }
 
 /// His rig: his body's pieces as they were fitted to the reference, each on its bone or split

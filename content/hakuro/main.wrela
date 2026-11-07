@@ -19,7 +19,7 @@ use std::gpu::{
 use std::io::{Pending, print}
 use std::transform::{rotate_y, translate}
 use reference_rig::{HAKURO_BONE, reference_rig}
-use clear::fists_off_mask
+use clear::{fists_off_mask, hands_off_hips}
 use engine::humanoid::{Clip, Pose, Rig, palette}
 use moves::idle::IDLE
 use moves::punch::PUNCH
@@ -73,7 +73,7 @@ fn moved(time: f32) -> [mat4; 64] {
     if MOVE == 1 || MOVE == 6 {
         m = curled(m, FIST_CURL)
     }
-    fists_off_mask(m)
+    fists_off_mask(hands_off_hips(m))
 }
 
 /// 1 to stand him in the sheet's pose; 0 at rest, a T-pose (`--set POSED=0`).
