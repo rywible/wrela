@@ -193,10 +193,12 @@ pub fn follow_legs(mesh: take Mesh) -> Mesh {
     m
 }
 
-/// `p` (a point of his coat's tails, posed) moved out of his legs, posed as `palette` (from
-/// `first`) has them: each thigh, shin and boot a tapered capsule round him, the cloth kept
-/// a centimetre off it. (Skinning the tails to his thighs follows a leg's swing, but where both
-/// legs pull at one panel, a knee or the back of a thigh still came through.)
+/// `p` (a point of his coat's tails, posed) draped over his legs, posed as `palette` (from
+/// `first`) has them. Each thigh, shin and boot is a tapered capsule round him, and the cloth is
+/// kept a centimetre off them, pushed out from his middle. Each point hangs on a rod from the
+/// tails' top above it, so a point pushed out swings up over the leg instead of being pierced
+/// by it: a heel kicked up behind him lifts the hem over it. (Skinning to the thighs and shins
+/// alone left a kicked leg or a knee coming through.)
 pub fn off_legs(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
     var q = p
     // (Not at all up under his belt, where the tails hang from his hips: the thighs' tops pushed
@@ -206,32 +208,66 @@ pub fn off_legs(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
     if reach <= 0.0 {
         return q
     }
+    // Its rod: from the tails' top straight above it at rest (carried by his hips), as long as at
+    // rest; and his middle, between his hips, to push out from.
+    let anchor = (palette[first] * vec4(rest.x, TAILS_TOP, rest.z, 1.0)).xyz
+    let rod = TAILS_TOP - rest.y
+    let mid = ((palette[first + 18] * vec4(0.114, 0.971, -0.036, 1.0)).xyz +
+        (palette[first + 19] * vec4(-0.114, 0.971, -0.036, 1.0)).xyz) * 0.5
+    var hip = [vec3(0.0); 2]
+    var knee = [vec3(0.0); 2]
+    var ankle = [vec3(0.0); 2]
+    var heel = [vec3(0.0); 2]
+    var toe = [vec3(0.0); 2]
     for side in 0..2 {
         let sx = if side == 0 { 1.0 } else { -1.0 }
-        let hip = (palette[first + 18 + side] * vec4(0.114 * sx, 0.971, -0.036, 1.0)).xyz
-        let knee = (palette[first + 20 + side] * vec4(0.114 * sx, 0.542, -0.036, 1.0)).xyz
-        let ankle = (palette[first + 22 + side] * vec4(0.114 * sx, 0.086, -0.088, 1.0)).xyz
-        // (And his boot, heel to toe.)
-        let heel = (palette[first + 22 + side] * vec4(0.114 * sx, 0.05, -0.15, 1.0)).xyz
-        let toe = (palette[first + 22 + side] * vec4(0.114 * sx, 0.05, 0.10, 1.0)).xyz
-        for k in 0..3 {
-            let a = if k == 0 { hip } else if k == 1 { knee } else { heel }
-            let b = if k == 0 { knee } else if k == 1 { ankle } else { toe }
-            let ra = if k == 0 { 0.125 } else if k == 1 { 0.1 } else { 0.065 }
-            let rb = if k == 0 { 0.1 } else if k == 1 { 0.085 } else { 0.06 }
-            let e = b - a
-            let h = clamp(dot(q - a, e) / dot(e, e), 0.0, 1.0)
-            let c = a + e * h
-            let off = q - c
-            let d = length(off)
-            let r = mix(ra, rb, h) + 0.012
-            // Eased in over a centimetre either side, so neighbours aren't pulled apart.
-            let x = r - d
-            let push = (0.5 * (x + sqrt(x * x + 0.0004)) - 0.002) * reach
-            if push > 0.0 && d > 1.0e-5 {
-                q = q + off / d * push
+        hip[side] = (palette[first + 18 + side] * vec4(0.114 * sx, 0.971, -0.036, 1.0)).xyz
+        knee[side] = (palette[first + 20 + side] * vec4(0.114 * sx, 0.542, -0.036, 1.0)).xyz
+        ankle[side] = (palette[first + 22 + side] * vec4(0.114 * sx, 0.086, -0.088, 1.0)).xyz
+        heel[side] = (palette[first + 22 + side] * vec4(0.124 * sx, 0.065, -0.13, 1.0)).xyz
+        toe[side] = (palette[first + 22 + side] * vec4(0.124 * sx, 0.055, 0.14, 1.0)).xyz
+    }
+    for _ in 0..6 {
+        // On its rod (only where it hangs: none up under his belt), then out of his legs, last,
+        // so whatever the rod leaves undone it's never left inside one.
+        let hang = q - anchor
+        if length(hang) > 1.0e-4 && rod > 0.0 {
+            q = mix(q, anchor + normalize(hang) * rod, reach)
+        }
+        let out = vec3(q.x - mid.x, 0.0, q.z - mid.z)
+        let dir = if length(out) > 1.0e-4 { normalize(out) } else { vec3(0.0, 0.0, -1.0) }
+        for side in 0..2 {
+            for k in 0..3 {
+                let a = if k == 0 { hip[side] } else if k == 1 { knee[side] } else { heel[side] }
+                let b = if k == 0 { knee[side] } else if k == 1 { ankle[side] } else { toe[side] }
+                let ra = if k == 0 { 0.125 } else if k == 1 { 0.1 } else { 0.085 }
+                let rb = if k == 0 { 0.1 } else if k == 1 { 0.085 } else { 0.075 }
+                let e = b - a
+                let h = clamp(dot(q - a, e) / dot(e, e), 0.0, 1.0)
+                let d = length(q - (a + e * h))
+                let r = mix(ra, rb, h) + 0.012
+                // Eased in over a centimetre either side, so neighbours aren't pulled apart.
+                let x = r - d
+                let push = (0.5 * (x + sqrt(x * x + 0.0004)) - 0.002) * reach
+                if push > 0.0 {
+                    q = q + dir * push
+                }
             }
         }
     }
     q
 }
+
+/// A point of the tails (`now`, posed) left trailing toward where it was a moment ago (`then`):
+/// the cloth's weight, so it swings after his legs and hips rather than moving as one with them.
+/// None at its top, most at the hem.
+pub fn trailed(now: vec3, then: vec3, rest: vec3) -> vec3 {
+    let u = clamp((TAILS_TOP - rest.y) / 0.45, 0.0, 1.0)
+    let back = then - now
+    let l = length(back)
+    let capped = if l > 0.15 { back * (0.15 / l) } else { back }
+    now + capped * 0.85 * u * u
+}
+
+/// Where the tails' rods hang from (his rest height).
+const TAILS_TOP: f32 = 0.97

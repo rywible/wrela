@@ -2,7 +2,7 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use arms::{arm, follow_legs, hand, jacket, off_legs, sampled_body}
+use arms::{arm, follow_legs, hand, jacket, off_legs, sampled_body, trailed}
 use hakuro::{Cloth, body_paint, coat, hands, head, hero, skeleton}
 use engine::character::{ByChannels, colours}
 use engine::character::skin_matrix
@@ -271,7 +271,8 @@ pub fn init() -> State {
     let hands_mesh = realize_once(ar, HOW_HANDS)
     let c3 = colours(hands_mesh, ar.field(), ByChannels {}, cell: 0.003)
     let pose = posed()
-    var palettes: GpuBuffer<mat4> = buffer(5 * MAX_BONES)
+    // (Each view's palette, then each one's a moment ago: `LAGGED`.)
+    var palettes: GpuBuffer<mat4> = buffer(10 * MAX_BONES)
     for v in 0..5 {
         let place = translate(vec3(f32(v) * 1.15 - 2.3, 0.0, 0.0)) * rotate_y(TURNS[v])
         var m = pose
@@ -279,6 +280,7 @@ pub fn init() -> State {
             m[k] = place * pose[k]
         }
         write(mut palettes, v * MAX_BONES, m)
+        write(mut palettes, v * MAX_BONES + LAGGED, m)
     }
     var tallies: Vec<Pending<Tally>> = Vec::new()
     tallies.push(read(body.tally.items()))
@@ -304,13 +306,17 @@ pub fn init() -> State {
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if MOVE > 0 {
         let pose = moved(time)
+        let before = moved(max(time - LAG, 0.0))
         for v in 0..5 {
             let place = translate(vec3(f32(v) * 1.15 - 2.3, 0.0, 0.0)) * rotate_y(TURNS[v])
             var m = pose
+            var b = before
             for k in 0..64 {
                 m[k] = place * pose[k]
+                b[k] = place * before[k]
             }
             write(mut s.palettes, v * MAX_BONES, m)
+            write(mut s.palettes, v * MAX_BONES + LAGGED, b)
         }
     }
     for i in 0..s.tallies.len() {
@@ -419,6 +425,11 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     pass.present()
 }
 
+/// How long ago the coat's tails' lag looks back (s), and where in `palettes` a view's palette
+/// of that moment sits after its own.
+const LAG: f32 = 0.12
+const LAGGED: u32 = 5 * MAX_BONES
+
 /// What his vertex passes on: where it is, where it is on him at rest, its skin's turn and which
 /// of his parts are near (so his pixel reads his fields there, as the opening draws him).
 pub struct Fielded: Copy {
@@ -433,11 +444,13 @@ pub struct Fielded: Copy {
     pub hi: Flat<u32>,
 }
 
-/// His coat's tails' vertex: as `fielded`, moved out of his legs (`arms::off_legs`).
+/// His coat's tails' vertex: as `fielded`, trailing its weight (`arms::trailed`) and draped over his
+/// legs (`arms::off_legs`).
 @vertex
 pub fn coat_fielded(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, view: View) -> Fielded {
     var f = fielded_at(v, verts, palettes, first, view)
-    f.world = off_legs(f.world, f.rest, palettes, first)
+    let then = (skin_matrix(verts[v.index], palettes, first + LAGGED) * vec4(f.rest, 1.0)).xyz
+    f.world = off_legs(trailed(f.world, then, f.rest), f.rest, palettes, first)
     f.clip = ClipPosition { position: view.view_proj * vec4(f.world, 1.0) }
     f
 }
