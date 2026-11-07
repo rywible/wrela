@@ -404,7 +404,11 @@ pub fn yonder(
     var cover = 0.0
     var marks = vec4(log2(far), SKY, 1.0, 0.0)
     var n = -d
-    if ts < t {
+    if ts < t && (OFF & 1024) != 0 {
+        c = vec3(0.05)
+        cover = 1.0
+        marks = vec4(log2(ts), ROCK, 1.0, 0.5)
+    } else if ts < t {
         let (sc, sn) = stacks_shade(s, h, clouds, view, aerial, dome, cloud, smp, o + d * ts, d, ts * k)
         c = sc
         cover = 1.0
@@ -471,7 +475,7 @@ pub fn yonder(
             // the last drawing's is a ghost, and it's dropped.)
             let near = min(bm.x, marks.x) < 11.5
             var fresh = 0.0
-            if near && abs(bm.x - marks.x) > 0.25 {
+            if near && abs(bm.x - marks.x) > 0.25 && (OFF & 2048) == 0 {
                 var same = 0.0
                 for j in 0..4 {
                     let a = f32(j) * 1.5707963
