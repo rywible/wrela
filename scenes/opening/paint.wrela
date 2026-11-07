@@ -5,7 +5,7 @@
 // (`engine::light::hazed`). Beside the colour it writes what the ink reads: how far, what it is,
 // a line field, the line's weight, the normal and the moment's energy.
 
-use main::LOOK
+use main::{LOOK, LOW_CLOUD}
 use look::{
     STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot,
     band, cells, hash2, luma, fbm, noise, ray,
@@ -96,7 +96,7 @@ fn into_the_air(
     }
     // (Lighter toward the horizon itself, where the eye looks out under the deck's edge into
     // farther air: the band the cathedral and the skiff stand dark against.)
-    let lift = mix(STORM_HORIZON, 1.0, smoothstep(0.0, STORM_LOW, d.y))
+    let lift = mix(mix(1.0, STORM_HORIZON, LOW_CLOUD), 1.0, smoothstep(0.0, STORM_LOW, d.y))
     let air = vec3(luma(far / 8.0)) * vec3(0.92, 0.96, 1.0) * lift
     let deck_k = smoothstep(STORM_LOW * 0.35, STORM_LOW, d.y)
     vec4(mix(air, sky.rgb, deck_k), mix(1.0, sky.a, deck_k))

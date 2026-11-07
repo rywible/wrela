@@ -96,3 +96,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
 /// Each frame records draws the host accepts.
 @test(frames: 2)
 fn frames_record_valid_draws() {}
+
+/// The storm's low cloud: 1 the scud torn under the deck and the lifted air on the horizon as
+/// they were; 0 neither, the deck going down into its own air (`--set LOW_CLOUD=0`).
+pub const LOW_CLOUD: f32 = 1.0

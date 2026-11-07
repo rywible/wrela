@@ -151,6 +151,17 @@ const FAIR_TOP: f32 = 0.42
 /// at this scale).
 const FAIR_SCALE: f32 = 0.4
 
+/// How far the air in front of the clouds reaches, seen from fair weather, against the map's own
+/// hazier air (the opening's sea day thins its air as much).
+const FAIR_AIR: f32 = 0.35
+
+/// How much brighter fair weather's heaps' sunlit sides are than the march's own light has them
+/// (its octaves stop short of all the light a thick cumulus scatters back).
+const FAIR_SUN: f32 = 1.5
+
+/// How much denser fair weather's heaps are than the field's own cloud.
+const FAIR_DENSITY: f32 = 6.0
+
 /// How much of the clouds `regions` (the first `count`) pull back at `xz` (the world's, m),
 /// and how much fair weather's own cloud they have there: the most any of them does, each
 /// region's edge torn by the noise so it isn't a circle (one noise for both).
@@ -470,7 +481,7 @@ fn field(
     rep: Sampler,
     detailed: bool,
 ) -> f32 {
-    field_in(weather_at(weather, rep, q), q, h, shape, detail, rep, detailed)
+    field_in(weather_at(weather, rep, q), q, h, shape, detail, rep, detailed, flat: 0.0)
 }
 
 /// The field at `q`, `h` metres above the layer's base, under weather map texel `w`: the map's
@@ -485,6 +496,7 @@ fn field_in(
     detail: Texture3d<Rgba16Float>,
     rep: Sampler,
     detailed: bool,
+    flat: f32,
 ) -> f32 {
     let top = w.g * (TOP - BASE)
     if h <= 0.0 || h >= top * 1.08 || w.r <= 0.001 {
@@ -496,7 +508,9 @@ fn field_in(
     if hf <= 0.0 || hf >= 1.0 {
         return 0.0
     }
-    let profile = cloud_profile(hf)
+    // (Fair weather's heaps, `flat` of them, on a flat base: they condense at one height, so
+    // their undersides are level, not rounded off as the profile rounds the storm's billows.)
+    let profile = mix(cloud_profile(hf), smoothstep(0.0, 0.025, hf) * smoothstep(1.0, 0.48, hf), flat)
     let cover = w.r * profile
     let carved = saturate(above(base.r, from: 1.0 - cover)) * cover
     var s = mix(cover * (0.4 + 0.8 * base.r), carved, w.a)
@@ -654,7 +668,10 @@ fn march(
             // more so the deeper into the region.)
             let scale = mix(1.0, FAIR_SCALE, fk)
             let qf = q * scale
-            let dens = field_in(w, qf, h, shape, detail, rep, detailed: true)
+            // (And denser: a cumulus is opaque a few hundred metres in, so its sunlit side and its
+            // shaded side part sharply and it reads as a solid heap, not a soft puff.)
+            let thick = mix(1.0, FAIR_DENSITY, fk)
+            let dens = field_in(w, qf, h, shape, detail, rep, detailed: true, flat: fk) * thick
             if dens > 0.0 {
                 // Resolve the sunlit skin before the deep shadow. Equal 150 m intervals
                 // missed this skin and made the whole cloud a soft, evenly shaded patch.
@@ -665,9 +682,11 @@ fn march(
                 for k in 0..LIGHT_SAMPLES {
                     let (lo, step) = light_interval(k)
                     let ql = q + c.sun * (lo + 0.5 * step)
-                    // (Fair weather's clouds shade themselves: their own cover toward the sun.)
+                    // (Fair weather's clouds shade themselves: their own cover toward the sun, at its own
+                    // density, not `thick`'s: the light a heap scatters on reaches deep into it, so
+                    // its body is bright and only its far side and base go grey.)
                     let f = if fair > 0.0 {
-                        field_in(w, ql * scale, ql.y - BASE, shape, detail, rep, detailed: k < 2)
+                        field_in(w, ql * scale, ql.y - BASE, shape, detail, rep, detailed: k < 2, flat: fk)
                     } else {
                         field(ql, ql.y - BASE, weather, shape, detail, rep, detailed: k < 2) *
                             (1.0 - kr)
@@ -717,9 +736,23 @@ fn march(
                 }
                 // (Fair weather's heaps darker toward their flat bases, in their own shade.)
                 if fair > 0.0 {
-                    dim *= mix(1.0, mix(0.55, 1.0, smoothstep(0.0, 0.45, hf)), kr)
+                    dim *= mix(1.0, mix(0.7, 1.0, smoothstep(0.0, 0.45, hf)), kr)
+                    // (And hollowed by their own bulk: the sky's light comes down from above, so
+                    // what's under a billow of the heap, its core and the folds between its
+                    // turrets, sees less of it; the turrets' crowns see it all. A heap, not a
+                    // cut-out.)
+                    var od_up = 0.0
+                    for k in 0..3 {
+                        let rise = 60.0 * pow(3.0, f32(k))
+                        let qu = q + vec3(0.0, rise, 0.0)
+                        od_up += field_in(w, qu * scale, h + rise, shape, detail, rep, detailed: k == 0, flat: fk) *
+                            thick * rise
+                    }
+                    dim *= mix(1.0, 0.7 + 0.3 * exp(-od_up * EXTINCTION * RELIEF), fk)
                 }
-                let source = sun_light * to_sun * shut + ambient * dim
+                // (Fair weather's heaps whiter in the sun: a cumulus's sunlit crown is the
+                // brightest thing in a fair sky, past the blue round it.)
+                let source = sun_light * to_sun * shut * mix(1.0, FAIR_SUN, fk) + ambient * dim
                 let step_t = exp(-dens * EXTINCTION * dt)
                 let absorbed = through * (1.0 - step_t)
                 lit += source * absorbed
@@ -738,7 +771,21 @@ fn march(
     // (Seen from a region's fair weather, through its clear air: a storm far off goes blue
     // with its distance as anything far does.)
     let eye_clear = if region_count > 0 { cleared(regions, region_count, c.eye.xz) } else { 0.0 }
-    let ap = stormy_air(aerial, s, c.sun, dir, d * 0.001, c.gloom * (1.0 - eye_clear))
+    // (And through a fair day's air, clearer than the map's: its heaps kilometres off keep their
+    // sunlit sides and their shade, not one even glow of the air in front of them.)
+    let km = d * 0.001 * mix(1.0, FAIR_AIR, eye_clear)
+    var ap = stormy_air(aerial, s, c.sun, dir, km, c.gloom * (1.0 - eye_clear))
+    // (Its light as the air square to the sun at the same height has it: the air's forward glare
+    // toward the sun otherwise lays one cream glow over every heap that way, their shaded bodies
+    // and lit rims alike.)
+    if eye_clear > 0.0 {
+        // (`aerial_uvw` reads only the azimuth to the sun and the height: a sun straight up, any
+        // way round will do, so no direction of zero length.)
+        let flat_sun = vec2(-c.sun.z, c.sun.x) + vec2(1.0e-5, 0.0)
+        let across = normalize(flat_sun) * sqrt(max(1.0 - dir.y * dir.y, 0.0))
+        let square = aerial.sample_level(s, aerial_uvw(c.sun, vec3(across.x, dir.y, across.y), km))
+        ap = vec4(mix(ap.rgb, square.rgb, 0.7 * eye_clear), ap.a)
+    }
     vec4(lit * ap.a + ap.rgb * cover, cover)
 }
 
