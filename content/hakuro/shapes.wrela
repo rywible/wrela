@@ -425,7 +425,9 @@ pub fn tails(p: vec3) -> (f32, f32) {
     let fold = (0.016 * pow(tt, 0.7) + 0.003) * sin(ph)
     // (Clear of his trousers by a couple of centimetres even in a fold's trough: his thighs
     // swing forward under it.)
-    let rr = girth(inside) + 0.026 + 0.040 * pow(tt, 1.3) + fold
+    // (Tucked in at the top, under the jacket's hem, easing out to clear him below it.)
+    let tuck = clamp(tt / 0.14, 0.0, 1.0)
+    let rr = girth(inside) - 0.012 + 0.038 * tuck * tuck * (3.0 - 2.0 * tuck) + 0.058 * pow(tt, 1.3) + fold * tuck
     var d = abs(r - rr) - 0.009
     // Its front edges: the distance round to the nearer (negative between them).
     d = max(d, max(TAILS_FROM - deg, deg - TAILS_TO) * 0.0174532925 * r)

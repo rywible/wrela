@@ -8,11 +8,12 @@
 use arm_left_grid
 use arm_right_grid
 use body_grid
+use jacket_grid
 use engine::creature::{ALL, Parts}
 use hakuro::rig
 use engine::realize::{BLOCK, Mesh, SkinVertex, Tally}
 use engine::realize::corner_offset
-use engine::sampled::{BLOCK_WORDS, Lattice, STORED, realize_sampled}
+use engine::sampled::{BLOCK_WORDS, Lattice, STORED, Samples, realize_sampled}
 use std::gpu::{GlobalId, Slots, dispatch}
 
 /// The skeleton's bone numbers (`hakuro::skeleton` adds them in this order: the trunk, then
@@ -157,7 +158,17 @@ pub fn skin_by_rig<C, F: Parts<C>>(
 
 /// His trunk, legs and head (`body_grid`) realized from their samples and skinned by his rig.
 pub fn sampled_body() -> Mesh {
-    let shape = body_grid::samples(0).upload()
+    by_rig(body_grid::samples(0))
+}
+
+/// His jacket (`jacket_grid`): its own shell over his shirt, skinned by his rig as his body is.
+pub fn jacket() -> Mesh {
+    by_rig(jacket_grid::samples(0))
+}
+
+/// A sampled shape of his realized and skinned by his rig.
+fn by_rig(samples: Samples) -> Mesh {
+    let shape = samples.upload()
     var mesh = realize_sampled(shape)
     dispatch(
         skin_by_rig.bind(

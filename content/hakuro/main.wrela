@@ -2,7 +2,7 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use arms::{arm, sampled_body}
+use arms::{arm, jacket, sampled_body}
 use hakuro::{Cloth, body_paint, coat, hands, head, hero, skeleton}
 use engine::character::{ByChannels, colours}
 use engine::character::skin_matrix
@@ -123,7 +123,7 @@ fn posed() -> [mat4; 64] {
 const TURNS = [0.0, -0.7853982, -1.5707963, 3.1415927, 1.5707963]
 
 pub struct State {
-    meshes: [Mesh; 7],
+    meshes: [Mesh; 8],
     colours: [GpuBuffer<Unorm8x4>; 4],
     palettes: GpuBuffer<mat4>,
     tallies: Vec<Pending<Tally>>,
@@ -166,7 +166,7 @@ pub fn init() -> State {
     let skin = sampled_body()
     tallies.push(read(skin.tally.items()))
     State {
-        meshes: [body, head_mesh, coat_mesh, hands_mesh, left_arm, right_arm, skin],
+        meshes: [body, head_mesh, coat_mesh, hands_mesh, left_arm, right_arm, skin, jacket()],
         colours: [c0, c1, c2, c3],
         palettes,
         tallies,
@@ -282,7 +282,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     }
     // (His arms and body, sampled from the reference: no fields to read, so their own normals and his
     // body's paint at their place at rest.)
-    for m in 4..7 {
+    for m in 4..8 {
         for k in 0..5 {
             draw(
                 pass,
