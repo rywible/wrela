@@ -102,7 +102,7 @@ pub fn hit_at() -> f32 {
 /// How long before the cross's full reach the fist lands (s): a blow lands with the arm still
 /// bent and the fist still fast (the elbow at about 135 degrees, some 25 cm of reach left to
 /// drive through), never at full extension, where the arm is locked and the fist has stopped.
-pub const X_EARLY: f32 = 0.068
+pub const X_EARLY: f32 = 0.062
 
 /// The connection: through the hit-stop the striker's body keeps driving in, slowed to `X_GRIND`
 /// of its speed, while his fist stays on what it struck, so his elbow loads; his fist rides what
@@ -114,19 +114,23 @@ pub const X_RECOIL: f32 = 0.3
 /// How fast the jolt rises and dies (s on his clock), and how long his fist takes to leave what
 /// it struck for its own path.
 pub const X_RECOIL_LIFE: f32 = 0.12
+/// How far the shock throws his fist back along the blow, per radian of it (m).
+pub const X_RECOIL_BACK: f32 = 0.3
 
 /// How far on past the place it struck the fist may go after the hit-stop (m), and for how long
 /// after the hit-stop the striker's arm is still minded (s; by then it's on its way home).
 pub const X_THROUGH: f32 = 0.03
+/// How much further it may follow on as his head leaves it (m).
+pub const X_FOLLOW_ON: f32 = 0.05
 pub const X_STOPPED: f32 = 0.7
 
 /// How far the fist is drawn back off the face after the hit-stop, ahead of the take's own
 /// recovery (m), and over how long (s).
-pub const X_BACK_OFF: f32 = 0.1
+pub const X_BACK_OFF: f32 = 0.04
 
 /// How much of the fist's overrun after the hit-stop is taken by rocking his trunk back (the
 /// rest by his arm).
-pub const X_ROCK: f32 = 0.8
+pub const X_ROCK: f32 = 1.0
 
 /// How far above where it struck the fist may rise after the hit-stop (m).
 pub const X_RISE: f32 = 0.04
@@ -504,7 +508,7 @@ pub fn fist_track() -> String {
         let ab = hd - nk
         let q = nk + ab * clamp(dot(kn - nk, ab) / dot(ab, ab), 0.0, 1.5)
         out.push_str(
-            f"{(c - h) * 60.0:.0}: kn {dot(kn, BLOW):.3} headcap {length(kn - q):.3} dhead {length(hd - last) * 100.0:.1}cm glove {gl:.3}\n".as_str(),
+            f"{(c - h) * 60.0:.0}: elbow {acos(clamp(dot(normalize(ws[rig.find("rightUpperArm")].t - el), normalize(wr - el)), -1.0, 1.0)) * 57.3:.0} kn {dot(kn, BLOW):.3} headcap {length(kn - q):.3} dhead {length(hd - last) * 100.0:.1}cm glove {gl:.3}\n".as_str(),
         )
         last = hd
     }
@@ -628,18 +632,6 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
             X_DRIVE * smoothstep(0.0, held, since) * (1.0 - smoothstep(free, end, since)),
         )
     }
-    // The shock: the hit-stop is held dead still, and as it breaks the blow kicks back into
-    // him over two drawings, then dies away. (Arriving in the hold, it read as the freeze
-    // creeping; arriving with the head's snap, it reads as the same blow.)
-    let after = wall - max(t.hold, t.flash)
-    let j = smoothstep(0.0, 0.05, after) * exp(-max(after - 0.05, 0.0) / X_RECOIL_LIFE)
-    let r = t.recoil * j
-    if r > 0.0 {
-        turn("rightShoulder", lift, r * 0.5)
-        turn("rightShoulder", back, -r * 1.0)
-        turn("upperChest", back, -r * 0.7)
-        turn("head", back, -r * 1.2)
-    }
     // His fist on the place it struck, carried with it, then let go.
     let at = KNUCKLES - BLOW * 0.09
     let hand = rig.find("rightHand")
@@ -657,17 +649,36 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
         let bo = clamp((wall - t.hold) / X_BACK_OFF_TIME, 0.0, 1.0)
         let back_off = X_BACK_OFF * (1.0 - (1.0 - bo) * (1.0 - bo))
         let spine = rig.find("spine")
-        let past = dot(w[hand].t - at, BLOW) - X_THROUGH + back_off
+        // (As his head leaves it, the fist may follow on a little behind it: his arm isn't
+        // crushed against a face that's gone.)
+        let through = X_THROUGH + X_FOLLOW_ON * smoothstep(0.0, 0.1, wall - t.hold)
+        let past = dot(w[hand].t - at, BLOW) - through + back_off
         if past > 0.0 {
             let reach = max(dot(w[hand].t - w[spine].t, BLOW), 0.2)
             stride::turn_below(rig, mut w, spine, Quat::axis_angle(back, -X_ROCK * past / reach))
         }
         let now = w[hand].t
-        let past = dot(now - at, BLOW) - X_THROUGH + back_off
+        let past = dot(now - at, BLOW) - through + back_off
         var held = if past > 0.0 { now - BLOW * past } else { now }
         // (Nor up his face as his chin tips back: no higher than it struck.)
         held.y = min(held.y, at.y + X_RISE)
         arm_to(rig, mut w, 1, held)
+    }
+    // The shock (laid on last, so it moves his arm whole rather than bending it): the
+    // hit-stop is held dead still, and as it breaks the blow kicks back into
+    // him over two drawings, then dies away. (Arriving in the hold, it read as the freeze
+    // creeping; arriving with the head's snap, it reads as the same blow.)
+    let after = wall - max(t.hold, t.flash)
+    let j = smoothstep(0.0, 0.05, after) * exp(-max(after - 0.05, 0.0) / X_RECOIL_LIFE)
+    let r = t.recoil * j
+    if r > 0.0 {
+        // (His fist goes back along the blow with it, not swung up by his chest rocking back.)
+        let fist = w[hand].t
+        stride::turn_below(rig, mut w, rig.find("rightShoulder"), Quat::axis_angle(lift, r * 0.5))
+        stride::turn_below(rig, mut w, rig.find("rightShoulder"), Quat::axis_angle(back, -r * 1.0))
+        stride::turn_below(rig, mut w, rig.find("upperChest"), Quat::axis_angle(back, -r * 0.7))
+        stride::turn_below(rig, mut w, rig.find("head"), Quat::axis_angle(back, -r * 1.2))
+        arm_to(rig, mut w, 1, fist - BLOW * (r * X_RECOIL_BACK))
     }
     // (His fist kept driven straight from the forearm, as the take keeps it, however the arm's
     // been moved: left as it was, it flops open toward the camera.)
@@ -715,7 +726,7 @@ fn home_from_hit(base: Pose, ps: f32, after: f32) -> Pose {
 /// How long the striker's punching arm takes to come home after the hit-stop (s), and how far
 /// toward his guard it's taken.
 pub const X_HOME: f32 = 0.2
-pub const X_HOME_SHARE: f32 = 0.4
+pub const X_HOME_SHARE: f32 = 0.15
 
 /// How near the middle of the struck one's glove may come to the striker's arms and fists, as
 /// the side-on camera sees them (m): a glove's half-width, an arm's, and a gap between. (Seen
