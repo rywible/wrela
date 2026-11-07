@@ -5,7 +5,7 @@
 // (`engine::light::hazed`). Beside the colour it writes what the ink reads: how far, what it is,
 // a line field, the line's weight, the normal and the moment's energy.
 
-use main::LOOK
+use main::{FREEBOARD, LOOK}
 use look::{
     STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, cells, hash2, luma, fbm,
     noise, ray,
@@ -209,7 +209,7 @@ fn sea_level(s: Shot, waves: Waves, p: vec3, foot: f32) -> f32 {
     let e = length(vec2(dot(rel, s.boat_x) / 0.62, dot(rel, s.boat_z) / 2.2))
     // (The cap follows the gunwale as the skiff heels and pitches, and lets go over a hull's
     // width or so, so the water slopes down to it rather than standing in a wall round it.)
-    let gunwale = s.boat.y - (s.boat_y.x * rel.x + s.boat_y.z * rel.z) / max(s.boat_y.y, 0.5)
+    let gunwale = s.boat.y + FREEBOARD * 0.6 - (s.boat_y.x * rel.x + s.boat_y.z * rel.z) / max(s.boat_y.y, 0.5)
     let near = 1.0 - smoothstep(1.0, 2.6, e)
     // (And heaped by the hull as it makes way: its bow wave, its quarters' hollow, the hump
     // astern: `wake::lifted`.)

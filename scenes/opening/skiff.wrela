@@ -4,7 +4,7 @@
 
 use look::{Shot, fbm, hash2, noise}
 use sail::{BOOM, BOW_OUT, FOOT, LASHED}
-use main::{PLANING, SAIL}
+use main::{FREEBOARD, PLANING, SAIL}
 use hero::{Joints, hero, hero_material}
 
 fn sd_box(p: vec3, b: vec3) -> f32 {
@@ -22,11 +22,12 @@ fn sd_capsule(p: vec3, a: vec3, b: vec3, r: f32) -> f32 {
 /// The half-length of the hull (m), its beam's half and its depth.
 const LONG: f32 = 2.2
 const BEAM: f32 = 0.62
-const DEEP: f32 = 0.42
+const DEEP: f32 = 0.42 + FREEBOARD / 0.85
 
 /// `p` (the world's) in the skiff's frame: across, up, along.
 pub fn local(s: Shot, p: vec3) -> vec3 {
-    let r = p - s.boat
+    // (Its frame's origin on the deck, `FREEBOARD` over the waterline `s.boat` floats at.)
+    let r = p - s.boat - s.boat_y * FREEBOARD
     vec3(dot(r, s.boat_x), dot(r, s.boat_y), dot(r, s.boat_z))
 }
 
