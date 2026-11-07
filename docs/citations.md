@@ -78,6 +78,19 @@ Photographs and footage from Wikimedia Commons, each licence read from its own p
 | vale-d8-overcast | development | a beech wood with a path, even light | Ermell | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0) | [Commons](https://commons.wikimedia.org/wiki/File:Kitschentalrangen-20200629-RM-170853.jpg) |
 | vale-motion-walk | motion | a wild roe buck walking across a meadow by bracken | Peter Trimming | [CC BY 2.0](https://creativecommons.org/licenses/by/2.0) | [Commons](https://commons.wikimedia.org/wiki/File:Roe_deer_in_England.webm) |
 
+### The orchestra's references
+
+Recordings from Wikimedia Commons, each licence read from its own page on 2026-11-07 (Commons only; no Freesound-origin or BY-SA files). Copies live outside the repo in the project's `music/refs/` with a `PROVENANCE.md` and each file's SHA-1. Measured only (long-term spectra, harmonic levels, attack and decay times) to set `engine/orchestra.wrela`'s numbers by hand; no audio is sampled, embedded or shipped. The music itself (`content/music`) is written as Wrela notation.
+
+| File | Creator | Licence | Used for |
+|---|---|---|---|
+| Holst, The Planets, I. Mars | Skidmore College Orchestra, via Musopen | CC0 | whole-orchestra balance, reverb |
+| Mussorgsky, Pictures at an Exhibition, Catacombae | Musopen | Public domain | brass spectrum, hall tail |
+| Tchaikovsky, Symphony No. 6, I. (theme) | Musopen | CC0 | string spectrum, vibrato |
+| 03. F4-trumpet.ogg, 05. D5-trumpet.ogg | ПростоУчастник | CC0 | trumpet harmonics, attack |
+| Pedal tone demonstration.ogg | Ovinus Real | CC0 | trombone notes, release |
+| Gong or bell vibrant (short).ogg | PDSounds | CC0 | gong ring |
+
 ## Assets and data in the repo
 
 | Source | Rights | How and why |

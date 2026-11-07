@@ -89,7 +89,7 @@ fn build(which: u32) -> Orchestra {
     if which >= 1000 {
         return orchestra(probe(which), PROBE_TEMPO, Hall {}, master: 0.5)
     }
-    orchestra(chosen(which), TEMPO, Hall {}, master: 0.5)
+    orchestra(chosen(which), TEMPO, Hall {}, master: 0.75)
 }
 
 @audio

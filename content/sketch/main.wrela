@@ -1,0 +1,56 @@
+// The hummed sketch's player, for the audio tool (`wrela tool audio -- content/sketch wav <out>`):
+// take 0 plays every idea together; take n plays idea n alone.
+
+use engine::orchestra::{Hall, Orchestra, Part, orchestra, play_orchestra}
+use sketch::{TEMPO, parts}
+use std::audio::play
+use std::collections::Vec
+use std::io::print
+
+fn chosen(which: u32) -> Vec<Part> {
+    let all = parts()
+    if which == 0 {
+        return all
+    }
+    var out: Vec<Part> = Vec::new()
+    out.push(all[which - 1].clone())
+    out
+}
+
+pub struct Piece {
+    which: u32,
+    started: bool,
+}
+
+pub fn init() -> Piece {
+    Piece { which: 0, started: false }
+}
+
+pub fn choose(p: mut Piece, which: u32) {
+    assert(!p.started, "a take is chosen before the piece starts")
+    p.which = which
+}
+
+fn build(which: u32) -> Orchestra {
+    orchestra(chosen(which), TEMPO, Hall {}, master: 1.0)
+}
+
+@audio
+fn render(o: mut Orchestra, left: mut [f32], right: mut [f32]) {
+    play_orchestra(mut o, mut left, mut right)
+}
+
+pub fn frame(p: mut Piece, time: f32, width: u32, height: u32) {
+    if !p.started {
+        p.started = true
+        play(build(p.which), render)
+    }
+}
+
+pub fn seconds(p: Piece) -> f32 {
+    f32(build(p.which).seconds)
+}
+
+pub fn describe(p: Piece) {
+    print(f"{{\"title\":\"Sketch\",\"take\":\"{p.which}\",\"seconds\":{seconds(p)}}}")
+}

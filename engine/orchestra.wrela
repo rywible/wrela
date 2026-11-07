@@ -411,6 +411,8 @@ struct Voice: Copy {
     thwack_fall: f32,
     /// The felt's noise, darkened (a one-pole low-pass near 1.2 kHz).
     felt: f32,
+    /// The brass's DC blocker (each sub-section's mean).
+    dc: vec2,
 }
 
 const SILENT: Voice = Voice {
@@ -450,6 +452,7 @@ const SILENT: Voice = Voice {
     thwack: 0.0,
     thwack_fall: 0.0,
     felt: 0.0,
+    dc: vec2(0.0),
 }
 
 /// The most notes sounding at once.
@@ -492,6 +495,9 @@ const HALL_SIDE: f32 = 0.6
 const SIDE_CUT: f32 = 0.0322
 /// The air: highs above about 9 kHz at half their level (a one-pole's share), on the whole mix.
 const AIR: f32 = 0.692
+/// One-pole shares for taking out DC: a voice's (about 20 Hz) and the mix's (about 6 Hz).
+const DC_CUT: f32 = 0.0026
+const MIX_DC_CUT: f32 = 0.0008
 
 /// The hall's character: seconds its lows and its highs take to fall 60 dB, how much of each
 /// part goes to it (at the front; the back sends more), and how loud it comes back.
@@ -517,6 +523,7 @@ pub struct Orchestra {
     pre: [f32; 8192],
     side_low: f32,
     air: vec2,
+    dc: vec2,
     pre_at: u32,
     diffuse: [f32; 4096],
     diffuse_at: u32,
@@ -621,6 +628,7 @@ pub fn orchestra(parts: Vec<Part>, tempo: [Tempo], hall: Hall, master: f32) -> O
         pre: [0.0; 8192],
         side_low: 0.0,
         air: vec2(0.0),
+        dc: vec2(0.0),
         pre_at: 0,
         diffuse: [0.0; 4096],
         diffuse_at: 0,
@@ -842,12 +850,19 @@ impl Orchestra {
             v.modes = MODES
             let top = if tam { 45.0 } else { 23.0 }
             for m in 0..MODES {
-                let u = (f32(m) + 0.8 * (scatter(v.seed, m, 21) - 0.5)) / f32(MODES)
+                // A tam-tam's modes near even steps; a cymbal's anywhere (a wash, not a chord).
+                let u = if tam {
+                    (f32(m) + 0.8 * (scatter(v.seed, m, 21) - 0.5)) / f32(MODES)
+                } else {
+                    scatter(v.seed, m, 21)
+                }
                 let hz = v.hz * pow(top, u)
                 let ring = i.ring * (if tam { 1.0 - 0.6 * u } else { 1.0 - 0.75 * u })
                 let share = (if tam { pow(1.0 - 0.8 * u, 2.0) } else {
                     0.4 + 0.6 * u
-                }) * (0.6 + 0.8 * scatter(v.seed, m, 22))
+                }) * (0.6 + 0.8 * scatter(v.seed, m, 22)) * (if !tam && hz < 1500.0 { 0.4 } else {
+                    1.0
+                })
                 self.set_mode(mut v, m, hz, ring, share)
                 // A tam-tam's high modes swell in over up to `swell` seconds; its lows at once.
                 v.pull[m] = if tam {
@@ -894,8 +909,11 @@ impl Orchestra {
             let kick = strength * v.shares[m] * pulse * (0.8 + 0.4 * scatter(v.seed + v.t, m, 24))
             v.re[m] += sign * kick
         }
-        v.thwack = max(v.thwack, 0.18 * strength)
-        v.thwack_fall = exp(-1.0 / (RATE * max(contact * 2.0, 0.001)))
+        // The stick on the head; a cymbal's sizzle, which lasts.
+        let cymbal = v.family == Family::Cymbal
+        let stick = if cymbal { 0.6 } else if v.family == Family::Timpani { 0.8 } else { 0.18 }
+        v.thwack = max(v.thwack, stick * strength)
+        v.thwack_fall = exp(-1.0 / (RATE * (if cymbal { 1.0 } else { max(contact * 2.0, 0.001) })))
     }
 }
 
@@ -1086,9 +1104,16 @@ impl Orchestra {
                 let root = sqrt(f32(players))
                 let a_in = (mono + air) / root + puff
                 let b_in = (other - air) / root + puff
-                let drive = 1.0 + 4.0 * i.blare * x * x * x
-                let ya = tanh(drive * v.lip[0].run(a_in)) / drive
-                let yb = if players > 1 { tanh(drive * v.lip[1].run(b_in)) / drive } else { 0.0 }
+                let drive = 1.0 + 6.0 * i.blare * x * x * x
+                // The tube saturates, but louder is still louder: the gain falls only as the
+                // root of the drive. The lips' pulse is one-sided, so its mean is taken out.
+                let y2 = vec2(
+                    tanh(drive * v.lip[0].run(a_in)) / sqrt(drive),
+                    if players > 1 { tanh(drive * v.lip[1].run(b_in)) / sqrt(drive) } else { 0.0 },
+                )
+                v.dc += DC_CUT * (y2 - v.dc)
+                let ya = y2.x - v.dc.x
+                let yb = y2.y - v.dc.y
                 let g = amp * root
                 let second = if players > 1 { 1 } else { 0 }
                 self.seats[s].left[k] += g * (ya * v.gain_l[0] + yb * v.gain_l[second])
@@ -1137,8 +1162,9 @@ impl Orchestra {
                 }
                 m += 1
             }
-            v.felt += FELT * (self.white() - v.felt)
-            let thwack = v.thwack * v.felt
+            let white = self.white()
+            v.felt += FELT * (white - v.felt)
+            let thwack = v.thwack * (if v.family == Family::Cymbal { white } else { v.felt })
             v.thwack *= v.thwack_fall
             let l = 0.65 * even + 0.35 * odd + thwack
             let r = 0.35 * even + 0.65 * odd + thwack
@@ -1224,7 +1250,9 @@ impl Orchestra {
         }
         for n in 0..128 {
             let wet = self.reverberate(n)
-            let mix = vec2(left[n] + hall.wet * wet.x, right[n] + hall.wet * wet.y)
+            var mix = vec2(left[n] + hall.wet * wet.x, right[n] + hall.wet * wet.y)
+            self.dc += MIX_DC_CUT * (mix - self.dc)
+            mix -= self.dc
             let low = self.air + AIR * (mix - self.air)
             self.air = low
             let aired = low + 0.5 * (mix - low)
@@ -1469,9 +1497,9 @@ pub const BASSES: Instrument = Instrument {
     vibrato_cents: 10.0,
     bright_lo: 800.0,
     bright_hi: 4000.0,
-    peak_hz: [60.0, 120.0, 400.0, 900.0, 0.0, 0.0],
-    peak_q: [2.0, 3.0, 2.0, 1.0, 1.0, 1.0],
-    peak_db: [3.0, 4.0, -2.0, 2.0, 0.0, 0.0],
+    peak_hz: [60.0, 120.0, 400.0, 900.0, 0.0, 35.0],
+    peak_q: [2.0, 3.0, 2.0, 1.0, 1.0, 0.7],
+    peak_db: [3.0, 4.0, -2.0, 2.0, 0.0, -9.0],
     release: 0.4,
     level: 0.25,
     body_lo: 45.0,
@@ -1497,9 +1525,9 @@ pub const HORNS: Instrument = Instrument {
     peak_hz: [380.0, 1100.0, 0.0, 0.0, 0.0, 0.0],
     peak_q: [1.5, 2.0, 1.0, 1.0, 1.0, 1.0],
     peak_db: [4.0, -3.0, 0.0, 0.0, 0.0, 0.0],
-    noise: 0.12,
+    noise: 0.5,
     range_db: 34.0,
-    level: 0.12,
+    level: 0.1,
 }
 
 /// Two trumpets: a bright bell (formants near 1.3 and 2.6 kHz).
@@ -1507,12 +1535,12 @@ pub const TRUMPETS: Instrument = Instrument {
     players: 2,
     attack: 0.012,
     bright_lo: 800.0,
-    bright_hi: 6000.0,
+    bright_hi: 8000.0,
     bright_most: 7000.0,
     blare: 0.8,
     peak_hz: [1300.0, 2600.0, 0.0, 0.0, 0.0, 0.0],
-    peak_db: [4.0, 3.0, 0.0, 0.0, 0.0, 0.0],
-    level: 0.09,
+    peak_db: [6.0, 6.0, 0.0, 0.0, 0.0, 0.0],
+    level: 0.1,
     ..HORNS,
 }
 
@@ -1527,7 +1555,7 @@ pub const TROMBONES: Instrument = Instrument {
     peak_hz: [520.0, 1200.0, 0.0, 0.0, 0.0, 0.0],
     peak_q: [1.2, 2.0, 1.0, 1.0, 1.0, 1.0],
     peak_db: [4.0, 3.0, 0.0, 0.0, 0.0, 0.0],
-    level: 0.11,
+    level: 0.09,
     ..HORNS,
 }
 
@@ -1542,7 +1570,7 @@ pub const TUBA: Instrument = Instrument {
     peak_hz: [230.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     peak_q: [1.2, 1.0, 1.0, 1.0, 1.0, 1.0],
     peak_db: [4.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    level: 0.09,
+    level: 0.075,
     ..HORNS,
 }
 
@@ -1608,5 +1636,5 @@ pub const CYMBAL: Instrument = Instrument {
     contact_soft: 0.0006,
     contact_hard: 0.0002,
     range_db: 30.0,
-    level: 0.25,
+    level: 0.14,
 }
