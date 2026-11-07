@@ -42,7 +42,7 @@ const WHITENS: f32 = 0.45
 
 /// How far a wind's crests lean down it, per metre they stand over the level (times the
 /// sea's chop).
-const LEAN: f32 = 0.35
+const LEAN: f32 = 0.65
 
 /// How many steps the sea's settled over before its first (`Ocean::step`).
 const WARM: u32 = 12
