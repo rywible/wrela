@@ -129,7 +129,7 @@ pub const X_BACK_OFF: f32 = 0.1
 pub const X_ROCK: f32 = 0.8
 
 /// How far above where it struck the fist may rise after the hit-stop (m).
-pub const X_RISE: f32 = 0.1
+pub const X_RISE: f32 = 0.04
 pub const X_BACK_OFF_TIME: f32 = 0.16
 pub const X_LET_GO: f32 = 0.14
 /// How far his trunk leans on into the blow through the hit-stop at `X_GRIND` (radians).
@@ -347,7 +347,9 @@ pub fn foe(p: f32) -> Pose {
     let r = humanoid::blend(
         i0,
         placed(REACT.pose(REACT_HIT / 30.0 + X_INTO + min(v, home))),
-        smoothstep(0.0, X_TAKE, v),
+        // (Fast off the mark, eased in to the drawing: the head's already going on the first
+        // frame out of the hit-stop.)
+        1.0 - pow(1.0 - clamp(v / X_TAKE, 0.0, 1.0), 3.0),
         n,
     )
     if v < home {
@@ -592,7 +594,7 @@ fn struck_point(c: vec3, pf: f32, t: Tune) -> vec3 {
 /// rides the place it struck as it's knocked away, and leaves it for its own path, driving
 /// through. (`t.grind` also leans his trunk on in through the hit-stop.)
 pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
-    let base = striker(ps)
+    let base = home_from_hit(striker(ps), ps, wall - t.hold)
     let h = hit_at()
     let since = ps - h
     let held = max(t.hold * t.grind, 1.0e-3)
@@ -652,7 +654,8 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
         // drawn back off the face at once, ahead of the take's own way home: the head is knocked
         // off the fist, the arm isn't shoved on after it. Where the take would carry him on, it's
         // his trunk that's stopped, rocked back from the hips, not his elbow folded up.)
-        let back_off = X_BACK_OFF * smoothstep(0.0, X_BACK_OFF_TIME, wall - t.hold)
+        let bo = clamp((wall - t.hold) / X_BACK_OFF_TIME, 0.0, 1.0)
+        let back_off = X_BACK_OFF * (1.0 - (1.0 - bo) * (1.0 - bo))
         let spine = rig.find("spine")
         let past = dot(w[hand].t - at, BLOW) - X_THROUGH + back_off
         if past > 0.0 {
@@ -669,6 +672,41 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
     stride::store(rig, w, mut c, 0)
     c.pose(0.0)
 }
+
+/// The striker's punching arm taken from the take's follow-through back toward his guard as the
+/// hit-stop breaks (`after` s since): the take drives on and up after a face it's no longer
+/// in, so his arm comes home along its own line instead, the rest of him left as the take has
+/// him.
+fn home_from_hit(base: Pose, ps: f32, after: f32) -> Pose {
+    if after <= 0.0 || after >= X_STOPPED {
+        return base
+    }
+    borrow rig = HERO.rig
+    let x = clamp(after / X_HOME, 0.0, 1.0)
+    let w = X_HOME_SHARE *
+        (1.0 - (1.0 - x) * (1.0 - x)) *
+        (1.0 - smoothstep(X_STOPPED - 0.25, X_STOPPED, after))
+    if w <= 0.0 {
+        return base
+    }
+    let guard = FIGHT_IDLE_M.pose(ps % FIGHT_IDLE_M.length())
+    // (Only the punching arm: his trunk is still turned into the cross, so a guard's chest laid
+    // on it would twist him past square.)
+    let blended = humanoid::blend(base, guard, w, rig.bones.len())
+    var out = base
+    for part in ["rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand"] {
+        let i = rig.find(part)
+        if i != humanoid::NONE {
+            out.turns[i] = blended.turns[i]
+        }
+    }
+    out
+}
+
+/// How long the striker's punching arm takes to come home after the hit-stop (s), and how far
+/// toward his guard it's taken.
+pub const X_HOME: f32 = 0.2
+pub const X_HOME_SHARE: f32 = 0.85
 
 /// How near the middle of the struck one's glove may come to the striker's arms and fists, as
 /// the side-on camera sees them (m): a glove's half-width, an arm's, and a gap between. (Seen
