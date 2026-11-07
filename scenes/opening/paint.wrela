@@ -42,18 +42,29 @@ fn storm_sky(
     disc: bool,
 ) -> vec4 {
     let c = dome.sample_level(smp, sky_uv(d))
-    let open = clear_sky(view, smp, light, d) + (if disc {
+    let open = mix(sea_day_sky(view, light, d, smp), clear_sky(view, smp, light, d), light.storm) + (if disc {
         (sun_disc(light, d) + sun_glow(light, d)) * (1.0 - light.storm)
     } else { vec3(0.0) })
     let behind = mix(open, vec3(luma(open)) * vec3(0.8, 0.85, 0.9) * STORM_BEHIND, light.storm)
     vec4(behind * (1.0 - c.a) + c.rgb, c.a)
 }
 
+/// The open sky along `d` on a sea day: its colour the sky's square to the sun at the same
+/// height, so the haze's forward glow doesn't turn the whole sunward sky to cream; the sky's
+/// own only close round the sun, where that glow is.
+fn sea_day_sky(view: Texture<Rgba16Float>, light: Light, d: vec3, smp: Sampler) -> vec3 {
+    let here = clear_sky(view, smp, light, d)
+    let flat = normalize(vec2(-light.sun.z, light.sun.x))
+    let k = sqrt(max(1.0 - d.y * d.y, 0.0))
+    let square = clear_sky(view, smp, light, vec3(flat.x * k, d.y, flat.y * k))
+    mix(square, here, pow(max(dot(d, light.sun), 0.0), 24.0))
+}
+
 /// The glare round the sun's disc under an open sky: a hot core and a wide soft halo, the haze
 /// lit up round it.
 fn sun_glow(light: Light, d: vec3) -> vec3 {
     let c = clamp(dot(d, light.sun), 1.0e-3, 1.0)
-    light.sun_colour * (0.25 * pow(c, 900.0) + 0.035 * pow(c, 60.0))
+    light.sun_colour * (1.5 * pow(c, 2500.0) + 0.3 * pow(c, 300.0) + 0.05 * pow(c, 40.0))
 }
 
 /// `sky` (`storm_sky`'s, along `d`), under the overcast gone low on the horizon, past the deck's
@@ -115,7 +126,9 @@ fn under_the_far_deck(
     var low = vec4(0.0)
     for k in 0..8 {
         let a = f32(k) * 0.785398
-        low += dome.sample_level(smp, sky_uv(normalize(vec3(cos(a), 0.075, sin(a))))) * 0.125
+        let lo = dome.sample_level(smp, sky_uv(normalize(vec3(cos(a), 0.035, sin(a)))))
+        let hi = dome.sample_level(smp, sky_uv(normalize(vec3(cos(a), 0.06, sin(a)))))
+        low += (if hi.a > lo.a { hi } else { lo }) * 0.125
     }
     let cloud = low.rgb / max(low.a, 1.0e-3)
     let toward = smoothstep(0.03, 0.0, d.y)

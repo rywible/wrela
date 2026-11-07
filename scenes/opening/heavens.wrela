@@ -64,7 +64,7 @@ fn weather() -> Weather {
 pub fn regions() -> Vec<Region> {
     var r = Vec::new()
     for c in climates() {
-        r.push(Region { at: c.at, reach: c.reach, clear: c.clear })
+        r.push(Region { at: c.at, reach: c.reach, clear: c.clear, fair: FAIR * c.clear })
     }
     r
 }
@@ -78,6 +78,9 @@ const GLOOM: f32 = 1.0
 
 /// The share of the sun's light that comes through the overcast's deck.
 const UNDER_DECK: f32 = 0.1
+
+/// Where the storm's clouds are pulled back, fair weather's own cumulus: their cover.
+const FAIR: f32 = 0.32
 
 /// How the world under an open sky is exposed (`Light::exposure`).
 const CLEAR_EXPOSURE: f32 = 0.48
