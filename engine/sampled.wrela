@@ -73,13 +73,17 @@ pub struct Sampled {
 /// A sampled shape from its tables (written by a tool from a distance: `slots`, a slot a block,
 /// x fastest; `samples`, `BLOCK_WORDS` words a stored block), uploaded once.
 pub fn sampled(lattice: Lattice, slots: [u32], samples: [u32]) -> Sampled {
+    let stored = samples.len() / BLOCK_WORDS
+    for v in slots {
+        assert(v < STORED || v - STORED < stored, f"a sampled shape's slot {v} is past its blocks")
+    }
     var s: GpuBuffer<u32> = buffer(slots.len())
     write(mut s, 0, slots)
     var w: GpuBuffer<u32> = buffer(max(samples.len(), 1))
     if samples.len() > 0 {
         write(mut w, 0, samples)
     }
-    Sampled { lattice, slots: s, samples: w, stored: samples.len() / BLOCK_WORDS }
+    Sampled { lattice, slots: s, samples: w, stored }
 }
 
 /// A sampled shape's tables on the CPU, as a tool wrote them: to upload (`upload`), and to ask
@@ -238,11 +242,22 @@ pub fn place_sampled_vertices(
         rhs += q * dot(q, pts[i] - m)
     }
     let pos = clamp(m + solve3(a0, a1, a2, rhs), cmin, cmin + vec3(cell))
-    let normal = normalize(blend_gradient(vals, (pos - cmin) / cell))
+    // The gradient there, or (where it vanishes, as at a saddle's middle) its crossings' normals'.
+    let gradient = blend_gradient(vals, (pos - cmin) / cell)
+    var crossed = vec3(0.0)
+    for i in 0..n {
+        crossed += nrm[i]
+    }
+    let normal = unit_or(gradient, unit_or(crossed, vec3(0.0, 1.0, 0.0)))
     let vi = verts.push(
         SkinVertex { pos, bones: lattice.bone, normal, weights: 255, mask: lb.mask },
     )
     cells.store(key, u32(CellWord { vertex: min(vi, NO_VERTEX), signs }))
+}
+
+/// `v` made a unit long, or `instead` where it's too short to have a direction.
+fn unit_or(v: vec3, instead: vec3) -> vec3 {
+    if dot(v, v) > 1.0e-20 { normalize(v) } else { instead }
 }
 
 /// The angle (degrees) past which two faces meeting at a vertex make a crease: the vertex is split
@@ -335,6 +350,7 @@ pub fn crease_vertices(
     cells: [u32],
     points: [SkinVertex],
     cos_crease: f32,
+    vroom: u32,
     verts: mut Append<SkinVertex>,
     sides: mut Atomics<u32>,
     block: WorkgroupId,
@@ -368,7 +384,7 @@ pub fn crease_vertices(
         var best = 0
         var near = -2.0
         for k in 0..count {
-            let d = dot(normalize(sums[k]), nf)
+            let d = dot(unit_or(sums[k], nf), nf)
             if d > near {
                 near = d
                 best = k
@@ -377,7 +393,7 @@ pub fn crease_vertices(
         if count < SIDES && near < cos_crease {
             sums[count] = nf
             count += 1
-        } else {
+        } else if near > 0.0 {
             sums[best] += nf
         }
     }
@@ -388,7 +404,7 @@ pub fn crease_vertices(
     }
     for k in 0..SIDES {
         if k < count {
-            let nk = normalize(sums[k])
+            let nk = unit_or(sums[k], p.normal)
             let vi = verts.push(
                 SkinVertex {
                     pos: p.pos,
@@ -398,7 +414,8 @@ pub fn crease_vertices(
                     mask: p.mask,
                 },
             )
-            sides.store(v0 * SIDE_WORDS + k, min(vi, NO_VERTEX))
+            // Past the mesh's room the side has no vertex, and its quads are holes.
+            sides.store(v0 * SIDE_WORDS + k, if vi < vroom { vi } else { NO_VERTEX })
             sides.store(v0 * SIDE_WORDS + SIDES + k, pack_normal(nk))
         } else {
             sides.store(v0 * SIDE_WORDS + k, NO_VERTEX)
@@ -408,7 +425,7 @@ pub fn crease_vertices(
 
 /// Of cell vertex `v`'s sides (the sides map's), the vertex of the one facing most as `nf` does.
 fn side_facing(sides: [u32], v: u32, nf: vec3) -> u32 {
-    var best = sides[v * SIDE_WORDS]
+    var best = NO_VERTEX
     var near = -2.0
     for k in 0..SIDES {
         let i = sides[v * SIDE_WORDS + k]
@@ -466,6 +483,10 @@ pub fn emit_creased_quads(
         let v1 = side_facing(sides, p1, nf)
         let v2 = side_facing(sides, p2, nf)
         let v3 = side_facing(sides, p3, nf)
+        if v0 == NO_VERTEX || v1 == NO_VERTEX || v2 == NO_VERTEX || v3 == NO_VERTEX {
+            let _ = holes.add(i: 0, value: 1)
+            continue
+        }
         let _ = quads.push(if in0 == 1 {
             Quad { a: v0, b: v1, c: v2, d: v0, e: v2, f: v3 }
         } else {
@@ -480,6 +501,11 @@ pub fn emit_creased_quads(
 /// smoothly. At most 65,535 stored blocks.
 pub fn realize_sampled(shape: Sampled, crease: f32 = CREASE) -> Mesh {
     let grid = shape.lattice.grid()
+    assert(shape.stored <= 65535, f"a sampled shape stores {shape.stored} blocks, past 65,535")
+    assert(
+        shape.slots.len() == grid.blocks,
+        f"a sampled shape has {shape.slots.len()} slots for {grid.blocks} blocks",
+    )
     let cells = BLOCK * BLOCK * BLOCK
     let room = max(shape.stored * cells, 1)
     var mesh = Mesh::new(Room { vertices: room, quads: room * 3 })
@@ -518,6 +544,7 @@ pub fn realize_sampled(shape: Sampled, crease: f32 = CREASE) -> Mesh {
             cells: scratch.cells.items(),
             points: points.items(),
             cos_crease: cos(crease * 0.017453292),
+            vroom: room,
             verts: mut mesh.verts,
             sides: mut sides,
         ),
