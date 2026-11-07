@@ -57,9 +57,9 @@ fn sampled_at(l: Lattice, slots: [u32], words: [u32], p: vec3) -> f32 {
 /// own weights round it.
 pub fn arm(side: u32) -> Mesh {
     if side == 0 {
-        weighted(arm_left_grid::samples(B_UPPER), arm_left_weights::weights(), 1.5)
+        weighted(arm_left_grid::samples(B_UPPER), arm_left_weights::weights(), reach: 1.5, pull: 0.0)
     } else {
-        weighted(arm_right_grid::samples(B_UPPER + 1), arm_right_weights::weights(), 1.5)
+        weighted(arm_right_grid::samples(B_UPPER + 1), arm_right_weights::weights(), reach: 1.5, pull: 0.0)
     }
 }
 
@@ -67,9 +67,9 @@ pub fn arm(side: u32) -> Mesh {
 /// finger's joints weighted as the reference's are.
 pub fn hand(side: u32) -> Mesh {
     if side == 0 {
-        weighted(hand_left_grid::samples(B_HAND), hand_left_weights::weights(), 1.5)
+        weighted(hand_left_grid::samples(B_HAND), hand_left_weights::weights(), reach: 1.5, pull: 0.0)
     } else {
-        weighted(hand_right_grid::samples(B_HAND + 1), hand_right_weights::weights(), 1.5)
+        weighted(hand_right_grid::samples(B_HAND + 1), hand_right_weights::weights(), reach: 1.5, pull: 0.0)
     }
 }
 
@@ -81,6 +81,7 @@ pub fn skin_weighted(
     wslots: [u32],
     wwords: [u32],
     reach: f32,
+    pull: f32,
     lattice: Lattice,
     slots: [u32],
     words: [u32],
@@ -92,7 +93,28 @@ pub fn skin_weighted(
         return
     }
     let v = verts[id]
-    let (bones, weights) = weights_at(grid, wslots, wwords, v.pos)
+    let found = weights_at(grid, wslots, wwords, v.pos)
+    var bones = found.0
+    var weights = found.1
+    // (A shell hanging clear of him, as his long jacket's back does, is off the lattice's kept
+    // blocks: its weights are his body's nearest in, `pull` at a time toward his middle, not
+    // the lattice's fallback, his chest, which swung it out as a slab.)
+    if pull > 0.0 {
+        var q = v.pos
+        for _ in 0..8 {
+            if !(bones == grid.fallback && weights == 255) {
+                break
+            }
+            let toward = vec3(q.x, 0.0, q.z + 0.02)
+            if length(toward) < 1.0e-4 {
+                break
+            }
+            q = q - normalize(toward) * pull
+            let again = weights_at(grid, wslots, wwords, q)
+            bones = again.0
+            weights = again.1
+        }
+    }
     let e = lattice.cell * reach
     let g = vec3(
         sampled_at(lattice, slots, words, v.pos + vec3(e, 0.0, 0.0)) - sampled_at(lattice, slots, words, v.pos - vec3(e, 0.0, 0.0)),
@@ -104,7 +126,7 @@ pub fn skin_weighted(
 }
 
 /// A sampled shape of his realized and skinned by a weight lattice.
-fn weighted(samples: Samples, tables: WeightTables, reach: f32) -> Mesh {
+fn weighted(samples: Samples, tables: WeightTables, reach: f32, pull: f32) -> Mesh {
     let shape = samples.upload()
     let w = tables.upload()
     var mesh = realize_sampled(shape)
@@ -114,6 +136,7 @@ fn weighted(samples: Samples, tables: WeightTables, reach: f32) -> Mesh {
             wslots: w.slots.items(),
             wwords: w.words.items(),
             reach: reach,
+            pull: pull,
             lattice: shape.lattice,
             slots: shape.slots.items(),
             words: shape.samples.items(),
@@ -129,14 +152,14 @@ fn weighted(samples: Samples, tables: WeightTables, reach: f32) -> Mesh {
 
 /// His trunk, legs and head (`body_grid`) realized from their samples and skinned.
 pub fn sampled_body() -> Mesh {
-    weighted(body_grid::samples(0), body_weights::weights(), 1.5)
+    weighted(body_grid::samples(0), body_weights::weights(), reach: 1.5, pull: 0.0)
 }
 
 /// His jacket (`jacket_grid`): its own shell over his shirt, skinned as his body is.
 pub fn jacket() -> Mesh {
     // (Its normal taken nearer: the shell is only a cell or two thick, and further off the
     // samples would reach through it to its other face.)
-    weighted(jacket_grid::samples(0), body_weights::weights(), 0.8)
+    weighted(jacket_grid::samples(0), body_weights::weights(), reach: 0.8, pull: 0.012)
 }
 
 // ---- his coat's tails ----------------------------------------------------------------------

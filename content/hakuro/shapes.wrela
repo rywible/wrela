@@ -438,7 +438,7 @@ pub fn tails(p: vec3) -> (f32, f32) {
     let tuck = clamp((JACKET_HEM + 0.01 - p.y) / 0.08, 0.0, 1.0)
     // (A long coat's fall, close over his hips and straight down: flared out like a skirt
     // straight off his belt it read as a kilt.)
-    let rr = girth(inside) - 0.012 + 0.024 * tuck * tuck * (3.0 - 2.0 * tuck) + 0.032 * pow(tt, 1.5) + fold * tuck
+    let rr = girth(inside) - 0.012 + 0.014 * tuck * tuck * (3.0 - 2.0 * tuck) + 0.032 * pow(tt, 1.5) + fold * tuck
     var d = abs(r - rr) - 0.009
     // Its front edges: the distance round to the nearer (negative between them).
     d = max(d, max(TAILS_FROM - deg, deg - TAILS_TO) * 0.0174532925 * r)
