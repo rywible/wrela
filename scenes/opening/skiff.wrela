@@ -22,7 +22,7 @@ fn sd_capsule(p: vec3, a: vec3, b: vec3, r: f32) -> f32 {
 /// The half-length of the hull (m), its beam's half and its depth.
 const LONG: f32 = 2.2
 const BEAM: f32 = 0.62
-const DEEP: f32 = 0.42 + FREEBOARD / 0.85
+const DEEP: f32 = 0.42
 
 /// `p` (the world's) in the skiff's frame: across, up, along.
 pub fn local(s: Shot, p: vec3) -> vec3 {
@@ -61,7 +61,7 @@ fn form(q: vec3) -> vec2 {
                 (1.0 - 0.85 * pow(max(z, 0.0), 1.6)) *
                 (1.0 - 0.25 * z * z * step(z, 0.0)),
             0.03,
-        )
+        ) + FREEBOARD * (1.0 - smoothstep(0.4, 0.95, z))
         let xs = abs(q.x) / w
         let ys = abs(y) / dk
         // (Its bilge and deck edge rounded, not a slab's square corners.)
@@ -70,8 +70,8 @@ fn form(q: vec3) -> vec2 {
     }
     let taper = if z > 0.0 { 1.0 - pow(z, 1.8) } else { 1.0 - 0.75 * pow(-z, 2.6) }
     let w = max(BEAM * taper, 0.03)
-    let e = length(vec2(q.x / w, y / DEEP))
-    vec2(max((e - 1.0) * min(w, DEEP), abs(q.z) - LONG), y)
+    let e = length(vec2(q.x / w, y / (DEEP + FREEBOARD)))
+    vec2(max((e - 1.0) * min(w, DEEP + FREEBOARD), abs(q.z) - LONG), y)
 }
 
 /// The hull as a solid, from its gunwale's middle (`q`, the skiff's frame): what keeps the sea
@@ -371,7 +371,9 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
         seam = sm
         // (Its bulwark's cap rail dark with old tar and handling, a line along each side that
         // says gunwale.)
-        let cap = smoothstep(0.07, 0.09, y) * smoothstep(0.28, 0.3, abs(q.x))
+        // (Above the deck's crown, but not the crate's top.)
+        let crate_k = smoothstep(0.32, 0.28, abs(q.x)) * smoothstep(0.3, 0.26, abs(q.z + 1.55))
+        let cap = smoothstep(0.07, 0.09, y) * (1.0 - crate_k)
         a = mix(a, vec3(0.1, 0.075, 0.06) * (0.8 + 0.4 * grain), cap * 0.85)
         rough = mix(rough, 0.45, cap)
     }
@@ -469,7 +471,7 @@ fn patch(uv: vec2, at: vec2, half: vec2, turn: f32) -> (f32, f32) {
 
 /// The old skiff's wood at `q` (the skiff's frame), `y` over its sheer, facing out (`outside`)
 /// or up (`inside`): its colour, roughness and the ink's seam field. Its topsides once painted
-/// madder over an ochre line, faded and chipped to the grey wood, grime run down from the rail,
+/// madder along the sheerstrake, faded and chipped to the bare wood, grime run down from the rail,
 /// a tin patch nailed over a split plank at the bow and weed below the water; its deck planks
 /// silvered by sun and salt, tarred at their seams, worn where the feet stand, wet in patches.
 fn old_wood(q: vec3, y: f32, outside: f32, inside: f32, grain: f32, fine: f32, px: f32) -> (vec3, f32, f32) {
@@ -489,13 +491,11 @@ fn old_wood(q: vec3, y: f32, outside: f32, inside: f32, grain: f32, fine: f32, p
     let painted = (1.0 - smoothstep(0.62, 0.7, wear)) * smoothstep(-0.13, -0.1, y)
     let faded = mix(vec3(0.3, 0.12, 0.08), vec3(0.4, 0.24, 0.18), smoothstep(-0.12, 0.0, y))
     var c = mix(wood, faded * (0.85 + 0.25 * grain), painted)
-    let ochre = smoothstep(-0.245, -0.235, y) * smoothstep(-0.205, -0.215, y)
-    c = mix(c, vec3(0.42, 0.31, 0.13) * (0.8 + 0.3 * grain), ochre * painted * (1.0 - smoothstep(0.004, 0.008, px)))
     // (Grime run down from the rail in streaks.)
     let streak = smoothstep(0.45, 0.75, noise(vec2(q.z * 11.0, y * 0.8))) * smoothstep(-0.3, 0.0, y)
     c *= 1.0 - 0.3 * streak
     // (Weed and dark slime below where the water reaches.)
-    let water = 1.0 - smoothstep(-0.3, -0.26, y + 0.03 * noise(vec2(q.z * 6.0, q.x * 6.0)))
+    let water = 1.0 - smoothstep(-0.3 - FREEBOARD, -0.26 - FREEBOARD, y + 0.03 * noise(vec2(q.z * 6.0, q.x * 6.0)))
     c = mix(c, vec3(0.06, 0.07, 0.04) * (0.8 + 0.5 * fine), water)
     // (A tin patch nailed over a split plank at the bow, either side, gone dull, its nails rust.)
     let pt = vec2(q.z - 1.22, y + 0.15)
