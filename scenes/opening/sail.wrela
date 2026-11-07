@@ -11,6 +11,7 @@
 use std::input::{Event, Key, PadAxis, PadButton}
 use sea::{HELD, SEA, bob}
 use wind::air_at
+use stacks::stacks
 use engine::ocean::Swell
 
 /// The skiff under the player's hands.
@@ -351,6 +352,19 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     r.turn += (wheel * TURN_RATE * grip - r.turn) * (1.0 - exp(-dt * 2.6))
     r.steer += r.turn * dt
     r.at += heading * r.speed * dt
+    // (Never into a rock: held off a sea stack's foot, its way lost against it. Steered or
+    // put back where one stands, it ran into the stone and the camera with it.)
+    let foot = vec3(r.at.x, 0.5, r.at.y)
+    let clear = stacks(foot, 0.2) - 4.0
+    if clear < 0.0 {
+        let e = 0.5
+        let g = vec2(
+            stacks(foot + vec3(x: e), 0.2) - stacks(foot - vec3(x: e), 0.2),
+            stacks(foot + vec3(z: e), 0.2) - stacks(foot - vec3(z: e), 0.2),
+        )
+        r.at -= g / max(length(g), 1.0e-4) * clear
+        r.speed *= exp(-dt * 3.0)
+    }
     // The boom: on its own side always. Sheeted, held at the angle the wind wants; let fly, it
     // streams out with the wind as far as its side lets it. With the wind round on the other
     // side (by the lee), it stays where it is, full, rather than swinging right across: a slam
