@@ -3,20 +3,21 @@
 // it the keys while the player sails (`input`), and each frame draws it into its `image` (`play`),
 // which it lays on its own screen.
 
-use main::{KINETIC, LANTERN, LOOK, START, STYLE}
+use main::{KINETIC, LANTERN, LOOK, OFF, START, STYLE}
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
 use paint::paint
-use yonder::{Yon, yonder}
+use yonder::{FIELD_SIDE, FIELD_SLABS, Yon, cook_isle, yonder}
 use ink::ink
 use weather::weather
 use sail::{Rig, key, let_go, rest, step}
 use std::collections::swap
 use std::input::Event
 use std::gpu::{
-    ClipPosition, Rgba16Float, Rgba8, Texture, VertexIndex, begin_pass, begin_pass3, draw, texture,
+    ClipPosition, R32Float, Rgba16Float, Rgba8, Texture, Texture3d, VertexIndex, begin_pass,
+    begin_pass3, dispatch, draw, label, texture, texture3d,
 }
 
 /// How finely a live page meets the scene (`Shot::fine`): the rock and the cathedral four times
@@ -47,6 +48,10 @@ pub struct State {
     pub(package) yon_shot: Shot,
     pub(package) yon_count: f32,
     pub(package) yon_seq: u32,
+    /// The isle's field, cooked once over the first drawings (`yonder::cook_isle`), and how many
+    /// of its slabs have been.
+    pub(package) isle_field: Texture3d<R32Float>,
+    pub(package) isle_cooked: u32,
     pub(package) width: u32,
     pub(package) height: u32,
     /// The skiff as the player sails it.
@@ -86,6 +91,8 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         yon_shot: shot,
         yon_count: 0.0,
         yon_seq: 0,
+        isle_field: texture3d::<R32Float>(FIELD_SIDE, FIELD_SIDE, FIELD_SIDE),
+        isle_cooked: 0,
         image: texture(width: 1, height: 1),
         image_size: (1, 1),
         spare: texture(width: 1, height: 1),
@@ -227,6 +234,12 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         s: s.ocean.s,
     }
     let width = s.width
+    if s.isle_cooked < FIELD_SLABS {
+        label("cook isle")
+        dispatch(cook_isle.bind(slab: s.isle_cooked, out: mut s.isle_field), over: s.isle_field)
+        s.isle_cooked += 1
+    }
+    label("yonder")
     let f = begin_pass3(mut s.yon_colour, mut s.yon_marks, mut s.yon_normal, keep: true)
     f.scissor(0, from, width, to - from)
     draw(
@@ -245,10 +258,12 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
             past_colour: s.past_colour,
             past_marks: s.past_marks,
             past_normal: s.past_normal,
+            field: s.isle_field,
         ),
         vertices: 3,
     )
     f.end()
+    label("paint")
     let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, keep: true)
     p.scissor(0, from, width, to - from)
     draw(
@@ -276,7 +291,12 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
 /// The weather laid over the painted scene (`weather`), into `aired`, for the ink.
 pub(package) fn weathered(s: mut State, shot: Shot) {
     borrow hv = s.heavens
+    label("weather")
     let p = begin_pass(mut s.aired, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    if (OFF & 256) != 0 {
+        p.end()
+        return
+    }
     draw(
         p,
         cover,
@@ -349,6 +369,7 @@ pub fn play(
     }
     weathered(mut s, shot)
     borrow hv = s.heavens
+    label("ink")
     let p = begin_pass(mut s.spare, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         p,

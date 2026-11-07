@@ -20,6 +20,9 @@ const REACH: f32 = 50.0
 const OUT: f32 = 2600.0
 /// The tallest rock (m).
 pub const TALLEST: f32 = 64.0
+/// How far under the sea the rocks reach (m): a stack's foot ends 12 m down (`stack`), its rough
+/// faces a metre and a half past that; nothing of them is deeper.
+const FLOOR: f32 = 16.0
 
 /// Whether a cluster at `at` (x, z) is kept out: the skiff's first reach, the lane ahead of it,
 /// the cathedral rock's bearing.
@@ -143,6 +146,33 @@ pub fn stacks(p: vec3, px: f32) -> f32 {
     // (Clusters stand a margin inside their cells, so the way out of this one is a step past
     // its edge and no nearer any rock: never so near the ray takes it for one.)
     let out = min(min(local.x, CELL - local.x), min(local.y, CELL - local.y)) + 5.0
+    in_cell(c, p, px, out)
+}
+
+/// How far a ray at `p` going `d` may step toward the rocks: `stacks`, but the way out of the
+/// cell taken along the ray, not to the cell's nearest side. (A ray running close beside a
+/// cell's side, as the opening's middle column runs beside x = 0, took steps only as long as it
+/// was near that side, a few metres, and ran out of steps short of the rocks it looked at.)
+fn stacks_along(p: vec3, d: vec3, px: f32) -> f32 {
+    if p.y > TALLEST + 4.0 {
+        return p.y - TALLEST
+    }
+    let g = vec2(p.x, p.z) / CELL
+    let c = floor(g)
+    let local = (g - c) * CELL
+    let dxz = vec2(d.x, d.z)
+    let to_x = if dxz.x > 0.0 { (CELL - local.x) / dxz.x } else if dxz.x < 0.0 { local.x / -dxz.x } else {
+        1.0e5
+    }
+    let to_z = if dxz.y > 0.0 { (CELL - local.y) / dxz.y } else if dxz.y < 0.0 { local.y / -dxz.y } else {
+        1.0e5
+    }
+    // (Past the side by a step: the next cell's rocks stand further in from it than that.)
+    in_cell(c, p, px, min(to_x, to_z) + 5.0)
+}
+
+/// The rocks of cell `c` at `p`, or `out`, the way out of the cell, if that's nearer.
+fn in_cell(c: vec2, p: vec3, px: f32, out: f32) -> f32 {
     let cl = cluster(c)
     if cl.z <= 0.0 {
         return max(out, 1.0)
@@ -162,15 +192,23 @@ pub fn march_stacks(o: vec3, d: vec3, hi: f32, k: f32) -> f32 {
     var top = min(hi, OUT * 1.2 / max(length(vec2(d.x, d.z)), 1.0e-3))
     if d.y > 0.0 {
         top = min(top, max(TALLEST + 4.0 - o.y, 0.0) / d.y)
-    } else if o.y > TALLEST + 4.0 {
-        lo = (o.y - TALLEST - 4.0) / -d.y
+    } else {
+        if o.y > TALLEST + 4.0 {
+            lo = (o.y - TALLEST - 4.0) / -d.y
+        }
+        // (Nor under the sea past where the rocks' feet end, `FLOOR` down: a ray that looks
+        // down at the water went on under it, out past every cell to where they stop, and met
+        // nothing there the sea doesn't hide.)
+        if d.y < 0.0 {
+            top = min(top, max(o.y + FLOOR, 0.0) / -d.y)
+        }
     }
     var t = lo
     var hit = hi
     var i = 0
     while i < 320 && t < top {
         let px = t * k
-        let h = stacks(o + d * t, px)
+        let h = stacks_along(o + d * t, d, px)
         if h < max(px * 0.4, 0.01) {
             hit = t
             t = top

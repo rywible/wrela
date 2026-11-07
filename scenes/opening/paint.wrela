@@ -5,7 +5,7 @@
 // (`engine::light::hazed`). Beside the colour it writes what the ink reads: how far, what it is,
 // a line field, the line's weight, the normal and the moment's energy.
 
-use main::{FREEBOARD, LOOK}
+use main::{FREEBOARD, LOOK, OFF}
 use look::{
     STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, cells, hash2, luma, fbm,
     noise, ray,
@@ -1017,7 +1017,7 @@ fn sample(
         t = far
         id = SKY
     }
-    if bs.x < t {
+    if bs.x < t && (OFF & 16) == 0 {
         let tb = march_skiff(s, o, d, bs.x, min(bs.y, t))
         if tb < min(bs.y, t) {
             t = tb
@@ -1036,6 +1036,9 @@ fn sample(
         line = 0.45 - sky.a
         weight = 0.0
         n = -d
+    } else if id == SEA && (OFF & 64) != 0 {
+        c = vec3(0.02, 0.03, 0.04)
+        n = vec3(y: 1.0)
     } else if id == SEA {
         let (sc, sl, sw, sn, se) = sea_shade(
             s,
@@ -1136,13 +1139,15 @@ fn sample(
         }
     }
     // The falls, fresh each drawing, in front of what's behind them (the rock too).
-    let (fall, _) = falls(s, h, view, aerial, dome, smp, o, d, t)
+    let (fall, _) = if (OFF & 8) == 0 { falls(s, h, view, aerial, dome, smp, o, d, t) } else {
+        (vec4(0.0), t)
+    }
     c = c * (1.0 - fall.a) + fall.rgb
     // (Its drops lit by the deck's light from above, and the sun through them toward it.)
     let toward = pow(max(dot(d, light.sun), 0.0), 6.0)
     let drops_lit = light.sun_colour * (0.9 + 9.0 * toward) +
         vec3(0.22, 0.25, 0.29) * mix(1.0, 1.6, light.storm)
-    let thrown = spray(s, drops_lit, o, d, t)
+    let thrown = if (OFF & 128) == 0 { spray(s, drops_lit, o, d, t) } else { vec4(0.0) }
     c = c * (1.0 - thrown.a) + thrown.rgb
     if s.lantern > 0.5 {
         let beam = beams(s, h, aerial, smp, o, d, t)

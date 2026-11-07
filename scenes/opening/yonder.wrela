@@ -11,6 +11,7 @@
 // falls move each drawing, so they're not added up here, which would smear them: the paint draws
 // them fresh, with `falls`.)
 
+use main::OFF
 use look::{GILT, GLASS, ISLE, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use far::far_off
@@ -19,7 +20,9 @@ use paint::{Heaven, aired, hazed_far, heaven, lit_solid, sphere}
 use engine::far::foot
 use engine::light::Light
 use engine::sky::{Clouds, cloud_shadow}
-use std::gpu::{FragCoord, Rgba16Float, Rgba8, Sampler, Targets3, Texture, Texture3d}
+use std::gpu::{
+    FragCoord, GlobalId, R32Float, Rgba16Float, Rgba8, Sampler, Targets3, Texels3d, Texture, Texture3d,
+}
 
 /// What the drawings before left, and where from: the camera of the last drawing (its eye, its
 /// axes, its focal length and its screen) and how many drawings the pixels hold (0: none, so
@@ -78,13 +81,64 @@ fn was_at(y: Yon, w: vec3) -> vec3 {
     vec3(at, if seen { 1.0 } else { 0.0 })
 }
 
-fn march_isle(o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
+/// The isle's field cooked once, at load (`cook_isle`), on a coarse grid of `FIELD_SIDE`³ cells
+/// over its bounds: in each cell, how far the isle is from anywhere in it at least (m). The rock
+/// and the cathedral don't move, so what's far from them stays far: the march crosses the
+/// empty air round them by it, a read a step, and meets them by their own field as before.
+pub const FIELD_SIDE: u32 = 128
+
+/// How much steeper than a distance the isle's field may run: the march steps 0.8 of it, but
+/// the rock's fractures and crags run steeper in places (about 2 at worst).
+const STEEP: f32 = 2.0
+
+/// How far the rock's field jumps where its beds wrap (m): its ledges' lips (4.5) and its finer
+/// beds (2.2), in the rock's own units, scaled to the world's. A cell across one of those sheets
+/// can't vouch for its far side by its slope alone.
+const JUMPS: f32 = 6.7 * SCALE
+
+/// The cook's slabs of the grid (in z), one a drawing, so the first drawing isn't held up by it.
+pub const FIELD_SLABS: u32 = 8
+
+/// Past how far (m) the cooked field is trusted for a step: nearer, the isle's own.
+const NEAR: f32 = 6.0
+
+/// A cell of the isle's cooked field: the field at its middle, less the most it can fall from
+/// there to the cell's corners.
+/// (Only slab `slab` of `FIELD_SLABS`, the rest left as they are. A cell not yet cooked reads 0:
+/// the isle's own field there, as before.)
+@compute(4, 4, 4)
+pub fn cook_isle(slab: u32, out: mut Texels3d<R32Float>, id: GlobalId) {
+    let per = FIELD_SIDE / FIELD_SLABS
+    if id.z < slab * per || id.z >= (slab + 1) * per {
+        return
+    }
+    let b = bounds()
+    let cell = 2.0 * b.w / f32(FIELD_SIDE)
+    let at = b.xyz - vec3(b.w) + (vec3(f32(id.x), f32(id.y), f32(id.z)) + vec3(0.5)) * cell
+    out.store(id, isle(at).x - STEEP * 0.8660254 * cell - JUMPS)
+}
+
+/// How far the isle is from `p` at least (m), by its cooked field (`cook_isle`); 0 outside it.
+fn isle_far(field: Texture3d<R32Float>, p: vec3) -> f32 {
+    let b = bounds()
+    let g = (p - (b.xyz - vec3(b.w))) / (2.0 * b.w) * f32(FIELD_SIDE)
+    let n = f32(FIELD_SIDE)
+    if g.x < 0.0 || g.y < 0.0 || g.z < 0.0 || g.x >= n || g.y >= n || g.z >= n {
+        return 0.0
+    }
+    field.load(u32(g.x), u32(g.y), u32(g.z))
+}
+
+fn march_isle(field: Texture3d<R32Float>, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
     var t = lo
     var hit = hi
     var i = 0
     while i < 320 && t < hi {
-        let h = isle(o + d * t).x
-        if h < t * 0.0001 {
+        let far = isle_far(field, o + d * t)
+        let h = if far > NEAR { far } else { isle(o + d * t).x }
+        if far > NEAR {
+            t += far * 0.8
+        } else if h < t * 0.0001 {
             hit = t
             t = hi
         } else {
@@ -325,6 +379,7 @@ pub fn yonder(
     past_colour: Texture<Rgba16Float>,
     past_marks: Texture<Rgba16Float>,
     past_normal: Texture<Rgba8>,
+    field: Texture3d<R32Float>,
 ) -> Targets3<vec4, vec4, vec4> {
     let s = shot
     let h = Heaven { light, clouds }
@@ -335,8 +390,8 @@ pub fn yonder(
     var t = far
     var id = SKY
     let is = sphere(o, d, bounds(), far)
-    if is.x < is.y {
-        let ti = march_isle(o, d, is.x, is.y)
+    if is.x < is.y && (OFF & 1) == 0 {
+        let ti = march_isle(field, o, d, is.x, is.y)
         if ti < is.y {
             t = ti
             id = isle(o + d * ti).y
@@ -344,12 +399,16 @@ pub fn yonder(
     }
     // The sea's own stacks, nearer.
     let k = 2.0 / (s.resolution.y * s.focal)
-    let ts = march_stacks(o, d, t, k)
+    let ts = if (OFF & 2) == 0 { march_stacks(o, d, t, k) } else { far }
     var c = vec3(0.0)
     var cover = 0.0
     var marks = vec4(log2(far), SKY, 1.0, 0.0)
     var n = -d
-    if ts < t {
+    if ts < t && (OFF & 1024) != 0 {
+        c = vec3(0.05)
+        cover = 1.0
+        marks = vec4(log2(ts), ROCK, 1.0, 0.5)
+    } else if ts < t {
         let (sc, sn) = stacks_shade(s, h, clouds, view, aerial, dome, cloud, smp, o + d * ts, d, ts * k)
         c = sc
         cover = 1.0
@@ -357,7 +416,7 @@ pub fn yonder(
         n = sn
     } else if id == SKY {
         // Past them, the archipelago's other islands on the horizon, as silhouettes.
-        let (tf, fnn) = far_off(o, d, far, k)
+        let (tf, fnn) = if (OFF & 4) == 0 { far_off(o, d, far, k) } else { (far, -d) }
         if tf < far {
             let p = o + d * tf
             let sun = mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, h.light.storm))
@@ -369,6 +428,10 @@ pub fn yonder(
             marks = vec4(log2(tf), ROCK, 1.0, 0.3)
             n = fnn
         }
+    } else if (OFF & 512) != 0 {
+        c = vec3(0.05)
+        cover = 1.0
+        marks = vec4(log2(t), id, 1.0, 0.5)
     } else {
         let (ic, il, iw, inn) = isle_shade(
             s,
@@ -412,7 +475,7 @@ pub fn yonder(
             // the last drawing's is a ghost, and it's dropped.)
             let near = min(bm.x, marks.x) < 11.5
             var fresh = 0.0
-            if near && abs(bm.x - marks.x) > 0.25 {
+            if near && abs(bm.x - marks.x) > 0.25 && (OFF & 2048) == 0 {
                 var same = 0.0
                 for j in 0..4 {
                     let a = f32(j) * 1.5707963

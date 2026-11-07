@@ -21,7 +21,7 @@ use ink::ink
 use played::{State, cover, painted, sized, targets, weathered}
 use sail::key
 use std::input::events
-use std::gpu::{begin_screen_pass, draw}
+use std::gpu::{begin_screen_pass, draw, label}
 
 /// The time the scene starts at (s): the frames a test or a still draws begin here.
 pub const START: f32 = 0.0
@@ -75,6 +75,14 @@ pub const FRAMING: f32 = 0.0
 /// deck and the hull's length read (`--set CAMERA=1`).
 pub const CAMERA: f32 = 0.0
 
+/// Pieces left out, to measure what each costs (`--set OFF=...`, the bits added): 1 the rock
+/// and the cathedral, 2 the sea stacks, 4 the far islands, 8 the falls, 16 the skiff (and the
+/// hero on it), 32 the hero alone, 64 the sea's shading (still traced, lit flat), 128 the wake's
+/// thrown spray, 256 the weather pass, 512 the rock's and the cathedral's shading (still met,
+/// lit flat), 1024 the stacks' shading (still met, lit flat), 2048 the stacks' edge test (the
+/// four rays round a stack's edge that keep it from trailing). 0, the scene whole: as shipped.
+pub const OFF: u32 = 0
+
 pub fn init() -> State {
     targets(heavens(SUN, 3.0), 640, 360)
 }
@@ -87,8 +95,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     }
     let shot = painted(mut s, time, VIEW, 0.0, framing: FRAMING, fine: FINE)
     weathered(mut s, shot)
-    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     borrow hv = s.heavens
+    label("ink")
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         screen,
         cover,
