@@ -147,7 +147,7 @@ pub fn jacket() -> Mesh {
 /// thighs went through the cloth.)
 pub fn tails_weights(p: vec3) -> (u32, u32) {
     // How far down the tails (from their top under the jacket's hem to about the knee).
-    let t = clamp((0.92 - p.y) / 0.42, 0.0, 1.0)
+    let t = clamp((0.98 - p.y) / 0.36, 0.0, 1.0)
     let share = 0.75 * t * t * (3.0 - 2.0 * t)
     // Over which leg: his left (+x) or right, both across the middle of his back.
     let lean = clamp(p.x / 0.11, -1.0, 1.0)
@@ -197,8 +197,15 @@ pub fn follow_legs(mesh: take Mesh) -> Mesh {
 /// `first`) has them: each thigh, shin and boot a tapered capsule round him, the cloth kept
 /// a centimetre off it. (Skinning the tails to his thighs follows a leg's swing, but where both
 /// legs pull at one panel, a knee or the back of a thigh still came through.)
-pub fn off_legs(p: vec3, palette: [mat4], first: u32) -> vec3 {
+pub fn off_legs(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
     var q = p
+    // (Not at all up under his belt, where the tails hang from his hips: the thighs' tops pushed
+    // there pinched the cloth into dark folds.)
+    let u = clamp((0.99 - rest.y) / 0.1, 0.0, 1.0)
+    let reach = u * u * (3.0 - 2.0 * u)
+    if reach <= 0.0 {
+        return q
+    }
     for side in 0..2 {
         let sx = if side == 0 { 1.0 } else { -1.0 }
         let hip = (palette[first + 18 + side] * vec4(0.114 * sx, 0.971, -0.036, 1.0)).xyz
@@ -210,16 +217,19 @@ pub fn off_legs(p: vec3, palette: [mat4], first: u32) -> vec3 {
         for k in 0..3 {
             let a = if k == 0 { hip } else if k == 1 { knee } else { heel }
             let b = if k == 0 { knee } else if k == 1 { ankle } else { toe }
-            let ra = if k == 0 { 0.115 } else if k == 1 { 0.085 } else { 0.065 }
-            let rb = if k == 0 { 0.085 } else if k == 1 { 0.08 } else { 0.06 }
+            let ra = if k == 0 { 0.125 } else if k == 1 { 0.1 } else { 0.065 }
+            let rb = if k == 0 { 0.1 } else if k == 1 { 0.085 } else { 0.06 }
             let e = b - a
             let h = clamp(dot(q - a, e) / dot(e, e), 0.0, 1.0)
             let c = a + e * h
             let off = q - c
             let d = length(off)
             let r = mix(ra, rb, h) + 0.012
-            if d < r && d > 1.0e-5 {
-                q = c + off / d * r
+            // Eased in over a centimetre either side, so neighbours aren't pulled apart.
+            let x = r - d
+            let push = (0.5 * (x + sqrt(x * x + 0.0004)) - 0.002) * reach
+            if push > 0.0 && d > 1.0e-5 {
+                q = q + off / d * push
             }
         }
     }

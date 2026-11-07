@@ -395,7 +395,7 @@ pub fn hero_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: S
 @vertex
 pub fn coat_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: Shot) -> HeroVertex {
     var h = hero_at(v, verts, palette, shot)
-    h.world = off_legs(h.world, palette, 0)
+    h.world = off_legs(h.world, h.rest, palette, 0)
     h.clip = ClipPosition { position: clip_of(shot, h.world) }
     h
 }

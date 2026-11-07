@@ -437,7 +437,7 @@ pub struct Fielded: Copy {
 @vertex
 pub fn coat_fielded(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, view: View) -> Fielded {
     var f = fielded_at(v, verts, palettes, first, view)
-    f.world = off_legs(f.world, palettes, first)
+    f.world = off_legs(f.world, f.rest, palettes, first)
     f.clip = ClipPosition { position: view.view_proj * vec4(f.world, 1.0) }
     f
 }

@@ -90,7 +90,7 @@ pub fn fists_off_mask(m: [mat4; 64]) -> [mat4; 64] {
 
 /// His hips and belt, with the coat on (his rest space): an upright elliptic cylinder, its half
 /// widths across and front to back, between two heights.
-const HIPS_HALF = vec2(0.205, 0.135)
+const HIPS_HALF = vec2(0.235, 0.15)
 const HIPS_LO: f32 = 0.84
 const HIPS_HI: f32 = 1.2
 
