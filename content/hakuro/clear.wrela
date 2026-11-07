@@ -16,7 +16,7 @@ const R_TIP: f32 = 0.019
 
 /// The mask's cheeks (his left's; the right mirrored): their middles and radius, in his rest space.
 const CHEEK = vec3(0.0726, 1.6308, 0.0830)
-const R_CHEEK: f32 = 0.055
+const R_CHEEK: f32 = 0.065
 
 /// The mask's chin, under the snout's root, and its radius.
 const CHIN = vec3(0.0, 1.600, 0.090)
@@ -56,13 +56,13 @@ pub fn fists_off_mask(m: [mat4; 64]) -> [mat4; 64] {
             let e = tip - root
             let h = clamp(dot(fist - root, e) / dot(e, e), 0.0, 1.0)
             var near = root + e * h
-            var reach = mix(R_ROOT, R_TIP, h) + FIST_R + 0.008
+            var reach = mix(R_ROOT, R_TIP, h) + FIST_R + 0.025
             // (Or a cheek or the chin, whichever it's deepest in.)
             for c in 0..3 {
                 let cx = if c == 0 { 1.0 } else { -1.0 }
                 let at = if c < 2 { vec3(CHEEK.x * cx, CHEEK.y, CHEEK.z) } else { CHIN }
                 let cheek = (m[5] * vec4(at, 1.0)).xyz
-                let rc = (if c < 2 { R_CHEEK } else { R_CHIN }) + FIST_R + 0.008
+                let rc = (if c < 2 { R_CHEEK } else { R_CHIN }) + FIST_R + 0.025
                 if rc - length(fist - cheek) > reach - length(fist - near) {
                     near = cheek
                     reach = rc
