@@ -1125,8 +1125,8 @@ fn sample(
         c += albedo * bounce + rim * sun
         // The waterline: the hull dark where the sea has wet it.
         let at_hull = sea_level(s, waves, p, 0.02)
-        let wet = smoothstep(0.14, 0.0, p.y - at_hull)
-        c *= 1.0 - 0.5 * wet
+        let wet = smoothstep(0.2, 0.02, p.y - at_hull)
+        c *= 1.0 - 0.65 * wet
         // (And the planks nearest the sea in the dark the sea throws up, not the sky's light:
         // the hull's lower side falls off toward the water, so it sits down in the sea.)
         c *= mix(0.5, 1.0, smoothstep(0.0, 0.45, p.y - at_hull))
