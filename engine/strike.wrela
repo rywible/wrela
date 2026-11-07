@@ -38,7 +38,7 @@ pub struct Striker: Copy {
 /// What's struck: its effective mass (kg) and stiffness (N/m) where it's hit, its modes'
 /// frequencies (Hz) and how much each takes up of a blow (0 to 1; 0 none), its material's loss
 /// factor (the share of a cycle's energy it loses: flesh about 0.3, bone 0.05, stone 0.005),
-/// its bare skin, its cloth and its surface's crack (0 to 1).
+/// its bare skin, its cloth, its surface's crack and its wetness (0 to 1).
 pub struct Target: Copy {
     pub mass: f32 = 5.0,
     pub stiffness: f32 = 1.5e6,
@@ -49,6 +49,8 @@ pub struct Target: Copy {
     pub cloth: f32 = 0.0,
     /// How much its surface cracks when struck (0 to 1): grains of stone, a bone's edge.
     pub crack: f32 = 0.0,
+    /// How wet it is (0 to 1): a film of water a blow or a step splashes out from under it.
+    pub wet: f32 = 0.0,
 }
 
 /// A bare fist, the arm behind it.
@@ -85,6 +87,35 @@ pub const PALM = Striker {
     hz: [160.0, 380.0],
     share: [1.0, 0.5],
     loss: 0.4,
+}
+
+/// A heel coming down in a leather-soled boot: the foot and shin's mass behind its first touch
+/// (the body's weight follows after, too slowly to ring anything), the heel's edge hard, no
+/// skin, its own foot's flesh ringing low.
+pub const HEEL = Striker {
+    mass: 5.0,
+    stiffness: 3.0e6,
+    skin: 0.0,
+    cloth: 0.0,
+    patch: 2.0,
+    hz: [120.0, 300.0],
+    share: [1.0, 0.5],
+    loss: 0.4,
+}
+
+/// The skiff's wet deck: planks nailed over a hollow hull, the hull's air ringing low under
+/// them, the planks above; wood loses little, but its nails and the sea under the hull drink
+/// it; a film of seawater on top.
+pub const DECK = Target {
+    mass: 40.0,
+    stiffness: 2.0e6,
+    hz: [95.0, 240.0, 510.0, 1050.0],
+    share: [0.15, 1.0, 1.5, 1.0],
+    loss: 0.08,
+    skin: 0.0,
+    cloth: 0.0,
+    crack: 0.1,
+    wet: 1.0,
 }
 
 /// A face: the head's mass on the neck, thin flesh over the cheekbone and jaw, which ring.
@@ -154,6 +185,9 @@ const SLAP: f32 = 3.0
 const THWAP: f32 = 3.0
 /// The striker's own ringing against the struck body's.
 const SELF: f32 = 0.6
+/// A splash's level, and the speed a heel stamps at (m/s).
+const SPLASH: f32 = 0.35
+const STAMP: f32 = 2.0
 
 /// Two springs in series, or masses pressed together: their reduced value.
 fn reduced(a: f32, b: f32) -> f32 {
@@ -203,6 +237,9 @@ pub fn struck(by: Striker, on: Target, speed: f32) -> Surface {
     // The crack: the struck surface's grains, a click as short as the contact, as loud as the
     // blow's force (its impulse over its contact).
     let crack = on.crack * j * contact(FIST, FACE, speed: SPEED) / t
+    // The splash: the water film squeezed out from under the contact, fanning out as spray,
+    // as wide as the patch and as hard as the speed (against a heel's stamp).
+    let splash = on.wet * by.patch * min(speed / STAMP, 2.0)
     // The thwap: cloth caught between them, crushed and snapped taut, lower and duller than a
     // slap (the weave lets the air through slowly).
     let cloth = min(by.cloth + on.cloth, 1.0)
@@ -212,10 +249,10 @@ pub fn struck(by: Striker, on: Target, speed: f32) -> Surface {
         grit_q: if crack > skin { 0.5 } else { 1.0 },
         grit_t60: if crack > skin { 0.06 } else { 4.0 * t + 0.025 },
         grit: SLAP * max(skin * by.patch * fast * fast, crack),
-        tail_hz: 1100.0 * sqrt(fast),
-        tail_q: 1.4,
-        tail_t60: 4.0 * t + 0.02,
-        tail: THWAP * cloth * by.patch * fast * fast,
+        tail_hz: if splash > cloth { 3200.0 } else { 1100.0 * sqrt(fast) },
+        tail_q: if splash > cloth { 0.6 } else { 1.4 },
+        tail_t60: if splash > cloth { 0.12 } else { 4.0 * t + 0.02 },
+        tail: max(THWAP * cloth * by.patch * fast * fast, SPLASH * splash),
         modes,
         contact: t,
         // The pulse's grain: wet skin on skin squelches, cloth smooths it.
@@ -243,6 +280,13 @@ fn a_fist_on_a_face_is_shorter_than_a_shin_in_a_belly() {
     // About 2.6 ms and 20 ms.
     assert(face > 0.002 && face < 0.004, f"{face}")
     assert(belly > 0.012 && belly < 0.03, f"{belly}")
+}
+
+@test
+fn a_heel_on_the_wet_deck_splashes_and_rings_the_hull() {
+    let step = struck(HEEL, DECK, speed: 1.5)
+    assert(step.tail > 0.0 && step.tail_hz > 2000.0)
+    assert(step.modes[0].hz < 100.0 && step.modes[0].level > 0.0)
 }
 
 @test

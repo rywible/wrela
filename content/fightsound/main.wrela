@@ -30,6 +30,9 @@ pub const ON: u32 = 0
 pub const HIT_SPEED: f32 = 9.0
 /// The game's weight under it (engine::strike::weighted: 0 the bodies alone, 1 a heavy hit).
 pub const WEIGHT: f32 = 0.0
+/// How fast the feet come down (m/s): the stumble's stamps, the lead foot's plant.
+pub const STUMBLE_SPEED: f32 = 2.5
+pub const PLANT_SPEED: f32 = 2.0
 const BYS: [strike::Striker; 4] = [strike::FIST, strike::ELBOW, strike::SHIN, strike::PALM]
 const ONS: [strike::Target; 5] = [strike::FACE, strike::RIBS, strike::BELLY, strike::GUARD, strike::STONE]
 
@@ -37,6 +40,10 @@ const ONS: [strike::Target; 5] = [strike::FACE, strike::RIBS, strike::BELLY, str
 fn palette() -> Palette {
     var p = PALETTE
     p.impacts[BLOW] = strike::weighted(strike::struck(BYS[BY], ONS[ON], speed: HIT_SPEED), WEIGHT)
+    // The feet on the wet deck: the struck fighter's stumbling stamps, and the striker's lead
+    // foot planting under the cross.
+    p.surfaces[DECK] = strike::struck(strike::HEEL, strike::DECK, speed: STUMBLE_SPEED)
+    p.impacts[PLANT] = strike::struck(strike::HEEL, strike::DECK, speed: PLANT_SPEED)
     p
 }
 
