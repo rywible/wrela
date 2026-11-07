@@ -956,7 +956,11 @@ fn sea_shade(
     let blown = clamp(max(torn, upwind * 0.9) * 2.0, 0.0, 1.0)
     // (Each break's foam trails down the wind behind it, in streaks: the foam a few metres upwind,
     // drawn out to here, so a whitecap's a head with a torn tail, not an oval.)
-    let tail = max(torn, upwind * 0.8) * smoothstep(0.35, 0.75, streak + lace * 0.3) * 0.6
+    // (And a gale draws its foam out further still, tens of metres down the wind: long thin
+    // streaks, the gale's own mark on the sea.)
+    let longer = shape_at(waves, rest - wind * (DRIFT * 10.0), du * 20.0 + wind * 9.0, dv * 20.0, tiles(calm)).w
+    let tail = max(max(torn, upwind * 0.8) * smoothstep(0.35, 0.75, streak + lace * 0.3) * 0.75,
+        longer * smoothstep(0.45, 0.8, streak) * 1.1 * smoothstep(0.03, 0.1, whitecaps(SEA_STATE)))
     // (Its outline torn: the foam read a metre or two off where it lies, wandering, so a break's
     // edge is ragged, tongues and holes, never a smooth oval.)
     let ragged = shape_at(waves, rest + (warp * 2.4 + warp2 * 1.2) * mix(1.0, 0.0, smoothstep(60.0, 200.0, t)), du, dv, tiles(calm)).w
