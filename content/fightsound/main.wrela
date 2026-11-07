@@ -40,16 +40,10 @@ const ONS: [strike::Target; 5] = [strike::FACE, strike::RIBS, strike::BELLY, str
 fn palette() -> Palette {
     var p = PALETTE
     p.impacts[BLOW] = strike::weighted(strike::struck(BYS[BY], ONS[ON], speed: HIT_SPEED), WEIGHT)
-    // The feet on the wet deck, each a heel, the weight's roll and a toe: the struck fighter's
-    // stumbling stamps, and the striker's lead foot planting under the cross.
-    let stumble = strike::footfall(strike::DECK, speed: STUMBLE_SPEED)
-    let plant = strike::footfall(strike::DECK, speed: PLANT_SPEED)
-    p.surfaces[STUMBLE_HEEL] = stumble.heel
-    p.surfaces[STUMBLE_HEEL + 1] = stumble.roll
-    p.surfaces[STUMBLE_HEEL + 2] = stumble.toe
-    p.surfaces[PLANT_HEEL] = plant.heel
-    p.surfaces[PLANT_HEEL + 1] = plant.roll
-    p.surfaces[PLANT_HEEL + 2] = plant.toe
+    // The feet on the wet deck: the struck fighter's stumbling stamps, and the striker's lead
+    // foot planting under the cross.
+    p.surfaces[DECK] = strike::struck(strike::HEEL, strike::DECK, speed: STUMBLE_SPEED)
+    p.impacts[PLANT] = strike::struck(strike::HEEL, strike::DECK, speed: PLANT_SPEED)
     p
 }
 
@@ -66,9 +60,6 @@ pub const SWELL: u32 = 0
 pub const CHOP: u32 = 1
 pub const SPRAY: u32 = 2
 pub const DECK: u32 = 0
-/// The footfalls' three surfaces each (heel, roll, toe): the stumble's and the plant's.
-pub const STUMBLE_HEEL: u32 = 0
-pub const PLANT_HEEL: u32 = 3
 
 /// How loud the sea and the wind sit under the fight, against the fitted references' level (set
 /// by meter: the bed about 35 dB under the blow's peak).
@@ -246,7 +237,7 @@ struct Line: Copy {
     cue: Cue,
 }
 
-const LINES: u32 = 30
+const LINES: u32 = 24
 
 /// How long the bed plays before the exchange's first frame (s), so the clip starts on a sea and
 /// a wind already blowing; the clip's soundtrack is cut from here.
@@ -261,16 +252,6 @@ fn bed(at: f32, flow: f32, gust: f32) -> [Line; 3] {
     ]
 }
 
-/// A footfall at `at` seconds: its heel and its weight's roll, then its toe.
-fn footfall(at: f32, heel: u32, toe_after: f32, where: vec3, seed: u32) -> [Line; 3] {
-    let step = |surface: u32, s: u32| -> Cue { Cue::Step { at: where, surface, weight: 1.0, seed: s } }
-    [
-        Line { at, cue: step(heel, seed) },
-        Line { at, cue: step(heel + 1, seed + 100) },
-        Line { at: at + toe_after, cue: step(heel + 2, seed + 200) },
-    ]
-}
-
 /// The exchange's cues, in time order from the clip's first frame: a wave breaking, the cloth
 /// and the whoosh as the cross leaves, the lead foot, the blow (and the blast's whoomp and
 /// spatter), the bed ducked 7 dB under the blow and let back over 0.4 s, the stumbling feet,
@@ -281,9 +262,6 @@ fn exchange() -> [Line; LINES] {
     let half = bed(CONTACT + 0.2, flow: 0.7, gust: 0.8)
     let back = bed(CONTACT + 0.4, flow: 1.0, gust: 0.9)
     let blast = f32(BLAST)
-    let plant = footfall(PLANTED, heel: PLANT_HEEL, toe_after: 0.06, where: LEAD, seed: 4)
-    let fall = footfall(STUMBLE[0], heel: STUMBLE_HEEL, toe_after: 0.07, where: STRUCK, seed: 7)
-    let catch = footfall(STUMBLE[1], heel: STUMBLE_HEEL, toe_after: 0.08, where: STRUCK, seed: 8)
     let wave = |at: f32, seed: u32| -> Line {
         Line { at, cue: Cue::Whoosh { at: vec3(0.0, -0.5, 5.0), kind: WAVE, amount: 0.3, seed } }
     }
@@ -297,9 +275,7 @@ fn exchange() -> [Line; LINES] {
             cue: Cue::Whoosh { at: LEAD + vec3(0.0, 1.0, 0.0), kind: CLOTH, amount: 0.8, seed: 9 },
         },
         Line { at: LAUNCH, cue: Cue::Whoosh { at: FIST, kind: SWING, amount: 1.0, seed: 3 } },
-        plant[0],
-        plant[1],
-        plant[2],
+        Line { at: PLANTED, cue: Cue::Impact { at: LEAD, kind: PLANT, strength: 0.8, seed: 4 } },
         duck[0],
         duck[1],
         duck[2],
@@ -331,15 +307,14 @@ fn exchange() -> [Line; LINES] {
         half[0],
         half[1],
         half[2],
-        fall[0],
-        fall[1],
-        fall[2],
+        Line { at: STUMBLE[0], cue: Cue::Step { at: STRUCK, surface: DECK, weight: 1.0, seed: 7 } },
         back[0],
         back[1],
         back[2],
-        catch[0],
-        catch[1],
-        catch[2],
+        Line {
+            at: STUMBLE[1],
+            cue: Cue::Step { at: STRUCK, surface: DECK, weight: 0.8, seed: 8 },
+        },
         wave(2.4, 12),
         Line { at: 1.0e9, cue: Cue::Listen { at: EARS, forward: vec2(0.0, 1.0) } },
     ]
@@ -417,15 +392,6 @@ pub fn init() -> Game {
     }
     if CUE == 6 {
         lines = exchange()
-    }
-    if CUE == 7 {
-        // Three footfalls alone, half a second apart.
-        for k in 0..3 {
-            let f = footfall(0.1 + 0.6 * f32(k), heel: STUMBLE_HEEL, toe_after: 0.07, where: at, seed: 20 + k)
-            for i in 0..3 {
-                lines[3 * k + i] = f[i]
-            }
-        }
     }
     play(Score { m, lines, next: 0, sample: 0 }, play_score)
     Game { cues }
