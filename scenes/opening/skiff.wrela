@@ -4,7 +4,7 @@
 
 use look::{Shot, fbm, hash2, noise}
 use sail::{BOOM, BOW_OUT, FOOT, LASHED}
-use main::{FREEBOARD, PLANING, SAIL}
+use main::{FREEBOARD, OFF, PLANING, SAIL}
 use hero::{Joints, hero, hero_material}
 
 fn sd_box(p: vec3, b: vec3) -> f32 {
@@ -305,7 +305,7 @@ fn parts(s: Shot, q: vec3) -> vec4 {
         let ring = vec2(length(vec2(c.x, c.z)) - 0.13, c.y)
         rig = min(rig, length(ring * vec2(1.0, 1.5)) / 1.5 - 0.028)
     }
-    vec4(wood, sail, rig, hero(j, q, blow, s.held))
+    vec4(wood, sail, rig, if (OFF & 32) == 0 { hero(j, q, blow, s.held) } else { 1.0e3 })
 }
 
 /// The skiff at `p` (the world's): its distance.

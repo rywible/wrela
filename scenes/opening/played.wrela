@@ -3,7 +3,7 @@
 // it the keys while the player sails (`input`), and each frame draws it into its `image` (`play`),
 // which it lays on its own screen.
 
-use main::{KINETIC, LANTERN, LOOK, START, STYLE}
+use main::{KINETIC, LANTERN, LOOK, OFF, START, STYLE}
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
@@ -277,6 +277,10 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
 pub(package) fn weathered(s: mut State, shot: Shot) {
     borrow hv = s.heavens
     let p = begin_pass(mut s.aired, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    if (OFF & 256) != 0 {
+        p.end()
+        return
+    }
     draw(
         p,
         cover,

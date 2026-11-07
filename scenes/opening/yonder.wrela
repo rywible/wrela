@@ -11,6 +11,7 @@
 // falls move each drawing, so they're not added up here, which would smear them: the paint draws
 // them fresh, with `falls`.)
 
+use main::OFF
 use look::{GILT, GLASS, ISLE, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use far::far_off
@@ -335,7 +336,7 @@ pub fn yonder(
     var t = far
     var id = SKY
     let is = sphere(o, d, bounds(), far)
-    if is.x < is.y {
+    if is.x < is.y && (OFF & 1) == 0 {
         let ti = march_isle(o, d, is.x, is.y)
         if ti < is.y {
             t = ti
@@ -344,7 +345,7 @@ pub fn yonder(
     }
     // The sea's own stacks, nearer.
     let k = 2.0 / (s.resolution.y * s.focal)
-    let ts = march_stacks(o, d, t, k)
+    let ts = if (OFF & 2) == 0 { march_stacks(o, d, t, k) } else { far }
     var c = vec3(0.0)
     var cover = 0.0
     var marks = vec4(log2(far), SKY, 1.0, 0.0)
@@ -357,7 +358,7 @@ pub fn yonder(
         n = sn
     } else if id == SKY {
         // Past them, the archipelago's other islands on the horizon, as silhouettes.
-        let (tf, fnn) = far_off(o, d, far, k)
+        let (tf, fnn) = if (OFF & 4) == 0 { far_off(o, d, far, k) } else { (far, -d) }
         if tf < far {
             let p = o + d * tf
             let sun = mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, h.light.storm))
@@ -369,6 +370,10 @@ pub fn yonder(
             marks = vec4(log2(tf), ROCK, 1.0, 0.3)
             n = fnn
         }
+    } else if (OFF & 512) != 0 {
+        c = vec3(0.05)
+        cover = 1.0
+        marks = vec4(log2(t), id, 1.0, 0.5)
     } else {
         let (ic, il, iw, inn) = isle_shade(
             s,
