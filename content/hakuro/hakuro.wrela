@@ -363,6 +363,16 @@ impl Surface for Tails {
     }
 }
 
+/// The long jacket's paint at `p` (rest space): as `body_paint` has it above his belt; below,
+/// where his trousers are, it carries on black, gold along its front edges.
+pub fn jacket_paint(p: vec3) -> Cloth {
+    if p.y >= 0.97 {
+        return body_paint(p)
+    }
+    let e = abs(p.x + 0.05) - 0.110
+    if p.z > 0.0 && e < 0.013 { GOLD } else { BLACK }
+}
+
 /// The tails' paint: black outside, gold lined, a gold band along the hem.
 fn tails_paint(p: vec3) -> Cloth {
     let q = p + vec3(0.0, 0.949, -0.043)

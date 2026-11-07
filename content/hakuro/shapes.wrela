@@ -381,7 +381,7 @@ pub fn boot_paint(p: vec3) -> (vec3, f32, f32) {
 
 /// Where the tails hang from: the pelvis's joint, and the band round the hips they start at.
 pub const TAILS_AXIS = vec3(0.0, 0.949, -0.043)
-pub const TAILS_TOP: f32 = 0.965
+pub const TAILS_TOP: f32 = 0.84
 
 /// Where the long jacket's hem is (rest height): the tails carry on below it.
 pub const JACKET_HEM: f32 = 0.80

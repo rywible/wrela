@@ -10,7 +10,7 @@
 // its sea bounce and its rim), shadowed by the rig and the clouds.
 
 use hakuro::arms::{arm, follow_legs, hand, jacket, off_legs, sampled_body, trailed}
-use hakuro::hakuro::{Cloth, FINGER_JOINTS, body_paint, coat, head, hero}
+use hakuro::hakuro::{Cloth, FINGER_JOINTS, body_paint, coat, head, hero, jacket_paint}
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
 use engine::character::skin_matrix
 use engine::look::CreatureLook
@@ -486,6 +486,7 @@ pub fn arm_pixel(
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     painted: Texture<Rgba16Float>,
+    jacket: u32,
     pixel: FragCoord,
 ) -> Targets3<vec4, vec4, vec4> {
     let s = shot
@@ -499,7 +500,9 @@ pub fn arm_pixel(
     if dot(n, d) > 0.0 {
         n = normalize(n - d * (dot(n, d) + 0.05))
     }
-    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, v.world, n, d, t, body_paint(v.rest), 0.9)
+    // (1 for his jacket, whose paint carries on down over his trousers: `jacket_paint`.)
+    let c = if jacket == 1 { jacket_paint(v.rest) } else { body_paint(v.rest) }
+    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, v.world, n, d, t, c, 0.9)
 }
 
 /// His light, illustrated: the world's own sky and sun, but the sky's light taken from fixed
@@ -845,6 +848,7 @@ impl Aboard {
                     cloud: hv.sky.shadow,
                     smp: hv.linear,
                     painted: marks,
+                    jacket: if a == 3 { 1 } else { 0 },
                 ),
                 indices: self.arms[a].quads.items(),
                 indirect: self.arms[a].draw.items(),

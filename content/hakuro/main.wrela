@@ -3,7 +3,7 @@
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
 use arms::{arm, follow_legs, hand, jacket, off_legs, sampled_body, trailed}
-use hakuro::{Cloth, body_paint, coat, hands, head, hero, skeleton}
+use hakuro::{Cloth, body_paint, coat, hands, head, hero, jacket_paint, skeleton}
 use engine::character::{ByChannels, colours}
 use engine::character::skin_matrix
 use engine::creature::{Bone, Creature, MAX_BONES, PartMask, Parts, Skeleton}
@@ -415,7 +415,13 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                     first: k * MAX_BONES,
                     view: v,
                 ),
-                painted_pixel.bind(view: v, lights: LIGHTS, shadow: s.shadow, shadow_sampler: s.smp),
+                painted_pixel.bind(
+                    view: v,
+                    lights: LIGHTS,
+                    shadow: s.shadow,
+                    shadow_sampler: s.smp,
+                    jacket: if m == 7 { 1 } else { 0 },
+                ),
                 indices: s.meshes[m].quads.items(),
                 indirect: s.meshes[m].draw.items(),
                 cull: Cull::Back,
@@ -508,8 +514,10 @@ pub fn painted_pixel(
     lights: Lights,
     shadow: DepthTexture,
     shadow_sampler: ComparisonSampler,
+    jacket: u32,
 ) -> vec4 {
-    let c = body_paint(v.rest)
+    // (1 for his jacket, whose paint carries on down over his trousers: `jacket_paint`.)
+    let c = if jacket == 1 { jacket_paint(v.rest) } else { body_paint(v.rest) }
     var n = normalize(v.normal)
     let d = normalize(v.world - view.eye)
     if dot(n, d) > 0.0 {
