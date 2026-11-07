@@ -151,12 +151,26 @@ pub fn tails_weights(p: vec3) -> (u32, u32) {
     let share = 0.75 * t * t * (3.0 - 2.0 * t)
     // Over which leg: his left (+x) or right, both across the middle of his back.
     let lean = clamp(p.x / 0.11, -1.0, 1.0)
-    let left = share * (0.5 + 0.5 * lean)
-    let right = share - left
+    var left = share * (0.5 + 0.5 * lean)
+    var right = share - left
+    // (Their hem, below the knee, partly carried by the nearer shin, so a heel kicked up behind
+    // him lifts it rather than coming out through it.)
+    let u = clamp((0.74 - p.y) / 0.24, 0.0, 1.0)
+    let low = 0.8 * u * u * (3.0 - 2.0 * u)
+    var shin = 0.0
+    if p.x >= 0.0 {
+        shin = left * low
+        left -= shin
+    } else {
+        shin = right * low
+        right -= shin
+    }
+    let sb: u32 = if p.x >= 0.0 { 20 } else { 21 }
     let wl = u32(round(left * 255.0))
     let wr = u32(round(right * 255.0))
-    let w0 = 255 - min(wl + wr, 255)
-    (0 | (18 << 8) | (19 << 16), w0 | (wl << 8) | (wr << 16))
+    let ws = u32(round(shin * 255.0))
+    let w0 = 255 - min(wl + wr + ws, 255)
+    (0 | (18 << 8) | (19 << 16) | (sb << 24), w0 | (wl << 8) | (wr << 16) | (ws << 24))
 }
 
 @compute(64)
@@ -180,7 +194,7 @@ pub fn follow_legs(mesh: take Mesh) -> Mesh {
 }
 
 /// `p` (a point of his coat's tails, posed) moved out of his legs, posed as `palette` (from
-/// `first`) has them: each thigh and shin a tapered capsule round his trousers, the cloth kept
+/// `first`) has them: each thigh, shin and boot a tapered capsule round him, the cloth kept
 /// a centimetre off it. (Skinning the tails to his thighs follows a leg's swing, but where both
 /// legs pull at one panel, a knee or the back of a thigh still came through.)
 pub fn off_legs(p: vec3, palette: [mat4], first: u32) -> vec3 {
@@ -190,11 +204,14 @@ pub fn off_legs(p: vec3, palette: [mat4], first: u32) -> vec3 {
         let hip = (palette[first + 18 + side] * vec4(0.114 * sx, 0.971, -0.036, 1.0)).xyz
         let knee = (palette[first + 20 + side] * vec4(0.114 * sx, 0.542, -0.036, 1.0)).xyz
         let ankle = (palette[first + 22 + side] * vec4(0.114 * sx, 0.086, -0.088, 1.0)).xyz
-        for k in 0..2 {
-            let a = if k == 0 { hip } else { knee }
-            let b = if k == 0 { knee } else { ankle }
-            let ra = if k == 0 { 0.115 } else { 0.085 }
-            let rb = if k == 0 { 0.085 } else { 0.07 }
+        // (And his boot, heel to toe.)
+        let heel = (palette[first + 22 + side] * vec4(0.114 * sx, 0.05, -0.15, 1.0)).xyz
+        let toe = (palette[first + 22 + side] * vec4(0.114 * sx, 0.05, 0.10, 1.0)).xyz
+        for k in 0..3 {
+            let a = if k == 0 { hip } else if k == 1 { knee } else { heel }
+            let b = if k == 0 { knee } else if k == 1 { ankle } else { toe }
+            let ra = if k == 0 { 0.115 } else if k == 1 { 0.085 } else { 0.065 }
+            let rb = if k == 0 { 0.085 } else if k == 1 { 0.08 } else { 0.06 }
             let e = b - a
             let h = clamp(dot(q - a, e) / dot(e, e), 0.0, 1.0)
             let c = a + e * h

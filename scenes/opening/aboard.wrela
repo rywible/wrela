@@ -9,7 +9,7 @@
 // as fine as his fields, however coarse his mesh. He's lit as the skiff is (`paint::lit_solid`,
 // its sea bounce and its rim), shadowed by the rig and the clouds.
 
-use hakuro::arms::{arm, follow_legs, hand, jacket, sampled_body}
+use hakuro::arms::{arm, follow_legs, hand, jacket, off_legs, sampled_body}
 use hakuro::hakuro::{Cloth, FINGER_JOINTS, body_paint, coat, head, hero}
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
 use engine::character::skin_matrix
@@ -388,6 +388,19 @@ pub fn clip_of(s: Shot, p: vec3) -> vec4 {
 
 @vertex
 pub fn hero_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: Shot) -> HeroVertex {
+    hero_at(v, verts, palette, shot)
+}
+
+/// His coat's tails' vertex: as `hero_vertex`, moved out of his legs (`hakuro::arms::off_legs`).
+@vertex
+pub fn coat_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: Shot) -> HeroVertex {
+    var h = hero_at(v, verts, palette, shot)
+    h.world = off_legs(h.world, palette, 0)
+    h.clip = ClipPosition { position: clip_of(shot, h.world) }
+    h
+}
+
+fn hero_at(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: Shot) -> HeroVertex {
     let sv = verts[v.index]
     let m = skin_matrix(sv, palette, 0)
     let world = (m * vec4(sv.pos, 1.0)).xyz
@@ -778,7 +791,7 @@ impl Aboard {
         )
         draw(
             p,
-            hero_vertex.bind(
+            coat_vertex.bind(
                 verts: self.coat.verts.items(),
                 palette: self.palette.items(),
                 shot: shot,

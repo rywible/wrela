@@ -234,7 +234,7 @@ fn curled(m: [mat4; 64], curl: [f32; 15]) -> [mat4; 64] {
 
 /// A closed fist's curl (degrees; index, middle, ring, little, thumb): knuckles square, the
 /// thumb folded across the middle bones.
-const FIST_CURL = [80.0, 95.0, 60.0, 84.0, 98.0, 60.0, 86.0, 100.0, 60.0, 88.0, 100.0, 60.0, 20.0, 40.0, 35.0]
+const FIST_CURL = [88.0, 105.0, 70.0, 90.0, 108.0, 70.0, 92.0, 108.0, 70.0, 94.0, 108.0, 70.0, 35.0, 50.0, 40.0]
 
 /// How far his hands turn about their length at his hip (degrees).
 const HIP_TWIST: f32 = 0.0

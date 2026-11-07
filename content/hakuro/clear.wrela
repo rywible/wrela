@@ -1,4 +1,4 @@
-// His fists kept off his mask's snout and cheeks. The moves were fitted to a body with a face, not a fox's
+// His fists kept off his mask's snout, cheeks and chin. The moves were fitted to a body with a face, not a fox's
 // snout 21 cm long: a boxer's guard holds the fists at the chin, where Hakuro's snout is, and
 // they went through it. Each fist near the snout is moved off it, the whole arm swung about its
 // shoulder (so the elbow and the grip are the move's), by how far it's in, eased so that it
@@ -18,9 +18,13 @@ const R_TIP: f32 = 0.019
 const CHEEK = vec3(0.0726, 1.6308, 0.0830)
 const R_CHEEK: f32 = 0.055
 
+/// The mask's chin, under the snout's root, and its radius.
+const CHIN = vec3(0.0, 1.600, 0.090)
+const R_CHIN: f32 = 0.045
+
 /// A fist's middle in his rest space (his left; the right mirrored), and its half thickness.
-const FIST = vec3(0.765, 1.432, -0.052)
-const FIST_R: f32 = 0.048
+const FIST = vec3(0.795, 1.425, -0.062)
+const FIST_R: f32 = 0.056
 
 /// His shoulder joints at rest (his left).
 const SHOULDER = vec3(0.212, 1.455, -0.065)
@@ -53,11 +57,12 @@ pub fn fists_off_mask(m: [mat4; 64]) -> [mat4; 64] {
             let h = clamp(dot(fist - root, e) / dot(e, e), 0.0, 1.0)
             var near = root + e * h
             var reach = mix(R_ROOT, R_TIP, h) + FIST_R + 0.008
-            // (Or a cheek, whichever it's deepest in.)
-            for c in 0..2 {
+            // (Or a cheek or the chin, whichever it's deepest in.)
+            for c in 0..3 {
                 let cx = if c == 0 { 1.0 } else { -1.0 }
-                let cheek = (m[5] * vec4(CHEEK.x * cx, CHEEK.y, CHEEK.z, 1.0)).xyz
-                let rc = R_CHEEK + FIST_R + 0.008
+                let at = if c < 2 { vec3(CHEEK.x * cx, CHEEK.y, CHEEK.z) } else { CHIN }
+                let cheek = (m[5] * vec4(at, 1.0)).xyz
+                let rc = (if c < 2 { R_CHEEK } else { R_CHIN }) + FIST_R + 0.008
                 if rc - length(fist - cheek) > reach - length(fist - near) {
                     near = cheek
                     reach = rc
