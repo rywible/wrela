@@ -227,7 +227,7 @@ pub fn off_legs(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
     var q = p
     // (Not at all up under his belt, where the tails hang from his hips: the thighs' tops pushed
     // there pinched the cloth into dark folds.)
-    let u = clamp((0.99 - rest.y) / 0.1, 0.0, 1.0)
+    let u = clamp((0.84 - rest.y) / 0.1, 0.0, 1.0)
     let reach = u * u * (3.0 - 2.0 * u)
     if reach <= 0.0 {
         return q

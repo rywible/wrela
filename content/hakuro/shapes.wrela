@@ -381,13 +381,16 @@ pub fn boot_paint(p: vec3) -> (vec3, f32, f32) {
 
 /// Where the tails hang from: the pelvis's joint, and the band round the hips they start at.
 pub const TAILS_AXIS = vec3(0.0, 0.949, -0.043)
-pub const TAILS_TOP: f32 = 0.84
+pub const TAILS_TOP: f32 = 0.93
 
 /// Where the long jacket's hem is (rest height): the tails carry on below it.
-pub const JACKET_HEM: f32 = 0.80
+pub const JACKET_HEM: f32 = 0.85
+
+/// How far the tails flare out for each metre they fall (the sheet's A-line).
+pub const FLARE: f32 = 0.14
 
 /// The back vent's top (rest height) and half its width at the hem (m).
-pub const VENT_TOP: f32 = 0.72
+pub const VENT_TOP: f32 = 0.56
 pub const VENT_HALF: f32 = 0.004
 
 /// How far round from straight ahead the tails' edges are (degrees): open in front between.
@@ -395,10 +398,10 @@ pub const TAILS_FROM: f32 = 42.0
 pub const TAILS_TO: f32 = 318.0
 
 /// The tails' girth, from `TAILS_FROM` to `TAILS_TO` every 12° (m from the axis): the long
-/// jacket's outside just above its hem (measured by jacket_grid.py), so they carry on its line.
+/// jacket's outside just above its hem (measured by jacket_long.py), so they carry on its line.
 pub const TAILS_GIRTH: [f32; 24] = [
-    0.210, 0.218, 0.218, 0.222, 0.228, 0.232, 0.228, 0.214, 0.190, 0.168, 0.152, 0.146, 0.146,
-    0.152, 0.168, 0.190, 0.214, 0.228, 0.232, 0.228, 0.222, 0.218, 0.218, 0.210,
+    0.210, 0.218, 0.222, 0.222, 0.228, 0.232, 0.228, 0.214, 0.190, 0.168, 0.152, 0.146, 0.146,
+    0.152, 0.168, 0.190, 0.214, 0.228, 0.232, 0.228, 0.222, 0.222, 0.218, 0.210,
 ]
 
 fn girth(deg: f32) -> f32 {
@@ -430,15 +433,12 @@ pub fn tails(p: vec3) -> (f32, f32) {
     let s = (inside - TAILS_FROM) / (TAILS_TO - TAILS_FROM)
     let ph = s * 6.2831853 * 8.0 + 0.9 * sin(s * 17.0)
     let fold = (0.016 * pow(tt, 0.7) + 0.003) * sin(ph)
-    // (Clear of his trousers by a couple of centimetres even in a fold's trough: his thighs
-    // swing forward under it.)
-    // (Tucked in at the top, under the jacket's hem, easing out to clear him below it.)
-    // (Inside the jacket down to its hem, then out to just over its line, so the two read as
-    // one long coat.)
-    let tuck = clamp((JACKET_HEM + 0.01 - p.y) / 0.08, 0.0, 1.0)
-    // (A long coat's fall, close over his hips and straight down: flared out like a skirt
-    // straight off his belt it read as a kilt.)
-    let rr = girth(inside) - 0.012 + 0.014 * tuck * tuck * (3.0 - 2.0 * tuck) + 0.032 * pow(tt, 1.5) + fold * tuck
+    // The sheet's drape: on from the long jacket's hem at its line, then straight out to the
+    // hem, an A-line, falling in long folds. (Eased out over his hips from his belt and then
+    // hanging straight read as a kilt.) Tucked in under the jacket above its hem.
+    // (Out to the jacket's line well above its hem, so no ledge shows under it.)
+    let tuck = clamp((JACKET_HEM + 0.035 - p.y) / 0.03, 0.0, 1.0)
+    let rr = girth(inside) - 0.024 + 0.016 * tuck * tuck * (3.0 - 2.0 * tuck) + FLARE * max(JACKET_HEM - p.y, 0.0) + fold * clamp((JACKET_HEM - p.y) / 0.06, 0.0, 1.0)
     var d = abs(r - rr) - 0.009
     // Its front edges: the distance round to the nearer (negative between them).
     d = max(d, max(TAILS_FROM - deg, deg - TAILS_TO) * 0.0174532925 * r)
