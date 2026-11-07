@@ -107,15 +107,21 @@ pub const X_EARLY: f32 = 0.062
 /// The connection: through the hit-stop the striker's body keeps driving in, slowed to `X_GRIND`
 /// of its speed, while his fist stays on what it struck, so his elbow loads; his fist rides what
 /// it struck back for `X_PIN` (s) after the hit-stop, then drives on through; and the blow jolts
-/// back into him, his chest and head rocked back by up to `X_RECOIL` (radians).
+/// back into him, his trunk's turn into the punch checked by up to `X_RECOIL` (radians).
 pub const X_GRIND: f32 = 0.0
 pub const X_PIN: f32 = 0.05
-pub const X_RECOIL: f32 = 0.08
+pub const X_RECOIL: f32 = 0.1
 /// How fast the jolt rises and dies (s on his clock), and how long his fist takes to leave what
 /// it struck for its own path.
 pub const X_RECOIL_LIFE: f32 = 0.12
-/// How far the shock throws his fist back along the blow, per radian of it (m).
-pub const X_RECOIL_BACK: f32 = 0.3
+
+/// The shock's shape: how fast each joint takes it (s), the drawing between one joint and the
+/// next (s), how much of the trunk's check the collar adds, and how far the elbow gives at full
+/// recoil (m).
+pub const X_SHOCK_RISE: f32 = 0.035
+pub const X_SHOCK_STEP: f32 = 0.017
+pub const X_SHOCK_COLLAR: f32 = 0.6
+pub const X_SHOCK_GIVE: f32 = 0.04
 
 /// How far on past the place it struck the fist may go after the hit-stop (m), and for how long
 /// after the hit-stop the striker's arm is still minded (s; by then it's on its way home).
@@ -593,8 +599,8 @@ fn struck_point(c: vec3, pf: f32, t: Tune) -> vec3 {
 
 /// The striker at his clock `ps` (the one struck at his clock `pf`; `wall` s since the contact,
 /// on the clock that doesn't stop), connecting: from the contact his fist stays on the place it
-/// struck; the shock jolts back up into him, his punching shoulder lifted and pushed back, his
-/// chest and head snapped back, held so through the hit-stop and let go after; then his fist
+/// struck through the hit-stop; as it breaks, the shock runs back up into him (elbow, shoulder,
+/// then trunk checked, his head steady) and dies away; then his fist
 /// rides the place it struck as it's knocked away, and leaves it for its own path, driving
 /// through. (`t.grind` also leans his trunk on in through the hit-stop.)
 pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
@@ -613,9 +619,6 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
     var c = c0.clone()
     var w = stride::worlds(rig, c0, 0)
     let own = w[rig.find("rightHand")].t
-    // (About `lift`, a positive turn raises the punching shoulder.)
-    let out = normalize(w[rig.find("rightUpperArm")].t - w[rig.find("rightShoulder")].t)
-    let lift = normalize(cross(out, vec3(0.0, 1.0, 0.0)))
     // (About `back`, a positive turn leans the top of a bone toward the blow.)
     let back = normalize(cross(vec3(0.0, 1.0, 0.0), BLOW))
     let turn = |name: str, axis: vec3, a: f32| {
@@ -664,21 +667,41 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
         held.y = min(held.y, at.y + X_RISE)
         arm_to(rig, mut w, 1, held)
     }
-    // The shock (laid on last, so it moves his arm whole rather than bending it): the
-    // hit-stop is held dead still, and as it breaks the blow kicks back into
-    // him over two drawings, then dies away. (Arriving in the hold, it read as the freeze
-    // creeping; arriving with the head's snap, it reads as the same blow.)
+    // The shock: as the hit-stop breaks, the blow runs back up the arm the way it came, a
+    // drawing apart at each joint: the elbow gives a little, then the punching shoulder is
+    // checked, then the trunk's turn into the punch is checked, each less, all dying away; his
+    // head held steady through it (a fighter's head stays on his target). Nothing tips him back:
+    // the one struck takes the movement. (Arriving in the hold, it read as the freeze creeping;
+    // laid on last, it moves his arm whole rather than folding it.)
     let after = wall - max(t.hold, t.flash)
-    let j = smoothstep(0.0, 0.05, after) * exp(-max(after - 0.05, 0.0) / X_RECOIL_LIFE)
-    let r = t.recoil * j
-    if r > 0.0 {
-        // (His fist goes back along the blow with it, not swung up by his chest rocking back.)
+    let pulse = |delay: f32| -> f32 {
+        let x = after - delay
+        smoothstep(0.0, X_SHOCK_RISE, x) * exp(-max(x - X_SHOCK_RISE, 0.0) / X_RECOIL_LIFE)
+    }
+    let (p_arm, p_shoulder, p_trunk) = (pulse(0.0), pulse(X_SHOCK_STEP), pulse(2.0 * X_SHOCK_STEP))
+    if t.recoil > 0.0 && p_arm + p_shoulder + p_trunk > 1.0e-4 {
+        let up = vec3(0.0, 1.0, 0.0)
+        let chest = rig.find("upperChest")
+        let collar = rig.find("rightShoulder")
+        let head = rig.find("head")
         let fist = w[hand].t
-        stride::turn_below(rig, mut w, rig.find("rightShoulder"), Quat::axis_angle(lift, r * 0.5))
-        stride::turn_below(rig, mut w, rig.find("rightShoulder"), Quat::axis_angle(back, -r * 1.0))
-        stride::turn_below(rig, mut w, rig.find("upperChest"), Quat::axis_angle(back, -r * 0.7))
-        stride::turn_below(rig, mut w, rig.find("head"), Quat::axis_angle(back, -r * 0.6))
-        arm_to(rig, mut w, 1, fist - BLOW * (r * X_RECOIL_BACK))
+        let shoulder0 = w[rig.find("rightUpperArm")].t
+        let face0 = w[head].q
+        // (Which way about up turns his punching shoulder back from the blow.)
+        let unwind = if dot(cross(up, shoulder0 - w[chest].t), BLOW) > 0.0 { -1.0 } else { 1.0 }
+        stride::turn_below(rig, mut w, chest, Quat::axis_angle(up, unwind * t.recoil * p_trunk))
+        stride::turn_below(
+            rig,
+            mut w,
+            collar,
+            Quat::axis_angle(up, unwind * t.recoil * X_SHOCK_COLLAR * p_shoulder),
+        )
+        // (His head kept facing where it faced.)
+        let steady = face0.mul(w[head].q.inverse())
+        stride::turn_below(rig, mut w, head, steady)
+        // (His fist carried back with his shoulder, and the elbow's own give on top.)
+        let moved = w[rig.find("rightUpperArm")].t - shoulder0
+        arm_to(rig, mut w, 1, fist + moved - BLOW * (X_SHOCK_GIVE * t.recoil / X_RECOIL * p_arm))
     }
     // (His fist kept driven straight from the forearm, as the take keeps it, however the arm's
     // been moved: left as it was, it flops open toward the camera.)
