@@ -56,6 +56,11 @@ pub const FINE: f32 = 1.0
 /// flat-bottomed and flared, its bow swept up and decked) (`--set PLANING=1`).
 pub const PLANING: f32 = 1.0
 
+/// How high the planing hull's deck stands over the water it floats in (m): its topsides, the
+/// freeboard that makes it read as a boat and not a board. Its hull is that much deeper, so it
+/// draws as much as before (`--set FREEBOARD=0`, the flush board it was).
+pub const FREEBOARD: f32 = 0.28
+
 /// The skiff's sail (1, the junk's, Ryan's pick): 0 the windsurfer's battened triangle, weathered and patched; 1 a junk's
 /// lug sail of tanbark cloth between bamboo battens; 2 a crab-claw of woven matting between two
 /// spars; 3 the triangle again in bold madder with a pennant streaming off its head
@@ -65,6 +70,10 @@ pub const SAIL: u32 = 1
 /// Where the camera stands: 0 the opening's shot, 1 the player's, up behind the skiff
 /// (`Rig::framing`; `--set FRAMING=1`).
 pub const FRAMING: f32 = 0.0
+
+/// The player's camera: 0 low behind the skiff, as it was; 1 higher and off its quarter, so the
+/// deck and the hull's length read (`--set CAMERA=1`).
+pub const CAMERA: f32 = 0.0
 
 pub fn init() -> State {
     targets(heavens(SUN, 3.0), 640, 360)
