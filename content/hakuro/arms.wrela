@@ -227,7 +227,7 @@ pub fn off_legs(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
     var q = p
     // (Not at all up under his belt, where the tails hang from his hips: the thighs' tops pushed
     // there pinched the cloth into dark folds.)
-    let u = clamp((0.84 - rest.y) / 0.1, 0.0, 1.0)
+    let u = clamp((0.99 - rest.y) / 0.1, 0.0, 1.0)
     let reach = u * u * (3.0 - 2.0 * u)
     if reach <= 0.0 {
         return q
@@ -274,14 +274,22 @@ pub fn off_legs(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
             for k in 0..3 {
                 let a = if k == 0 { hip[side] } else if k == 1 { knee[side] } else { heel[side] }
                 let b = if k == 0 { knee[side] } else if k == 1 { ankle[side] } else { toe[side] }
-                let ra = if k == 0 { 0.125 } else if k == 1 { 0.11 } else { 0.085 }
-                let rb = if k == 0 { 0.11 } else if k == 1 { 0.115 } else { 0.075 }
+                let ra = if k == 0 { 0.135 } else if k == 1 { 0.125 } else { 0.085 }
+                let rb = if k == 0 { 0.125 } else if k == 1 { 0.22 } else { 0.075 }
                 let e = b - a
                 let h = clamp(dot(q - a, e) / dot(e, e), 0.0, 1.0)
                 let d = length(q - (a + e * h))
                 let r = mix(ra, rb, h) + 0.012
+                // Less however far in it the point already is at rest, so the capsules can be as
+                // fat as his baggy trousers without pushing the cloth out where it hangs at rest.
+                let sx = if side == 0 { 1.0 } else { -1.0 }
+                let ar = if k == 0 { vec3(0.114 * sx, 0.971, -0.036) } else if k == 1 { vec3(0.114 * sx, 0.542, -0.036) } else { vec3(0.124 * sx, 0.065, -0.13) }
+                let br = if k == 0 { vec3(0.114 * sx, 0.542, -0.036) } else if k == 1 { vec3(0.114 * sx, 0.086, -0.088) } else { vec3(0.124 * sx, 0.055, 0.14) }
+                let er = br - ar
+                let hr = clamp(dot(rest - ar, er) / dot(er, er), 0.0, 1.0)
+                let dr = length(rest - (ar + er * hr))
                 // Eased in over a centimetre either side, so neighbours aren't pulled apart.
-                let x = r - d
+                let x = r - d - max(mix(ra, rb, hr) + 0.012 - dr, 0.0)
                 let push = (0.5 * (x + sqrt(x * x + 0.0004)) - 0.002) * reach
                 if push > 0.0 {
                     q = q + dir * push
