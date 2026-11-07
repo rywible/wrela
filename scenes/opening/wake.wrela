@@ -132,6 +132,16 @@ pub fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
     (normalize(mix(m, vec3(y: 1.0), calm * 0.55)), splash)
 }
 
+/// Froth of density `k` (0 to 1) and `age` (0 fresh to 1 old) over a froth's height (`billow`
+/// fresh, `walls` old, `lace` over both), as `paint::sea_shade` erodes the whitecaps: a
+/// billowing mass of bubble domes with holes, thinning to lace as it ages. Its cover.
+fn eroded(k: f32, age: f32, lace: f32, billow: f32, walls: f32) -> f32 {
+    let froth_h = mix(billow, walls, smoothstep(0.05, 0.45, age))
+    let feather = 0.09 + 0.3 * age
+    let e = clamp((k * (0.62 + 0.3 * lace) - (1.0 - froth_h)) / feather + k * k * 0.1, 0.0, 1.0)
+    e * (1.0 - 0.5 * age) * (0.75 + 0.25 * e)
+}
+
 /// The skiff's marks at `p` on the sea (`xz`, `rest` where its water rests): its wake (white),
 /// the lip of broken water at its waterline (foam), how far `p` is out from the hull's side, and
 /// how full of bubbles the water under its trail is.
@@ -157,54 +167,40 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32, f32) {
         off = length(u) - abs(bend)
     }
     let behind_ = max(back - 2.0, 0.0)
-    // The froth's grain laid along the skiff's track: streaked out long the way it came, as
-    // churned water's drawn out astern. Where it rests, so it stays on the sea as the skiff
-    // leaves it.
-    // (On the sea's own axes, along the opening's course: laid on the skiff's, every touch of
-    // the helm swung the whole pattern round the world's origin and the trail pulsed.)
+    // Its froth drawn as the sea's whitecaps are (`paint::sea_shade`): a density, eroded against
+    // a froth's height, so fresh it's a billowing mass of bubble domes with holes, and as it ages
+    // the holes open and it thins to a lace of cell walls. One foam on the whole sea. Laid where
+    // the water rests, on the sea's own axes along the opening's course, streaked out along it.
+    // (Not on the skiff's axes: every touch of the helm swung the pattern round the world's
+    // origin and the trail pulsed.)
     let course = vec2(sin(-0.22), cos(-0.22))
-    let grain = vec2(dot(rest, vec2(course.y, -course.x)) * 1.7, dot(rest, course) * 0.8)
-    let froth = lace_at(grain + vec2(7.0, 3.0))
-    let clots = froth * (0.55 + 0.9 * fbm(grain * 0.5, 2))
-    // (Churn: froth everywhere it's been stirred, not only where the lace drifts: gated by the
-    // drifts, the trail astern went missing in long stretches.)
-    // (Fine: froth streaked a hand or two across; coarse, it lay in flat white blobs a metre
-    // across that came and went as the trail passed over them.)
-    // (Laced: the froth drawn along the cells' edges, a web of white round dark holes, warped
-    // so no cell's round; the cells' centres as dots or holes read as polka dots or a cow's
-    // hide.)
-    let lw = vec2(fbm(grain * 1.1 + vec2(4.0, 2.0), 2), fbm(grain * 1.1 + vec2(9.0, 7.0), 2)) - vec2(0.5)
-    let bub = cells(grain * 4.0 + lw * 2.5)
-    let web = 1.0 - smoothstep(0.0, 0.12, bub.y - bub.x)
-    let churned = 0.7 * fbm(grain * 3.5 + vec2(1.7, 9.2), 3) + 0.3 * fbm(grain * 0.9, 2) +
-        0.35 * web - 0.1
-    // Its arms: the bow wave's own crests carried on aft, one V from the stem, each a thin
-    // broken line of froth riding the crest, dashes and clots with the dark sea between, fading
-    // to nothing a few lengths astern. (Never a soft band: smooth, it glowed like a beam.)
+    let wa = vec2(dot(rest, course), dot(rest, vec2(course.y, -course.x)))
+    let lace = noise(wa * vec2(1.0, 2.4) + vec2(3.0, 9.0)) * 0.5 +
+        noise(wa * vec2(4.0, 9.0) + vec2(7.0, 1.0)) * 0.32 +
+        noise(wa * vec2(13.0, 24.0)) * 0.18
+    let wq = wa * vec2(0.55, 2.0)
+    let warp = vec2(noise(wq * 0.5 + vec2(2.1, 8.3)), noise(wq * 0.5 + vec2(6.7, 3.9))) - vec2(0.5)
+    let warp2 = vec2(noise(wa * 1.7 + vec2(4.4, 1.2)), noise(wa * 1.7 + vec2(9.1, 6.6))) - vec2(0.5)
+    let c1 = cells(wq * 1.6 + warp * 3.5 + warp2 * 1.2 + vec2(0.3, 5.1))
+    let c2 = cells(wa * vec2(3.0, 6.0) + warp * 3.0 + vec2(8.2, 1.7))
+    let billow = clamp(1.0 - c1.x * 1.25, 0.0, 1.0) * 0.45 + clamp(1.0 - c2.x * 1.3, 0.0, 1.0) * 0.2 + lace * 0.35
+    let gap = min(c1.y - c1.x, (c2.y - c2.x) * 1.6 + 0.15 * (1.0 - lace))
+    let walls = (1.0 - smoothstep(0.0, 0.35 + 0.5 * lace, gap)) * (0.25 + 0.3 * lace) + lace * 0.4
+    // Its arms: the bow wave's own crests carried on aft, one V from the stem, each a broken
+    // line of froth riding the crest, ageing to lace and gone a few lengths astern.
     let from_b = max(back + bow_at(s) - 0.6, 0.0)
-    let arm_w = 0.015 + from_b * 0.01
+    let arm_w = 0.02 + from_b * 0.012
     let arm_d = abs(off) - crest_out(s, from_b + 0.6)
     let arm_fade = exp(-from_b / (2.5 + 3.0 * way + 5.0 * run))
-    let arms = exp(-arm_d * arm_d / arm_w) *
-        smoothstep(1.0, 2.5, from_b) *
-        // (Dashes, never one unbroken line: a crisp thread of white across the sea read as a
-        // crack in the frame.)
-        smoothstep(0.62 - 0.2 * arm_fade, 0.7 - 0.2 * arm_fade, churned) *
-        smoothstep(0.3, 0.55, noise(rest * 0.9 + vec2(3.0, 11.0))) *
-        arm_fade *
-        (0.65 + 0.3 * run)
+    let arm_k = exp(-arm_d * arm_d / arm_w) * smoothstep(1.0, 2.5, from_b) * arm_fade * (0.75 + 0.25 * run)
+    let arms = eroded(arm_k, 1.0 - arm_fade, lace, billow, walls)
     // Straight astern, the churned water it leaves: as wide as the transom where it's left, a
-    // mass of froth close astern with the dark sea showing through, then tearing into streaks
-    // and clots that thin, widen and fade; running, longer and whiter.
+    // mass of froth close astern, then thinning to lace that widens and fades; running, longer.
     let width = 0.34 + 0.05 * behind_ + 0.1 * run
-    let core = exp(-pow(abs(off) / width, 3.0))
+    let core = exp(-pow(abs(off) / width, 2.0))
     let fresh = exp(-behind_ / (2.5 + 4.0 * way + 7.0 * run))
-    let trail = core *
-        smoothstep(-0.3, 0.4, behind_) *
-        smoothstep(0.8 - 0.3 * fresh, 0.9 - 0.3 * fresh, churned) *
-        (0.75 + 0.5 * (churned - 0.5)) *
-        (0.35 + 0.65 * fresh) *
-        smoothstep(0.0, 0.4, way)
+    let trail_k = core * smoothstep(-0.3, 0.4, behind_) * fresh * smoothstep(0.0, 0.4, way)
+    let trail = eroded(trail_k, 1.0 - fresh, lace, billow, walls)
     // (Under it, the water's paler and greener, full of the bubbles the hull and its wash drove
     // down: broader and longer than the froth on top, the trail's after-image.)
     let aer = exp(-pow(abs(off) / (width * 1.5 + 0.2), 2.0)) *
@@ -216,12 +212,12 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32, f32) {
     let from_bow = max(bow_at(s) - along, 0.0)
     // (White on the crest of the wave the hull heaps (`lifted`), in froth: torn, never soft.)
     let crest_d = abs(across) - crest_out(s, from_bow)
-    let bow_wave = exp(-pow(crest_d + 0.02, 2.0) / (0.003 + 0.004 * from_bow + 0.006 * run)) *
-        (0.6 + 0.4 * smoothstep(0.3, 0.0, from_bow)) *
+    let bow_k = exp(-pow(crest_d + 0.02, 2.0) / (0.004 + 0.006 * from_bow + 0.008 * run)) *
+        (0.7 + 0.3 * smoothstep(0.3, 0.0, from_bow)) *
         smoothstep(0.0, 0.15, from_bow) *
         smoothstep(2.4, 1.2, from_bow) *
-        smoothstep(0.55 - 0.25 * smoothstep(1.2, 0.0, from_bow), 0.8, churned) *
         way
+    let bow_wave = eroded(bow_k, 0.15 * smoothstep(0.0, 2.0, from_bow), lace, billow, walls)
     // (Thinned only right under the eye, where a pixel's footprint is a hand across.)
     let near_eye = smoothstep(1.5, 3.5, length(p - s.eye))
     let wake = max(max(arms * step(-2.5, back), trail * step(-0.2, back)), bow_wave * (0.7 + 0.3 * run)) * near_eye
