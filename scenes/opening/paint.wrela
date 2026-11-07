@@ -822,7 +822,7 @@ fn sea_shade(
         smp,
         disc: false,
     ).rgb
-    let reflected = mix(mirrored, spread, max(0.15 * detail, 0.6 * smoothstep(8.0, 60.0, t)))
+    let reflected = mix(mirrored, spread, max(0.35 + 0.15 * detail, 0.65 * smoothstep(8.0, 60.0, t)))
     // The sun's glitter: its mean, the facets' mirror as the pixel holds them (spread most down
     // the view, where the footprint lost most), and that mean gathered into the points it is.
     // A glint is the sun's mirror in one small facet, as bright as the facet is large to the
@@ -1013,7 +1013,7 @@ fn sea_shade(
         smoothstep(0.03, 0.1, whitecaps(SEA_STATE)) * 0.6
     // (Round the patches and behind them, the veins their old foam left, white threads.)
     let vein_foam = veins * smoothstep(0.04, 0.2, dense + tail) * mix(0.45, 0.8, age) * web_k
-    let white = max(foamed, vein_foam)
+    let white = max(foamed, vein_foam * 0.0)
     // (Lit as a mass of bubbles: its domes bright, its creases and thin film greyer, the older
     // the greyer.)
     // (And modelled as the wave it rides: brightest on the crest's top, greyer down its back, so a
@@ -1028,7 +1028,7 @@ fn sea_shade(
         mix(1.0, 0.7 + 0.5 * noise(wa * vec2(9.0, 12.0) + warp2 * 2.0), web_k)
     // Under it and round it, the water's paler and greener, full of the bubbles the break drove
     // down, as the water under a whitecap is.
-    let bubbles = smoothstep(0.15, 0.7, foam_k) * (0.3 + 0.4 * lace)
+    let bubbles = smoothstep(0.03, 0.45, dense + tail * 0.5) * (0.5 + 0.5 * lace)
     // The skiff's wake, and the lip of broken water along its waterline (`wake`).
     let (wake, foam, wl, aer) = marks(s, p, xz, rest)
     // (Foam's a froth of bubbles: lit by the sun on it, and through it from behind when the eye
@@ -1046,6 +1046,9 @@ fn sea_shade(
     let foam_light = mix(foam_lit, vec3(luma(foam_lit)) * vec3(1.0, 0.97, 0.94), 0.45) * 1.6
     c *= mix(0.45, 1.0, smoothstep(0.0, 0.3, max(wl, 0.0)))
     c += body * (1.0 - fresnel) * mix(2.6, 0.9, h.light.storm) * max(bubbles, aer * 0.3) * (1.0 - white)
+    // (Under a storm's sky too: the drowned froth glows a pale jade through the water, wider than
+    // the foam on top, the sea's one colour that isn't slate.)
+    c = mix(c, c * 0.55 + vec3(0.07, 0.15, 0.13) * luma(foam_light), bubbles * 0.45 * (1.0 - white) * h.light.storm)
     c = mix(c, foam_light * bright_, white * 0.92)
     // (The far crests' caps, lit full: the whitest thing out there, as a breaking crest is.)
     c = mix(c, foam_light * 0.9, far_caps * (1.0 - white))
