@@ -123,6 +123,13 @@ pub const X_STOPPED: f32 = 0.7
 /// How far the fist is drawn back off the face after the hit-stop, ahead of the take's own
 /// recovery (m), and over how long (s).
 pub const X_BACK_OFF: f32 = 0.1
+
+/// How much of the fist's overrun after the hit-stop is taken by rocking his trunk back (the
+/// rest by his arm).
+pub const X_ROCK: f32 = 0.8
+
+/// How far above where it struck the fist may rise after the hit-stop (m).
+pub const X_RISE: f32 = 0.1
 pub const X_BACK_OFF_TIME: f32 = 0.16
 pub const X_LET_GO: f32 = 0.14
 /// How far his trunk leans on into the blow through the hit-stop at `X_GRIND` (radians).
@@ -619,36 +626,45 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
             X_DRIVE * smoothstep(0.0, held, since) * (1.0 - smoothstep(free, end, since)),
         )
     }
-    // The shock: in over two drawings, held through the hit-stop, then let go.
-    // (It starts as the impact frame ends, so it's seen happening, not swapped in under the ink.)
-    let j = smoothstep(t.flash, t.flash + 0.035, wall) * (if wall < t.hold { 1.0 } else {
-        exp(-(wall - t.hold) / X_RECOIL_LIFE)
-    })
+    // The shock: the hit-stop is held dead still, and as it breaks the blow kicks back into
+    // him over two drawings, then dies away. (Arriving in the hold, it read as the freeze
+    // creeping; arriving with the head's snap, it reads as the same blow.)
+    let after = wall - max(t.hold, t.flash)
+    let j = smoothstep(0.0, 0.035, after) * exp(-max(after - 0.035, 0.0) / X_RECOIL_LIFE)
     let r = t.recoil * j
     if r > 0.0 {
-        turn("rightShoulder", lift, r * 1.2)
-        turn("rightShoulder", back, -r * 0.8)
-        turn("upperChest", back, -r * 0.6)
+        turn("rightShoulder", lift, r * 0.5)
+        turn("rightShoulder", back, -r * 1.0)
+        turn("upperChest", back, -r * 0.7)
         turn("head", back, -r * 1.2)
     }
     // His fist on the place it struck, carried with it, then let go.
-    {
-        let at = KNUCKLES - BLOW * 0.09
-        let want = if wall < t.hold {
-            // (Through the hit-stop it stays on the place it struck, riding it back along the
-            // blow, not up as the head tips back.)
-            let moved = struck_point(at, pf, t) - at
-            let on = at + BLOW * max(dot(moved, BLOW), 0.0) + vec3(0.0, moved.y * 0.3, 0.0)
-            mix(own, on, 1.0 - smoothstep(free, end, since))
-        } else {
-            // (After, it goes its own way but no further along the blow than where it struck,
-            // and a hair: the head is knocked off the fist, the arm isn't shoved on after it.)
-            // (And it's drawn back off the face at once, ahead of the take's own way home.)
-            let back_off = X_BACK_OFF * smoothstep(0.0, X_BACK_OFF_TIME, wall - t.hold)
-            let past = dot(own - at, BLOW) - X_THROUGH + back_off
-            if past > 0.0 { own - BLOW * past } else { own }
+    let at = KNUCKLES - BLOW * 0.09
+    let hand = rig.find("rightHand")
+    if wall < t.hold {
+        // (Through the hit-stop it stays on the place it struck, riding it back along the blow,
+        // not up as the head tips back.)
+        let moved = struck_point(at, pf, t) - at
+        let on = at + BLOW * max(dot(moved, BLOW), 0.0) + vec3(0.0, moved.y * 0.3, 0.0)
+        arm_to(rig, mut w, 1, mix(own, on, 1.0 - smoothstep(free, end, since)))
+    } else {
+        // (After, it goes no further along the blow than where it struck, and a hair, and it's
+        // drawn back off the face at once, ahead of the take's own way home: the head is knocked
+        // off the fist, the arm isn't shoved on after it. Where the take would carry him on, it's
+        // his trunk that's stopped, rocked back from the hips, not his elbow folded up.)
+        let back_off = X_BACK_OFF * smoothstep(0.0, X_BACK_OFF_TIME, wall - t.hold)
+        let spine = rig.find("spine")
+        let past = dot(w[hand].t - at, BLOW) - X_THROUGH + back_off
+        if past > 0.0 {
+            let reach = max(dot(w[hand].t - w[spine].t, BLOW), 0.2)
+            stride::turn_below(rig, mut w, spine, Quat::axis_angle(back, -X_ROCK * past / reach))
         }
-        arm_to(rig, mut w, 1, want)
+        let now = w[hand].t
+        let past = dot(now - at, BLOW) - X_THROUGH + back_off
+        var held = if past > 0.0 { now - BLOW * past } else { now }
+        // (Nor up his face as his chin tips back: no higher than it struck.)
+        held.y = min(held.y, at.y + X_RISE)
+        arm_to(rig, mut w, 1, held)
     }
     stride::store(rig, w, mut c, 0)
     c.pose(0.0)
