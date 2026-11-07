@@ -757,7 +757,11 @@ fn sea_shade(
         let tilt = slope * QUARTILES[k]
         let w = max(nv + tilt * sqrt(max(1.0 - nv * nv, 0.0)), 0.0) + 1.0e-4
         let e = max(rise + 2.0 * atan(tilt), 0.002)
-        let rk = vec3(across.x * cos(e), sin(e), across.y * cos(e))
+        // (And spread sideways as much, the facets tilt every way: one sharp line of mirrored
+        // sky through it drew the clouds' detail as ruled dashes on every wave's face.)
+        let az = slope * QUARTILES[(k + 2) % 4] * 1.2
+        let ak = vec2(across.x * cos(az) - across.y * sin(az), across.x * sin(az) + across.y * cos(az))
+        let rk = vec3(ak.x * cos(e), sin(e), ak.y * cos(e))
         let facing = sqrt(max((1.0 + dot(-d, rk)) * 0.5, 0.0))
         let f = 0.02 + 0.98 * pow(1.0 - facing, 5.0)
         mirrored += mirrored_sky(view, h.light, rk, dome, smp) * w * f
