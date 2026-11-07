@@ -492,7 +492,7 @@ fn illustrated(
     let deck = (storm_sky(view, light, up, dome, smp, disc: false).rgb +
         storm_sky(view, light, side, dome, smp, disc: false).rgb) * 0.5
     // Two values of shade: the faces turned up, and the rest, a soft step between.
-    let open = 0.24 + 0.16 * smoothstep(0.15, 0.35, n.y)
+    let open = 0.20 + 0.20 * smoothstep(0.15, 0.35, n.y)
     let under = max(-n.y, 0.0)
     let below = light.sun_colour * vec3(0.085, 0.07, 0.055) * under
     let sky = (deck * PI * open + below) * (0.25 + 0.75 * ao * ao)
@@ -508,7 +508,11 @@ fn illustrated(
         reflected: if metal { deck * ao * 0.6 } else { vec3(0.0) },
         glint: if metal { 0.6 } else { 0.0 },
     }
-    world(light, lit, p, s.eye)
+    // A key from the sky's bright quarter, set to a hard edge: his forms' lit side and shade side,
+    // two tones as an illustrator lays them.
+    let key = smoothstep(0.05, 0.15, dot(n, side))
+    let keyed = deck * c.albedo * (1.0 - c.metal) * key * 1.1
+    world(light, lit, p, s.eye) + keyed
 }
 
 /// His pixel lit, from its normal `n`, cloth `c` and how open it is to the sky `ao`: as the skiff
@@ -587,7 +591,7 @@ fn lit_hero(
         // (Not on his bare skin: its muscles turn from the eye inside his outline, and the band
         // drew their contours in squiggles there.)
         let cloth = if c.albedo.r > 0.3 && c.metal < 0.5 { 0.0 } else { 1.0 }
-        col += sky * band * (0.45 + 0.55 * max(n.y, 0.0)) * 0.7 * cloth
+        col += sky * band * (0.45 + 0.35 * max(n.y, 0.0)) * 0.45 * cloth
         // His gold's trim kept bright under the storm.
         col += c.albedo * c.metal * 0.05
     }
