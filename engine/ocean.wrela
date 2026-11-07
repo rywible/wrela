@@ -655,7 +655,7 @@ fn on_tile(p: vec2, side: f32) -> vec2 {
 /// footprint the flat sea gives is too small, a speckle in ruled bands; read through 2.5 times it
 /// coarser, they hold still, and the slopes the coarser read loses go to the roughness
 /// (`surface_at`).
-const STEADY: f32 = 2.5
+const STEADY: f32 = 1.8
 
 /// The ocean's shape at lattice point `p` (x, z, m: where the water rests, before it's carried):
 /// its displacement along x, its height, its displacement along z and its foam, each tile

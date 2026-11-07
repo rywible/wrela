@@ -918,7 +918,7 @@ fn sea_shade(
         pow(clamp(0.5 - 0.5 * dot(lf, n), 0.0, 1.0), 3.0)
     // (A gust's cat's paw lies darker, a lull's glassier water paler: the low sky's mirror broken
     // or whole.)
-    var c = (body + through + glow) * (1.0 - fresnel) + reflected * fresnel * (1.15 - 0.35 * gusting) + glint
+    var c = (body + through + glow) * (1.0 - fresnel) + reflected * fresnel * (1.15 - 0.35 * gusting) * mix(1.0, 0.72, h.light.storm) + glint
     // The white horses and the foam they leave, as film and game oceans draw them now (density
     // and age: Crest's, Houdini's ocean shader's): `foam_k`, how dense the foam is there (fresh
     // and whole where a crest breaks now, thinning as it fades), and its age read back from
