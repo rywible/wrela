@@ -431,8 +431,11 @@ pub fn tails(p: vec3) -> (f32, f32) {
     let low = hem(inside)
     let tt = clamp((TAILS_TOP - p.y) / (TAILS_TOP - low), 0.0, 1.0)
     let s = (inside - TAILS_FROM) / (TAILS_TO - TAILS_FROM)
-    let ph = s * 6.2831853 * 8.0 + 0.9 * sin(s * 17.0)
-    let fold = (0.016 * pow(tt, 0.7) + 0.003) * sin(ph)
+    // The sheet's folds: knife pleats, each a panel stepping out over the next with a crisp
+    // edge (a sawtooth round, its drop eased so the cloth stays whole), deeper as they fall.
+    let f = fract(s * 5.0 + 0.5)
+    let saw = f - smoothstep(0.72, 1.0, f) - 0.5 + 0.14
+    let fold = (0.05 * pow(tt, 0.6) + 0.006) * saw * 1.4
     // The sheet's drape: on from the long jacket's hem at its line, then straight out to the
     // hem, an A-line, falling in long folds. (Eased out over his hips from his belt and then
     // hanging straight read as a kilt.) Tucked in under the jacket above its hem.
