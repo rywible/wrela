@@ -9,7 +9,7 @@
 // as fine as his fields, however coarse his mesh. He's lit as the skiff is (`paint::lit_solid`,
 // its sea bounce and its rim), shadowed by the rig and the clouds.
 
-use hakuro::arms::{arm, follow_legs, hand, jacket, off_legs, sampled_body}
+use hakuro::arms::{arm, follow_legs, hand, jacket, off_legs, sampled_body, trailed}
 use hakuro::hakuro::{Cloth, FINGER_JOINTS, body_paint, coat, head, hero}
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
 use engine::character::skin_matrix
@@ -54,6 +54,10 @@ pub struct Aboard {
     coat: Mesh,
     arms: [Mesh; 6],
     palette: GpuBuffer<mat4>,
+    // (His palette a moment ago, each frame eased toward his: the coat's tails trail toward
+    // where they were, `hakuro::arms::trailed`. Drawn after his own in `palette`.)
+    lagged: [mat4; 64],
+    fresh: bool,
     colour: Texture<Rgba16Float>,
     marks: Texture<Rgba16Float>,
     normal: Texture<Rgba8>,
@@ -79,7 +83,9 @@ pub fn aboard() -> Aboard {
         coat: follow_legs(realize_once(coat(), COAT)),
         // (His arms and body are sampled from the reference's own surface: `hakuro::arms`.)
         arms: [arm(0), arm(1), sampled_body(), jacket(), hand(0), hand(1)],
-        palette: buffer(MAX_BONES),
+        palette: buffer(2 * MAX_BONES),
+        lagged: [mat4(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0)); 64],
+        fresh: true,
         colour: texture(width: 1, height: 1),
         marks: texture(width: 1, height: 1),
         normal: texture(width: 1, height: 1),
@@ -391,11 +397,13 @@ pub fn hero_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: S
     hero_at(v, verts, palette, shot)
 }
 
-/// His coat's tails' vertex: as `hero_vertex`, moved out of his legs (`hakuro::arms::off_legs`).
+/// His coat's tails' vertex: as `hero_vertex`, trailing its weight (`hakuro::arms::trailed`) and draped
+/// over his legs (`hakuro::arms::off_legs`).
 @vertex
 pub fn coat_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: Shot) -> HeroVertex {
     var h = hero_at(v, verts, palette, shot)
-    h.world = off_legs(h.world, h.rest, palette, 0)
+    let then = (skin_matrix(verts[v.index], palette, MAX_BONES) * vec4(h.rest, 1.0)).xyz
+    h.world = off_legs(trailed(h.world, then, h.rest), h.rest, palette, 0)
     h.clip = ClipPosition { position: clip_of(shot, h.world) }
     h
 }
@@ -730,7 +738,14 @@ impl Aboard {
             self.width = width
             self.height = height
         }
-        write(mut self.palette, 0, bones(shot))
+        let now = bones(shot)
+        write(mut self.palette, 0, now)
+        // (A frame's ease: about a tenth of a second behind at 60 frames a second.)
+        for k in 0..64 {
+            self.lagged[k] = if self.fresh { now[k] } else { self.lagged[k] + (now[k] - self.lagged[k]) * 0.16 }
+        }
+        self.fresh = false
+        write(mut self.palette, MAX_BONES, self.lagged)
         let p = begin_pass3_with_depth(
             mut self.colour,
             mut self.marks,
