@@ -110,7 +110,7 @@ pub const X_EARLY: f32 = 0.062
 /// back into him, his chest and head rocked back by up to `X_RECOIL` (radians).
 pub const X_GRIND: f32 = 0.0
 pub const X_PIN: f32 = 0.05
-pub const X_RECOIL: f32 = 0.3
+pub const X_RECOIL: f32 = 0.08
 /// How fast the jolt rises and dies (s on his clock), and how long his fist takes to leave what
 /// it struck for its own path.
 pub const X_RECOIL_LIFE: f32 = 0.12
@@ -677,7 +677,7 @@ pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
         stride::turn_below(rig, mut w, rig.find("rightShoulder"), Quat::axis_angle(lift, r * 0.5))
         stride::turn_below(rig, mut w, rig.find("rightShoulder"), Quat::axis_angle(back, -r * 1.0))
         stride::turn_below(rig, mut w, rig.find("upperChest"), Quat::axis_angle(back, -r * 0.7))
-        stride::turn_below(rig, mut w, rig.find("head"), Quat::axis_angle(back, -r * 1.2))
+        stride::turn_below(rig, mut w, rig.find("head"), Quat::axis_angle(back, -r * 0.6))
         arm_to(rig, mut w, 1, fist - BLOW * (r * X_RECOIL_BACK))
     }
     // (His fist kept driven straight from the forearm, as the take keeps it, however the arm's
