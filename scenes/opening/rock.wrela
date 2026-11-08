@@ -13,7 +13,7 @@ use engine::look::Level
 use engine::realize::{Eye, SkinVertex, solid}
 use engine::solids::{Bake, Tiles, tiles}
 use std::derive::{Box3, Interval}
-use std::field::{Field, Surface}
+use std::field::{Bound, Field, Surface, UNBOUNDED}
 use std::gpu::{
     ClipPosition, Cull, DepthTexture, GpuBuffer, Rg32Float, Texture, VertexIndex,
     begin_pass_with_depth, draw,
@@ -25,6 +25,11 @@ pub struct Isle: Copy + GpuData {
 }
 
 impl Surface for Isle {
+    /// Unbounded: the scene culls it by its tiles (`engine::solids`), not by a sphere.
+    fn bound(self) -> Bound {
+        UNBOUNDED
+    }
+
     fn distance(self, p: vec3) -> f32 {
         isle(p).x
     }

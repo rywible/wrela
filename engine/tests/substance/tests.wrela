@@ -9,7 +9,7 @@ use engine::substance
 use engine::substance::{field_shape, history_of, screen_shape}
 use hosts::steps::{built, text_of}
 use std::derive::gradient
-use std::field::{Surface, sphere}
+use std::field::{Bound, Surface, UNBOUNDED, sphere}
 use std::io::print
 use std::json::{Doc, TOP, parse}
 use std::tool::toolchain
@@ -83,6 +83,11 @@ struct Cylinder: Copy + GpuData {
 }
 
 impl Surface for Cylinder {
+    /// Unbounded: it reaches to infinity along y.
+    fn bound(self) -> Bound {
+        UNBOUNDED
+    }
+
     fn distance(self, p: vec3) -> f32 {
         length(p.xz) - self.r
     }
