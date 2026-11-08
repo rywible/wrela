@@ -11,7 +11,7 @@
 // falls move each drawing, so they're not added up here, which would smear them: the paint draws
 // them fresh, with `falls`.)
 
-use main::OFF
+use main::{OFF, RELIT}
 use look::{GILT, GLASS, ISLE, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use far::far_off
@@ -36,7 +36,16 @@ pub struct Yon: Copy + GpuData {
     pub resolution: vec2,
     pub held: f32,
     pub jitter: vec2,
+    /// Which of each 2x2 of 8x8-pixel blocks this drawing meets the rock in afresh (`REFRESH`).
+    pub turn: u32,
 }
+
+/// The rock and the cathedral met afresh in one block of each 2x2 a drawing, in turn: the
+/// others keep what the drawings before met there, carried to where the camera has gone. They
+/// don't move and they're kilometres off, so what was met is still true; the mean over the
+/// drawings only builds up four times as slowly.
+pub const REFRESH: u32 = 4
+
 
 /// The most drawings a pixel holds: a new one weighs at least one part in so many.
 const HOLD: f32 = 12.0
@@ -390,7 +399,26 @@ pub fn yonder(
     var t = far
     var id = SKY
     let is = sphere(o, d, bounds(), far)
-    if is.x < is.y && (OFF & 1) == 0 {
+    // (Not this pixel's turn, and the last drawing met the rock, or something as far, where it
+    // sees: that's kept, and only what's nearer met.)
+    var rest = false
+    // (By blocks of pixels (`main::RELIT`), not single pixels: a GPU runs neighbouring pixels together, and
+    // a block where any one pixel meets the rock afresh waits on it.)
+    let mine = (u32(px.x) / RELIT % 2) + 2 * (u32(px.y) / RELIT % 2)
+    if yon.held > 0.0 && mine != yon.turn && is.x < is.y && (OFF & 4096) == 0 {
+        let was0 = was_at(yon, o + ray(s, px) * length(ISLE - o))
+        if was0.z > 0.0 {
+            let q0 = clamp(floor(was0.xy), vec2(0.0), yon.resolution - vec2(1.0))
+            let bm0 = past_marks.load(u32(q0.x), u32(q0.y))
+            let seen = was_at(yon, o + ray(s, px) * min(exp2(bm0.x), length(ISLE - o) * 1.2)).z
+            if bm0.y > ROCK - 0.5 && exp2(bm0.x) > 2500.0 && seen > 0.0 {
+                rest = true
+                t = exp2(bm0.x)
+                id = bm0.y
+            }
+        }
+    }
+    if is.x < is.y && (OFF & 1) == 0 && !rest {
         let ti = march_isle(field, o, d, is.x, is.y)
         if ti < is.y {
             t = ti
@@ -428,6 +456,10 @@ pub fn yonder(
             marks = vec4(log2(tf), ROCK, 1.0, 0.3)
             n = fnn
         }
+    } else if rest {
+        // (Kept from the drawings before, below.)
+        cover = 1.0
+        marks = vec4(log2(t), id, 1.0, 0.5)
     } else if (OFF & 512) != 0 {
         c = vec3(0.05)
         cover = 1.0
@@ -489,7 +521,7 @@ pub fn yonder(
                 // sky behind it, and a long mean would trail it.)
                 fresh = if same > 3.5 { 1.0 } else { 0.3 }
             }
-            let k = max(1.0 / min(yon.held + 1.0, HOLD), fresh)
+            let k = if rest && ts >= t { 0.0 } else { max(1.0 / min(yon.held + 1.0, HOLD), fresh) }
             now = mix(before, now, k)
             let bn = past_normal.sample_level(smp, uv)
             // (What it is isn't a mean: the last drawing's where this one met nothing of it.)

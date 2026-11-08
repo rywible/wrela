@@ -9,7 +9,7 @@ use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
 use paint::paint
-use yonder::{FIELD_SIDE, FIELD_SLABS, Yon, cook_isle, yonder}
+use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder}
 use ink::ink
 use weather::weather
 use sail::{Rig, key, let_go, rest, step}
@@ -131,6 +131,7 @@ fn afresh(shot: Shot) -> Yon {
         resolution: shot.resolution,
         held: 0.0,
         jitter: vec2(0.0),
+        turn: 0,
     }
 }
 
@@ -162,6 +163,7 @@ fn next_yon(s: mut State, shot: Shot) {
     s.yon = Yon {
         held: n,
         jitter: vec2(halton(i, 2), halton(i, 3)) - vec2(0.5),
+        turn: s.yon_seq % REFRESH,
         ..afresh(s.yon_shot),
     }
     s.yon_count = min(n + 1.0, 64.0)
