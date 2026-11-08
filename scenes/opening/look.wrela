@@ -161,11 +161,14 @@ pub fn shot_at(
     // low chine dug in, as a carving hull loads up.)
     let boat = afloat + vec3(y: 0.06 * pl - 0.2 * abs(sin(hl)))
     let g = pose(r)
-    // The bounce: how sharply the skiff's fall was stopped over the last drawings.
+    // The bounce: how sharply the skiff's fall was stopped over the last drawings. (The sea's
+    // alone, `afloat`, as the drawings before are: the heel's sink and the plane's lift in it
+    // too would read every change of heel between two drawings as a slam, the more the more
+    // drawings a second, and held the slap on all through a turn.)
     let dt = 1.0 / HELD
     let (b1, _, _, _) = bob(t - dt, r.shown_at, r.shown_steer, swell)
     let (b2, _, _, _) = bob(t - 2.0 * dt, r.shown_at, r.shown_steer, swell)
-    let lift = (boat.y - 2.0 * b1.y + b2.y) / (dt * dt)
+    let lift = (afloat.y - 2.0 * b1.y + b2.y) / (dt * dt)
     let behind = turned(vec2(0.5 - OPEN_SIDE, -21.0), r.shown_look)
     let ahead = turned(vec2(-530.5, 5421.0), r.shown_look)
     let low = vec3(r.shown_at.x + behind.x, 1.9 + boat.y * 0.6, r.shown_at.y + behind.y)
