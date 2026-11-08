@@ -9,7 +9,7 @@
 // as fine as his fields, however coarse his mesh. He's lit as the skiff is (`paint::lit_solid`,
 // its sea bounce and its rim), shadowed by the rig and the clouds.
 
-use hakuro::arms::{arm, follow_legs, hand, jacket, off_legs, sampled_body, trailed}
+use hakuro::arms::{arm, drape_room, draped, follow_legs, hand, jacket, sampled_body, trailed, work_drape}
 use hakuro::hakuro::{Cloth, FINGER_JOINTS, body_paint, coat, head, hero, jacket_paint}
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
 use engine::character::skin_matrix
@@ -57,6 +57,8 @@ pub struct Aboard {
     // (His palette a moment ago, each frame eased toward his: the coat's tails trail toward
     // where they were, `hakuro::arms::trailed`. Drawn after his own in `palette`.)
     lagged: [mat4; 64],
+    // (Where his coat's tails are draped over his legs this frame: `hakuro::arms::draped`.)
+    drape: GpuBuffer<vec4>,
     fresh: bool,
     colour: Texture<Rgba16Float>,
     marks: Texture<Rgba16Float>,
@@ -85,6 +87,7 @@ pub fn aboard() -> Aboard {
         arms: [arm(0), arm(1), sampled_body(), jacket(), hand(0), hand(1)],
         palette: buffer(2 * MAX_BONES),
         lagged: [mat4(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0)); 64],
+        drape: drape_room(1),
         fresh: true,
         colour: texture(width: 1, height: 1),
         marks: texture(width: 1, height: 1),
@@ -398,12 +401,12 @@ pub fn hero_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: S
 }
 
 /// His coat's tails' vertex: as `hero_vertex`, trailing its weight (`hakuro::arms::trailed`) and draped
-/// over his legs (`hakuro::arms::off_legs`).
+/// over his legs (`hakuro::arms::draped`).
 @vertex
-pub fn coat_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: Shot) -> HeroVertex {
+pub fn coat_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], grid: [vec4], shot: Shot) -> HeroVertex {
     var h = hero_at(v, verts, palette, shot)
     let then = (skin_matrix(verts[v.index], palette, MAX_BONES) * vec4(h.rest, 1.0)).xyz
-    h.world = off_legs(trailed(h.world, then, h.rest), h.rest, palette, 0)
+    h.world = draped(trailed(h.world, then, h.rest), h.rest, grid, 0)
     h.clip = ClipPosition { position: clip_of(shot, h.world) }
     h
 }
@@ -749,6 +752,7 @@ impl Aboard {
         }
         self.fresh = false
         write(mut self.palette, MAX_BONES, self.lagged)
+        work_drape(self.palette, 1, MAX_BONES, MAX_BONES, mut self.drape)
         let p = begin_pass3_with_depth(
             mut self.colour,
             mut self.marks,
@@ -812,6 +816,7 @@ impl Aboard {
             coat_vertex.bind(
                 verts: self.coat.verts.items(),
                 palette: self.palette.items(),
+                grid: self.drape.items(),
                 shot: shot,
             ),
             hero_pixel.bind(
