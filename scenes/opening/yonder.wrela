@@ -15,13 +15,15 @@ use main::{OFF, RELIT, SPARSE}
 use look::{GILT, GLASS, ISLE, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use far::far_off
+use rock::march_from
 use stacks::{march_stacks, stacks_albedo, stacks_ao, stacks_normal, stacks_shadow}
 use paint::{Heaven, aired, hazed_far, heaven, lit_solid, sphere}
 use engine::far::foot
 use engine::light::{Light, sky as clear_sky}
 use engine::sky::{Clouds, cloud_shadow}
 use std::gpu::{
-    FragCoord, GlobalId, R32Float, Rgba16Float, Rgba8, Sampler, Targets3, Texels3d, Texture, Texture3d,
+    FragCoord, GlobalId, R32Float, Rgba16Float, Rgba8, Sampler, Targets3, Texels3d, Texture,
+    Texture3d,
 }
 
 /// What the drawings before left, and where from: the camera of the last drawing (its eye, its
@@ -38,6 +40,8 @@ pub struct Yon: Copy + GpuData {
     pub jitter: vec2,
     /// Which of each 2x2 of 8x8-pixel blocks this drawing meets the rock in afresh (`REFRESH`).
     pub turn: u32,
+    /// Whether the rock's meshes say where its march starts (`rock::reach`): 1, or 0.
+    pub meshed: u32,
 }
 
 /// The rock and the cathedral met afresh in one block of each 2x2 a drawing, in turn: the
@@ -45,7 +49,6 @@ pub struct Yon: Copy + GpuData {
 /// don't move and they're kilometres off, so what was met is still true; the mean over the
 /// drawings only builds up four times as slowly.
 pub const REFRESH: u32 = 4
-
 
 /// The most drawings a pixel holds: a new one weighs at least one part in so many.
 const HOLD: f32 = 12.0
@@ -419,6 +422,7 @@ pub fn yonder(
     past_marks: Texture<Rgba16Float>,
     past_normal: Texture<Rgba8>,
     field: Texture3d<R32Float>,
+    reach: Texture<R32Float>,
 ) -> Targets3<vec4, vec4, vec4> {
     let s = shot
     let h = Heaven { light, clouds }
@@ -448,8 +452,9 @@ pub fn yonder(
             }
         }
     }
-    if is.x < is.y && (OFF & 1) == 0 && !rest {
-        let ti = march_isle(field, o, d, is.x, is.y)
+    let from = if yon.meshed == 1 { march_from(reach, px, s.resolution, is.x, is.y) } else { is.x }
+    if from < is.y && (OFF & 1) == 0 && !rest {
+        let ti = march_isle(field, o, d, from, is.y)
         if ti < is.y {
             t = ti
             id = isle(o + d * ti).y
@@ -612,6 +617,8 @@ fn meet(
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     field: Texture3d<R32Float>,
+    reach: Texture<R32Float>,
+    meshed: u32,
     pf: vec2,
 ) -> (vec4, vec4, vec4) {
     let o = s.eye
@@ -620,8 +627,9 @@ fn meet(
     var t = far
     var id = SKY
     let is = sphere(o, d, bounds(), far)
-    if is.x < is.y && (OFF & 1) == 0 {
-        let ti = march_isle(field, o, d, is.x, is.y)
+    let from = if meshed == 1 { march_from(reach, pf, s.resolution, is.x, is.y) } else { is.x }
+    if from < is.y && (OFF & 1) == 0 {
+        let ti = march_isle(field, o, d, from, is.y)
         if ti < is.y {
             t = ti
             id = isle(o + d * ti).y
@@ -638,7 +646,19 @@ fn meet(
         cover = 1.0
         marks = vec4(log2(ts), ROCK, 1.0, 0.5)
     } else if ts < t {
-        let (sc, sn) = stacks_shade(s, h, clouds, view, aerial, dome, cloud, smp, o + d * ts, d, ts * k)
+        let (sc, sn) = stacks_shade(
+            s,
+            h,
+            clouds,
+            view,
+            aerial,
+            dome,
+            cloud,
+            smp,
+            o + d * ts,
+            d,
+            ts * k,
+        )
         c = sc
         cover = 1.0
         marks = vec4(log2(ts), ROCK, 1.0, 0.5)
@@ -649,7 +669,25 @@ fn meet(
             let p = o + d * tf
             let sun = mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, h.light.storm))
             let albedo = vec3(0.07, 0.072, 0.08) * (0.85 + 0.3 * noise(vec2(p.x + p.z, p.y) * 0.02))
-            let lit = lit_solid(s, h, view, aerial, dome, smp, p, fnn, d, albedo, 0.9, 0.0, vec3(0.0), sun, 1.0, 1.0, 0.0)
+            let lit = lit_solid(
+                s,
+                h,
+                view,
+                aerial,
+                dome,
+                smp,
+                p,
+                fnn,
+                d,
+                albedo,
+                0.9,
+                0.0,
+                vec3(0.0),
+                sun,
+                1.0,
+                1.0,
+                0.0,
+            )
             c = pushed_back(h, view, dome, smp, lit, d, 0.4 * smoothstep(3000.0, 10000.0, tf))
             cover = 1.0
             marks = vec4(log2(tf), ROCK, 1.0, 0.3)
@@ -660,7 +698,21 @@ fn meet(
         cover = 1.0
         marks = vec4(log2(t), id, 1.0, 0.5)
     } else {
-        let (ic, il, iw, inn) = isle_shade(s, h, clouds, view, aerial, dome, cloud, smp, o + d * t, d, t, id, pf)
+        let (ic, il, iw, inn) = isle_shade(
+            s,
+            h,
+            clouds,
+            view,
+            aerial,
+            dome,
+            cloud,
+            smp,
+            o + d * t,
+            d,
+            t,
+            id,
+            pf,
+        )
         c = ic
         cover = 1.0
         marks = vec4(log2(t), id, il, iw)
@@ -690,10 +742,22 @@ fn shuffled(q: vec2) -> u32 {
 
 /// The 4x4 ordered-dither (Bayer) matrix's places, by their number.
 const SPOTS = [
-    vec2(0.0, 0.0), vec2(2.0, 2.0), vec2(2.0, 0.0), vec2(0.0, 2.0),
-    vec2(1.0, 1.0), vec2(3.0, 3.0), vec2(3.0, 1.0), vec2(1.0, 3.0),
-    vec2(1.0, 0.0), vec2(3.0, 2.0), vec2(3.0, 0.0), vec2(1.0, 2.0),
-    vec2(0.0, 1.0), vec2(2.0, 3.0), vec2(2.0, 1.0), vec2(0.0, 3.0),
+    vec2(0.0, 0.0),
+    vec2(2.0, 2.0),
+    vec2(2.0, 0.0),
+    vec2(0.0, 2.0),
+    vec2(1.0, 1.0),
+    vec2(3.0, 3.0),
+    vec2(3.0, 1.0),
+    vec2(1.0, 3.0),
+    vec2(1.0, 0.0),
+    vec2(3.0, 2.0),
+    vec2(3.0, 0.0),
+    vec2(1.0, 2.0),
+    vec2(0.0, 1.0),
+    vec2(2.0, 3.0),
+    vec2(2.0, 1.0),
+    vec2(0.0, 3.0),
 ]
 
 /// The far things met a quarter at a time (`main::QUARTER`): a pixel of this pass's, half the
@@ -712,10 +776,24 @@ pub fn yonder_low(
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     field: Texture3d<R32Float>,
+    reach: Texture<R32Float>,
 ) -> Targets3<vec4, vec4, vec4> {
     let q = floor(pixel.position.xy)
     let pf = q * f32(SPARSE) + spot(yon.turn + shuffled(q)) + vec2(0.5) + yon.jitter
-    let (now, marks, third) = meet(shot, Heaven { light, clouds }, clouds, view, aerial, dome, cloud, smp, field, pf)
+    let (now, marks, third) = meet(
+        shot,
+        Heaven { light, clouds },
+        clouds,
+        view,
+        aerial,
+        dome,
+        cloud,
+        smp,
+        field,
+        reach,
+        yon.meshed,
+        pf,
+    )
     Targets3 { first: now, second: marks, third }
 }
 

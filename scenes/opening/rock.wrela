@@ -1,0 +1,157 @@
+// The rock and its cathedral as meshes: the isle's field (`isle::isle`) realized by the engine in
+// tiles (`engine::solids`), each at the level its size on screen asks for, and drawn each drawing
+// into how far each pixel is from the eye (`reach`). The far pass (`yonder`) starts its march
+// there, a little short, instead of from the isle's bounds: it meets the surface in a few steps,
+// and a pixel the mesh doesn't cover (nor any pixel round it) doesn't march the isle at all. Its
+// light is the traced field's still: the mesh only says where to look.
+
+use main::MESHED
+use isle::{bounds, isle}
+use look::Shot
+use engine::creature::{CreatureField, Placed}
+use engine::look::Level
+use engine::realize::{Eye, SkinVertex, solid}
+use engine::solids::{Tiles, tiles}
+use std::derive::{Box3, Interval}
+use std::field::{Field, Surface}
+use std::gpu::{
+    ClipPosition, Cull, DepthTexture, R32Float, Texture, VertexIndex, begin_pass_with_depth, draw,
+}
+
+/// The rock and its cathedral as a surface: the traced field's distance, and its material.
+pub struct Isle: Copy + GpuData {
+    pub unused: f32,
+}
+
+impl Surface for Isle {
+    fn distance(self, p: vec3) -> f32 {
+        isle(p).x
+    }
+
+    /// From its distance at the box's centre and a bound on its steepness, not interval
+    /// arithmetic through the whole field (whose kernel would pass the 256 KiB a pipeline may be).
+    fn interval(self, over: Box3) -> Interval {
+        let r = STEEP * 0.5 * length(over.hi - over.lo)
+        let d = isle(over.center()).x
+        Interval { lo: d - r, hi: d + r }
+    }
+}
+
+impl Field<f32> for Isle {
+    fn channels(self, p: vec3) -> f32 {
+        isle(p).y
+    }
+}
+
+/// A bound on how steep the isle's distance is (its pieces are scaled, some unevenly).
+const STEEP: f32 = 1.5
+
+/// The isle's meshes, kept by the engine.
+pub type Rock = Tiles<CreatureField<Placed<Isle>>>
+
+/// The levels (cells, m), coarse to fine, and each's estimated cost a block (us).
+pub const LEVELS = [
+    Level { cell: 32.0, cost_us: 0.3 },
+    Level { cell: 16.0, cost_us: 0.3 },
+    Level { cell: 8.0, cost_us: 0.3 },
+    Level { cell: 4.0, cost_us: 0.3 },
+]
+
+/// A tile's side (m).
+pub const SIDE: f32 = 512.0
+
+/// How far short of the mesh the march starts (m): past the coarsest level's error.
+pub const SHORT: f32 = 40.0
+
+/// The isle's box: its bounding sphere's.
+pub fn isle_box() -> Box3 {
+    let b = bounds()
+    Box3 { lo: b.xyz - vec3(b.w), hi: b.xyz + vec3(b.w) }
+}
+
+/// The isle's tiles, none realized yet.
+pub fn rock() -> Rock {
+    let shape = solid(Isle { unused: 0.0 }, isle_box(), name: "isle")
+    tiles(shape.field(), isle_box(), SIDE, LEVELS, max_cell_px: 2.0, budget_us: 6000.0)
+}
+
+/// The near and far planes of `reach`'s depth (m).
+const NEAR: f32 = 20.0
+const FAR: f32 = 100000.0
+
+/// `s`'s camera as a view-projection: the pixel a point lands on is the one whose `ray` meets it.
+pub fn view_proj(s: Shot) -> mat4 {
+    let a = s.focal * s.resolution.y / s.resolution.x
+    let k = FAR / (FAR - NEAR)
+    let row0 = vec4(s.right * a, -dot(s.right, s.eye) * a)
+    let row1 = vec4(s.up * s.focal, -dot(s.up, s.eye) * s.focal)
+    let row3 = vec4(s.forward, -dot(s.forward, s.eye))
+    let row2 = row3 * k - vec4(0.0, 0.0, 0.0, NEAR * k)
+    mat4(
+        vec4(row0.x, row1.x, row2.x, row3.x),
+        vec4(row0.y, row1.y, row2.y, row3.y),
+        vec4(row0.z, row1.z, row2.z, row3.z),
+        vec4(row0.w, row1.w, row2.w, row3.w),
+    )
+}
+
+/// The rock's tiles stepped on for `s`: each tile's level, and what the budget realizes.
+pub fn step_rock(rock: mut Rock, s: Shot) {
+    let fovy = 2.0 * atan(1.0 / s.focal)
+    rock.frame(Eye { at: s.eye, view_proj: view_proj(s), height: s.resolution.y, fovy })
+}
+
+/// How far each pixel of `s` is from the eye to the rock's mesh (m), `FAR` where it sees none:
+/// drawn into `out`. Whether the mesh is whole (until it is, `out` says nothing and the far pass
+/// marches as it did).
+pub fn reach(rock: Rock, s: Shot, out: mut Texture<R32Float>, depth: mut DepthTexture) -> bool {
+    if !MESHED || !rock.whole() {
+        return false
+    }
+    let vp = view_proj(s)
+    let pass = begin_pass_with_depth(mut out, mut depth, clear: vec4(FAR))
+    for i in 0..rock.len() {
+        borrow m = rock.mesh(i)
+        draw(
+            pass,
+            placed.bind(verts: m.verts.items(), view_proj: vp, eye: s.eye),
+            how_far.bind(),
+            indices: m.quads.items(),
+            indirect: m.draw.items(),
+            cull: Cull::None,
+        )
+    }
+    pass.end()
+    true
+}
+
+pub struct Reached: Copy {
+    pub clip: ClipPosition,
+    pub far: f32,
+}
+
+@vertex
+pub fn placed(v: VertexIndex, verts: [SkinVertex], view_proj: mat4, eye: vec3) -> Reached {
+    let p = verts[v.index].pos
+    Reached { clip: ClipPosition { position: view_proj * vec4(p, 1.0) }, far: length(p - eye) }
+}
+
+@fragment
+pub fn how_far(r: Reached) -> f32 {
+    r.far
+}
+
+/// Where the march through pixel `pf` (px, the full drawing's) should start along the ray, by
+/// the mesh's `reach`: a little short of the nearest the mesh is in the pixel and the eight round
+/// it; past `hi` (the isle's bounds' far side) where none of them sees it.
+pub fn march_from(reach: Texture<R32Float>, pf: vec2, size: vec2, lo: f32, hi: f32) -> f32 {
+    let q = floor(pf)
+    var near = FAR
+    for j in 0..3 {
+        for i in 0..3 {
+            let at = clamp(q + vec2(f32(i) - 1.0, f32(j) - 1.0), vec2(0.0), size - vec2(1.0))
+            near = min(near, reach.load(u32(at.x), u32(at.y)))
+        }
+    }
+    if near >= FAR { hi + 1.0 } else { max(lo, near - SHORT) }
+}
