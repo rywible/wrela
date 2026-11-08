@@ -150,6 +150,11 @@ pub const UPSCALE: bool = false
 /// that can't be asked for timestamps, as the render box's (`--set TIMINGS=true`).
 pub const TIMINGS: bool = false
 
+/// Whether the clouds move (`--set MOVING_CLOUDS=true`): off (Ryan, Nov 8: no refresh glitch, and
+/// the lightning reads better over a still deck), the dome is marched whole once and
+/// then held, the clouds' march skipped every drawing after.
+pub const MOVING_CLOUDS: bool = false
+
 /// The passes `TIMINGS` prints.
 const TIMED: [Text; 7] = ["clouds", "ocean", "rock", "yonder", "paint", "weather", "ink"]
 

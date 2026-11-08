@@ -11,6 +11,7 @@ use std::gpu::{Address, Sampler, sampler}
 use std::math::PI
 use look::{BREAK, LIFT, OVERCAST, SUN, THIN, VEIL}
 use wind::{cleared_at, climates, gale, mean_wind}
+use main::MOVING_CLOUDS
 
 /// The engine's approved switches: the sky's march at full size, or at half each way where
 /// `main::HALF_SKY` asks.
@@ -167,7 +168,7 @@ impl Heavens {
                 self.sky.cook_weather_band(w, band)
             }
             self.sky.cook_shadow(self.light.sun, self.repeat, shadows: true)
-        } else {
+        } else if MOVING_CLOUDS || !self.sky.done() {
             let drift = weather().wind * time
             self.clouds = self.sky.march::<Approved>(
                 self.air,
