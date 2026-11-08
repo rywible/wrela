@@ -68,6 +68,9 @@ pub struct State {
     pub(package) rock: Rock,
     pub(package) reach: Texture<Rg32Float>,
     pub(package) reach_depth: DepthTexture,
+    /// The inked drawing, at the drawing's size, where it's drawn below the screen's
+    /// (`main::RENDER_SCALE`): brought up to the screen by `main::upscaled`.
+    pub(package) inked: Texture<Rgba16Float>,
     /// What a tile not yet cooked reads for its shade (`rock::reach`).
     pub(package) unbaked: GpuBuffer<vec4>,
     /// The passes' times asked for and not yet answered (which, the ask, its frame), and the
@@ -133,6 +136,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         rock: rock(),
         reach: texture(width: width, height: height),
         reach_depth: depth_texture(width, height),
+        inked: texture(width: width, height: height),
         unbaked: buffer(1),
         asks: Vec::new(),
         frames: 0,
@@ -244,6 +248,7 @@ pub(package) fn sized(s: mut State, width: u32, height: u32) {
         s.half_normal = texture(width: (width + 1) / 2, height: height)
         s.reach = texture(width: width, height: height)
         s.reach_depth = depth_texture(width, height)
+        s.inked = texture(width: width, height: height)
         s.yon_count = 0.0
         s.width = width
         s.height = height
