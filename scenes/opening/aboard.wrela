@@ -63,6 +63,13 @@ pub struct Aboard {
     fresh: bool,
     // (The drawing's time he was last stepped to.)
     held: f32,
+    // (His ride: how far the hull's lurches have pressed his hips from where they'd be (m, the
+    // skiff's frame) and how fast, and the hull's last place and velocity in the world.)
+    give: vec3,
+    give_v: vec3,
+    last_boat: vec3,
+    last_v: vec3,
+    rode: u32,
     colour: Texture<Rgba16Float>,
     marks: Texture<Rgba16Float>,
     normal: Texture<Rgba8>,
@@ -93,6 +100,11 @@ pub fn aboard() -> Aboard {
         drape: drape_room(1),
         fresh: true,
         held: 0.0,
+        give: vec3(0.0),
+        give_v: vec3(0.0),
+        last_boat: vec3(0.0),
+        last_v: vec3(0.0),
+        rode: 0,
         colour: texture(width: 1, height: 1),
         marks: texture(width: 1, height: 1),
         normal: texture(width: 1, height: 1),
@@ -231,7 +243,7 @@ fn stood_over(hips: vec3, foot: vec3, leg: f32) -> f32 {
 
 /// His palette as the shot holds the traveller (in the skiff's frame), into the world: each of
 /// his bones' matrices, rest space to world.
-pub fn bones(s: Shot) -> [mat4; 64] {
+pub fn bones(s: Shot, give: vec3) -> [mat4; 64] {
     var m = [mat4(
         vec4(1.0, 0.0, 0.0, 0.0),
         vec4(0.0, 1.0, 0.0, 0.0),
@@ -239,6 +251,9 @@ pub fn bones(s: Shot) -> [mat4; 64] {
         vec4(0.0, 0.0, 0.0, 1.0),
     ); 64]
     let up = vec3(0.0, 1.0, 0.0)
+    // Which way is up in the world, in the skiff's frame: as the hull heels and pitches he keeps
+    // his body and his head to it, as a rider does, not to the deck.
+    let plumb = normalize(vec3(s.boat_x.y, s.boat_y.y, s.boat_z.y))
     // Which way he faces: from his hips toward his hands, level.
     let mid = (s.fore_hand + s.aft_hand) * 0.5
     let facing = normalize(vec3(mid.x - s.hips.x, 0.0, mid.z - s.hips.z) + vec3(0.0, 0.0, 1.0e-4))
@@ -287,20 +302,19 @@ pub fn bones(s: Shot) -> [mat4; 64] {
     neck_at = neck_at + into * 0.12
     hips = hips + into * 0.05
     let torso = length(NECK - PELVIS)
-    // (His knees kept bent, a rider's ready crouch, never stood up straight-legged: sprung,
-    // they work with the hull, a slow give and rise as it rides the sea, and he sinks lower
+    // (His knees kept bent, a rider's ready crouch, never stood up straight-legged, and lower
     // the harder it's turning.)
-    let ride = 0.5 + 0.5 * sin(s.held * 2.3) * sin(s.held * 0.9 + 1.0)
-    let crouch = 0.84 - 0.03 * ride - 0.05 * clamp(abs(s.turn) / 0.4, 0.0, 1.0)
+    let crouch = 0.84 - 0.05 * clamp(abs(s.turn) / 0.4, 0.0, 1.0)
     let leg = crouch * (length(CALF - THIGH) + length(FOOT - CALF))
     // A rider hangs off the boom: his shoulders back from his hands by near a straight arm's
     // reach and level with them, his trunk laid back from there 22 degrees off upright, away
     // from the sail, his hips under it as low as his bent legs set them. (Fed his weight through
     // straight arms, not crooked up under his chin, and never sat upright on his heels.)
-    let reach = length(HAND - UPPER) * 0.92 + 0.14
+    // (Further out in a gust, as he takes its pull.)
+    let reach = length(HAND - UPPER) * 0.92 + 0.14 + 0.08 * clamp(s.gust - 1.0, -0.5, 1.0)
     let back = vec3(neck_at.x - mid.x, 0.0, neck_at.z - mid.z)
     let back_dir = back / max(length(back), 1.0e-4)
-    let lay = normalize(back_dir * 0.375 + up * 0.927)
+    let lay = normalize(back_dir * 0.375 + normalize(mix(up, plumb, 0.7)) * 0.927)
     neck_at = mid + back_dir * reach + up * 0.04
     let hung = neck_at - lay * torso
     hips = vec3(hung.x, hips.y, hung.z)
@@ -311,6 +325,11 @@ pub fn bones(s: Shot) -> [mat4; 64] {
     let top = min(stood_over(hips, fore_foot, leg), stood_over(hips, aft_foot, leg))
     hips.y = min(hung.y, top)
     neck_at = hips + lay * torso
+    // His give: the hull's lurches taken in his knees and hips (`Aboard::ride`), his hips moved
+    // the whole of it, his shoulders less, so his trunk sways over his feet.
+    hips = hips + give
+    hips.y = min(hips.y, top)
+    neck_at = neck_at + vec3(give.x, give.y * 0.8, give.z) * 0.45
     // His trunk: the pelvis half way to the spine's lean, the chest along it.
     let spine = normalize(neck_at - hips)
     // (The pelvis kept nearer upright than the chest: tipped as far, it swung the coat's tails
@@ -339,8 +358,9 @@ pub fn bones(s: Shot) -> [mat4; 64] {
     m[B_SPINE2] = placed(r_spine2, spine2, SPINE2)
     m[B_SPINE3] = placed(r_chest, spine3, SPINE3)
     // His head along the sailing's gaze: ahead over the bow, into turns.
-    let look = normalize(s.gaze)
-    let r_head = aim(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), look, up + spine)
+    // (Kept level to the horizon as the hull rolls under him, as the eyes keep a head.)
+    let look = normalize(s.gaze - plumb * dot(s.gaze, plumb) * 0.7)
+    let r_head = aim(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), look, plumb * 3.0 + spine)
     let r_neck = aim(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), normalize(spine + up), look)
     m[B_NECK] = placed(r_neck, neck, NECK)
     let head = neck + r_neck * (HEAD_AT - NECK)
@@ -826,6 +846,35 @@ pub fn laid(
 }
 
 impl Aboard {
+    /// His ride, stepped by `dt` (s) of the drawing's time: the hull's lurches (its acceleration
+    /// in the world, felt in its own frame, as he stands on it) press his hips the other way on
+    /// a sprung, damped give, his knees taking the heave and his hips the surge and the sway,
+    /// and it springs back, about one and a half times a second, a little past and settling.
+    fn ride(mut self, s: Shot, dt: f32) {
+        if self.rode < 2 || dt <= 0.0 {
+            // (A start, or a held drawing: nothing felt yet.)
+            let v = if self.rode == 0 || dt <= 0.0 { vec3(0.0) } else { (s.boat - self.last_boat) / dt }
+            if dt > 0.0 || self.rode == 0 {
+                self.last_v = v
+                self.last_boat = s.boat
+                self.rode = self.rode + 1
+            }
+            return
+        }
+        let v = (s.boat - self.last_boat) / dt
+        let a = (v - self.last_v) / dt
+        self.last_boat = s.boat
+        self.last_v = v
+        // (Felt in the hull's frame: heave in his knees, surge and sway in his hips.)
+        let felt = vec3(dot(a, s.boat_x), dot(a, s.boat_y), dot(a, s.boat_z))
+        let k = 90.0
+        let c = 11.0
+        let push = -felt * vec3(0.012, 0.02, 0.012)
+        self.give_v = self.give_v + (push * k - self.give * k - self.give_v * c) * dt
+        self.give = self.give + self.give_v * dt
+        self.give = clamp(self.give, vec3(-0.07, -0.09, -0.07), vec3(0.07, 0.03, 0.07))
+    }
+
     /// Him drawn into the painted scene (`colour`, `marks`, `normal`, which the paint has just
     /// filled), as `shot` holds him.
     pub fn draw(
@@ -855,7 +904,8 @@ impl Aboard {
         // held over two frames let the cloth run on and then jump, a pop every fifth frame.)
         let moved = shot.held - self.held
         if self.fresh || moved != 0.0 {
-            let now = bones(shot)
+            self.ride(shot, moved)
+            let now = bones(shot, self.give)
             write(mut self.palette, 0, now)
             // (About a tenth of a second behind: 0.16 of the way each 60th of a second.)
             let ease = 1.0 - pow(0.84, clamp(moved, 0.0, 0.1) * 60.0)
