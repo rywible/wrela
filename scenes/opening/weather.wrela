@@ -12,6 +12,7 @@ use look::{ROCK, SKY, STORM_LOW, Shot, hash2, luma, ray}
 use engine::air::{ALTITUDE, BOTTOM}
 use engine::light::Light
 use engine::light::sky as clear_sky
+use main::LOW_CLOUD
 use engine::noise::{fbm2, fbm2_seen}
 use engine::sky::{BASE, Clouds, DECK_BASE, SKY_H, SKY_W, sky_uv, stormy_air}
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, Texture3d}
@@ -298,7 +299,7 @@ pub fn weather(
         c = vec4(mix(c.rgb, air, k), c.a)
     }
     // The scud, in front of what's behind it.
-    let sc = scud(s, aerial, smp, light, deck_light, d, m.y, dist, px_angle)
+    let sc = scud(s, aerial, smp, light, deck_light, d, m.y, dist, px_angle) * LOW_CLOUD
     c = vec4(c.rgb * (1.0 - sc.a * s.storm) + sc.rgb * sc.a * s.storm, c.a)
     // The rain's curtains, between the eye and what it sees.
     // (Each pixel's samples at the same distances: shells, so neighbours agree.)

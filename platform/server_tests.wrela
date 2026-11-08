@@ -201,6 +201,8 @@ struct Host {
     calls: Vec<String>,
     /// Calls of every instance, counted.
     rounds: u32,
+    /// Store scans actually requested, for bounded-work checks.
+    scans: u32,
     /// The relying party and origin the instances take.
     rp: String,
     origin: String,
@@ -245,6 +247,7 @@ fn host() -> Host {
         failing: Vec::new(),
         calls: Vec::new(),
         rounds: 0,
+        scans: 0,
         rp: String::from(RP),
         origin: String::from(ORIGIN),
         asked_log: Vec::new(),
@@ -489,6 +492,7 @@ impl Host {
                     self.instances[i].waiting.push((ticket, Some(take a)))
                 },
                 Command::Scan { ticket, from, to, limit, down } => {
+                    self.scans += 1
                     let a = answer_scan(self.instances[i].store, from, to, limit, down)
                     self.instances[i].waiting.push((ticket, Some(take a)))
                 },
@@ -3074,7 +3078,7 @@ fn a_deleted_accounts_late_removals_never_take_its_name_from_the_next_to_hold_it
     // Another draws its name while they wait, and posts.
     let (b, tb) = named(mut h, 2, 6, seed)
     post(mut h, 2, tb, 30)
-    // They're heard; then a third draws the name, and posts.
+    // They're heard; then a third tries the same name, and posts under another.
     h.holding.clear()
     h.settle()
     let (c, tc) = named(mut h, 3, 7, seed)
@@ -3104,7 +3108,7 @@ fn a_deleted_accounts_late_removals_never_take_its_name_from_the_next_to_hold_it
             panic(f"{s.name} is placed")
         }
     }
-    assert(b.name != a.name && c.name == a.name, "free only once its removals were done")
+    assert(b.name != a.name && c.name != a.name, "the kept identity stays retired after removal")
     assert(nothing_left_of(h, a), "the first is gone")
 }
 
@@ -3563,4 +3567,375 @@ fn a_win_its_room_wrote_is_kept_on_the_account_once() {
     h.settle()
     assert(nothing_left_of(h, s), "nothing of it left")
     assert(h.keys(progress::ROOMS, "won/") == 1, "only the other's win is left")
+}
+
+@test
+fn mmo_character_requests_do_not_outlive_their_session() {
+    for saving in [false, true] {
+        var h = host()
+        let s = sign_up(mut h, 1, 5)
+        let _ = h.say(1, Request::Keep { csrf: s.csrf.clone() })
+        let look = wire::Look { build: 1, skin: 2, hair: 3, cloth: 4 }
+        let _ = h.say(1, Request::SaveCharacter { csrf: s.csrf.clone(), look })
+        let changed = wire::Look { build: 0, skin: 0, hair: 0, cloth: 0 }
+        let pending = if saving {
+            Request::SaveCharacter { csrf: s.csrf.clone(), look: changed }
+        } else { Request::Character }
+        // Both sessions are read together, but the character's read answers only after sign-out.
+        let rs = h.together(1, [take pending, Request::SignOut { csrf: s.csrf.clone() }])
+        assert(refused([rs[0].reply.clone()]), "an ended session gets no new room pass")
+        let Some(v) = record(h, s, account::CHARACTER) else { panic("the character stays") }
+        let Ok(c) = load::<account::Character>(take v) else { panic("a character record") }
+        assert(c.look == look, "an ended session cannot change its character")
+    }
+}
+
+@test
+fn mmo_progress_requests_do_not_outlive_their_session() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    let Reply::Character { name, .. } = h.say(1, Request::Character)[0].clone() else {
+        panic("a name")
+    }
+    let fight = progress::fight_id("fight-ab", 1000, 1)
+    room_wrote(mut h, name, fight, boss: 1, frames: 5400, at: h.time)
+    h.pausing.push(String::from(progress::ROOMS))
+    let conns = h.send(
+        1,
+        [Request::Record { csrf: s.csrf.clone(), fight: fight.clone() }],
+        public: false,
+    )
+    h.settle()
+    assert(h.paused.len() == 1, "waiting for the room's win")
+    let _ = h.say(1, Request::SignOut { csrf: s.csrf.clone() })
+    h.unpause()
+    h.settle()
+    let rs = h.answers(1, conns)
+    assert(refused([rs[0].reply.clone()]), "an ended session cannot record its pending win")
+    assert(record(h, s, progress::PROGRESS).is_none(), "no progress written after sign-out")
+}
+
+@test
+fn mmo_progress_keeps_distinct_fights_even_when_their_times_match_or_arrive_backwards() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    let Reply::Character { name, .. } = h.say(1, Request::Character)[0].clone() else {
+        panic("a name")
+    }
+    let at = h.time
+    let first = progress::fight_id("fight-ab", 1000, 1)
+    let second = progress::fight_id("fight-cd", 1000, 1)
+    let older = progress::fight_id("fight-ef", 500, 1)
+    room_wrote(mut h, name, first, boss: 1, frames: 900, at: at + 200)
+    room_wrote(mut h, name, second, boss: 1, frames: 800, at: at + 200)
+    room_wrote(mut h, name, older, boss: 1, frames: 600, at: at + 100)
+    let _ = h.say(1, Request::Record { csrf: s.csrf.clone(), fight: first.clone() })
+    let b = beaten_of(h.say(1, Request::Record { csrf: s.csrf.clone(), fight: second.clone() }))
+    assert(b[0].wins == 2 && b[0].best == 800, "two fights may end at the same time")
+    let b = beaten_of(h.say(1, Request::Record { csrf: s.csrf.clone(), fight: older.clone() }))
+    assert(b[0].wins == 3 && b[0].best == 600, "a delayed record still counts, including its best")
+    assert(b[0].first == at + 100 && b[0].last == at + 200, "first and last follow fight times")
+    let fourth = progress::fight_id("fight-ab", 1000, 2)
+    room_wrote(mut h, name, fourth, boss: 1, frames: 700, at: at + 200)
+    let rs = h.together(
+        1,
+        [
+            Request::Record { csrf: s.csrf.clone(), fight: fourth.clone() },
+            Request::Record { csrf: s.csrf.clone(), fight: fourth.clone() },
+        ],
+    )
+    for a in rs {
+        assert(beaten_of([a.reply.clone()])[0].wins == 4, "a concurrent first record counts once")
+    }
+    // Two tabs replaying the same receipt cannot count it twice, even after the instance reloads.
+    h.drop_instance(s.at().as_str())
+    let rs = h.together(
+        1,
+        [
+            Request::Record { csrf: s.csrf.clone(), fight: older.clone() },
+            Request::Record { csrf: s.csrf.clone(), fight: older.clone() },
+        ],
+    )
+    for a in rs {
+        let b = beaten_of([a.reply.clone()])
+        assert(b[0].wins == 4, "each fight counts once")
+    }
+}
+
+@test
+fn mmo_deleted_character_names_are_retired_even_when_the_keep_arrives_late() {
+    for held_keep in [false, true] {
+        var h = host()
+        let seed: u64 = 11
+        give(mut h, 1, 5, seed)
+        let a = sign_up(mut h, 1, 5)
+        if held_keep { h.holding.push(String::from("names/")) }
+        let _ = h.say(1, Request::Keep { csrf: a.csrf.clone() })
+        let i = h.instance(a.at().as_str())
+        let late = replace(mut h.instances[i].outbox, Vec::new())
+        h.holding.clear()
+        let look = wire::Look { build: 1, skin: 2, hair: 3, cloth: 4 }
+        let Reply::Character { name, pass: signed, .. } = h.say(
+            1,
+            Request::SaveCharacter { csrf: a.csrf.clone(), look },
+        )[0].clone() else { panic("a character") }
+        let Ok(p) = std::pack::unpack::<pass::Pass>(take signed) else { panic("its pass") }
+        let Some(k) = pass::key_of(String::from(KEY).as_bytes()) else { panic("a key") }
+        let _ = h.say(1, Request::Delete { csrf: a.csrf.clone() })
+        h.settle()
+        assert(pass::opens([k], p, h.time), "the old pass still opens rooms after deletion")
+        let (b, _) = named(mut h, 2, 6, seed)
+        assert(b.name != a.name, "an old pass must never identify a new account's character")
+        // A previously verified peer may settle an old fight after deletion and pass expiry.
+        let fight = progress::fight_id("fight-old", 1000, 1)
+        room_wrote(mut h, name, fight, boss: 1, frames: 600, at: h.time)
+        assert(refused(h.say(2, Request::Record { csrf: b.csrf.clone(), fight: fight.clone() })))
+        assert(beaten_of(h.say(2, Request::Progress)).is_empty())
+        let shard = server::names_instance(name)
+        let entries = h.store_of(shard.as_str())
+        let (j, found) = find(entries, account::key("n", names::key(name)))
+        assert(found, "the retired name keeps its old-format row")
+        let Ok(entry) = load::<shards::NameEntry>(entries[j].value.clone()) else {
+            panic("the name row's schema is unchanged")
+        }
+        assert(entry.owner.is_empty() && entry.kept, "the tombstone holds no account handle")
+        let i = h.instance(a.at().as_str())
+        for m in late { h.instances[i].outbox.push(m.clone()) }
+        h.settle()
+        assert(nothing_left_of(h, a), "the deleted account's own data is still cleared")
+        h.time += pass::LIFE_MS + 1
+        let (c, _) = named(mut h, 3, 7, seed)
+        assert(c.name != a.name, "verified room identities may outlive the pass's lifetime")
+    }
+}
+
+@test
+fn mmo_room_tokens_are_host_random_for_guests_without_accounts_or_stored_state() {
+    var h = host()
+    h.keys.clear()
+    h.closed = true
+    let supplied: Vec<u8> = Vec::from([1, 2, 3, 4, 5, 6, 7, 8])
+    h.given.push(supplied.clone())
+    let replies = h.together(1, [Request::RoomToken, Request::RoomToken])
+    var tokens: Vec<Vec<u8>> = Vec::new()
+    for r in replies {
+        let Reply::RoomToken { token } = r.reply.clone() else {
+            panic("a guest can get a room token, even without signing keys or open sign-ups")
+        }
+        assert(token.len() == wire::ROOM_TOKEN_BYTES && account::u64_at(token, 0) != 0)
+        assert(r.cookies.is_empty() && r.public == 0 && !r.immutable, "private, never cached")
+        tokens.push(token.clone())
+    }
+    assert(tokens[0] == supplied, "the host's random bytes, never a clock or a viewport")
+    assert(tokens[0] != tokens[1], "each page gets its own token")
+    assert(h.calls.is_empty(), "no account or other instance asked")
+    for instance in h.instances { assert(instance.store.is_empty(), "no token rows") }
+    assert(refused([h.read(1, Request::RoomToken).0]), "not a cacheable GET")
+}
+
+@test
+fn mmo_room_tokens_fail_closed_when_the_host_cannot_make_a_valid_token() {
+    for answer in [
+        None,
+        Some(Vec::new()),
+        Some(Vec::filled(7, u8(1))),
+        Some(Vec::filled(8, u8(0))),
+        Some(Vec::filled(9, u8(1))),
+    ] {
+        var e = engine(Toy {}, RP, ORIGIN, VERSIONS, "")
+        e.begin()
+        e.http(
+            1,
+            Asked {
+                time: 1_800_000_000_000,
+                public: false,
+                session: Vec::new(),
+                ceremony: Vec::new(),
+                keys: Vec::new(),
+                body: save(Request::RoomToken),
+            },
+        )
+        e.end()
+        let commands = e.commands()
+        assert(commands.len() == 1, "only a request for random bytes")
+        let Command::Random { ticket, n } = commands[0] else { panic("host random") }
+        assert(n == wire::ROOM_TOKEN_BYTES)
+        e.begin()
+        e.answer(ticket, answer.clone())
+        e.end()
+        let commands = e.commands()
+        assert(commands.len() == 1, "one answer, no storage writes")
+        let Command::Respond { body, cookies, public, .. } = commands[0].clone() else {
+            panic("the guest is answered")
+        }
+        let Ok(reply) = load::<Reply>(take body) else { panic("a reply") }
+        assert(refused([take reply]) && cookies.is_empty() && public == 0)
+    }
+}
+
+@test
+fn mmo_a_replaced_session_cannot_finish_recording_its_pending_win() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    let Reply::Character { name, .. } = h.say(1, Request::Character)[0].clone() else {
+        panic("a name")
+    }
+    let fight = progress::fight_id("fight-ab", 1000, 1)
+    room_wrote(mut h, name, fight, boss: 1, frames: 5400, at: h.time)
+    h.pausing.push(String::from(progress::ROOMS))
+    let conns = h.send(
+        1,
+        [Request::Record { csrf: s.csrf.clone(), fight: fight.clone() }],
+        public: false,
+    )
+    h.settle()
+    assert(h.paused.len() == 1, "waiting on the room under the old session")
+    let new_csrf = fresh(mut h, 1, 5, s)
+    assert(new_csrf != s.csrf, "signing in again replaced this browser's old session")
+    h.unpause()
+    h.settle()
+    let rs = h.answers(1, conns)
+    assert(refused([rs[0].reply.clone()]), "a replaced session cannot finish its old request")
+    assert(record(h, s, progress::PROGRESS).is_none(), "no progress written by the old session")
+}
+
+@test
+fn mmo_account_security_changes_cannot_finish_after_sign_out() {
+    for add in [false, true] {
+        var h = host()
+        let s = sign_up(mut h, 1, 5)
+        var request = Request::NewCodes { csrf: s.csrf.clone() }
+        if add {
+            let c = challenge_of(h.say(1, begin(ADD_PASSKEY, s.csrf.clone())))
+            request = Request::AddPasskey {
+                csrf: s.csrf.clone(),
+                challenge: c.clone(),
+                id: Vec::from([9]),
+                client_data: client("webauthn.create", c, ORIGIN),
+                attestation: made(RP, [9], 9),
+            }
+        }
+        let rs = h.together(1, [take request, Request::SignOut { csrf: s.csrf.clone() }])
+        assert(
+            refused([rs[0].reply.clone()]),
+            "a signed-out request cannot change recovery material",
+        )
+        assert(h.keys(s.at().as_str(), "c/") == 1, "no new passkey after sign-out")
+        for code in s.codes {
+            let Some(hash) = account::code_hash(code.as_str()) else { panic("a recovery code") }
+            let store = h.store_of(s.at().as_str())
+            let (_, found) = find(store, account::code_key(hash))
+            assert(found, "the original recovery codes stay in place")
+        }
+    }
+}
+
+@test
+fn mmo_recorded_win_retries_need_no_room_call() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    let Reply::Character { name, .. } = h.say(1, Request::Character)[0].clone() else {
+        panic("a name")
+    }
+    let fight = progress::fight_id("fight-ab", 1000, 1)
+    room_wrote(mut h, name, fight, boss: 1, frames: 5400, at: h.time)
+    let ask = Request::Record { csrf: s.csrf.clone(), fight: fight.clone() }
+    let first = beaten_of(h.say(1, ask.clone()))
+    assert(first[0].wins == 1, "the room checked the first record")
+    h.drop_instance(s.at().as_str())
+    h.failing.push(String::from(progress::ROOMS))
+    h.calls.clear()
+    let again = beaten_of(h.say(1, ask.clone()))
+    assert(again[0].wins == 1 && again[0].best == 5400, "the persistent receipt suffices")
+    assert(h.calls.is_empty(), "a duplicate record makes no room RPC, even after restart")
+}
+
+@test
+fn mmo_unreadable_progress_is_not_replaced_by_a_new_win() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    let Reply::Character { name, .. } = h.say(1, Request::Character)[0].clone() else {
+        panic("a name")
+    }
+    let unreadable = Vec::from([u8(255), 19, 7, 2, 0])
+    let i = h.instance(s.at().as_str())
+    put_entry(mut h.instances[i].store, account::under(progress::PROGRESS), unreadable)
+    let fight = progress::fight_id("fight-ab", 1000, 1)
+    room_wrote(mut h, name, fight, boss: 1, frames: 5400, at: h.time)
+    assert(
+        refused(h.say(1, Request::Record { csrf: s.csrf.clone(), fight: fight.clone() })),
+        "unknown progress must not be treated as no previous wins",
+    )
+    assert(record(h, s, progress::PROGRESS) == Some(unreadable.clone()), "the save is preserved")
+    assert(refused(h.say(1, Request::Progress)), "an unreadable record is not an empty history")
+    assert(h.keys(s.at().as_str(), progress::RECEIPTS) == 0, "the new win is not spent")
+}
+
+@test
+fn mmo_export_skips_internal_fight_receipts_without_scanning_them() {
+    var counts: Vec<u32> = Vec::new()
+    for receipts in [u32(0), 2 * server::EXPORT_RECORDS + 1] {
+        var h = host()
+        let s = sign_up(mut h, 1, 5)
+        let i = h.instance(s.at().as_str())
+        let Some(p) = progress::credited(
+            progress::no_progress(),
+            progress::Won { boss: 1, frames: 5400, at: h.time },
+        ) else { panic("a win") }
+        put_entry(mut h.instances[i].store, account::under(progress::PROGRESS), save(p))
+        for n in 0..receipts {
+            let key = account::key(progress::RECEIPTS, progress::fight_id("fight-ab", u64(n), 1))
+            put_entry(mut h.instances[i].store, key, [])
+        }
+        let before = h.scans
+        let Reply::Export { text, last, .. } = h.say(
+            1,
+            Request::Export { after: Vec::new() },
+        )[0].clone() else { panic("an export") }
+        assert(last && std::json::parse(text.as_str()).is_some(), "a complete valid export")
+        assert(
+            text.as_str().find("\"mmo_progress\":[{\"boss\":1").is_some(),
+            "progress is exported",
+        )
+        counts.push(h.scans - before)
+    }
+    std::io::print(f"export scans: no receipts {counts[0]}, 1025 receipts {counts[1]}")
+    assert(counts[0] == counts[1], "internal receipts do not add scan pages to an export")
+}
+
+@test
+fn mmo_win_record_infrastructure_failures_are_retryable() {
+    for failure in 0..4 {
+        var h = host()
+        let s = sign_up(mut h, 1, 5)
+        let Reply::Character { name, .. } = h.say(1, Request::Character)[0].clone() else {
+            panic("a name")
+        }
+        let fight = progress::fight_id("fight-ab", 1000, 1)
+        room_wrote(mut h, name, fight, boss: 1, frames: 5400, at: h.time)
+        let ask = Request::Record { csrf: s.csrf.clone(), fight: fight.clone() }
+        if failure == 3 { h.failing.push(String::from(progress::ROOMS)) }
+        let conns = h.send(1, [ask.clone()], public: false)
+        if failure == 0 {
+            fail_at(mut h, s.at().as_str(), server::Step::RecordReceipt)
+        } else if failure == 1 {
+            // The room's failed store read answers Back::Refused, which the account receives.
+            fail_at(mut h, progress::ROOMS, server::Step::WonRead)
+        } else if failure == 2 {
+            fail_at(mut h, s.at().as_str(), server::Step::RecordProgress)
+        }
+        h.settle()
+        let rs = h.answers(1, conns)
+        let Reply::RecordPending = rs[0].reply else {
+            panic(f"an infrastructure failure is pending, not a rejected win: {failure}")
+        }
+        assert(record(h, s, progress::PROGRESS).is_none(), "no successful write was claimed")
+        h.failing.clear()
+        assert(beaten_of(h.say(1, ask.clone()))[0].wins == 1, "the same fight can be retried")
+        let missing = progress::fight_id("fight-unknown", 1000, 1)
+        assert(
+            refused(h.say(1, Request::Record { csrf: s.csrf.clone(), fight: missing })),
+            "an actual missing win stays a final refusal",
+        )
+    }
 }

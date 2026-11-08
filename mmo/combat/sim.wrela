@@ -380,7 +380,7 @@ impl World {
     /// longsword.
     pub fn start(players: u32) -> World {
         var weapons: Vec<u32> = Vec::new()
-        for _ in 0..players {
+        for _ in 0..min(players, MAX_PARTY) {
             weapons.push(LONGSWORD)
         }
         World::armed(weapons)
@@ -497,7 +497,9 @@ pub fn step(w: mut World, inputs: [u32]) {
         return
     }
     for i in 0..w.party.len() {
-        let input = if i < inputs.len() { inputs[i] } else { 0 }
+        // Buttons are toggles: zeroing an omitted input would press every button whose last
+        // toggle was one. Missing input only releases the stick, leaving button toggles alone.
+        let input = if i < inputs.len() { inputs[i] } else { w.before[i] }
         let read = w.reads(i)
         let pressed = ((input ^ w.before[i]) & read & BUTTON_BITS) >> 6
         // A stick that isn't one (past 48) is still: any input gives a fight, never a trap.
@@ -544,7 +546,7 @@ pub fn step(w: mut World, inputs: [u32]) {
 @deterministic
 pub fn run(players: u32, logs: [Log]) -> Outcome {
     var weapons: Vec<u32> = Vec::new()
-    for _ in 0..players {
+    for _ in 0..min(players, MAX_PARTY) {
         weapons.push(LONGSWORD)
     }
     run_armed(weapons, logs)
@@ -823,6 +825,14 @@ fn next(seed: mut u32) -> u32 {
 }
 
 @test
+fn oversized_party_counts_still_make_the_same_four_player_fight() {
+    let w = World::start(1000000)
+    assert(w == World::start(MAX_PARTY))
+    let out = run(1000000, [])
+    assert(out == run(MAX_PARTY, []))
+}
+
+@test
 fn a_bit_the_rules_dont_read_changes_nothing_then_or_later() {
     // Random fights of four; at each frame, every bit outside each player's read set flipped at
     // random gives the same world, at once and after 60 more frames of the same inputs.
@@ -898,6 +908,20 @@ fn hold(w: mut World, input: u32, frames: u32) {
         w.boss.timer = 2
         step(mut w, [input])
     }
+}
+
+@test
+fn a_missing_input_stops_the_stick_without_pressing_a_button() {
+    var w = at_the_boss(LONGSWORD)
+    let first = MOVES[WEAPONS[LONGSWORD].light]
+    hold(mut w, input: ATTACK << 6, frames: 2 + first.windup + first.active + first.recovery)
+    assert(w.party[0].act == IDLE, "the previous press has finished")
+    step(mut w, [ATTACK << 6 | 3])
+    let hp = w.boss.hp
+    let x = w.party[0].x
+    step(mut w, [])
+    assert(w.party[0].act == IDLE, "no input presses no attack")
+    assert(w.party[0].x == x && w.boss.hp == hp, "no input moves nowhere or attacks")
 }
 
 @test

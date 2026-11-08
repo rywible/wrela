@@ -21,7 +21,8 @@ use ink::ink
 use played::{State, cover, painted, sized, targets, weathered}
 use sail::key
 use std::input::events
-use std::gpu::{begin_screen_pass, draw}
+use std::gpu::{begin_screen_pass, draw, label, timed}
+use std::io::print
 
 /// The time the scene starts at (s): the frames a test or a still draws begin here.
 pub const START: f32 = 0.0
@@ -77,9 +78,58 @@ pub const OPEN_SIDE: f32 = 3.5
 /// (`Rig::framing`; `--set FRAMING=1`).
 pub const FRAMING: f32 = 0.0
 
+/// Clear weather over the opening itself (`--set CLEAR=1`): the clear region moved onto the
+/// skiff and the rock, so every view can be checked in a sea day's light.
+pub const CLEAR: f32 = 0.0
+
 /// The player's camera: 0 low behind the skiff, as it was; 1 higher and off its quarter, so the
 /// deck and the hull's length read (`--set CAMERA=1`).
 pub const CAMERA: f32 = 0.0
+
+/// Pieces left out, to measure what each costs (`--set OFF=...`, the bits added): 1 the rock
+/// and the cathedral, 2 the sea stacks, 4 the far islands, 8 the falls, 16 the skiff (and the
+/// hero on it), 32 the hero alone, 64 the sea's shading (still traced, lit flat), 128 the wake's
+/// thrown spray, 256 the weather pass, 512 the rock's and the cathedral's shading (still met,
+/// lit flat), 1024 the stacks' shading (still met, lit flat), 2048 the stacks' edge test (the
+/// four rays round a stack's edge that keep it from trailing), 4096 the rock's rest (met afresh
+/// every drawing in every pixel, `yonder::REFRESH`). 0, the scene whole: as shipped.
+pub const OFF: u32 = 0
+
+/// The side (px) of the blocks the rock is met afresh in, a block of each 2x2 a drawing in turn
+/// (`yonder::REFRESH`): wide enough that each group of pixels a GPU runs together falls in one.
+pub const RELIT: u32 = 32
+
+/// Whether the rock, the cathedral, the stacks and the far islands are met a quarter of their
+/// pixels a drawing, at half the size each way, and rebuilt at the full size over the drawings
+/// (`yonder::yonder_low`, `yonder::yonder_rebuild`): a quarter of the far pass's cost.
+pub const QUARTER: bool = true
+
+/// The side of the blocks the far things are met sparsely in (`QUARTER`): one pixel of each
+/// block a drawing, at 1 / `SPARSE` the size each way: 2, or 4 (a quarter the cost again, but
+/// the stacks stay grainy for seconds after the camera starts).
+pub const SPARSE: u32 = 2
+
+/// Whether the paint is painted in every other column out on the sea, the others filled between
+/// their neighbours along the row, and in full round the skiff (`paint::paint_half`,
+/// `paint::paint_fill`): about half the paint's cost.
+pub const HALF_PAINT: bool = true
+
+/// How many frames march the clouds' dome whole, a share of its tiles each
+/// (`engine::switches::Switches::DOME_PHASES`; 32, 64 or 128): at 128 a frame's march costs a
+/// quarter of 32's, and at 120 frames a second the dome is still marched whole about once a
+/// second (`--set DOME_PHASES=32` for the engine's own).
+pub const DOME_PHASES: u32 = 128
+
+/// Whether the clouds' dome is marched at half its size each way (`--set HALF_SKY=false` for full): a
+/// quarter of the clouds' cost, a little softer.
+pub const HALF_SKY: bool = true
+
+/// Whether each frame's passes print their GPU time (`timing <frame> <pass> <us>`), for a host
+/// that can't be asked for timestamps, as the render box's (`--set TIMINGS=true`).
+pub const TIMINGS: bool = false
+
+/// The passes `TIMINGS` prints.
+const TIMED: [Text; 6] = ["clouds", "ocean", "yonder", "paint", "weather", "ink"]
 
 /// Whether the hero (Hakuro, content/hakuro: his fields realized and drawn into the painted
 /// scene, `aboard`) stands to the sail: 1, him; 0 the traveller's figure in his place
@@ -99,6 +149,9 @@ pub fn init() -> State {
 }
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if TIMINGS {
+        timings(mut s)
+    }
     sized(mut s, width, height)
     // The player's keys: W sheets in, S lets the sail fly, A and D steer.
     for e in events() {
@@ -106,17 +159,52 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     }
     let shot = painted(mut s, time, VIEW, 0.0, framing: FRAMING, fine: FINE)
     weathered(mut s, shot)
-    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     borrow hv = s.heavens
+    borrow colour = if (OFF & 256) != 0 { s.colour } else { s.aired }
+    label("ink")
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         screen,
         cover,
-        ink.bind(shot: shot, light: hv.light, colour: s.aired, marks: s.marks, normal: s.normal),
+        ink.bind(
+            shot: shot,
+            light: hv.light,
+            colour: colour,
+            marks: s.marks,
+            normal: s.normal,
+        ),
         vertices: 3,
     )
     screen.present()
 }
 
+/// The passes' times as they come back, printed, and this frame's asked for.
+fn timings(s: mut State) {
+    var k = 0
+    while k < s.asks.len() {
+        let i = s.asks[k].0
+        let at = s.asks[k].2
+        match s.asks[k].1.poll() {
+            Some(Ok(us)) => {
+                print(f"timing {at} {TIMED[i]} {us[0]}")
+                let _ = s.asks.remove(k)
+            },
+            Some(Err(_)) => {
+                let _ = s.asks.remove(k)
+            },
+            None => k += 1,
+        }
+    }
+    for i in 0..6 {
+        s.asks.push((u32(i), timed(TIMED[i]), s.frames))
+    }
+    s.frames += 1
+}
+
 /// Each frame records draws the host accepts.
 @test(frames: 2)
 fn frames_record_valid_draws() {}
+
+/// The storm's low cloud: 1 the scud torn under the deck and the lifted air on the horizon as
+/// they were; 0 neither, the deck going down into its own air (`--set LOW_CLOUD=0`).
+pub const LOW_CLOUD: f32 = 1.0

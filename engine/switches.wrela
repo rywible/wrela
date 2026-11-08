@@ -30,6 +30,10 @@ pub trait Switches {
     /// The clouds' dome marched at half its size each way (`sky::Sky::march`, D17; off:
     /// docs/bench.md B5.4).
     const HALVED: bool = false
+    /// How many frames march the clouds' dome whole, a share of its tiles each (`sky::PHASES`;
+    /// it must divide `sky`'s tiles evenly: 32, 64, 128). More, the dome's march costs less a
+    /// frame and refreshes over more of them.
+    const DOME_PHASES: u32 = 32
     /// The radiance cascades (B14.4, `cascades`) in place of the probes' sky and the ambient
     /// occlusion.
     const CASCADES: bool = false

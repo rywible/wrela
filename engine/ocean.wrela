@@ -39,6 +39,13 @@ const G: f32 = 9.81
 /// How long a broken crest's foam takes to fade to a third (s).
 const FOAM_FADE: f32 = 6.0
 
+/// What remains of old foam between drawings: no elapsed history on the first drawing or
+/// when time runs back. The fade is computed once, then shared by every tile's texels.
+fn foam_fade(last: f32, now: f32) -> f32 {
+    let elapsed = if last < 0.0 { 0.0 } else { max(now - last, 0.0) }
+    exp(-elapsed / FOAM_FADE)
+}
+
 /// What sea it is: the wind that raises it and the swell come from far off.
 pub struct SeaState: Copy + GpuData {
     /// The way the wind blows (x, z: a unit vector), its speed 10 m up (m/s), and how much open
@@ -309,14 +316,14 @@ fn butterfly(
 
 /// A tile's fields from the inverse FFT (`heights`, `slopes`), as the surface reads them. Into
 /// `shape`: its displacement (x, height, z; the crests leaned by `chop`) and its foam, the last
-/// frame's (`before`) faded over `dt` s, and fresh where a crest breaks: where the water is
+/// frame's (`before`) multiplied by `fade`, and fresh where a crest breaks: where the water is
 /// squeezed toward folding over, its Jacobian under `breaks` (white a deviation, `spread`, past
 /// it). Into `tilt`: its slopes and
 /// stretches (∂h/∂x, ∂h/∂z, ∂Dx/∂x, ∂Dz/∂z, leaned as the crests are).
 @compute(8, 8)
 fn settle(
     chop: f32,
-    dt: f32,
+    fade: f32,
     breaks: f32,
     spread: f32,
     heights: Texture<Rgba32Float>,
@@ -337,7 +344,7 @@ fn settle(
     let squeezed = (1.0 + dxx) * (1.0 + dzz) - dxz * dxz
     let old = before.load(x: id.x, y: id.y).w
     let broke = clamp((breaks - squeezed) / spread, 0.0, 1.0)
-    let foam = max(old * exp(-dt / FOAM_FADE), broke)
+    let foam = max(old * fade, broke)
     shape.store(id, vec4(hq.x * chop, hq.y, hq.z * chop, foam))
     tilt.store(id, vec4(sq.x, sq.y, dxx, dzz))
 }
@@ -402,9 +409,9 @@ struct Scratch {
     to_b: Texture<Rgba32Float>,
 }
 
-/// Tile `tile` at time `t`, `dt` s after the last: its waves (`evolve`), summed along x and then
+/// Tile `tile` at time `t`, old foam kept by `fade`: its waves (`evolve`), summed along x and then
 /// along z, settled into its surface and its mips filled.
-fn run(sea: SeaState, t: f32, dt: f32, tile: mut Tile, f: mut Scratch, s: Sampler) {
+fn run(sea: SeaState, t: f32, fade: f32, tile: mut Tile, f: mut Scratch, s: Sampler) {
     dispatch(evolve.bind(sea, tile.band, t, heights: mut f.a, slopes: mut f.b), over: (SIDE, SIDE))
     for d in 0..2 {
         for pass in 0..PASSES {
@@ -427,7 +434,7 @@ fn run(sea: SeaState, t: f32, dt: f32, tile: mut Tile, f: mut Scratch, s: Sample
     dispatch(
         settle.bind(
             sea.chop,
-            dt,
+            fade,
             tile.breaks,
             tile.spread,
             heights: f.a,
@@ -511,13 +518,13 @@ impl Ocean {
     /// The sea at time `t` (s): each tile summed and settled. The foam fades by the time since
     /// the last (none the first time, nor when time runs back).
     pub fn step(mut self, t: f32) {
-        let dt = if self.last < 0.0 { 0.0 } else { clamp(t - self.last, 0.0, 0.25) }
+        let fade = foam_fade(self.last, t)
         self.last = t
         label("ocean")
-        run(self.sea, t, dt, mut self.big, mut self.scratch, self.mips)
-        run(self.sea, t, dt, mut self.mid, mut self.scratch, self.mips)
-        run(self.sea, t, dt, mut self.fine, mut self.scratch, self.mips)
-        run(self.sea, t, dt, mut self.ripple, mut self.scratch, self.mips)
+        run(self.sea, t, fade, mut self.big, mut self.scratch, self.mips)
+        run(self.sea, t, fade, mut self.mid, mut self.scratch, self.mips)
+        run(self.sea, t, fade, mut self.fine, mut self.scratch, self.mips)
+        run(self.sea, t, fade, mut self.ripple, mut self.scratch, self.mips)
     }
 
     /// What a shader needs of it beside its textures.
@@ -778,4 +785,17 @@ fn the_loudest_waves_hold_most_of_the_height() {
     let sw = Swell::new(gentle(), 512, 1.0)
     print(f"{sw.modes.len()} waves hold {sw.held * 100.0} % of the long tiles' variance")
     assert(sw.held > 0.6, f"{sw.held}")
+}
+
+@test
+fn foam_fades_over_the_actual_gap_between_drawings() {
+    assert(
+        foam_fade(last: 1.0, now: 31.0) < 0.01,
+        "a long game-time gap leaves no fresh-looking old foam",
+    )
+    let one = foam_fade(last: 1.0, now: 2.0)
+    let two = foam_fade(last: 1.0, now: 1.5) * foam_fade(last: 1.5, now: 2.0)
+    assert(abs(one - two) < 1.0e-6, "the same elapsed time fades equally at different draw rates")
+    assert(foam_fade(last: -1.0, now: 30.0) == 1.0, "the first drawing has no elapsed history")
+    assert(foam_fade(last: 30.0, now: 1.0) == 1.0, "time running back fades no history")
 }

@@ -172,13 +172,18 @@ pub struct Accounts {
     /// Whether the server answered the last request, and when to ask again if it didn't.
     connected: bool,
     retry_at: f32,
-    /// The requests under way, what each was for, and the account it was made for (`epoch`).
-    waiting: Vec<(Pending<u8>, Purpose, u32)>,
+    /// The requests under way, what each was for, the account it was made for (`epoch`), and its ID.
+    waiting: Vec<(Pending<u8>, Purpose, u32, u32)>,
+    request_serial: u32 = 0,
+    /// Only the foreground request owning this ID may release the account's busy controls.
+    busy_request: Option<u32> = None,
     /// Counted up each time the console's account becomes another (`identify`): a reply to a
     /// request made for the one before is dropped, but a game's own asks'.
     epoch: u32,
     /// The session's CSRF token, as the server last gave it.
     csrf: Vec<u8>,
+    /// A fresh session for the same account must refresh the MMO's cached CSRF token too.
+    session_revision: u32 = 0,
     pub me: Me,
     passkey: Option<Pending<u8>>,
     /// The ceremony under way: what it's for, its challenge and the handle it's for, which its
@@ -250,7 +255,7 @@ pub struct Accounts {
     /// How each control looks: its hover eased in (by its index in `controls`), the one the
     /// pointer pressed, and whether the keyboard moved the focus last (its ring shows only then).
     hover: Vec<f32> = Vec::new(),
-    pressed: Option<u32> = None,
+    pressed: Option<Act> = None,
     keyboard: bool = false,
     /// Seconds since the frame before; how far the dialog has faded in; its height as eased
     /// toward its page's.
@@ -332,6 +337,7 @@ pub fn new(rp_id: str, online: bool) -> Accounts {
 /// `GET`, with no cookie, so the browser's cache and the edge's may answer it, and anything else by
 /// `POST`.
 fn request(a: mut Accounts, request: Request, purpose: Purpose) {
+    let id = request_started(mut a, request, purpose)
     let asked = if let Request::Watch { run } = request {
         // A run's replay at its own path, which never changes: kept a day.
         std::http::fetch_public(run_path(run).as_str(), [])
@@ -345,7 +351,36 @@ fn request(a: mut Accounts, request: Request, purpose: Purpose) {
         }
         std::http::fetch("POST", ACCOUNTS, [take kind], save(request))
     }
-    a.waiting.push((take asked, purpose, a.epoch))
+    a.waiting.push((take asked, purpose, a.epoch, id))
+}
+
+/// Records which request owns a foreground action. Background reads and game requests may
+/// finish during a passkey prompt or while a name is being saved, without ending that action.
+fn request_started(a: mut Accounts, request: Request, purpose: Purpose) -> u32 {
+    a.request_serial += 1
+    let id = a.request_serial
+    let foreground = match request {
+        Request::Begin { .. } | Request::Register { .. } | Request::SignIn { .. } => true,
+        Request::AddPasskey { .. } | Request::Recover { .. } | Request::Keep { .. } => true,
+        Request::Reroll { .. } | Request::BestRuns { .. } | Request::NewCodes { .. } => true,
+        Request::Delete { .. } => true,
+        Request::Consent { .. } => purpose == Purpose::Consent,
+        _ => false,
+    }
+    if foreground {
+        a.busy_request = Some(id)
+        a.busy = true
+    }
+    id
+}
+
+/// The request finished, including a failed or stale reply. A passkey challenge may immediately
+/// put the action back under way, and its eventual submission takes a new request ID.
+fn request_finished(a: mut Accounts, id: u32) {
+    if a.busy_request == Some(id) {
+        a.busy_request = None
+        a.busy = false
+    }
 }
 
 /// The console's account is `me` now: if it's another than it was (by its handle, whatever its
@@ -355,6 +390,13 @@ fn identify(a: mut Accounts, me: take Me) {
         another_account(mut a)
     }
     a.me = take me
+}
+
+fn keep_csrf(a: mut Accounts, csrf: Vec<u8>) {
+    if a.csrf != csrf {
+        a.session_revision += 1
+    }
+    a.csrf = csrf.clone()
 }
 
 /// The console's account became another (or none): what it knew of the one before goes (its
@@ -393,7 +435,6 @@ fn keeps(a: Accounts, purpose: Purpose, epoch: u32) -> bool {
 /// consent carried for it is said to the game as not taken, so it can be asked again.
 fn dropped(a: mut Accounts, purpose: Purpose) {
     a.dirty = true
-    a.busy = false
     if purpose == Purpose::GameConsent {
         let why = String::from("You're signed in to another account now. Post again to post as it.")
         answer_game(mut a, Answer::Failed { why, retry_after: u32(RETRY) })
@@ -401,7 +442,7 @@ fn dropped(a: mut Accounts, purpose: Purpose) {
 }
 
 fn signed_out(a: mut Accounts) {
-    a.csrf.clear()
+    keep_csrf(mut a, Vec::new())
     identify(
         mut a,
         Me {
@@ -482,7 +523,6 @@ fn failed(a: mut Accounts, purpose: Purpose, why: take String, after: f32) {
 /// The server's reply to a request for `purpose`.
 fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
     a.dirty = true
-    a.busy = false
     if purpose == Purpose::Game {
         game_replied(mut a, reply)
         return
@@ -507,7 +547,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
         Reply::Welcome { me, csrf } => {
             let was = a.me.signed_in
             identify(mut a, me.clone())
-            a.csrf = csrf.clone()
+            keep_csrf(mut a, csrf.clone())
             if !me.signed_in {
                 if was {
                     signed_out(mut a)
@@ -591,7 +631,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
             a.busy = true
         },
         Reply::Session { csrf, me, codes } => {
-            a.csrf = csrf.clone()
+            keep_csrf(mut a, csrf.clone())
             identify(mut a, me.clone())
             a.message.clear()
             if !codes.is_empty() {
@@ -780,7 +820,9 @@ impl mmo::client::Account for Accounts {
 
     fn who(self) -> String {
         let handle = std::hash::sha256::hex(self.me.handle)
-        String::from(f"{self.me.signed_in}/{self.me.fixed}/{self.me.must_add_passkey}/{handle}")
+        String::from(
+            f"{self.me.signed_in}/{self.me.fixed}/{self.me.must_add_passkey}/{handle}/{self.session_revision}",
+        )
     }
 }
 
@@ -1119,7 +1161,8 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
     while i < a.waiting.len() {
         match a.waiting[i].0.poll() {
             Some(result) => {
-                let (_, purpose, epoch) = a.waiting.remove(i)
+                let (_, purpose, epoch, id) = a.waiting.remove(i)
+                request_finished(mut a, id)
                 if keeps(a, purpose, epoch) {
                     answered(mut a, purpose, take result)
                 } else {
@@ -1230,7 +1273,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
 
 /// Whether it is animating, so the console draws every frame.
 pub fn animating(a: Accounts) -> bool {
-    a.open && a.page == Page::Knighting && a.knight_t < LENGTH + 0.2
+    a.open && !a.view_reduced && a.page == Page::Knighting && a.knight_t < LENGTH + 0.2
 }
 
 const NO_FOCUS: u32 = 4294967295
@@ -1540,24 +1583,51 @@ fn act(a: mut Accounts, x: Act) {
     }
 }
 
+/// Whether the knighting is still playing: its actions aren't shown or live until it finishes.
+fn knighting(a: Accounts) -> bool {
+    !a.view_reduced && a.page == Page::Knighting && a.knight_t < (if a.knight_again { AGAIN } else {
+        LENGTH
+    })
+}
+
+/// The live control at `p` in logical pixels: clipped controls and the knighting while it plays
+/// take no clicks.
+fn control_at(a: Accounts, p: vec2) -> Option<Act> {
+    let knighting = a.open && knighting(a)
+    for (x, r) in a.shown {
+        let live = if a.open {
+            x == Act::Chip || a.page == Page::Knighting || a.sheet_at.contains(p)
+        } else { x == Act::Chip }
+        if r.contains(p) && live && !knighting { return Some(x) }
+    }
+    None
+}
+
+/// Finishes this pointer's press even when it ends elsewhere. Activates only the control that
+/// was pressed, so dragging a scene or selecting text cannot press an account action on release.
+fn released(a: mut Accounts, at: vec2, zoom: f32) -> Option<Act> {
+    let pressed = a.pressed
+    a.pressed = None
+    if pressed.is_some() { a.dirty = true }
+    let over = control_at(a, at / zoom)
+    if over == pressed { over } else { None }
+}
+
 /// Event `e` (positions in device pixels, `zoom` of them a logical pixel): whether the account
 /// took it, so the console doesn't.
 pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
     if let Event::PointerDown { at, button: Button::Primary, .. } = e {
         // Pressed: the control under it shows so until the press ends.
         a.keyboard = false
-        a.pressed = None
-        for i in 0..a.shown.len() {
-            if a.shown[i].1.contains(at / zoom) && (a.open || a.shown[i].0 == Act::Chip) {
-                a.pressed = Some(i)
-            }
-        }
+        a.pressed = control_at(a, at / zoom)
         a.dirty = true
         if !a.open { return a.pressed.is_some() }
     }
-    if let Event::PointerUp { button: Button::Primary, .. } = e {
-        if a.pressed.is_some() { a.dirty = true }
-        a.pressed = None
+    if let Event::PointerUp { at, button: Button::Primary, .. } = e {
+        if let Some(x) = released(mut a, at, zoom) {
+            act(mut a, x)
+            return true
+        }
     }
     if let Event::KeyDown { key, .. } = e {
         if a.open &&
@@ -1576,38 +1646,14 @@ pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
             a.pointer = Some(at / zoom)
             if over_chip(a) != was { a.dirty = true }
         }
-        if let Event::PointerUp { at, button: Button::Primary, .. } = e {
-            for (x, r) in a.shown {
-                if x == Act::Chip && r.contains(at / zoom) {
-                    act(mut a, Act::Chip)
-                    return true
-                }
-            }
-        }
         return false
     }
     a.dirty = true
-    let knighting = a.page == Page::Knighting && a.knight_t < (if a.knight_again { AGAIN } else {
-        LENGTH
-    })
+    let knighting = knighting(a)
     match e {
         Event::PointerMove { at, .. } => {
             a.pointer = Some(at / zoom)
             a.keyboard = false
-        },
-        Event::PointerUp { at, button: Button::Primary, .. } => {
-            let p = at / zoom
-            for (x, r) in a.shown {
-                // While open, only what shows in the sheet: a tall page's clipped foot isn't hit.
-                let seen = !a.open ||
-                    x == Act::Chip ||
-                    a.page == Page::Knighting ||
-                    a.sheet_at.contains(p)
-                if r.contains(p) && seen && !knighting {
-                    act(mut a, x)
-                    return true
-                }
-            }
         },
         Event::Wheel { delta, .. } => a.scroll = max(a.scroll + delta.y / zoom, 0.0),
         Event::Assist { node, action } => {
@@ -1805,16 +1851,17 @@ fn wrapped(fonts: Fonts, s: str, size: f32, width: f32, face: Face) -> Vec<Strin
     var line = String::new()
     for (from, to) in s.split(" ") {
         let word = s.slice(from, to)
-        var trial = line.clone()
-        if !trial.is_empty() {
-            trial.push_str(" ")
+        let before = line.len()
+        if before > 0 {
+            line.push_str(" ")
         }
-        trial.push_str(word)
-        if !line.is_empty() && measure(fonts, trial.as_str(), size, face) > width {
-            lines.push(line.clone())
+        line.push_str(word)
+        if before > 0 && measure(fonts, line.as_str(), size, face) > width {
+            // Test the actual line, then restore its prefix on wrapping: no full-line trial
+            // clone per word, and no second copy when the finished line moves to the output.
+            line.truncate(before)
+            lines.push(take line)
             line = String::from(word)
-        } else {
-            line = take trial
         }
     }
     if !line.is_empty() || lines.is_empty() {
@@ -1885,7 +1932,7 @@ fn look(a: mut Accounts, index: u32, r: Rect, disabled: bool, loading: bool) -> 
     a.hover[index] = kit::ease(a.hover[index], if over && !a.keyboard { 1.0 } else { 0.0 }, a.dt)
     State {
         hover: a.hover[index],
-        pressed: a.pressed == Some(index) && over,
+        pressed: a.pressed == Some(a.controls[index].0) && over,
         focused: a.keyboard && index == a.focus,
         disabled,
         loading,
@@ -2072,6 +2119,9 @@ pub fn draw(
     zoom: f32,
     reduced: bool,
 ) {
+    // The home and MMO both draw this account. Input readiness must use the same motion
+    // setting as the drawing, including the home which doesn't call `set_view`.
+    a.view_reduced = reduced
     a.controls.clear()
     a.nodes.clear()
     a.node_controls.clear()
@@ -3163,4 +3213,117 @@ fn a_press_that_sends_a_request_sends_it_once_until_its_answer_comes() {
     }
     var a = new("wrela.dev", online: true)
     assert(press(mut a, Act::Agree) && press(mut a, Act::Agree) && !a.busy, "a box sends nothing")
+}
+
+@test
+fn an_account_click_must_begin_and_end_on_the_same_control() {
+    var a = new("wrela.dev", online: true)
+    a.open = true
+    a.page = Page::Create
+    a.sheet_at = Rect::new(x: 0.0, y: 0.0, w: 300.0, h: 300.0)
+    a.shown.push((Act::Agree, Rect::new(x: 10.0, y: 10.0, w: 80.0, h: 30.0)))
+    a.shown.push((Act::OfAge, Rect::new(x: 10.0, y: 60.0, w: 80.0, h: 30.0)))
+    assert(released(mut a, vec2(20.0, 20.0), zoom: 1.0).is_none(), "no preceding press")
+    a.pressed = Some(Act::Agree)
+    assert(released(mut a, vec2(20.0, 70.0), zoom: 1.0).is_none(), "dragged to another box")
+    a.pressed = Some(Act::Agree)
+    assert(released(mut a, vec2(20.0, 20.0), zoom: 1.0) == Some(Act::Agree), "one click")
+    assert(released(mut a, vec2(20.0, 20.0), zoom: 1.0).is_none(), "consumed once")
+}
+
+@test
+fn background_and_stale_replies_cannot_unlock_an_account_action() {
+    var a = new("wrela.dev", online: true)
+    let startup = request_started(mut a, Request::Me, Purpose::Other)
+    let posting = request_started(mut a, Request::Posting, Purpose::Posting)
+    assert(press(mut a, Act::SignIn))
+    let begin = Request::Begin { ceremony: SIGN_IN, csrf: Vec::new(), agreed: NOT_AGREED }
+    let signing_in = request_started(mut a, begin, Purpose::Other)
+    request_finished(mut a, startup)
+    assert(!press(mut a, Act::SignIn), "the startup read does not finish sign-in")
+    request_finished(mut a, posting)
+    assert(!press(mut a, Act::SignIn), "posting's background read does not finish sign-in")
+    let game = request_started(
+        mut a,
+        Request::Board {
+            game: String::from("mmo"),
+            course: 0,
+            category: 0,
+            from: 0,
+            after: Vec::new(),
+        },
+        Purpose::Game,
+    )
+    request_finished(mut a, game)
+    assert(!press(mut a, Act::SignIn), "a game's background read does not finish sign-in")
+    request_finished(mut a, signing_in)
+    // A challenge starts the authenticator prompt; no HTTP request owns that stage.
+    a.busy = true
+    let token = request_started(mut a, Request::Token { game: String::from("mmo") }, Purpose::Token)
+    request_finished(mut a, token)
+    assert(!press(mut a, Act::SignIn), "a background token cannot dismiss the passkey prompt")
+    // The prompt answered: its submission now owns the gate, until that request answers.
+    let submission = request_started(
+        mut a,
+        Request::SignIn {
+            challenge: Vec::new(),
+            id: Vec::new(),
+            client_data: Vec::new(),
+            authenticator_data: Vec::new(),
+            signature: Vec::new(),
+            user: Vec::new(),
+        },
+        Purpose::Other,
+    )
+    request_finished(mut a, signing_in)
+    assert(!press(mut a, Act::SignIn), "a stale earlier completion cannot release the submission")
+    request_finished(mut a, submission)
+    assert(press(mut a, Act::Keep), "the action's own answer releases the controls")
+    let keeping = request_started(mut a, Request::Keep { csrf: Vec::new() }, Purpose::Name)
+    let consent = request_started(
+        mut a,
+        Request::Consent {
+            csrf: Vec::new(),
+            version: posting::VERSION,
+            best_runs: true,
+        },
+        Purpose::GameConsent,
+    )
+    request_finished(mut a, consent)
+    assert(!press(mut a, Act::Keep), "a game's consent cannot release the name being saved")
+    request_finished(mut a, keeping)
+    assert(press(mut a, Act::Keep), "the name's own answer releases it")
+}
+
+@test
+fn reduced_motion_knighting_actions_are_live_as_soon_as_they_are_shown() {
+    var a = new("wrela.dev", online: true)
+    a.open = true
+    a.page = Page::Knighting
+    a.knight_t = 0.0
+    let fonts = Fonts::load()
+    var d = DrawList::new()
+    d.clear(vec2(1280.0, 720.0))
+    draw(mut a, mut d, fonts, w: 1280.0, h: 720.0, margin: 24.0, zoom: 1.0, reduced: true)
+    var keep: Option<vec2> = None
+    for (x, r) in a.shown {
+        if x == Act::Keep { keep = Some(vec2(r.x + r.w * 0.5, r.y + r.h * 0.5)) }
+    }
+    let Some(at) = keep else { panic("reduced motion shows Keep immediately") }
+    assert(control_at(a, at) == Some(Act::Keep), "a displayed Keep button can be clicked")
+    assert(!knighting(a), "keys, pads and accessibility share the same ready state")
+    assert(!animating(a), "reduced motion need not keep the animation frame loop awake")
+}
+
+@test
+fn a_new_session_for_the_same_account_refreshes_the_games_character() {
+    var a = new("wrela.dev", online: true)
+    identify(mut a, me_of(1, "Sir Wobblesnout the Unhurried"))
+    keep_csrf(mut a, Vec::from([u8(1); 16]))
+    let before = mmo::client::Account::who(a)
+    keep_csrf(mut a, Vec::from([u8(2); 16]))
+    let fresh = mmo::client::Account::who(a)
+    assert(before != fresh, "the client must discard the old session's character and CSRF token")
+    keep_csrf(mut a, Vec::from([u8(2); 16]))
+    assert(mmo::client::Account::who(a) == fresh, "a repeated session read changes nothing")
 }
