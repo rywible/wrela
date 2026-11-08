@@ -22,6 +22,11 @@ use std::pack::unpack
 use std::serialize::{LoadError, load, save}
 use ui::draw::{DrawList, Rect}
 
+/// Refresh at half the pass lifetime, leaving time for failed requests before expiry.
+const PASS_SECONDS: f64 = f64(platform::pass::LIFE_MS) / 1000.0
+const REFRESH_EVERY: f64 = PASS_SECONDS * 0.5
+const REFRESH_RETRY: f64 = 30.0
+
 /// Where the character is.
 pub enum Stage: Copy + Eq {
     /// Asking whose session this is, or the account's character.
@@ -78,6 +83,12 @@ pub struct Character {
     wants_progress: bool,
     /// What came of the last fight won, for the player.
     pub recorded: String,
+    time: f64 = 0.0,
+    refresh_at: f64 = 0.0,
+    pass_until: f64 = 0.0,
+    record_fight: Option<Vec<u8>> = None,
+    record_retry_at: f64 = 0.0,
+    retry_at: f64 = 0.0,
 }
 
 pub fn start() -> Character {
@@ -118,15 +129,36 @@ fn ask(c: mut Character, request: Request) {
     c.asked = Some(posted(request))
 }
 
+/// Whether another receipt can be sent without replacing a progress request or a retry.
+pub fn ready_to_record(c: Character) -> bool {
+    c.stage == Stage::Ready &&
+        !c.csrf.is_empty() &&
+        c.progress.is_none() &&
+        c.record_fight.is_none()
+}
+
+/// A verified win not yet acknowledged by the account. Its caller can retain it before a
+/// session change replaces the character, then match its owner again after the new lookup.
+pub fn pending_record(c: Character) -> Option<Vec<u8>> {
+    c.record_fight.clone()
+}
+
 /// Asks the account to record fight `fight` (combat's `Fight::id`), which its room says this
-/// character won: once it's ready, whatever else is asked.
+/// character won. Keep the receipt until the account answers, without replacing another request.
 pub fn record(c: mut Character, fight: Vec<u8>) {
-    if c.stage != Stage::Ready || c.csrf.is_empty() {
-        return
+    if let Some(request) = begin_record(mut c, fight) {
+        c.progress = Some(posted(request))
     }
+}
+
+fn begin_record(c: mut Character, fight: Vec<u8>) -> Option<Request> {
+    if !ready_to_record(c) {
+        return None
+    }
+    c.record_fight = Some(fight.clone())
     c.recording = true
     c.recorded = String::from("Recording the win on your account…")
-    c.progress = Some(posted(Request::Record { csrf: c.csrf.clone(), fight: fight.clone() }))
+    Some(Request::Record { csrf: c.csrf.clone(), fight: fight.clone() })
 }
 
 /// What a fight's frames (`sim::HZ` a second) read as: minutes and seconds.
@@ -174,14 +206,21 @@ pub fn heard_progress(c: mut Character, reply: Option<Reply>) {
         Some(Reply::Progress { beaten }) => {
             c.beaten = beaten.clone()
             if recording {
+                c.record_fight = None
                 c.recorded = String::from("Win recorded on your account.")
             }
         },
         Some(Reply::Refused { why }) => if recording {
+            c.record_fight = None
             c.recorded = String::from(f"The win wasn't recorded: {why}")
         },
         _ => if recording {
-            c.recorded = String::from("The win wasn't recorded: your account couldn't be reached.")
+            // Transport failures and the account's typed RecordPending both leave this
+            // receipt outstanding. The server deduplicates a retry that already landed.
+            c.record_retry_at = c.time + REFRESH_RETRY
+            c.recorded = String::from(
+                "Your account couldn't be reached. The win will be tried again.",
+            )
         },
     }
 }
@@ -189,7 +228,7 @@ pub fn heard_progress(c: mut Character, reply: Option<Reply>) {
 /// The card the island is told, with its pass: the character's, once it's ready and its account
 /// signed it.
 pub fn card(c: Character) -> Option<(Card, Seal)> {
-    if c.stage != Stage::Ready {
+    if c.stage != Stage::Ready || stale_pass(c) {
         return None
     }
     let Some(p) = c.pass else { return None }
@@ -203,26 +242,66 @@ fn pass_for(bytes: [u8], name: Name, look: Look) -> Option<Pass> {
     if p.name() == name && p.look() == look { Some(p) } else { None }
 }
 
-/// Polls the requests under way.
-pub fn update(c: mut Character) {
+/// Whether the pass must renew before another signed room join: the host clock advances while
+/// the tab is hidden too, whereas the game's presentation clock need not.
+pub fn stale_pass(c: Character) -> bool {
+    c.stage == Stage::Ready && c.pass.is_some() && c.time >= c.pass_until
+}
+
+/// Polls the requests under way at the host's clock (`std::time::now`), not presentation time.
+pub fn update(c: mut Character, time: f64 = 0.0) {
+    c.time = time
     update_progress(mut c)
     let answer = match mut c.asked {
         Some(p) => p.poll(),
         None => None,
     }
-    let Some(result) = answer else { return }
-    c.asked = None
-    let reply = match result {
-        Ok(bytes) => reply_of(bytes),
-        Err(_) => None,
+    if let Some(result) = answer {
+        c.asked = None
+        let reply = match result {
+            Ok(bytes) => reply_of(bytes),
+            Err(_) => None,
+        }
+        if let Some(next) = heard(mut c, reply) {
+            ask(mut c, next)
+        }
     }
-    if let Some(next) = heard(mut c, reply) {
-        ask(mut c, next)
+    match next_background(mut c) {
+        Some(Request::Progress) => c.progress = Some(posted(Request::Progress)),
+        Some(Request::Character) => refresh(mut c),
+        Some(Request::Me) => ask(mut c, Request::Me),
+        Some(request) => c.progress = Some(posted(request)),
+        None => {},
+    }
+}
+
+/// Work to begin while the foreground character request is idle.
+fn next_background(c: mut Character) -> Option<Request> {
+    if c.asked.is_some() { return None }
+    if c.stage == Stage::Guest && c.why == Why::Unreachable && c.time >= c.retry_at {
+        c.retry_at = c.time + REFRESH_RETRY
+        return Some(Request::Me)
+    }
+    if c.stage == Stage::Ready &&
+        c.progress.is_none() &&
+        !c.recording &&
+        c.time >= c.record_retry_at {
+        if let Some(fight) = c.record_fight {
+            let retry = fight.clone()
+            c.recording = true
+            c.recorded = String::from("Recording the win on your account…")
+            return Some(Request::Record { csrf: c.csrf.clone(), fight: retry.clone() })
+        }
+    }
+    if c.stage == Stage::Ready && c.time >= c.refresh_at {
+        c.refresh_at = c.time + REFRESH_RETRY
+        return Some(Request::Character)
     }
     if c.wants_progress && c.progress.is_none() {
         c.wants_progress = false
-        c.progress = Some(posted(Request::Progress))
+        return Some(Request::Progress)
     }
+    None
 }
 
 /// The server's reply's bytes, read: none if it isn't one (the server out of reach, or no server).
@@ -258,6 +337,7 @@ pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
         } else {
             c.stage = Stage::Guest
             c.why = Why::Unreachable
+            c.retry_at = c.time + REFRESH_RETRY
         }
         return None
     }
@@ -284,6 +364,8 @@ pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
                 c.look = look
                 c.making = look
                 c.stage = Stage::Ready
+                c.refresh_at = c.time + REFRESH_EVERY
+                c.pass_until = c.time + PASS_SECONDS
                 c.wants_progress = c.beaten.is_empty()
             } else {
                 c.stage = Stage::Making
@@ -296,11 +378,13 @@ pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
             } else {
                 c.stage = Stage::Guest
                 c.why = Why::Unreachable
+                c.retry_at = c.time + REFRESH_RETRY
             }
         },
         _ => {
             c.stage = Stage::Guest
             c.why = Why::Unreachable
+            c.retry_at = c.time + REFRESH_RETRY
         },
     }
     next
@@ -310,6 +394,7 @@ pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
 /// expires (platform/pass.wrela's `LIFE_MS`), and a tab may stay open longer.
 pub fn refresh(c: mut Character) {
     if c.stage == Stage::Ready && c.asked.is_none() {
+        c.refresh_at = c.time + REFRESH_RETRY
         ask(mut c, Request::Character)
         c.refreshing = true
     }
@@ -544,6 +629,116 @@ fn character_refresh_does_not_close_the_character_maker() {
     )
     assert(c.stage == Stage::Making, "a refresh must not take away the maker")
     assert(c.making.build == 1 && c.look == before, "the unsaved choices are kept")
+}
+
+@test
+fn character_passes_refresh_on_a_connected_page_and_back_off_after_failure() {
+    var c = blank()
+    c.time = 100.0
+    let reply = Reply::Character { made: true, name: c.name, look: c.look, pass: Vec::new() }
+    let _ = heard(mut c, Some(reply.clone()))
+    c.wants_progress = false
+    c.time = 100.0 + REFRESH_EVERY - 1.0
+    assert(next_background(mut c).is_none(), "no needless refresh while the pass is fresh")
+    c.time += 1.0
+    let Some(Request::Character) = next_background(mut c) else {
+        panic("a connected page refreshes before its pass expires")
+    }
+    // The scheduled request failed: retain the current character, then wait before retrying.
+    c.refreshing = true
+    let _ = heard(mut c, None)
+    assert(c.stage == Stage::Ready, "a transient refresh failure does not discard the character")
+    assert(next_background(mut c).is_none(), "a failed refresh is not retried every frame")
+    c.time += REFRESH_RETRY
+    let Some(Request::Character) = next_background(mut c) else { panic("retry is due") }
+    c.time += 1.0
+    let _ = heard(mut c, Some(take reply))
+    c.wants_progress = false
+    assert(next_background(mut c).is_none(), "a fresh reply starts a new lifetime")
+    c.time += REFRESH_EVERY
+    c.stage = Stage::Making
+    assert(next_background(mut c).is_none(), "background refresh does not interrupt the maker")
+}
+
+@test
+fn character_does_not_reuse_an_expired_pass_after_a_hidden_tab_returns() {
+    var c = blank()
+    c.time = 100.0
+    let pass = platform::pass::sign([7; 32], c.name, c.look, 1000000)
+    let reply = Reply::Character {
+        made: true,
+        name: c.name,
+        look: c.look,
+        pass: std::pack::pack(pass),
+    }
+    let _ = heard(mut c, Some(reply.clone()))
+    c.wants_progress = false
+    assert(!stale_pass(c) && card(c).is_some())
+    // No visible frames ran for longer than a pass lives. The next host time jumps ahead.
+    c.time += PASS_SECONDS + 1.0
+    assert(stale_pass(c) && card(c).is_none(), "expired credentials are not worn into a room")
+    let Some(Request::Character) = next_background(mut c) else { panic("renew immediately") }
+    c.refreshing = true
+    let _ = heard(mut c, Some(take reply))
+    assert(!stale_pass(c) && card(c).is_some(), "the new pass releases the waiting room join")
+}
+
+@test
+fn character_keeps_a_won_fight_until_a_transient_record_failure_can_retry() {
+    var c = blank()
+    c.stage = Stage::Ready
+    c.csrf = Vec::from([7; 16])
+    c.refresh_at = REFRESH_EVERY
+    let fight = Vec::from([u8(1), 2, 3])
+    let Some(Request::Record { fight: first, .. }) = begin_record(mut c, fight.clone()) else {
+        panic("a receipt can be sent")
+    }
+    assert(first == fight)
+    assert(pending_record(c) == Some(fight.clone()), "session changes can retain the receipt")
+    c.time = 1.0
+    heard_progress(mut c, None)
+    assert(!ready_to_record(c), "a new win cannot replace the failed receipt")
+    assert(next_background(mut c).is_none(), "a network failure backs off")
+    c.time += REFRESH_RETRY
+    let Some(Request::Record { fight: retry, .. }) = next_background(mut c) else {
+        panic("the same win is retried after a transient failure")
+    }
+    assert(retry == fight)
+    heard_progress(mut c, Some(Reply::RecordPending))
+    assert(
+        !ready_to_record(c) && next_background(mut c).is_none(),
+        "a backend failure backs off too",
+    )
+    c.time += REFRESH_RETRY
+    let Some(Request::Record { fight: backend_retry, .. }) = next_background(mut c) else {
+        panic("a temporary account or room outage does not discard the win")
+    }
+    assert(backend_retry == fight)
+    heard_progress(mut c, Some(Reply::Progress { beaten: Vec::new() }))
+    assert(ready_to_record(c), "the queued next win can follow the successful receipt")
+    assert(pending_record(c).is_none(), "an acknowledged receipt needs no session handover")
+    assert(next_background(mut c).is_none(), "a successful record is not retried")
+    let Some(_) = begin_record(mut c, fight) else { panic("another receipt") }
+    heard_progress(mut c, Some(Reply::Refused { why: String::from("Not a winner.") }))
+    assert(ready_to_record(c), "a semantic refusal is final")
+    assert(next_background(mut c).is_none(), "a refused record is not retried")
+}
+
+@test
+fn character_lookup_recovers_from_a_transient_initial_failure() {
+    var c = blank()
+    c.time = 100.0
+    let _ = heard(mut c, None)
+    assert(c.stage == Stage::Guest && c.why == Why::Unreachable)
+    assert(next_background(mut c).is_none(), "an unavailable account backs off")
+    c.time += REFRESH_RETRY
+    let Some(Request::Me) = next_background(mut c) else { panic("the initial lookup retries") }
+    assert(next_background(mut c).is_none(), "a retry is scheduled only once per interval")
+    for why in [Why::SignedOut, Why::NameNotKept, Why::NotMade] {
+        c.why = why
+        c.time += REFRESH_RETRY
+        assert(next_background(mut c).is_none(), "an intentional guest does not poll the account")
+    }
 }
 
 fn me(signed_in: bool, fixed: bool) -> Reply {

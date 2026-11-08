@@ -182,6 +182,8 @@ pub struct Accounts {
     epoch: u32,
     /// The session's CSRF token, as the server last gave it.
     csrf: Vec<u8>,
+    /// A fresh session for the same account must refresh the MMO's cached CSRF token too.
+    session_revision: u32 = 0,
     pub me: Me,
     passkey: Option<Pending<u8>>,
     /// The ceremony under way: what it's for, its challenge and the handle it's for, which its
@@ -390,6 +392,13 @@ fn identify(a: mut Accounts, me: take Me) {
     a.me = take me
 }
 
+fn keep_csrf(a: mut Accounts, csrf: Vec<u8>) {
+    if a.csrf != csrf {
+        a.session_revision += 1
+    }
+    a.csrf = csrf.clone()
+}
+
 /// The console's account became another (or none): what it knew of the one before goes (its
 /// choices of posting, its codes still to save, its passkeys and sessions shown, an export under
 /// way, the game's token), the new one's choices are asked for again, and replies to what was
@@ -433,7 +442,7 @@ fn dropped(a: mut Accounts, purpose: Purpose) {
 }
 
 fn signed_out(a: mut Accounts) {
-    a.csrf.clear()
+    keep_csrf(mut a, Vec::new())
     identify(
         mut a,
         Me {
@@ -538,7 +547,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
         Reply::Welcome { me, csrf } => {
             let was = a.me.signed_in
             identify(mut a, me.clone())
-            a.csrf = csrf.clone()
+            keep_csrf(mut a, csrf.clone())
             if !me.signed_in {
                 if was {
                     signed_out(mut a)
@@ -622,7 +631,7 @@ fn replied(a: mut Accounts, purpose: Purpose, reply: Reply) {
             a.busy = true
         },
         Reply::Session { csrf, me, codes } => {
-            a.csrf = csrf.clone()
+            keep_csrf(mut a, csrf.clone())
             identify(mut a, me.clone())
             a.message.clear()
             if !codes.is_empty() {
@@ -811,7 +820,9 @@ impl mmo::client::Account for Accounts {
 
     fn who(self) -> String {
         let handle = std::hash::sha256::hex(self.me.handle)
-        String::from(f"{self.me.signed_in}/{self.me.fixed}/{self.me.must_add_passkey}/{handle}")
+        String::from(
+            f"{self.me.signed_in}/{self.me.fixed}/{self.me.must_add_passkey}/{handle}/{self.session_revision}",
+        )
     }
 }
 
@@ -1262,7 +1273,7 @@ pub fn update(a: mut Accounts, time: f32) -> bool {
 
 /// Whether it is animating, so the console draws every frame.
 pub fn animating(a: Accounts) -> bool {
-    a.open && a.page == Page::Knighting && a.knight_t < LENGTH + 0.2
+    a.open && !a.view_reduced && a.page == Page::Knighting && a.knight_t < LENGTH + 0.2
 }
 
 const NO_FOCUS: u32 = 4294967295
@@ -1572,12 +1583,17 @@ fn act(a: mut Accounts, x: Act) {
     }
 }
 
+/// Whether the knighting is still playing: its actions aren't shown or live until it finishes.
+fn knighting(a: Accounts) -> bool {
+    !a.view_reduced && a.page == Page::Knighting && a.knight_t < (if a.knight_again { AGAIN } else {
+        LENGTH
+    })
+}
+
 /// The live control at `p` in logical pixels: clipped controls and the knighting while it plays
 /// take no clicks.
 fn control_at(a: Accounts, p: vec2) -> Option<Act> {
-    let knighting = a.open && a.page == Page::Knighting && a.knight_t < (if a.knight_again {
-        AGAIN
-    } else { LENGTH })
+    let knighting = a.open && knighting(a)
     for (x, r) in a.shown {
         let live = if a.open {
             x == Act::Chip || a.page == Page::Knighting || a.sheet_at.contains(p)
@@ -1633,9 +1649,7 @@ pub fn event(a: mut Accounts, e: Event, zoom: f32) -> bool {
         return false
     }
     a.dirty = true
-    let knighting = a.page == Page::Knighting && a.knight_t < (if a.knight_again { AGAIN } else {
-        LENGTH
-    })
+    let knighting = knighting(a)
     match e {
         Event::PointerMove { at, .. } => {
             a.pointer = Some(at / zoom)
@@ -1837,16 +1851,17 @@ fn wrapped(fonts: Fonts, s: str, size: f32, width: f32, face: Face) -> Vec<Strin
     var line = String::new()
     for (from, to) in s.split(" ") {
         let word = s.slice(from, to)
-        var trial = line.clone()
-        if !trial.is_empty() {
-            trial.push_str(" ")
+        let before = line.len()
+        if before > 0 {
+            line.push_str(" ")
         }
-        trial.push_str(word)
-        if !line.is_empty() && measure(fonts, trial.as_str(), size, face) > width {
-            lines.push(line.clone())
+        line.push_str(word)
+        if before > 0 && measure(fonts, line.as_str(), size, face) > width {
+            // Test the actual line, then restore its prefix on wrapping: no full-line trial
+            // clone per word, and no second copy when the finished line moves to the output.
+            line.truncate(before)
+            lines.push(take line)
             line = String::from(word)
-        } else {
-            line = take trial
         }
     }
     if !line.is_empty() || lines.is_empty() {
@@ -2104,6 +2119,9 @@ pub fn draw(
     zoom: f32,
     reduced: bool,
 ) {
+    // The home and MMO both draw this account. Input readiness must use the same motion
+    // setting as the drawing, including the home which doesn't call `set_view`.
+    a.view_reduced = reduced
     a.controls.clear()
     a.nodes.clear()
     a.node_controls.clear()
@@ -3275,4 +3293,37 @@ fn background_and_stale_replies_cannot_unlock_an_account_action() {
     assert(!press(mut a, Act::Keep), "a game's consent cannot release the name being saved")
     request_finished(mut a, keeping)
     assert(press(mut a, Act::Keep), "the name's own answer releases it")
+}
+
+@test
+fn reduced_motion_knighting_actions_are_live_as_soon_as_they_are_shown() {
+    var a = new("wrela.dev", online: true)
+    a.open = true
+    a.page = Page::Knighting
+    a.knight_t = 0.0
+    let fonts = Fonts::load()
+    var d = DrawList::new()
+    d.clear(vec2(1280.0, 720.0))
+    draw(mut a, mut d, fonts, w: 1280.0, h: 720.0, margin: 24.0, zoom: 1.0, reduced: true)
+    var keep: Option<vec2> = None
+    for (x, r) in a.shown {
+        if x == Act::Keep { keep = Some(vec2(r.x + r.w * 0.5, r.y + r.h * 0.5)) }
+    }
+    let Some(at) = keep else { panic("reduced motion shows Keep immediately") }
+    assert(control_at(a, at) == Some(Act::Keep), "a displayed Keep button can be clicked")
+    assert(!knighting(a), "keys, pads and accessibility share the same ready state")
+    assert(!animating(a), "reduced motion need not keep the animation frame loop awake")
+}
+
+@test
+fn a_new_session_for_the_same_account_refreshes_the_games_character() {
+    var a = new("wrela.dev", online: true)
+    identify(mut a, me_of(1, "Sir Wobblesnout the Unhurried"))
+    keep_csrf(mut a, Vec::from([u8(1); 16]))
+    let before = mmo::client::Account::who(a)
+    keep_csrf(mut a, Vec::from([u8(2); 16]))
+    let fresh = mmo::client::Account::who(a)
+    assert(before != fresh, "the client must discard the old session's character and CSRF token")
+    keep_csrf(mut a, Vec::from([u8(2); 16]))
+    assert(mmo::client::Account::who(a) == fresh, "a repeated session read changes nothing")
 }

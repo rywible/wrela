@@ -1071,6 +1071,14 @@ impl<G: Game> Engine<G> {
         }
         self.searching.retain(|s| s.0 != j.conn)
         let Some(i) = self.conn_index(j.conn) else { return }
+        // A failed read/call says nothing about whether a fight was won. The client retains
+        // this ID until it gets progress or a semantic refusal, and can safely retry it.
+        if self.conns[i].via == Via::Http {
+            if let Request::Record { .. } = j.request {
+                self.reply(j.conn, Reply::RecordPending)
+                return
+            }
+        }
         match self.conns[i].via {
             Via::Http => self.refuse(
                 j.conn,

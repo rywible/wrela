@@ -266,9 +266,19 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         s: s.ocean.s,
     }
     let width = s.width
+    // The half paint reads one row beyond the band for its vertical reconstruction. Its
+    // far-layer inputs must be current there too, not left over from another drawing.
+    let paint_from = if HALF_PAINT && from > 0 { from - 1 } else { from }
+    let paint_to = if HALF_PAINT { min(to + 1, s.height) } else { to }
     if s.isle_cooked < FIELD_SLABS {
         label("cook isle")
-        dispatch(cook_isle.bind(slab: s.isle_cooked, out: mut s.isle_field), over: s.isle_field)
+        // Keep the global IDs the field stores through, but stop at this slab's upper edge:
+        // later slabs would only launch invocations that immediately return.
+        let depth = (s.isle_cooked + 1) * (FIELD_SIDE / FIELD_SLABS)
+        dispatch(
+            cook_isle.bind(slab: s.isle_cooked, out: mut s.isle_field),
+            over: (FIELD_SIDE, FIELD_SIDE, depth),
+        )
         s.isle_cooked += 1
     }
     label("yonder")
@@ -277,8 +287,8 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         // pixels round each.)
         let lw = (width + SPARSE - 1) / SPARSE
         let lh = (s.height + SPARSE - 1) / SPARSE
-        let lfrom = if from / SPARSE > 0 { from / SPARSE - 1 } else { 0 }
-        let lto = min((to + SPARSE - 1) / SPARSE + 1, lh)
+        let lfrom = if paint_from / SPARSE > 0 { paint_from / SPARSE - 1 } else { 0 }
+        let lto = min((paint_to + SPARSE - 1) / SPARSE + 1, lh)
         let f = begin_pass3(mut s.low_colour, mut s.low_marks, mut s.low_normal, keep: true)
         f.scissor(0, lfrom, lw, lto - lfrom)
         draw(
@@ -300,7 +310,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         )
         f.end()
         let r = begin_pass3(mut s.yon_colour, mut s.yon_marks, mut s.yon_normal, keep: true)
-        r.scissor(0, from, width, to - from)
+        r.scissor(0, paint_from, width, paint_to - paint_from)
         draw(
             r,
             cover,
@@ -320,7 +330,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         r.end()
     } else {
         let f = begin_pass3(mut s.yon_colour, mut s.yon_marks, mut s.yon_normal, keep: true)
-        f.scissor(0, from, width, to - from)
+        f.scissor(0, paint_from, width, paint_to - paint_from)
         draw(
             f,
             cover,
@@ -346,10 +356,8 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
     label("paint")
     if HALF_PAINT {
         // (A row of the half either side of the band's own: the fill reads the rows round each.)
-        let hfrom = if from > 0 { from - 1 } else { 0 }
-        let hto = min(to + 1, s.height)
         let hp = begin_pass3(mut s.half_colour, mut s.half_marks, mut s.half_normal, keep: true)
-        hp.scissor(0, hfrom, (width + 1) / 2, hto - hfrom)
+        hp.scissor(0, paint_from, (width + 1) / 2, paint_to - paint_from)
         draw(
             hp,
             cover,
@@ -413,13 +421,12 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
 
 /// The weather laid over the painted scene (`weather`), into `aired`, for the ink.
 pub(package) fn weathered(s: mut State, shot: Shot) {
+    // The ink reads the unweathered paint directly when this pass is disabled. Clearing an
+    // unused `aired` first would both cost a pass and replace the scene with black.
+    if (OFF & 256) != 0 { return }
     borrow hv = s.heavens
     label("weather")
     let p = begin_pass(mut s.aired, clear: vec4(0.0, 0.0, 0.0, 1.0))
-    if (OFF & 256) != 0 {
-        p.end()
-        return
-    }
     draw(
         p,
         cover,
@@ -492,12 +499,19 @@ pub fn play(
     }
     weathered(mut s, shot)
     borrow hv = s.heavens
+    borrow colour = if (OFF & 256) != 0 { s.colour } else { s.aired }
     label("ink")
     let p = begin_pass(mut s.spare, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         p,
         cover,
-        ink.bind(shot: shot, light: hv.light, colour: s.aired, marks: s.marks, normal: s.normal),
+        ink.bind(
+            shot: shot,
+            light: hv.light,
+            colour: colour,
+            marks: s.marks,
+            normal: s.normal,
+        ),
         vertices: 3,
     )
     p.end()

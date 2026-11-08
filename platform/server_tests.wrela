@@ -201,6 +201,8 @@ struct Host {
     calls: Vec<String>,
     /// Calls of every instance, counted.
     rounds: u32,
+    /// Store scans actually requested, for bounded-work checks.
+    scans: u32,
     /// The relying party and origin the instances take.
     rp: String,
     origin: String,
@@ -245,6 +247,7 @@ fn host() -> Host {
         failing: Vec::new(),
         calls: Vec::new(),
         rounds: 0,
+        scans: 0,
         rp: String::from(RP),
         origin: String::from(ORIGIN),
         asked_log: Vec::new(),
@@ -489,6 +492,7 @@ impl Host {
                     self.instances[i].waiting.push((ticket, Some(take a)))
                 },
                 Command::Scan { ticket, from, to, limit, down } => {
+                    self.scans += 1
                     let a = answer_scan(self.instances[i].store, from, to, limit, down)
                     self.instances[i].waiting.push((ticket, Some(take a)))
                 },
@@ -3766,5 +3770,172 @@ fn mmo_room_tokens_fail_closed_when_the_host_cannot_make_a_valid_token() {
         }
         let Ok(reply) = load::<Reply>(take body) else { panic("a reply") }
         assert(refused([take reply]) && cookies.is_empty() && public == 0)
+    }
+}
+
+@test
+fn mmo_a_replaced_session_cannot_finish_recording_its_pending_win() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    let Reply::Character { name, .. } = h.say(1, Request::Character)[0].clone() else {
+        panic("a name")
+    }
+    let fight = progress::fight_id("fight-ab", 1000, 1)
+    room_wrote(mut h, name, fight, boss: 1, frames: 5400, at: h.time)
+    h.pausing.push(String::from(progress::ROOMS))
+    let conns = h.send(
+        1,
+        [Request::Record { csrf: s.csrf.clone(), fight: fight.clone() }],
+        public: false,
+    )
+    h.settle()
+    assert(h.paused.len() == 1, "waiting on the room under the old session")
+    let new_csrf = fresh(mut h, 1, 5, s)
+    assert(new_csrf != s.csrf, "signing in again replaced this browser's old session")
+    h.unpause()
+    h.settle()
+    let rs = h.answers(1, conns)
+    assert(refused([rs[0].reply.clone()]), "a replaced session cannot finish its old request")
+    assert(record(h, s, progress::PROGRESS).is_none(), "no progress written by the old session")
+}
+
+@test
+fn mmo_account_security_changes_cannot_finish_after_sign_out() {
+    for add in [false, true] {
+        var h = host()
+        let s = sign_up(mut h, 1, 5)
+        var request = Request::NewCodes { csrf: s.csrf.clone() }
+        if add {
+            let c = challenge_of(h.say(1, begin(ADD_PASSKEY, s.csrf.clone())))
+            request = Request::AddPasskey {
+                csrf: s.csrf.clone(),
+                challenge: c.clone(),
+                id: Vec::from([9]),
+                client_data: client("webauthn.create", c, ORIGIN),
+                attestation: made(RP, [9], 9),
+            }
+        }
+        let rs = h.together(1, [take request, Request::SignOut { csrf: s.csrf.clone() }])
+        assert(
+            refused([rs[0].reply.clone()]),
+            "a signed-out request cannot change recovery material",
+        )
+        assert(h.keys(s.at().as_str(), "c/") == 1, "no new passkey after sign-out")
+        for code in s.codes {
+            let Some(hash) = account::code_hash(code.as_str()) else { panic("a recovery code") }
+            let store = h.store_of(s.at().as_str())
+            let (_, found) = find(store, account::code_key(hash))
+            assert(found, "the original recovery codes stay in place")
+        }
+    }
+}
+
+@test
+fn mmo_recorded_win_retries_need_no_room_call() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    let Reply::Character { name, .. } = h.say(1, Request::Character)[0].clone() else {
+        panic("a name")
+    }
+    let fight = progress::fight_id("fight-ab", 1000, 1)
+    room_wrote(mut h, name, fight, boss: 1, frames: 5400, at: h.time)
+    let ask = Request::Record { csrf: s.csrf.clone(), fight: fight.clone() }
+    let first = beaten_of(h.say(1, ask.clone()))
+    assert(first[0].wins == 1, "the room checked the first record")
+    h.drop_instance(s.at().as_str())
+    h.failing.push(String::from(progress::ROOMS))
+    h.calls.clear()
+    let again = beaten_of(h.say(1, ask.clone()))
+    assert(again[0].wins == 1 && again[0].best == 5400, "the persistent receipt suffices")
+    assert(h.calls.is_empty(), "a duplicate record makes no room RPC, even after restart")
+}
+
+@test
+fn mmo_unreadable_progress_is_not_replaced_by_a_new_win() {
+    var h = host()
+    let s = sign_up(mut h, 1, 5)
+    let Reply::Character { name, .. } = h.say(1, Request::Character)[0].clone() else {
+        panic("a name")
+    }
+    let unreadable = Vec::from([u8(255), 19, 7, 2, 0])
+    let i = h.instance(s.at().as_str())
+    put_entry(mut h.instances[i].store, account::under(progress::PROGRESS), unreadable)
+    let fight = progress::fight_id("fight-ab", 1000, 1)
+    room_wrote(mut h, name, fight, boss: 1, frames: 5400, at: h.time)
+    assert(
+        refused(h.say(1, Request::Record { csrf: s.csrf.clone(), fight: fight.clone() })),
+        "unknown progress must not be treated as no previous wins",
+    )
+    assert(record(h, s, progress::PROGRESS) == Some(unreadable.clone()), "the save is preserved")
+    assert(refused(h.say(1, Request::Progress)), "an unreadable record is not an empty history")
+    assert(h.keys(s.at().as_str(), progress::RECEIPTS) == 0, "the new win is not spent")
+}
+
+@test
+fn mmo_export_skips_internal_fight_receipts_without_scanning_them() {
+    var counts: Vec<u32> = Vec::new()
+    for receipts in [u32(0), 2 * server::EXPORT_RECORDS + 1] {
+        var h = host()
+        let s = sign_up(mut h, 1, 5)
+        let i = h.instance(s.at().as_str())
+        let Some(p) = progress::credited(
+            progress::no_progress(),
+            progress::Won { boss: 1, frames: 5400, at: h.time },
+        ) else { panic("a win") }
+        put_entry(mut h.instances[i].store, account::under(progress::PROGRESS), save(p))
+        for n in 0..receipts {
+            let key = account::key(progress::RECEIPTS, progress::fight_id("fight-ab", u64(n), 1))
+            put_entry(mut h.instances[i].store, key, [])
+        }
+        let before = h.scans
+        let Reply::Export { text, last, .. } = h.say(
+            1,
+            Request::Export { after: Vec::new() },
+        )[0].clone() else { panic("an export") }
+        assert(last && std::json::parse(text.as_str()).is_some(), "a complete valid export")
+        assert(
+            text.as_str().find("\"mmo_progress\":[{\"boss\":1").is_some(),
+            "progress is exported",
+        )
+        counts.push(h.scans - before)
+    }
+    std::io::print(f"export scans: no receipts {counts[0]}, 1025 receipts {counts[1]}")
+    assert(counts[0] == counts[1], "internal receipts do not add scan pages to an export")
+}
+
+@test
+fn mmo_win_record_infrastructure_failures_are_retryable() {
+    for failure in 0..4 {
+        var h = host()
+        let s = sign_up(mut h, 1, 5)
+        let Reply::Character { name, .. } = h.say(1, Request::Character)[0].clone() else {
+            panic("a name")
+        }
+        let fight = progress::fight_id("fight-ab", 1000, 1)
+        room_wrote(mut h, name, fight, boss: 1, frames: 5400, at: h.time)
+        let ask = Request::Record { csrf: s.csrf.clone(), fight: fight.clone() }
+        if failure == 3 { h.failing.push(String::from(progress::ROOMS)) }
+        let conns = h.send(1, [ask.clone()], public: false)
+        if failure == 0 {
+            fail_at(mut h, s.at().as_str(), server::Step::RecordReceipt)
+        } else if failure == 1 {
+            // The room's failed store read answers Back::Refused, which the account receives.
+            fail_at(mut h, progress::ROOMS, server::Step::WonRead)
+        } else if failure == 2 {
+            fail_at(mut h, s.at().as_str(), server::Step::RecordProgress)
+        }
+        h.settle()
+        let rs = h.answers(1, conns)
+        let Reply::RecordPending = rs[0].reply else {
+            panic(f"an infrastructure failure is pending, not a rejected win: {failure}")
+        }
+        assert(record(h, s, progress::PROGRESS).is_none(), "no successful write was claimed")
+        h.failing.clear()
+        assert(beaten_of(h.say(1, ask.clone()))[0].wins == 1, "the same fight can be retried")
+        let missing = progress::fight_id("fight-unknown", 1000, 1)
+        assert(
+            refused(h.say(1, Request::Record { csrf: s.csrf.clone(), fight: missing })),
+            "an actual missing win stays a final refusal",
+        )
     }
 }

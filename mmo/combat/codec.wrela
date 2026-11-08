@@ -50,6 +50,9 @@ pub struct Pad: Copy {
     pub x: f32,
     pub z: f32,
     pub held: u32,
+    /// Press edges since the previous live step, including a tap released between draws.
+    /// Unlike held-state edges, each live step consumes these once.
+    pub pressed: u32 = 0,
 }
 
 /// Turns the pad into the input a player sends, frame by frame.
@@ -112,7 +115,7 @@ impl Encoder {
         let stick = if reads & STICK_BITS == 0 { prev & STICK_BITS } else {
             stick_of(x: pad.x, z: pad.z, prev: prev & STICK_BITS)
         }
-        let pressed = (pad.held & !self.held) & (BUTTON_BITS >> 6)
+        let pressed = ((pad.held & !self.held) | pad.pressed) & (BUTTON_BITS >> 6)
         self.held = pad.held
         let soon = (reads & BUTTON_BITS) >> 6
         let ready = (now & BUTTON_BITS) >> 6
@@ -219,6 +222,7 @@ pub fn encode(p: Packet) -> Option<Vec<u8>> {
     if p.through >= MAX_FRAMES ||
         p.seq > MAX_CHANGES ||
         p.changes.len() > BULK ||
+        p.skip > p.seq ||
         p.skip + p.changes.len() > p.seq ||
         (p.acks.len() != 0 && p.acks.len() != MAX_PARTY) {
         return None
@@ -345,7 +349,7 @@ impl Sender {
     /// The newest change every player has heard.
     fn floor(self) -> u32 {
         var m = NONE
-        for h in self.heard.clone() {
+        for h in self.heard {
             if h < m {
                 m = h
             }
@@ -364,9 +368,12 @@ impl Sender {
         }
         self.heard[slot] = ack
         // How long that change took to be heard, if one packet carried it there.
-        let m = self.made[ack - 1].clone()
-        if m.sent && !m.resent && now >= m.first_sent {
-            self.sample(now - m.first_sent)
+        borrow m = self.made[ack - 1]
+        let sample = if m.sent && !m.resent && now >= m.first_sent {
+            Some(now - m.first_sent)
+        } else { None }
+        if let Some(frames) = sample {
+            self.sample(frames)
         }
     }
 
@@ -597,7 +604,7 @@ impl Receiver {
             self.through = p.through
         }
         let changed = if fresh { self.relog(lowest) } else { None }
-        Some(Heard { fresh, changed, acks: p.acks.clone() })
+        Some(Heard { fresh, changed, acks: take p.acks })
     }
 
     /// The log again from change `from` on: the first frame whose input that changes.
@@ -720,9 +727,9 @@ impl Link {
 
     /// This frame's input: the packet to send now, if one goes (none alone: no one to hear).
     pub fn send(mut self, frame: u32, input: u32) -> Option<Vec<u8>> {
-        var acks: Vec<u32> = Vec::new()
+        var acks = [u32(0); 4]
         for j in 0..MAX_PARTY {
-            acks.push(self.rx[j].contig)
+            acks[j] = self.rx[j].contig
         }
         let out = self.tx.frame(frame, input, acks)
         if self.party < 2 { None } else { out }
@@ -1135,4 +1142,34 @@ fn reordered_changes_repair_the_log_from_the_first_difference() {
             ),
     )
     assert(rx.contig == 3 && rx.known() == 30)
+}
+
+@test
+fn an_invalid_change_skip_is_rejected_without_overflowing() {
+    let p = Packet {
+        through: 1,
+        seq: 1,
+        skip: 4294967295,
+        changes: Vec::from([Change { frame: 0, input: 1 }]),
+        acks: Vec::new(),
+    }
+    assert(encode(p).is_none(), "a skip cannot name changes before sequence one")
+}
+
+@test
+fn released_taps_on_consecutive_steps_each_flip_their_button() {
+    var enc = Encoder::new()
+    let reads = STICK_BITS | BUTTON_BITS
+    let tap = Pad { x: 0.0, z: 0.0, held: 0, pressed: sim::ATTACK }
+    let first = enc.input(tap, prev: 0, reads: reads, now: reads)
+    assert(first == sim::ATTACK << 6, "a tap released before the step is still a press")
+    let second = enc.input(tap, prev: first, reads: reads, now: reads)
+    assert(second == 0, "a separate tap on the next step is a separate press")
+    let still = Pad { x: 0.0, z: 0.0, held: 0 }
+    assert(enc.input(still, prev: second, reads: reads, now: reads) == second, "no edge, no press")
+    let down = Pad { x: 0.0, z: 0.0, held: sim::ATTACK, pressed: sim::ATTACK }
+    let third = enc.input(down, prev: second, reads: reads, now: reads)
+    assert(third == first, "held and explicit edges describe one press, not two")
+    let held = Pad { x: 0.0, z: 0.0, held: sim::ATTACK }
+    assert(enc.input(held, prev: third, reads: reads, now: reads) == third)
 }

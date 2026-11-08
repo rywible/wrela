@@ -336,6 +336,9 @@ pub enum Reply: Clone + Serialize {
     Refused { why: String },
     /// A host-random room bearer token. Keep it private: knowing it permits resuming its peer.
     RoomToken { token: Vec<u8> },
+    /// A win record could not be checked or stored because its backend was temporarily
+    /// unavailable. Keep the fight ID and retry later; this does not reject the win.
+    RecordPending,
 }
 
 /// The path of run `run`'s replay: `RUNS`, its account's handle in hexadecimal, `/`, its number.

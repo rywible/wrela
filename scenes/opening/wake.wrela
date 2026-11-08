@@ -151,6 +151,10 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32, f32) {
     let rel = p - s.boat
     let along = dot(rel, s.boat_z)
     let across = dot(rel, s.boat_x)
+    let wl = hull_off(s, p)
+    // Ahead of the bow all wake, trail and bubble masks are zero. At four metres the hull
+    // is over 1.8 m away too, beyond even the widest waterline foam: skip its noise and cells.
+    if along > 4.0 { return (0.0, 0.0, wl, 0.0) }
     // Under way, the wake runs longer and whiter, and the bow throws a wave off each side. The
     // wake lies along the way the skiff came: turning, an arc (its centre `bend` m to the side the
     // bow swings), read as how far back along it (`back`) and how far off it (`off`).
@@ -219,7 +223,6 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32, f32) {
     // Where the sea meets the hull: a lip of churned water along its waterline, out past the
     // gunwale's flare so the eye above sees it, wider and whiter as the skiff makes way or slaps
     // down.
-    let wl = hull_off(s, p)
     let fore = clamp(dot(p - s.boat, s.boat_z) / 2.2, 0.0, 1.0)
     let lip_w = (0.04 + 0.06 * way + 0.1 * s.slap + 0.12 * fore * fore * (0.3 + way) + 0.04 * run) *
         (0.55 + 0.9 * noise(xz * 2.2 + vec2(s.held * 0.4, 0.0)))
