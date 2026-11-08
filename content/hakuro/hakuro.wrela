@@ -45,6 +45,7 @@ impl Shaded for Cloth {
 pub const BLACK = Cloth { albedo: vec3(0.050, 0.050, 0.066), rough: 0.6, metal: 0.0 }
 pub const CHARCOAL = Cloth { albedo: vec3(0.070, 0.070, 0.088), rough: 0.85, metal: 0.0 }
 pub const GOLD = Cloth { albedo: vec3(0.690, 0.380, 0.016), rough: 0.35, metal: 1.0 }
+pub const LINING = Cloth { albedo: vec3(0.420, 0.230, 0.030), rough: 0.45, metal: 0.6 }
 pub const SKIN = Cloth { albedo: vec3(0.500, 0.250, 0.130), rough: 0.72, metal: 0.0 }
 pub const SASH = Cloth { albedo: vec3(0.043, 0.043, 0.055), rough: 0.8, metal: 0.0 }
 pub const HAIR = Cloth { albedo: vec3(0.027, 0.028, 0.045), rough: 0.7, metal: 0.0 }
@@ -375,8 +376,8 @@ pub fn jacket_paint(p: vec3) -> Cloth {
     if p.y >= 0.97 {
         return body_paint(p)
     }
-    let e = abs(p.x + 0.05) - 0.110
-    if p.z > 0.0 && e < 0.013 { GOLD } else { BLACK }
+    // (Its gold trim ends at his belt, as the sheet's: below, the tails' own hem is gold.)
+    BLACK
 }
 
 /// The tails' paint: black outside, gold lined, a gold band along the hem.
@@ -399,7 +400,8 @@ fn tails_paint(p: vec3) -> Cloth {
     // lifted hem showed it as a flat slab.)
     let t = clamp((q.y - low - 0.05) / 0.3, 0.0, 1.0)
     let shade = 1.0 - 0.8 * t * t * (3.0 - 2.0 * t)
-    Cloth { albedo: GOLD.albedo * shade, rough: GOLD.rough, metal: GOLD.metal }
+    // (A darker amber satin than the trim's gold, as the sheet's lining.)
+    Cloth { albedo: LINING.albedo * shade, rough: LINING.rough, metal: LINING.metal }
 }
 
 /// His rig: his body's pieces as they were fitted to the reference, each on its bone or split
@@ -447,9 +449,10 @@ pub fn hero() -> Creature<Cloth> {
         .join(
             "sash",
             b("spine 1"),
-            oval(vec3(0.19, 0.12, 0.14))
-                .translate(vec3(0.0, 1.0, 0.0))
-                .intersect(cuboid(vec3(1.0, 0.045, 1.0)).translate(vec3(0.0, 0.985, 0.0)))
+            // A flat leather belt, about 4 cm, straight-sided (an oval band bulged into a tube).
+            oval(vec3(0.19, 0.6, 0.14))
+                .translate(vec3(0.0, 0.975, 0.0))
+                .intersect(cuboid(vec3(1.0, 0.021, 1.0)).translate(vec3(0.0, 0.975, 0.0)))
                 .with_at(sash_paint)
                 .translate(-s.rest(b("spine 1"))),
             seam: hard(),
