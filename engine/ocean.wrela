@@ -161,8 +161,9 @@ pub fn whitecaps(sea: SeaState) -> f32 {
 pub fn breaking(sea: SeaState) -> f32 {
     let p = clamp(whitecaps(sea) / 2.0, 1.0e-5, 0.4)
     let t = sqrt(-2.0 * log(p))
-    t - (2.515517 + 0.802853 * t + 0.010328 * t * t) /
-        (1.0 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t)
+    t -
+        (2.515517 + 0.802853 * t + 0.010328 * t * t) /
+            (1.0 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t)
 }
 
 /// The mean square slope of the sea's face, both slopes summed, from its wind (Cox and Munk 1954,
@@ -407,7 +408,8 @@ fn settle(
     let here = before.load(x: id.x, y: id.y).w
     let ax = min(abs(drift.x), 1.0)
     let az = min(abs(drift.y), 1.0)
-    let old = here * (1.0 - ax) * (1.0 - az) + before.load(x: back_x, y: id.y).w * ax * (1.0 - az) +
+    let old = here * (1.0 - ax) * (1.0 - az) +
+        before.load(x: back_x, y: id.y).w * ax * (1.0 - az) +
         before.load(x: id.x, y: back_z).w * az * (1.0 - ax) +
         before.load(x: back_x, y: back_z).w * ax * az
     let broke = clamp((breaks - squeezed) / (spread * WHITENS), 0.0, 1.0)
@@ -670,6 +672,14 @@ pub fn shape_at(o: Waves, p: vec2, du: vec2, dv: vec2, w: vec4) -> vec4 {
         o.ripple_shape.sample_grad(o.s, on_tile(p, s.w), fu / s.w, fv / s.w) * w.w
 }
 
+/// Its foam alone at lattice point `p`, as `shape_at` (only the two longer tiles break, each
+/// weighted by `w`).
+pub fn foam_at(o: Waves, p: vec2, du: vec2, dv: vec2, w: vec2) -> f32 {
+    let s = o.sea.sides
+    o.big_shape.sample_grad(o.s, on_tile(p, s.x), du / s.x, dv / s.x).w * w.x +
+        o.mid_shape.sample_grad(o.s, on_tile(p, s.y), du / s.y, dv / s.y).w * w.y
+}
+
 /// Its slopes and stretches at lattice point `p` (∂h/∂x, ∂h/∂z, ∂Dx/∂x, ∂Dz/∂z), as `shape_at`.
 pub fn tilt_at(o: Waves, p: vec2, du: vec2, dv: vec2, w: vec4) -> vec4 {
     let s = o.sea.sides
@@ -688,6 +698,11 @@ pub fn level_at(o: Waves, p: vec2, foot: f32, mid: f32) -> f32 {
     let s = o.sea.sides
     let lb = log2(max(foot * f32(SIDE) / s.x, 1.0))
     let lm = log2(max(foot * f32(SIDE) / s.y, 1.0))
+    // (The swell alone, `mid` 0, reads the long tile alone: half the reads, for a far march.)
+    if mid <= 0.0 {
+        let d = o.big_shape.sample_level(o.s, on_tile(p, s.x), lb)
+        return o.big_shape.sample_level(o.s, on_tile(p - vec2(d.x, d.z), s.x), lb).y
+    }
     let d = o.big_shape.sample_level(o.s, on_tile(p, s.x), lb) +
         o.mid_shape.sample_level(o.s, on_tile(p, s.y), lm) * mid
     let q = p - vec2(d.x, d.z)
@@ -725,7 +740,8 @@ pub fn surface_at(
     let past_u = max(log2(finest * length(du) * STEADY / PI), 0.0)
     let past_v = max(log2(finest * length(dv) * STEADY / PI), 0.0)
     let lost = vec2(past_u * 0.75 + past_v * 0.25, past_v * 0.75 + past_u * 0.25) *
-        (o.sea.octave * 0.5) + vec2(o.sea.unseen)
+        (o.sea.octave * 0.5) +
+        vec2(o.sea.unseen)
     (d.y, n, d.w, sx * sz, lost, q)
 }
 
