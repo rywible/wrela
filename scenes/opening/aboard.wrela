@@ -23,6 +23,8 @@ use look::{OVERCAST, SKIFF, Shot}
 use main::{FREEBOARD, HERO_POP, INKED}
 use paint::{Heaven, lit_solid, storm_sky}
 use played::cover
+use sail::{BOOM, BOW_OUT, LASHED}
+use sail::FOOT as RIG_FOOT
 use skiff::vessel_shadow
 use std::gpu::{
     ClipPosition, DepthTexture, Flat, FragCoord, GpuBuffer, Rgba16Float, Rgba8, Sampler, Targets3,
@@ -216,6 +218,8 @@ fn drawn_in(foot: vec3, hips: vec3) -> vec3 {
 
 /// How far out across the deck from his hips his feet ever stand (m).
 const STANCE: f32 = 0.3
+/// How far his head keeps off the boom's arms (m), his hair's spikes and all.
+const CLEAR: f32 = 0.45
 
 /// The highest his pelvis can stand over `foot` (where it's planted) with a leg `leg` long from
 /// hip to ankle, his hips where `hips` is across the deck.
@@ -248,7 +252,32 @@ pub fn bones(s: Shot) -> [mat4; 64] {
     let lean = toward / max(length(toward), 1.0e-4) * over
     // Sunk a little into his knees, braced against the sea.
     var hips = s.hips + lean * 0.35 - vec3(0.0, 0.04, 0.0)
-    let neck_at = s.neck + lean * 1.15
+    var neck_at = s.neck + lean * 1.15
+    // The wishbone's arm his hands are on runs at his head's height, and leaning toward his
+    // hands never took his head off it: the boom went through his head. So he hangs out from
+    // it, his head (a hand above his neck) at least `CLEAR` off them, across the boom, as far
+    // to windward as it takes (his hips a third as far), which straightens his arms too.
+    // (And his neck a hand over his hands, the boom at his shoulders, as a sailor of a board
+    // holds it: at his neck, it ran past his eyes.)
+    neck_at.y = max(neck_at.y, mid.y + 0.15)
+    let head_at = neck_at + up * 0.18
+    let r = head_at - RIG_FOOT - s.mast * LASHED
+    let u = clamp(dot(r, s.boom), 0.0, BOOM)
+    let bowed = BOW_OUT * sin(PI * u / BOOM) + 0.015
+    let spar = RIG_FOOT + s.mast * LASHED + s.boom * u
+    // (Both of the wishbone's arms: his hair fans out a hand's span round his head, and the far
+    // arm cut through it.)
+    let gap_near = head_at - (spar - s.belly * bowed)
+    let gap_far = head_at - (spar + s.belly * bowed)
+    let near_g = gap_near - s.boom * dot(gap_near, s.boom)
+    let far_g = gap_far - s.boom * dot(gap_far, s.boom)
+    let gap = if length(near_g) < length(far_g) { near_g } else { far_g }
+    let windward = vec3(-s.belly.x, 0.0, -s.belly.z)
+    let level = vec3(gap.x, 0.0, gap.z) + windward * 0.05
+    let side = level / max(length(level), 1.0e-4)
+    let short = max(CLEAR - length(gap), 0.0)
+    neck_at = neck_at + side * short
+    hips = hips + side * short * 0.35
     // The sailing holds a slighter figure's hips low under a neck at the boom; his own trunk is
     // its length, so stood that low his shoulders fell a hand's span under the boom and his arms
     // were wrung up over his head to it. So he rises out of the crouch till his trunk reaches up
