@@ -116,22 +116,24 @@ pub fn view_proj(s: Shot) -> mat4 {
 }
 
 /// The rock's tiles stepped on for `s`: each tile's level, what the budget realizes, and the
-/// sun's shade cooked onto what's new. Whether every tile is drawn and cooked.
+/// sun's shade cooked onto what's new. Whether every tile has a mesh.
 pub fn step_rock(rock: mut Rock, s: Shot, sun: vec3) -> bool {
     let fovy = 2.0 * atan(1.0 / s.focal)
     rock.frame(Eye { at: s.eye, view_proj: view_proj(s), height: s.resolution.y, fovy })
-    let cooked = rock.bake(Shade { sun }, BAKES)
-    cooked && rock.whole()
+    let _ = rock.bake(Shade { sun }, BAKES)
+    rock.whole()
 }
 
 /// How far each pixel of `s` is from the eye to the rock's mesh (m), `FAR` where it sees none,
-/// and the shade cooked there (`Shade`, packed: `pack`): drawn into `out`. Only once every tile
-/// is drawn and cooked (`ready`); until then `out` says nothing and the far pass marches and
-/// shades as it did. Whether it drew.
+/// and the shade cooked there (`Shade`, packed: `pack`; -1 on a tile not cooked yet, whose mesh
+/// is new: `unbaked` stands in for its numbers): drawn into `out`. Only once every tile has a
+/// mesh (`ready`); until then `out` says nothing and the far pass marches and shades as it did.
+/// Whether it drew.
 pub fn reach(
     rock: Rock,
     s: Shot,
     ready: bool,
+    unbaked: GpuBuffer<vec4>,
     out: mut Texture<Rg32Float>,
     depth: mut DepthTexture,
 ) -> bool {
@@ -142,11 +144,13 @@ pub fn reach(
     let pass = begin_pass_with_depth(mut out, mut depth, clear: vec4(FAR, 0.0, 0.0, 0.0))
     for i in 0..rock.len() {
         borrow m = rock.mesh(i)
+        let cooked = rock.has_baked(i)
         draw(
             pass,
             placed.bind(
                 verts: m.verts.items(),
-                shade: rock.baked(i).items(),
+                shade: if cooked { rock.baked(i).items() } else { unbaked.items() },
+                cooked: if cooked { 1 } else { 0 },
                 view_proj: vp,
                 eye: s.eye,
             ),
@@ -171,6 +175,7 @@ pub fn placed(
     v: VertexIndex,
     verts: [SkinVertex],
     shade: [vec4],
+    cooked: u32,
     view_proj: mat4,
     eye: vec3,
 ) -> Reached {
@@ -178,13 +183,13 @@ pub fn placed(
     Reached {
         clip: ClipPosition { position: view_proj * vec4(p, 1.0) },
         far: length(p - eye),
-        shade: shade[v.index].xy,
+        shade: if cooked == 1 { shade[v.index].xy } else { vec2(-1.0) },
     }
 }
 
 @fragment
 pub fn how_far(r: Reached) -> vec2 {
-    vec2(r.far, pack(r.shade))
+    vec2(r.far, if r.shade.x < 0.0 { -1.0 } else { pack(r.shade) })
 }
 
 /// Two numbers from 0 to 1 in one, a part in 4095 each (an `f32` holds every whole number of
@@ -205,7 +210,7 @@ pub fn unpack(x: f32) -> vec2 {
 pub fn baked_at(reach: Texture<Rg32Float>, pf: vec2, size: vec2, t: f32) -> vec2 {
     let q = clamp(floor(pf), vec2(0.0), size - vec2(1.0))
     let r = reach.load(u32(q.x), u32(q.y))
-    if r.x >= FAR || abs(r.x - t) > SHORT { vec2(-1.0) } else { unpack(r.y) }
+    if r.x >= FAR || abs(r.x - t) > SHORT || r.y < 0.0 { vec2(-1.0) } else { unpack(r.y) }
 }
 
 /// Where the march through pixel `pf` (px, the full drawing's) should start along the ray, by

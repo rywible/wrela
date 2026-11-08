@@ -18,7 +18,7 @@ use std::collections::swap
 use std::io::Pending
 use std::input::Event
 use std::gpu::{
-    ClipPosition, DepthTexture, R32Float, Rg32Float, Rgba16Float, Rgba8, Texture, Texture3d,
+    ClipPosition, DepthTexture, GpuBuffer, buffer, R32Float, Rg32Float, Rgba16Float, Rgba8, Texture, Texture3d,
     VertexIndex, begin_pass, begin_pass3, depth_texture, dispatch, draw, label, texture, texture3d,
 }
 
@@ -67,6 +67,8 @@ pub struct State {
     pub(package) rock: Rock,
     pub(package) reach: Texture<Rg32Float>,
     pub(package) reach_depth: DepthTexture,
+    /// What a tile not yet cooked reads for its shade (`rock::reach`).
+    pub(package) unbaked: GpuBuffer<vec4>,
     /// The passes' times asked for and not yet answered (which, the ask, its frame), and the
     /// frames drawn (`main::TIMINGS`).
     pub(package) asks: Vec<(u32, Pending<f32>, u32)>,
@@ -130,6 +132,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         rock: rock(),
         reach: texture(width: width, height: height),
         reach_depth: depth_texture(width, height),
+        unbaked: buffer(1),
         asks: Vec::new(),
         frames: 0,
         image: texture(width: 1, height: 1),
@@ -282,7 +285,7 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     // The rock's meshes, and how far each pixel is to them.
     label("rock")
     let ready = step_rock(mut s.rock, shot, s.heavens.light.sun)
-    let meshed = reach(s.rock, shot, ready, mut s.reach, mut s.reach_depth)
+    let meshed = reach(s.rock, shot, ready, s.unbaked, mut s.reach, mut s.reach_depth)
     s.yon.meshed = if meshed { 1 } else { 0 }
     shot
 }
