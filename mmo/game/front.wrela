@@ -50,7 +50,7 @@ const MENU: [u32; 3] = [RESUME, ONLINE, TITLE]
 const MENU_LABELS: [Text; 3] = ["Resume", "Play online", "Title screen"]
 
 /// The bands of rows a drawing of the scene is painted in, one a frame (`play`).
-const BANDS: u32 = 2
+const BANDS: u32 = 1
 /// The opening: the name comes up over black at once (`NAME_AT` seconds in), a title card while
 /// the sky cooks; the scene then rises behind it (`RISE` seconds once its first drawing is
 /// ready), and Play comes in `CONTROLS_AFTER` of the way through that, or over the black anyway
@@ -79,12 +79,9 @@ const SAVE_EVERY: f32 = 10.0
 /// The tallest the scene is drawn (pixels), and the shortest the budget takes it to.
 const TALLEST: f32 = 1440.0
 const SHORTEST: f32 = 360.0
-/// Seconds a frame may take, on average, before the scene is drawn smaller; and under which it
-/// grows again. A screen slower than 60 a second raises both with its own frame (`base`).
-const SLOW: f32 = 1.0 / 48.0
-const QUICK: f32 = 1.0 / 57.0
-/// The same under the title, whose shot hardly moves: a sharp scene at 30 a second over a soft
-/// one at 60.
+/// Seconds a frame may take under the title, on average, before the scene is drawn smaller, and
+/// under which it grows again: its shot hardly moves, so a sharp scene at 30 a second over a soft
+/// one at the screen's pace. Rowing, the screen's own pace (`frame_limits`).
 const TITLE_SLOW: f32 = 1.0 / 30.0
 const TITLE_QUICK: f32 = 1.0 / 34.0
 /// How much the scene's drawing is sharpened as it's laid over the screen (`laid`).
@@ -322,9 +319,11 @@ fn frame_base(base: f32, quickest: f32, first: bool) -> f32 {
 
 /// The slow and quick frame limits for the observed screen cadence.
 fn frame_limits(title: bool, base: f32) -> (f32, f32) {
-    (max(if title { TITLE_SLOW } else { SLOW }, base * 1.25), max(if title { TITLE_QUICK } else {
-        QUICK
-    }, base * 1.06))
+    // (Rowing, the screen's own pace: a new drawing every frame it shows, 120 a second on a
+    // screen that shows 120. Under the title, never quicker than `TITLE_SLOW` asks.)
+    if title {
+        (max(TITLE_SLOW, base * 1.25), max(TITLE_QUICK, base * 1.06))
+    } else { (base * 1.25, base * 1.06) }
 }
 
 @test
