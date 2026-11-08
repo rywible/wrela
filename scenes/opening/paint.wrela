@@ -215,12 +215,13 @@ fn sea_level(s: Shot, waves: Waves, p: vec3, foot: f32) -> f32 {
     // rounds over rather than ending in a crease.)
     let gunwale = s.boat.y + FREEBOARD - (s.boat_y.x * rel.x + s.boat_y.z * rel.z) / max(s.boat_y.y, 0.5)
     let near = 1.0 - smoothstep(1.0, 2.6, e)
+    // (Heaped by the hull as it makes way: its bow wave, its quarters' hollow, the hump astern:
+    // `wake::lifted`; the cap over that too, so the bow wave never stands over the deck.)
+    let heaped = level + lifted(s, p)
     let cap = gunwale - 0.14
-    let hk = clamp(0.5 + 0.5 * (cap - level) / 0.08, 0.0, 1.0)
-    let capped = mix(cap, level, hk) - 0.08 * hk * (1.0 - hk)
-    // (And heaped by the hull as it makes way: its bow wave, its quarters' hollow, the hump
-    // astern: `wake::lifted`.)
-    mix(level, capped, near * near * (3.0 - 2.0 * near)) + lifted(s, p)
+    let hk = clamp(0.5 + 0.5 * (cap - heaped) / 0.08, 0.0, 1.0)
+    let capped = mix(cap, heaped, hk) - 0.08 * hk * (1.0 - hk)
+    mix(heaped, capped, near * near * (3.0 - 2.0 * near))
 }
 
 fn march_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
@@ -1024,7 +1025,7 @@ fn sample(
         t = ts
         id = SEA
     }
-    let bs = sphere(o, d, vec4(s.boat + s.boat_y * (1.5 + FREEBOARD), 3.6), far)
+    let bs = sphere(o, d, vec4(s.boat + s.boat_y * (1.5 + FREEBOARD), 4.0), far)
     // The sea inside the skiff isn't there: the ray goes on to the hull.
     if id == SEA && dry(s, o + d * t) {
         t = far

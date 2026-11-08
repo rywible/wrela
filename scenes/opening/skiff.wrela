@@ -306,12 +306,16 @@ fn parts(s: Shot, q: vec3) -> vec4 {
         let ring = vec2(length(vec2(c.x, c.z)) - 0.13, c.y)
         rig = min(rig, length(ring * vec2(1.0, 1.5)) / 1.5 - 0.028)
     }
-    // (The rider only where he can be: a capsule from his feet past his head, as wide as his
-    // reach; outside it, its distance stands for his. Every sea pixel's reflection check calls
-    // this, and the whole rider there cost more than the hull.)
-    let feet = (j.fore_foot + j.aft_foot) * 0.5
-    let bound = sd_capsule(q, feet, j.neck + (j.neck - feet) * 0.2, 0.95)
-    let man = if bound > 0.05 { bound } else { hero(j, q, blow, s.held) }
+    // (The rider only where he can be: capsules round his legs and coat, his body and head,
+    // and each arm out to its hand; well outside them, their distance stands for his. Every
+    // sea pixel's checks call this, and the whole rider there cost more than the hull. Near
+    // them he's drawn whole, so what reads his distance close by (his shadow, the dark of the
+    // water against the hull) reads his own, not the capsules'.)
+    let legs = min(sd_capsule(q, j.fore_foot, j.hips, 0.42), sd_capsule(q, j.aft_foot, j.hips, 0.42))
+    let body = sd_capsule(q, j.hips, j.neck + (j.neck - j.hips) * 0.6, 0.45)
+    let arms = min(sd_capsule(q, j.neck, j.fore_hand, 0.32), sd_capsule(q, j.neck, j.aft_hand, 0.32))
+    let bound = min(min(legs, body), arms)
+    let man = if bound > 0.3 { bound } else { hero(j, q, blow, s.held) }
     vec4(wood, sail, rig, man)
 }
 

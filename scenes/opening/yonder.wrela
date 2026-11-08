@@ -413,13 +413,13 @@ pub fn yonder(
             let near = min(bm.x, marks.x) < 11.5
             var fresh = 0.0
             if near && abs(bm.x - marks.x) > 0.25 {
-                // (Two neighbours, on the diagonal 1.5 pixels off, see a side's edge and a top's
+                // (Two neighbours, one on each diagonal 1.5 pixels off, see a side's edge and a top's
                 // alike; and once one differs it's an edge, and the other isn't marched.)
                 var same = true
                 var j = 0
                 while j < 2 && same {
                     let side = f32(j) * 2.0 - 1.0
-                    let dj = ray(s, px + vec2(side, side) * 1.06)
+                    let dj = ray(s, px + vec2(1.0, side) * 1.06)
                     same = (march_stacks(o, dj, t, k) < t) == (ts < t)
                     j += 1
                 }
