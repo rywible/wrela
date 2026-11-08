@@ -139,19 +139,56 @@ pub struct Region: Copy + GpuData {
     pub at: vec2,
     pub reach: f32,
     pub clear: f32,
+    /// The fair weather's own clouds in it, where the map's are pulled back: their cover (0
+    /// none: a clear sky; 0.3 or so, scattered cumulus), low, white and unshaded by a storm.
+    pub fair: f32 = 0.0,
 }
 
-/// How much of the clouds `regions` (the first `count`) pull back at `xz` (the world's, m):
-/// the most any of them does there, each region's edge torn by the noise so it isn't a
-/// circle.
-pub fn cleared(regions: [Region], count: u32, xz: vec2) -> f32 {
-    var k = 0.0
+/// How far fair weather's cumulus rise (a weather map's `g`: their tops over the base).
+const FAIR_TOP: f32 = 0.42
+
+/// How much larger fair weather's heaps are drawn than the field's own billows (its noise read
+/// at this scale).
+const FAIR_SCALE: f32 = 0.4
+
+/// How far the air in front of the clouds reaches, seen from fair weather, against the map's own
+/// hazier air (the opening's sea day thins its air as much).
+const FAIR_AIR: f32 = 0.35
+
+/// How much brighter fair weather's heaps' sunlit sides are than the march's own light has them
+/// (its octaves stop short of all the light a thick cumulus scatters back).
+const FAIR_SUN: f32 = 1.5
+
+/// How fine fair weather's billows are against the field's detail as its heaps read it (their
+/// field read at `FAIR_SCALE`): about 600 m across, a cumulus's turrets (finer, and the dome's texels
+/// can't hold them: they alias into specks and streaks).
+const FAIR_DETAIL: f32 = 0.5
+
+/// How many of the sun's light's samples fair weather's heaps take (`light_interval`'s first:
+/// they reach about 1.6 km).
+const FAIR_LIGHT_SAMPLES: u32 = 7
+
+/// How much denser fair weather's heaps are than the field's own cloud.
+const FAIR_DENSITY: f32 = 6.0
+
+/// How much of the clouds `regions` (the first `count`) pull back at `xz` (the world's, m),
+/// and how much fair weather's own cloud they have there: the most any of them does, each
+/// region's edge torn by the noise so it isn't a circle (one noise for both).
+pub fn regional(regions: [Region], count: u32, xz: vec2) -> vec2 {
+    var k = vec2(0.0)
     for i in 0..count {
         let r = regions[i]
         let torn = (fbm2(xz / 6000.0 + vec2(3.0, 17.0), 3) - 0.5) * 0.5 * r.reach
-        k = max(k, r.clear * smoothstep(r.reach, r.reach * 0.45, length(xz - r.at) + torn))
+        let within = smoothstep(r.reach, r.reach * 0.45, length(xz - r.at) + torn)
+        k = max(k, vec2(r.clear, r.fair) * within)
     }
     k
+}
+
+/// How much of the clouds `regions` (the first `count`) pull back at `xz` (the world's, m):
+/// the most any of them does there (`regional`'s first).
+pub fn cleared(regions: [Region], count: u32, xz: vec2) -> f32 {
+    regional(regions, count, xz).x
 }
 
 /// What the dome's march and the clouds' shadows read: where the eye is, which of the dome's
@@ -453,7 +490,7 @@ fn field(
     rep: Sampler,
     detailed: bool,
 ) -> f32 {
-    field_in(weather_at(weather, rep, q), q, h, shape, detail, rep, detailed)
+    field_in(weather_at(weather, rep, q), q, h, shape, detail, rep, detailed, flat: 0.0)
 }
 
 /// The field at `q`, `h` metres above the layer's base, under weather map texel `w`: the map's
@@ -468,6 +505,7 @@ fn field_in(
     detail: Texture3d<Rgba16Float>,
     rep: Sampler,
     detailed: bool,
+    flat: f32,
 ) -> f32 {
     let top = w.g * (TOP - BASE)
     if h <= 0.0 || h >= top * 1.08 || w.r <= 0.001 {
@@ -479,12 +517,16 @@ fn field_in(
     if hf <= 0.0 || hf >= 1.0 {
         return 0.0
     }
-    let profile = cloud_profile(hf)
+    // (Fair weather's heaps, `flat` of them, on a flat base: they condense at one height, so
+    // their undersides are level, not rounded off as the profile rounds the storm's billows.)
+    let profile = mix(cloud_profile(hf), smoothstep(0.0, 0.025, hf) * smoothstep(1.0, 0.48, hf), flat)
     let cover = w.r * profile
     let carved = saturate(above(base.r, from: 1.0 - cover)) * cover
     var s = mix(cover * (0.4 + 0.8 * base.r), carved, w.a)
     if detailed && s > 0.0 {
-        let d = detail.sample_level(rep, q / DETAIL_SPAN)
+        // (Fair weather's heaps, broad as `FAIR_SCALE` reads them, still billow at a cumulus's
+        // own small scale: their detail read finer, not broadened with them.)
+        let d = detail.sample_level(rep, q / (DETAIL_SPAN * mix(1.0, FAIR_DETAIL, flat)))
         let fine = d.r * 0.625 + d.g * 0.25 + d.b * 0.125
         let wisp = mix(fine, 1.0 - fine, saturate(hf * 4.0))
         // (A storm's deck, its map's alpha a little under 1, torn harder at its edges.)
@@ -493,7 +535,10 @@ fn field_in(
     }
     // Dense a little way in: a cloud's edge is sharp. (An overcast's deck thickens slowly into
     // its base, wisps and scud first: no hard floor for the march's steps to terrace.)
-    min(s * mix(1.1, 3.0, w.a), 1.0)
+    // (A fair heap's edge sharper still: its outline crisp, not airbrushed; and its faintest
+    // wisps gone, so no specks of one float loose in the open sky round it.)
+    s = above(s, from: 0.06 * flat)
+    max(min(s * mix(mix(1.1, 3.0, w.a), 6.0, flat), 1.0), 0.0)
 }
 
 /// The planet's radius under the world's y = 0 (m).
@@ -598,7 +643,9 @@ fn march(
     // of metres between neighbouring dome texels.
     // (Under a storm's deck, twice as many: its long grazing base otherwise terraces into a
     // fine woven grain, the march's steps showing.)
-    let fine = view_samples(ct * (1.0 + c.gloom))
+    // (Under a fair sky, the storm's deck is far off, its base not grazed: the plain count.)
+    let eye_clear = if region_count > 0 { cleared(regions, region_count, c.eye.xz) } else { 0.0 }
+    let fine = view_samples(ct * (1.0 + c.gloom * (1.0 - eye_clear)))
     let dt = ct / f32(fine)
     for i in 0..cells {
         if through < 0.01 {
@@ -618,11 +665,29 @@ fn march(
             let q = vec3(p.x - c.drift.x, h + BASE, p.z - c.drift.y)
             // Pulled back where a region's own weather clears them (`Region`): less of the map's
             // cover, lower, and no storm's shade.
-            let kr = if region_count > 0 { cleared(regions, region_count, p.xz) } else { 0.0 }
+            let rk = if region_count > 0 { regional(regions, region_count, p.xz) } else { vec2(0.0) }
+            let kr = rk.x
+            let fair = rk.y
+            // (How far fair weather's own clouds stand in for the map's: as far as the region
+            // reaches, so its edge fades, never a ring.)
+            let fk = if fair > 0.0 { kr } else { 0.0 }
             let wm = weather_at(weather, rep, q)
-            let w = vec4(wm.r * (1.0 - kr), wm.g * mix(1.0, 0.6, kr), wm.b, wm.a)
+            // (In their place, fair weather's own: scattered, low, carved into heaps.)
+            let w = vec4(
+                wm.r * (1.0 - kr) + fair,
+                mix(wm.g * mix(1.0, 0.6, kr), FAIR_TOP, fk),
+                wm.b * (1.0 - fk),
+                mix(wm.a, 1.0, fk),
+            )
             let gl = c.gloom * (1.0 - kr)
-            let dens = field_in(w, q, h, shape, detail, rep, detailed: true)
+            // (Fair weather's heaps broader than the storm's billows: their field read larger,
+            // more so the deeper into the region.)
+            let scale = mix(1.0, FAIR_SCALE, fk)
+            let qf = q * scale
+            // (And denser: a cumulus is opaque a few hundred metres in, so its sunlit side and its
+            // shaded side part sharply and it reads as a solid heap, not a soft puff.)
+            let thick = mix(1.0, FAIR_DENSITY, fk)
+            let dens = field_in(w, qf, h, shape, detail, rep, detailed: true, flat: fk) * thick
             if dens > 0.0 {
                 // Resolve the sunlit skin before the deep shadow. Equal 150 m intervals
                 // missed this skin and made the whole cloud a soft, evenly shaded patch.
@@ -631,12 +696,27 @@ fn march(
                 // visible skin and its lighting at once.
                 var od = 0.0
                 for k in 0..LIGHT_SAMPLES {
+                    // (Fair weather's heaps are low: past a kilometre and a half toward the sun there's no
+                    // more of them to shade it, under a sun that's well up. Only deep in a fair sky:
+                    // at its edge the storm's towers still need their whole reach, or they'd brighten
+                    // in a ring.)
+                    if fk > 0.99 && k >= FAIR_LIGHT_SAMPLES {
+                        break
+                    }
                     let (lo, step) = light_interval(k)
                     let ql = q + c.sun * (lo + 0.5 * step)
-                    od += field(ql, ql.y - BASE, weather, shape, detail, rep, detailed: k < 2) *
-                        step
+                    // (Fair weather's clouds shade themselves: their own cover toward the sun, at its own
+                    // density, not `thick`'s: the light a heap scatters on reaches deep into it, so
+                    // its body is bright and only its far side and base go grey.)
+                    let f = if fair > 0.0 {
+                        field_in(w, ql * scale, ql.y - BASE, shape, detail, rep, detailed: k < 2, flat: fk)
+                    } else {
+                        field(ql, ql.y - BASE, weather, shape, detail, rep, detailed: k < 2) *
+                            (1.0 - kr)
+                    }
+                    od += f * step
                 }
-                od *= EXTINCTION * (1.0 - kr)
+                od *= EXTINCTION
                 // Scattering many times (Wrenninge's octaves): each fainter, less forward and
                 // reaching deeper; four, so a thick cloud's sunlit side reflects as a white
                 // surface would (an albedo of about 0.8).
@@ -677,7 +757,13 @@ fn march(
                     let lift = exp(-od_up * EXTINCTION * RELIEF)
                     dim *= mix(1.0, 0.45 + 1.6 * lift, gl)
                 }
-                let source = sun_light * to_sun * shut + ambient * dim
+                // (Fair weather's heaps darker toward their flat bases, in their own shade.)
+                if fair > 0.0 {
+                    dim *= mix(1.0, mix(0.85, 1.0, smoothstep(0.0, 0.45, hf)), kr)
+                }
+                // (Fair weather's heaps whiter in the sun: a cumulus's sunlit crown is the
+                // brightest thing in a fair sky, past the blue round it.)
+                let source = sun_light * to_sun * shut * mix(1.0, FAIR_SUN, fk) + ambient * dim
                 let step_t = exp(-dens * EXTINCTION * dt)
                 let absorbed = through * (1.0 - step_t)
                 lit += source * absorbed
@@ -693,7 +779,23 @@ fn march(
     }
     // Through the air in front of them, from their mean depth.
     let d = depth_sum / max(weight, 1.0e-6)
-    let ap = stormy_air(aerial, s, c.sun, dir, d * 0.001, c.gloom)
+    // (Seen from a region's fair weather, through its clear air: a storm far off goes blue
+    // with its distance as anything far does.)
+    // (And through a fair day's air, clearer than the map's: its heaps kilometres off keep their
+    // sunlit sides and their shade, not one even glow of the air in front of them.)
+    let km = d * 0.001 * mix(1.0, FAIR_AIR, eye_clear)
+    var ap = stormy_air(aerial, s, c.sun, dir, km, c.gloom * (1.0 - eye_clear))
+    // (Its light as the air square to the sun at the same height has it: the air's forward glare
+    // toward the sun otherwise lays one cream glow over every heap that way, their shaded bodies
+    // and lit rims alike.)
+    if eye_clear > 0.0 {
+        // (`aerial_uvw` reads only the azimuth to the sun and the height: a sun straight up, any
+        // way round will do, so no direction of zero length.)
+        let flat_sun = vec2(-c.sun.z, c.sun.x) + vec2(1.0e-5, 0.0)
+        let across = normalize(flat_sun) * sqrt(max(1.0 - dir.y * dir.y, 0.0))
+        let square = aerial.sample_level(s, aerial_uvw(c.sun, vec3(across.x, dir.y, across.y), km))
+        ap = vec4(mix(ap.rgb, square.rgb, 0.7 * eye_clear), ap.a)
+    }
     vec4(lit * ap.a + ap.rgb * cover, cover)
 }
 
