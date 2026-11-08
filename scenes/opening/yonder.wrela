@@ -630,22 +630,29 @@ fn meet(
     var id = SKY
     let is = sphere(o, d, bounds(), far)
     let from = if meshed == 1 { march_from(reach, pf, s.resolution, is.x, is.y) } else { is.x }
-    if from < is.y && (OFF & 1) == 0 && !skip_rock {
+    let k = 2.0 / (s.resolution.y * s.focal)
+    // (Skipped only where no stack stands past where the rock begins: there the rock may be the
+    // nearer, and it's met. The stacks met to the horizon here are the same as met to the rock.)
+    let s0 = if skip_rock && is.x < is.y && (OFF & 2) == 0 {
+        march_stacks_from(o, d, stacks_from(reach, stacked, pf, s.resolution, far), far, k)
+    } else { far }
+    let skip = skip_rock && (s0 >= far || s0 < is.x)
+    if from < is.y && (OFF & 1) == 0 && !skip {
         let ti = march_isle(field, o, d, from, is.y)
         if ti < is.y {
             t = ti
             id = isle(o + d * ti).y
         }
     }
-    let k = 2.0 / (s.resolution.y * s.focal)
-    let sf = stacks_from(reach, stacked, pf, s.resolution, t)
-    let ts = if (OFF & 2) == 0 { march_stacks_from(o, d, sf, t, k) } else { far }
+    let ts = if skip_rock && is.x < is.y && (OFF & 2) == 0 { s0 } else if (OFF & 2) == 0 {
+        march_stacks_from(o, d, stacks_from(reach, stacked, pf, s.resolution, t), t, k)
+    } else { far }
     var c = vec3(0.0)
     var cover = 0.0
     var marks = vec4(log2(far), SKY, 1.0, 0.0)
     var n = -d
     // (Only where the rock could be: past its bounds, the far islands are met as ever.)
-    if skip_rock && ts >= t && is.x < is.y {
+    if skip && ts >= t && is.x < is.y {
         // (As far as the rock: where the rebuild carries what was met from.)
         return (vec4(0.0), vec4(log2(length(ISLE - o)), KEEP, 0.0, 0.0), vec4(0.0))
     }
@@ -793,7 +800,9 @@ pub fn yonder_low(
     // (Not this block's turn to meet the rock: only the stacks are met, and where none is, what
     // was carried is kept.)
     let block = (u32(q.x) / ROCK_BLOCK % 2) + 2 * (u32(q.y) / ROCK_BLOCK % 2)
-    let skip = ROCK_SPARSE && yon.held > 0.0 && block != yon.rock_turn
+    // (And only where the last drawing saw it: at the edge a turn brings in there's nothing to keep.)
+    let seen = was_at(yon, shot.eye + ray(shot, pf) * length(ISLE - shot.eye)).z > 0.0
+    let skip = ROCK_SPARSE && yon.held > 0.0 && block != yon.rock_turn && seen
     let (now, marks, third) = meet(
         shot,
         Heaven { light, clouds },
@@ -934,7 +943,17 @@ pub fn yonder_rebuild(
         return Targets3 { first: lc, second: lm, third: ln }
     }
     let w = s.eye + ray(s, ip + vec2(0.5)) * min(exp2(lm.x), length(ISLE - s.eye) * 1.2)
-    let was = was_at(yon, w)
+    var was = was_at(yon, w)
+    // (Kept (`KEEP`): carried from as far as the rock's middle, then again from as far as what
+    // was carried there, so its near and far faces don't slide.)
+    if lm.y == KEEP && was.z > 0.0 {
+        let bq0 = clamp(floor(was.xy), vec2(0.0), yon.resolution - vec2(1.0))
+        let d0 = exp2(past_marks.load(u32(bq0.x), u32(bq0.y)).x)
+        let again = was_at(yon, s.eye + ray(s, ip + vec2(0.5)) * min(d0, length(ISLE - s.eye) * 1.2))
+        if again.z > 0.0 {
+            was = again
+        }
+    }
     if was.z <= 0.0 {
         return Targets3 { first: lc, second: lm, third: ln }
     }

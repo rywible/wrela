@@ -232,9 +232,13 @@ fn mirrored_sky(
 /// the swell alone (`trace_far`).
 fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
     let plane = if d.y < 0.0 { o.y / -d.y } else { 1.0e9 }
-    if plane > NEAR_SEA {
-        return trace_far(s, waves, o, d, far)
-    }
+    // (A ray that meets the level far off is marched here only as far as the far march takes
+    // over, or till it rises clear of the highest crest: the eye's often lower than a gale's
+    // crests, and one standing near before it hides what's beyond.)
+    let far_off = plane > NEAR_SEA
+    let limit = if far_off {
+        min(NEAR_SEA * 0.8, if d.y > 0.0 { (CREST - o.y) / d.y } else { 1.0e9 })
+    } else { 1.0e9 }
     // (Stepping only forward, each step what the sea's slopes allow, so a ray skimming a crest
     // never hops back and forth between it and the trough behind; once under, halved onto it.
     // The footprint along the ray, foreshortened, picks the mips: a crest a pixel can't hold
@@ -245,7 +249,7 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
     var before = t
     var under = false
     var i = 0
-    while i < 40 && !under {
+    while i < 40 && !under && t < limit {
         let p = o + d * t
         let foot = t * 2.0 / (s.resolution.y * s.focal * slant)
         let f = p.y - sea_level(s, waves, p, foot)
@@ -255,7 +259,9 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
             before = t
             // (Near, a crest's face can stand steep before the eye; further off the footprint's
             // mips have smoothed it, and the steps can lengthen.)
-            t += f / (-d.y + mix(STEEPEST, 0.2, smoothstep(10.0, 60.0, t))) + 0.01 + t * 0.003
+            t += f / max(-d.y + mix(STEEPEST, 0.2, smoothstep(10.0, 60.0, t)), 0.1) +
+                0.01 +
+                t * 0.003
         }
         i += 1
     }
@@ -274,6 +280,9 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
             }
         }
         t = (lo + hi) * 0.5
+    } else if far_off {
+        // (Nothing near: on from the last place it was over the water.)
+        return trace_far(s, waves, o, d, far, before)
     }
     min(t, far)
 }
@@ -282,7 +291,7 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
 /// where it meets the level (going down) or nothing (`1.0e9`): on the swell alone, read as
 /// coarse as the ray's long footprint holds it, so the horizon is the crests of the sea's
 /// big waves standing against the spray, not a ruler's edge.
-fn trace_far(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
+fn trace_far(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32, from: f32) -> f32 {
     // (One loop, one read of the sea: stepping forward till under, then halving onto it.)
     // (No further than what's in front, nor than a rising ray's still under the highest crest:
     // the sky's pixels, most of the frame, march not at all.)
@@ -290,7 +299,9 @@ fn trace_far(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
     if end <= NEAR_SEA * 0.8 {
         return far
     }
-    var lo = NEAR_SEA * 0.8
+    // (From where the near march left it, over the water: never from under it, where the first
+    // halving would close on that one place, a band of pixels all at one distance.)
+    var lo = max(from, NEAR_SEA * 0.5)
     var hi = 0.0
     var t = lo
     var i = 0
@@ -1017,7 +1028,7 @@ fn sea_shade(
         PI *
         (1.0 - under_isle(p))
     let horizon_sky = heaven(view, h.light, normalize(vec3(d.x, 0.006, d.z)), dome, smp).rgb
-    let body = vec3(0.055, 0.14, 0.12) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
+    let body = vec3(0.088, 0.22, 0.19) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
     let behind = pow(max(dot(normalize(vec3(-d.x, 0.0, -d.z)), -l) * 0.5 + 0.5, 0.0), 4.0)
     // The sun through the waves' crests: their thin tops, where the waves crowd and sharpen,
     // glowing green on the faces turned to the eye, most when the eye looks toward the sun
@@ -1035,7 +1046,7 @@ fn sea_shade(
     // The bright low sky behind a crest shining through its thin top (as Atlas's water draws
     // it): the higher the crest stands over the sea, the more its face is turned to the eye
     // away from that light, the more of it comes through, green-grey.
-    let lf = normalize(vec3(d.x, 0.0, d.z))
+    let lf = normalize(vec3(d.x, 0.0, d.z) + vec3(1.0e-6, 0.0, 0.0))
     let glow = vec3(0.05, 0.2, 0.15) *
         horizon_sky *
         GLOW *
@@ -1059,9 +1070,18 @@ fn sea_shade(
     // into a sliver, and froth laid on rest there would stretch along it, a smeared texture.)
     let laid = mix(rest, xz, mix(1.0, 0.7, smoothstep(10.0, 40.0, t)))
     let wa = vec2(dot(laid, wind), dot(laid, vec2(-wind.y, wind.x)))
-    let lace = noise(wa * vec2(1.0, 2.4) + vec2(3.0, 9.0)) * 0.5 +
-        noise(wa * vec2(4.0, 9.0) + vec2(7.0, 1.0)) * 0.32 +
-        noise(wa * vec2(13.0, 24.0)) * 0.18
+    // (Each octave fading to its mean as the pixel's footprint, foreshortened down the view, grows
+    // past it: a finer pattern than a pixel holds draws a grain that crawls frame to frame.)
+    let foot_l = max(length(du), length(dv))
+    let lace = mix(
+        noise(wa * vec2(1.0, 2.4) + vec2(3.0, 9.0)),
+        0.5,
+        smoothstep(0.15, 0.5, foot_l * 2.4),
+    ) *
+        0.5 +
+        mix(noise(wa * vec2(4.0, 9.0) + vec2(7.0, 1.0)), 0.5, smoothstep(0.15, 0.5, foot_l * 9.0)) *
+            0.32 +
+        mix(noise(wa * vec2(13.0, 24.0)), 0.5, smoothstep(0.15, 0.5, foot_l * 24.0)) * 0.18
     let wq = wa * vec2(0.55, 2.0)
     let warp = vec2(noise(wq * 0.5 + vec2(2.1, 8.3)), noise(wq * 0.5 + vec2(6.7, 3.9))) - vec2(0.5)
     // The foam upwind, read blurred, a few metres back and further: what the wind has drawn out
@@ -1074,7 +1094,7 @@ fn sea_shade(
         dv * 12.0,
         tiles(calm).xy,
     )
-    let web_k = clamp(1.0 - px_m * 2.0, 0.0, 1.0)
+    let web_k = clamp(1.0 - foot_l * 2.0, 0.0, 1.0)
     // (Most of the sea's bare of foam: where there's none within a few pixels, nor upwind, its
     // froth's not worked out at all.)
     let near_foam = foam_at(waves, rest, du * 8.0, dv * 8.0, tiles(calm).xy)
@@ -1132,7 +1152,7 @@ fn sea_shade(
         // (Where it breaks now it's a crest whatever its height.)
         let on_crest = mix(
             0.22,
-            mix(1.7, 3.2, smoothstep(4.0, 14.0, t)),
+            mix(1.7, 3.2, smoothstep(4.0, 14.0, t)) * mix(1.0, 0.55, smoothstep(60.0, 250.0, t)),
             max(crest_k, smoothstep(0.4, 0.8, foam_k)),
         )
         let dense_ = clamp(
@@ -1170,8 +1190,18 @@ fn sea_shade(
         let lines = smoothstep(0.9 - blown * 0.06, 0.96 - blown * 0.04, ridge) * (0.4 + 0.6 * lace)
         // (Too far for its froth, a whitecap still breaks up: torn by a coarser pattern a pixel there
         // can hold, metres across, not a smooth lens of white.)
-        let coarse = noise(wa * vec2(0.12, 0.4) + vec2(5.0, 3.0)) * 0.6 +
-            noise(wa * vec2(0.4, 1.1) + vec2(1.0, 8.0)) * 0.4
+        let coarse = mix(
+            noise(wa * vec2(0.12, 0.4) + vec2(5.0, 3.0)),
+            0.5,
+            smoothstep(0.3, 0.9, foot_l * 0.4),
+        ) *
+            0.6 +
+            mix(
+                noise(wa * vec2(0.4, 1.1) + vec2(1.0, 8.0)),
+                0.5,
+                smoothstep(0.15, 0.5, foot_l * 1.1),
+            ) *
+                0.4
         let far_white = clamp((dense - (1.0 - coarse) * 0.8) / 0.3, 0.0, 1.0) * (0.6 + 0.4 * coarse)
         let froth = mix(coarse, froth_h, web_k)
         // (Never one smooth white even where it's densest: a fresh cap's a heap of bubble domes, its
@@ -1321,7 +1351,7 @@ fn sea_shade(
     let hazy = mix(aired, horizon_sky, max(spray, smoothstep(2500.0, 30000.0, t) * 0.85))
     // (Under an overcast a storm's sea is slate, its blue and green mostly gone grey, and only a
     // few values darker than the sky over it.)
-    let hazy = mix(hazy, vec3(luma(hazy)) * vec3(0.94, 1.08, 0.97) * 1.2, SLATE * h.light.storm)
+    let hazy = mix(hazy, vec3(luma(hazy)) * vec3(0.93, 1.07, 1.0) * 1.45, SLATE * h.light.storm)
     (hazy, line, detail * 0.6 + foam, n, cut)
 }
 

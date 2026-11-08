@@ -4,13 +4,16 @@
 use look::noise
 use engine::ocean::{SeaState, Swell}
 
-/// The rate the sea and the skiff are drawn at (a second's drawings): on ones at 24, as the clean
-/// look's world moves. (12 holds them on twos, as a hand-drawn film's are.)
-pub const HELD: f32 = 24.0
+/// The rate the sea and the skiff are drawn at (a second's drawings): a new drawing every frame
+/// of a 120 a second screen (Ryan, Nov 8: "24 for a combat game won't feel good"). (24 held
+/// them on ones as a film's are, 12 on twos.)
+pub const HELD: f32 = 120.0
 
 /// `time` held to the last drawing.
 pub fn held(time: f32) -> f32 {
-    floor(time * HELD) / HELD
+    // (Half a drawing on: a frame's time that falls on a drawing's start, give or take its
+    // rounding, isn't put in the one before.)
+    floor(time * HELD + 0.5) / HELD
 }
 
 /// The opening's sea: a gale of 19 m/s (Beaufort 8: moderately high waves, their crests

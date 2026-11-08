@@ -2,7 +2,7 @@
 // inverse FFT at a time, a few of their texels read back, and the same waves summed one by one
 // on the CPU at the places those texels hold (texel m at m L / SIDE).
 
-use engine::ocean::{Ocean, SIDE, SeaState, amplitude, band, leaning, wavenumber}
+use engine::ocean::{Ocean, SIDE, SeaState, amplitude, band, leaning, standing, wavenumber}
 use std::gpu::{GlobalId, GpuBuffer, Rgba16Float, Slots, Texture, buffer, dispatch, read}
 use std::io::{Pending, print}
 
@@ -99,7 +99,7 @@ fn summed(i: u32, at: vec2u) -> vec3 {
         }
     }
     // (The crests leaned on down the wind: the water over the level carried further.)
-    let carried = leaning(SEA) * max(d.y, 0.0)
+    let carried = leaning(SEA) * standing(d.y)
     d + vec3(carried.x, 0.0, carried.y)
 }
 
