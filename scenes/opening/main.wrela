@@ -104,6 +104,11 @@ pub const QUARTER: bool = true
 /// the stacks stay grainy for seconds after the camera starts).
 pub const SPARSE: u32 = 2
 
+/// Whether the sea, the skiff and what else the paint meets are painted in half the pixels, a
+/// checkerboard's, the others filled between them along the edges (`paint::paint_half`,
+/// `paint::paint_fill`): half the paint's cost.
+pub const CHECKER: bool = true
+
 /// Whether the clouds' dome is marched at half its size each way (`--set HALF_SKY=false` for full): a
 /// quarter of the clouds' cost, a little softer.
 pub const HALF_SKY: bool = true

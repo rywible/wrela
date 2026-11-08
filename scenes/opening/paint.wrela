@@ -1190,9 +1190,9 @@ fn sample(
 /// Four places in a pixel, on a turned grid: each its own row and column.
 const WITHIN = [vec2(0.125, -0.375), vec2(-0.375, -0.125), vec2(0.375, 0.125), vec2(-0.125, 0.375)]
 
-@fragment
-pub fn paint(
-    pixel: FragCoord,
+/// What the paint makes of pixel `px` (its centre, the drawing's pixels): the colour, and what
+/// the ink reads.
+fn paint_at(
     shot: Shot,
     light: Light,
     clouds: Clouds,
@@ -1205,9 +1205,9 @@ pub fn paint(
     yon_colour: Texture<Rgba16Float>,
     yon_marks: Texture<Rgba16Float>,
     yon_normal: Texture<Rgba8>,
-) -> Targets3<vec4, vec4, vec4> {
+    px: vec2,
+) -> (vec4, vec4, vec4) {
     let s = shot
-    let px = pixel.position.xy
     // Where the ray passes near the skiff, what's finer than a pixel (the hull's edge, the
     // paddle) is met four times over and averaged, so it neither stairs nor crawls as the eye
     // moves. Elsewhere, once. (Round the skiff the four fade to the one over its last metre, so
@@ -1262,5 +1262,110 @@ pub fn paint(
     if count > 1 {
         c = mix(c, sum / weight, boat_k)
     }
-    Targets3 { first: vec4(c, 1.0), second: marks, third }
+    (vec4(c, 1.0), marks, third)
+}
+
+@fragment
+pub fn paint(
+    pixel: FragCoord,
+    shot: Shot,
+    light: Light,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    waves: Waves,
+    yon_colour: Texture<Rgba16Float>,
+    yon_marks: Texture<Rgba16Float>,
+    yon_normal: Texture<Rgba8>,
+) -> Targets3<vec4, vec4, vec4> {
+    let (first, second, third) = paint_at(shot, light, clouds, view, aerial, dome, cloud, smp, waves, yon_colour, yon_marks, yon_normal, pixel.position.xy)
+    Targets3 { first, second, third }
+}
+
+/// The paint for half the drawing's pixels (`main::CHECKER`), those of a checkerboard: this
+/// pass is half the drawing's width, and its pixel x in row y paints the drawing's 2x, or 2x + 1
+/// on odd rows. `paint_fill` fills the others between them.
+@fragment
+pub fn paint_half(
+    pixel: FragCoord,
+    shot: Shot,
+    light: Light,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    waves: Waves,
+    yon_colour: Texture<Rgba16Float>,
+    yon_marks: Texture<Rgba16Float>,
+    yon_normal: Texture<Rgba8>,
+) -> Targets3<vec4, vec4, vec4> {
+    let q = floor(pixel.position.xy)
+    let x = q.x * 2.0 + f32(u32(q.y) % 2)
+    let (first, second, third) = paint_at(shot, light, clouds, view, aerial, dome, cloud, smp, waves, yon_colour, yon_marks, yon_normal, vec2(x + 0.5, q.y + 0.5))
+    Targets3 { first, second, third }
+}
+
+/// The drawing's pixels from the checkerboard's (`paint_half`): those it painted as they are;
+/// each other one between the two of its four painted neighbours, left and right or above and
+/// below, that differ least, so an edge is followed along, not blurred across; and what the ink
+/// reads, of the neighbour nearest that colour.
+@fragment
+pub fn paint_fill(
+    pixel: FragCoord,
+    size: vec2,
+    half_colour: Texture<Rgba16Float>,
+    half_marks: Texture<Rgba16Float>,
+    half_normal: Texture<Rgba8>,
+) -> Targets3<vec4, vec4, vec4> {
+    let ip = floor(pixel.position.xy)
+    let x = u32(ip.x)
+    let y = u32(ip.y)
+    let hw = u32((size.x + 1.0) * 0.5) - 1
+    let hh = u32(size.y) - 1
+    if (x + y) % 2 == 0 {
+        let hx = min(x / 2, hw)
+        return Targets3 {
+            first: half_colour.load(hx, y),
+            second: half_marks.load(hx, y),
+            third: half_normal.load(hx, y),
+        }
+    }
+    // (Its neighbours left and right, in its own row; above and below, in theirs.)
+    let l = (if x > 0 { x - 1 } else { x + 1 }) / 2
+    let r = min((x + 1) / 2, hw)
+    let up = if y > 0 { y - 1 } else { y + 1 }
+    let dn = min(y + 1, hh)
+    let hc = min(x / 2, hw)
+    let cl = half_colour.load(min(l, hw), y)
+    let cr = half_colour.load(r, y)
+    let cu = half_colour.load(hc, up)
+    let cd = half_colour.load(hc, dn)
+    let across = luma(abs(cl.rgb - cr.rgb))
+    let down = luma(abs(cu.rgb - cd.rgb))
+    let c = if across <= down { (cl + cr) * 0.5 } else { (cu + cd) * 0.5 }
+    // (The ink's reading is no mean: a line or a depth halfway between two isn't either's.)
+    var best = cl
+    var bx = min(l, hw)
+    var by = y
+    if luma(abs(cr.rgb - c.rgb)) < luma(abs(best.rgb - c.rgb)) {
+        best = cr
+        bx = r
+        by = y
+    }
+    if luma(abs(cu.rgb - c.rgb)) < luma(abs(best.rgb - c.rgb)) {
+        best = cu
+        bx = hc
+        by = up
+    }
+    if luma(abs(cd.rgb - c.rgb)) < luma(abs(best.rgb - c.rgb)) {
+        best = cd
+        bx = hc
+        by = dn
+    }
+    Targets3 { first: c, second: half_marks.load(bx, by), third: half_normal.load(bx, by) }
 }
