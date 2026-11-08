@@ -282,14 +282,37 @@ pub fn bones(s: Shot) -> [mat4; 64] {
     // its length, so stood that low his shoulders fell a hand's span under the boom and his arms
     // were wrung up over his head to it. So he rises out of the crouch till his trunk reaches up
     // toward where the sailing wants his neck, as far as his legs, near straight, let him.
+    // (Steering with his weight: his body leans into a turn, his hips a little across with it.)
+    let into = left * clamp(s.turn / 0.4, -1.0, 1.0)
+    neck_at = neck_at + into * 0.12
+    hips = hips + into * 0.05
     let torso = length(NECK - PELVIS)
-    let leg = 0.96 * (length(CALF - THIGH) + length(FOOT - CALF))
+    // (His knees kept bent, a rider's ready crouch, never stood up straight-legged: sprung,
+    // they work with the hull, a slow give and rise as it rides the sea, and he sinks lower
+    // the harder it's turning.)
+    let ride = 0.5 + 0.5 * sin(s.held * 2.3) * sin(s.held * 0.9 + 1.0)
+    let crouch = 0.84 - 0.03 * ride - 0.05 * clamp(abs(s.turn) / 0.4, 0.0, 1.0)
+    let leg = crouch * (length(CALF - THIGH) + length(FOOT - CALF))
     // (His feet drawn in under him a little, as wide a stance as his legs keep strength in:
     // spread as wide as the sailing sets them, he'd have had to squat to reach the deck.)
     let fore_foot = drawn_in(s.fore_foot, hips)
     let aft_foot = drawn_in(s.aft_foot, hips)
     let top = min(stood_over(hips, fore_foot, leg), stood_over(hips, aft_foot, leg))
-    hips.y = max(hips.y, min(neck_at.y - torso * 0.97, top))
+    hips.y = top
+    // A rider hangs off the boom: his shoulders back from his hands by near a straight arm's
+    // reach, his trunk leaning out from his crouched hips to there (never more than 35 degrees
+    // off upright), so his arms are long, not crooked up under his chin.
+    let reach = length(HAND - UPPER) * 0.92 + 0.12
+    let back = vec3(neck_at.x - mid.x, 0.0, neck_at.z - mid.z)
+    let back_dir = back / max(length(back), 1.0e-4)
+    let goal = mid + back_dir * reach + up * 0.06
+    var lay = normalize(goal - hips)
+    let level_len = length(vec2(lay.x, lay.z))
+    if lay.y < 0.82 {
+        let flat = vec3(lay.x, 0.0, lay.z) / max(level_len, 1.0e-4)
+        lay = normalize(flat * 0.5727 + up * 0.82)
+    }
+    neck_at = hips + lay * torso
     // His trunk: the pelvis half way to the spine's lean, the chest along it.
     let spine = normalize(neck_at - hips)
     // (The pelvis kept nearer upright than the chest: tipped as far, it swung the coat's tails
@@ -439,7 +462,9 @@ pub fn bones(s: Shot) -> [mat4; 64] {
         vec4(s.boat_z, 0.0),
         vec4(s.boat + s.boat_y * FREEBOARD, 1.0),
     )
-    for i in 0..26 {
+    // (Every bone, fingers too: stopped at the legs' last, his fingers stayed in the skiff's
+    // frame, at the world's middle, and their skin streaked back to there from his hands.)
+    for i in 0..64 {
         m[i] = world * m[i]
     }
     m

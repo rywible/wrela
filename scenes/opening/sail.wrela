@@ -464,7 +464,7 @@ pub struct Pose: Copy {
 /// Where the mast stands (the skiff's frame), how far up it the boom is lashed, and the boom's
 /// length to the clew (m).
 pub const FOOT = vec3(0.0, 0.02, 0.95)
-pub const LASHED: f32 = 1.3
+pub const LASHED: f32 = 1.15
 pub const BOOM: f32 = 2.15
 
 /// How far either arm of the wishbone bows out from the sail, at its middle (m).
