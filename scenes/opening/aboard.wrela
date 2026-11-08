@@ -69,6 +69,8 @@ pub struct Aboard {
     give_v: vec3,
     last_boat: vec3,
     last_v: vec3,
+    // (The hull's last pitch and roll: how far its bow and its side were tipped up.)
+    last_tip: vec2,
     rode: u32,
     colour: Texture<Rgba16Float>,
     marks: Texture<Rgba16Float>,
@@ -104,6 +106,7 @@ pub fn aboard() -> Aboard {
         give_v: vec3(0.0),
         last_boat: vec3(0.0),
         last_v: vec3(0.0),
+        last_tip: vec2(0.0),
         rode: 0,
         colour: texture(width: 1, height: 1),
         marks: texture(width: 1, height: 1),
@@ -241,6 +244,13 @@ fn stood_over(hips: vec3, foot: vec3, leg: f32) -> f32 {
     ankle.y + sqrt(max(leg * leg - dot(across, across), 0.0)) - (THIGH.y - PELVIS.y)
 }
 
+/// How far into a pull on the boom he is at drawing time `t` (0 eased out, 1 pulled in): a
+/// pull every 1.2 to 1.6 s, quick in, slower out.
+fn trimming(t: f32) -> f32 {
+    let phase = fract(t / 1.4 + 0.12 * sin(t * 0.73))
+    smoothstep(0.0, 0.16, phase) * smoothstep(0.55, 0.25, phase)
+}
+
 /// His palette as the shot holds the traveller (in the skiff's frame), into the world: each of
 /// his bones' matrices, rest space to world.
 pub fn bones(s: Shot, give: vec3) -> [mat4; 64] {
@@ -311,7 +321,10 @@ pub fn bones(s: Shot, give: vec3) -> [mat4; 64] {
     // from the sail, his hips under it as low as his bent legs set them. (Fed his weight through
     // straight arms, not crooked up under his chin, and never sat upright on his heels.)
     // (Further out in a gust, as he takes its pull.)
-    let reach = length(HAND - UPPER) * 0.92 + 0.14 + 0.08 * clamp(s.gust - 1.0, -0.5, 1.0)
+    // (And every second or so he works the sail: pulls in on the boom over a fifth of a
+    // second, bending his arms and drawing himself toward it, then eases back out.)
+    let trim = trimming(s.held)
+    let reach = length(HAND - UPPER) * 0.92 + 0.14 + 0.08 * clamp(s.gust - 1.0, -0.5, 1.0) - 0.13 * trim
     let back = vec3(neck_at.x - mid.x, 0.0, neck_at.z - mid.z)
     let back_dir = back / max(length(back), 1.0e-4)
     let lay = normalize(back_dir * 0.375 + normalize(mix(up, plumb, 0.7)) * 0.927)
@@ -359,7 +372,10 @@ pub fn bones(s: Shot, give: vec3) -> [mat4; 64] {
     m[B_SPINE3] = placed(r_chest, spine3, SPINE3)
     // His head along the sailing's gaze: ahead over the bow, into turns.
     // (Kept level to the horizon as the hull rolls under him, as the eyes keep a head.)
-    let look = normalize(s.gaze - plumb * dot(s.gaze, plumb) * 0.7)
+    // (Glancing up at the sail's luff as he trims it.)
+    let at_sail = normalize(s.mast * 1.6 + RIG_FOOT - neck)
+    let gaze = normalize(mix(normalize(s.gaze), at_sail, 0.45 * trimming(s.held - 0.08)))
+    let look = normalize(gaze - plumb * dot(gaze, plumb) * 0.7)
     let r_head = aim(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), look, plumb * 3.0 + spine)
     let r_neck = aim(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), normalize(spine + up), look)
     m[B_NECK] = placed(r_neck, neck, NECK)
@@ -857,6 +873,7 @@ impl Aboard {
             if dt > 0.0 || self.rode == 0 {
                 self.last_v = v
                 self.last_boat = s.boat
+                self.last_tip = vec2(s.boat_z.y, s.boat_x.y)
                 self.rode = self.rode + 1
             }
             return
@@ -869,10 +886,15 @@ impl Aboard {
         let felt = vec3(dot(a, s.boat_x), dot(a, s.boat_y), dot(a, s.boat_z))
         let k = 90.0
         let c = 11.0
-        let push = -felt * vec3(0.012, 0.02, 0.012)
+        // (And the hull's pitching and rolling: as the bow lifts he sinks into his knees and
+        // springs back as it falls; as it rolls he shifts his weight onto the low foot.)
+        let tip = vec2(s.boat_z.y, s.boat_x.y)
+        let tipping = (tip - self.last_tip) / dt
+        self.last_tip = tip
+        let push = -felt * vec3(0.012, 0.02, 0.012) + vec3(-tipping.y * 0.35, -abs(tipping.x) * 0.4 - tipping.x * 0.25, 0.0)
         self.give_v = self.give_v + (push * k - self.give * k - self.give_v * c) * dt
         self.give = self.give + self.give_v * dt
-        self.give = clamp(self.give, vec3(-0.07, -0.09, -0.07), vec3(0.07, 0.03, 0.07))
+        self.give = clamp(self.give, vec3(-0.09, -0.12, -0.08), vec3(0.09, 0.04, 0.08))
     }
 
     /// Him drawn into the painted scene (`colour`, `marks`, `normal`, which the paint has just
