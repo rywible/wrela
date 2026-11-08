@@ -14,6 +14,7 @@ use ink::ink
 use weather::weather
 use sail::{Rig, key, let_go, rest, step}
 use std::collections::swap
+use std::io::Pending
 use std::input::Event
 use std::gpu::{
     ClipPosition, R32Float, Rgba16Float, Rgba8, Texture, Texture3d, VertexIndex, begin_pass,
@@ -52,6 +53,10 @@ pub struct State {
     /// of its slabs have been.
     pub(package) isle_field: Texture3d<R32Float>,
     pub(package) isle_cooked: u32,
+    /// The passes' times asked for and not yet answered (which, the ask, its frame), and the
+    /// frames drawn (`main::TIMINGS`).
+    pub(package) asks: Vec<(u32, Pending<f32>, u32)>,
+    pub(package) frames: u32,
     pub(package) width: u32,
     pub(package) height: u32,
     /// The skiff as the player sails it.
@@ -93,6 +98,8 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         yon_seq: 0,
         isle_field: texture3d::<R32Float>(FIELD_SIDE, FIELD_SIDE, FIELD_SIDE),
         isle_cooked: 0,
+        asks: Vec::new(),
+        frames: 0,
         image: texture(width: 1, height: 1),
         image_size: (1, 1),
         spare: texture(width: 1, height: 1),

@@ -21,7 +21,8 @@ use ink::ink
 use played::{State, cover, painted, sized, targets, weathered}
 use sail::key
 use std::input::events
-use std::gpu::{begin_screen_pass, draw, label}
+use std::gpu::{begin_screen_pass, draw, label, timed}
+use std::io::print
 
 /// The time the scene starts at (s): the frames a test or a still draws begin here.
 pub const START: f32 = 0.0
@@ -83,11 +84,21 @@ pub const CAMERA: f32 = 0.0
 /// four rays round a stack's edge that keep it from trailing). 0, the scene whole: as shipped.
 pub const OFF: u32 = 0
 
+/// Whether each frame's passes print their GPU time (`timing <frame> <pass> <us>`), for a host
+/// that can't be asked for timestamps, as the render box's (`--set TIMINGS=true`).
+pub const TIMINGS: bool = false
+
+/// The passes `TIMINGS` prints.
+const TIMED: [Text; 6] = ["clouds", "ocean", "yonder", "paint", "weather", "ink"]
+
 pub fn init() -> State {
     targets(heavens(SUN, 3.0), 640, 360)
 }
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if TIMINGS {
+        timings(mut s)
+    }
     sized(mut s, width, height)
     // The player's keys: W sheets in, S lets the sail fly, A and D steer.
     for e in events() {
@@ -105,6 +116,29 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         vertices: 3,
     )
     screen.present()
+}
+
+/// The passes' times as they come back, printed, and this frame's asked for.
+fn timings(s: mut State) {
+    var k = 0
+    while k < s.asks.len() {
+        let i = s.asks[k].0
+        let at = s.asks[k].2
+        match s.asks[k].1.poll() {
+            Some(Ok(us)) => {
+                print(f"timing {at} {TIMED[i]} {us[0]}")
+                let _ = s.asks.remove(k)
+            },
+            Some(Err(_)) => {
+                let _ = s.asks.remove(k)
+            },
+            None => k += 1,
+        }
+    }
+    for i in 0..6 {
+        s.asks.push((u32(i), timed(TIMED[i]), s.frames))
+    }
+    s.frames += 1
 }
 
 /// Each frame records draws the host accepts.
