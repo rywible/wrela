@@ -293,25 +293,23 @@ pub fn bones(s: Shot) -> [mat4; 64] {
     let ride = 0.5 + 0.5 * sin(s.held * 2.3) * sin(s.held * 0.9 + 1.0)
     let crouch = 0.84 - 0.03 * ride - 0.05 * clamp(abs(s.turn) / 0.4, 0.0, 1.0)
     let leg = crouch * (length(CALF - THIGH) + length(FOOT - CALF))
+    // A rider hangs off the boom: his shoulders back from his hands by near a straight arm's
+    // reach and level with them, his trunk laid back from there 22 degrees off upright, away
+    // from the sail, his hips under it as low as his bent legs set them. (Fed his weight through
+    // straight arms, not crooked up under his chin, and never sat upright on his heels.)
+    let reach = length(HAND - UPPER) * 0.92 + 0.14
+    let back = vec3(neck_at.x - mid.x, 0.0, neck_at.z - mid.z)
+    let back_dir = back / max(length(back), 1.0e-4)
+    let lay = normalize(back_dir * 0.375 + up * 0.927)
+    neck_at = mid + back_dir * reach + up * 0.04
+    let hung = neck_at - lay * torso
+    hips = vec3(hung.x, hips.y, hung.z)
     // (His feet drawn in under him a little, as wide a stance as his legs keep strength in:
     // spread as wide as the sailing sets them, he'd have had to squat to reach the deck.)
     let fore_foot = drawn_in(s.fore_foot, hips)
     let aft_foot = drawn_in(s.aft_foot, hips)
     let top = min(stood_over(hips, fore_foot, leg), stood_over(hips, aft_foot, leg))
-    hips.y = top
-    // A rider hangs off the boom: his shoulders back from his hands by near a straight arm's
-    // reach, his trunk leaning out from his crouched hips to there (never more than 35 degrees
-    // off upright), so his arms are long, not crooked up under his chin.
-    let reach = length(HAND - UPPER) * 0.92 + 0.12
-    let back = vec3(neck_at.x - mid.x, 0.0, neck_at.z - mid.z)
-    let back_dir = back / max(length(back), 1.0e-4)
-    let goal = mid + back_dir * reach + up * 0.06
-    var lay = normalize(goal - hips)
-    let level_len = length(vec2(lay.x, lay.z))
-    if lay.y < 0.82 {
-        let flat = vec3(lay.x, 0.0, lay.z) / max(level_len, 1.0e-4)
-        lay = normalize(flat * 0.5727 + up * 0.82)
-    }
+    hips.y = min(hung.y, top)
     neck_at = hips + lay * torso
     // His trunk: the pelvis half way to the spine's lean, the chest along it.
     let spine = normalize(neck_at - hips)
