@@ -276,12 +276,11 @@ pub fn bones(s: Shot) -> [mat4; 64] {
         let pole = -up + out * 0.25 - facing * 0.15
         let elbow = bend(shoulder, goal, l1, l2, pole)
         let wrist = elbow + normalize(goal - elbow) * l2
-        let along = vec3(side, 0.0, 0.0)
-        // The upper arm and forearm turned so the elbow's crease faces the hand's way.
-        // (At rest his arms are straight out, the inside of each elbow ahead, +z: bent, it faces
-        // the forearm's way; the forearm's own +z, back along the upper arm. Straight, it faces
-        // down.)
-        let crook = (wrist - elbow) + pole * 0.05
+        // The upper arm turned so the elbow's crease faces the hand's way: away from the elbow's
+        // point, which `bend` set toward `pole`. (At rest his arms are straight out, the inside of
+        // each elbow ahead, +z.) The crease taken from the pole, not the forearm, so a near
+        // straight arm doesn't spin about itself.
+        let crook = (wrist - elbow) - pole * 0.05
         // (Each bone along its own rest axis, a degree or two off straight out.)
         let r_upper = aim(
             normalize(mirrored(FORE, side) - mirrored(UPPER, side)),
@@ -289,14 +288,35 @@ pub fn bones(s: Shot) -> [mat4; 64] {
             elbow - shoulder,
             crook,
         )
-        let r_fore = aim(
+        // The forearm folds about the elbow's hinge (the upper arm's own up, at rest), so the
+        // fold itself never twists the two against each other at the elbow.
+        let fore_axis = normalize(wrist - elbow)
+        let r_fold = aim(
             normalize(mirrored(HAND, side) - mirrored(FORE, side)),
-            vec3(0.0, 0.0, 1.0),
+            vec3(0.0, 1.0, 0.0),
             wrist - elbow,
-            (shoulder - elbow) + pole * 0.05,
+            r_upper * vec3(0.0, 1.0, 0.0),
         )
-        // The hand round the boom: the palm down onto it, the knuckles on along the forearm.
-        let r_hand = aim(along, vec3(0.0, -1.0, 0.0), wrist - elbow, -up + facing * 0.5)
+        // The hand round the boom wants its palm down onto it. A forearm turns the hand by
+        // twisting along its length (more than a wrist could), so the turn the palm needs from
+        // the folded forearm's is shared: half twists the forearm, all of it the hand, and none
+        // of it is ever more than a real arm's. (All of it at the wrist pinched the forearm
+        // thin and long.)
+        let palm_at = r_fold * vec3(0.0, -1.0, 0.0)
+        let palm_raw = -up + facing * 0.5
+        // (When the forearm points nearly along the palm's wanted way, that way spins about it,
+        // so the turn fades out there rather than following it.)
+        let across = palm_raw - fore_axis * dot(palm_raw, fore_axis)
+        let sure = smoothstep(0.1, 0.3, length(across) / length(palm_raw))
+        let palm_want = across / max(length(across), 1.0e-4)
+        let palm_now = palm_at
+        let twist = sure * clamp(
+            atan2(dot(cross(palm_now, palm_want), fore_axis), dot(palm_now, palm_want)),
+            -1.7,
+            1.7,
+        )
+        let r_fore = about(fore_axis, twist * 0.5) * r_fold
+        let r_hand = about(fore_axis, twist) * r_fold
         let i = u32(k)
         m[B_CLAVICLE + i] = placed(r_chest, clav, mirrored(CLAVICLE, side))
         m[B_UPPER + i] = placed(r_upper, shoulder, mirrored(UPPER, side))
