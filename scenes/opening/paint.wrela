@@ -1095,14 +1095,7 @@ fn sea_shade(
     let above = wave - level_at(waves, xz, max(px_m * 3.0, 2.0), 0.0)
     let crest_k = max(smoothstep(-0.5, 0.7, above), smoothstep(0.8, 2.6, wave)) *
         smoothstep(-2.5, 0.3, wave)
-    // (And where a crest stands highest and sharpest, crowded to a ridge, it's breaking now
-    // whether or not the waves the ocean breaks have folded there: the white horses on the
-    // crests of the waves a boat rides, a head of fresh white on each.)
-    let cap = smoothstep(0.75, 0.35, squeezed) *
-        smoothstep(0.0, 0.7, above) *
-        crest_k *
-        smoothstep(0.03, 0.1, whitecaps(SEA_STATE))
-    let (white, bright_, bubbles, veil) = if max(max(near_foam, cap), max(torn, upwind)) > 0.004 {
+    let (white, bright_, bubbles, veil) = if max(near_foam, max(torn, upwind)) > 0.004 {
         // (The froth's height: bubble domes, two sizes, drawn out a little down the wind, and the
         // lace over them.)
         // (Warped twice over, so its cells run every size, never a lattice.)
@@ -1152,7 +1145,7 @@ fn sea_shade(
             max(crest_k, smoothstep(0.4, 0.8, foam_k)),
         )
         let dense_ = clamp(
-            max(max(mix(foam_k, ragged, 0.75), cap * 0.8) * on_crest, tail) * (2.1 + 1.0 * gusting),
+            max(mix(foam_k, ragged, 0.75) * on_crest, tail) * (2.1 + 1.0 * gusting),
             0.0,
             1.0,
         )
