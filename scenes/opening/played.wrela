@@ -3,20 +3,22 @@
 // it the keys while the player sails (`input`), and each frame draws it into its `image` (`play`),
 // which it lays on its own screen.
 
-use main::{KINETIC, LANTERN, LOOK, START, STYLE}
+use main::{HALF_PAINT, KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, START, STYLE}
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
-use paint::paint
-use yonder::{Yon, yonder}
+use paint::{paint, paint_fill, paint_half}
+use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder, yonder_low, yonder_rebuild}
 use ink::ink
 use weather::weather
 use sail::{Rig, key, let_go, rest, step}
 use std::collections::swap
+use std::io::Pending
 use std::input::Event
 use std::gpu::{
-    ClipPosition, Rgba16Float, Rgba8, Texture, VertexIndex, begin_pass, begin_pass3, draw, texture,
+    ClipPosition, R32Float, Rgba16Float, Rgba8, Texture, Texture3d, VertexIndex, begin_pass,
+    begin_pass3, dispatch, draw, label, texture, texture3d,
 }
 
 /// How finely a live page meets the scene (`Shot::fine`): the rock and the cathedral four times
@@ -43,10 +45,26 @@ pub struct State {
     pub(package) past_colour: Texture<Rgba16Float>,
     pub(package) past_marks: Texture<Rgba16Float>,
     pub(package) past_normal: Texture<Rgba8>,
+    /// A quarter of them met afresh this drawing, at half the size each way (`main::QUARTER`).
+    pub(package) low_colour: Texture<Rgba16Float>,
+    pub(package) low_marks: Texture<Rgba16Float>,
+    pub(package) low_normal: Texture<Rgba8>,
+    /// Every other column of the paint, at half the width (`main::HALF_PAINT`).
+    pub(package) half_colour: Texture<Rgba16Float>,
+    pub(package) half_marks: Texture<Rgba16Float>,
+    pub(package) half_normal: Texture<Rgba8>,
     pub(package) yon: Yon,
     pub(package) yon_shot: Shot,
     pub(package) yon_count: f32,
     pub(package) yon_seq: u32,
+    /// The isle's field, cooked once over the first drawings (`yonder::cook_isle`), and how many
+    /// of its slabs have been.
+    pub(package) isle_field: Texture3d<R32Float>,
+    pub(package) isle_cooked: u32,
+    /// The passes' times asked for and not yet answered (which, the ask, its frame), and the
+    /// frames drawn (`main::TIMINGS`).
+    pub(package) asks: Vec<(u32, Pending<f32>, u32)>,
+    pub(package) frames: u32,
     pub(package) width: u32,
     pub(package) height: u32,
     /// The skiff as the player sails it.
@@ -82,10 +100,20 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         past_colour: texture(width: width, height: height),
         past_marks: texture(width: width, height: height),
         past_normal: texture(width: width, height: height),
+        low_colour: texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE),
+        low_marks: texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE),
+        low_normal: texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE),
+        half_colour: texture(width: (width + 1) / 2, height: height),
+        half_marks: texture(width: (width + 1) / 2, height: height),
+        half_normal: texture(width: (width + 1) / 2, height: height),
         yon: afresh(shot),
         yon_shot: shot,
         yon_count: 0.0,
         yon_seq: 0,
+        isle_field: texture3d::<R32Float>(FIELD_SIDE, FIELD_SIDE, FIELD_SIDE),
+        isle_cooked: 0,
+        asks: Vec::new(),
+        frames: 0,
         image: texture(width: 1, height: 1),
         image_size: (1, 1),
         spare: texture(width: 1, height: 1),
@@ -117,6 +145,7 @@ fn afresh(shot: Shot) -> Yon {
         resolution: shot.resolution,
         held: 0.0,
         jitter: vec2(0.0),
+        turn: 0,
     }
 }
 
@@ -144,10 +173,14 @@ fn next_yon(s: mut State, shot: Shot) {
     // (The sequence runs on past the most a pixel holds: held at its cap, the offset would stop
     // on one place and the crawl come back.)
     s.yon_seq += 1
-    let i = s.yon_seq % 16 + 1
+    // (Met a quarter at a time, or the rock a block in four (`yonder::REFRESH`), each pixel's
+    // offset steps on once in its four drawings: stepped each drawing, the four would each run
+    // through only a part of the sequence.)
+    let i = (if QUARTER { s.yon_seq / (SPARSE * SPARSE) } else if (OFF & 4096) == 0 { s.yon_seq / REFRESH } else { s.yon_seq }) % 16 + 1
     s.yon = Yon {
         held: n,
         jitter: vec2(halton(i, 2), halton(i, 3)) - vec2(0.5),
+        turn: if QUARTER { s.yon_seq % (SPARSE * SPARSE) } else { s.yon_seq % REFRESH },
         ..afresh(s.yon_shot),
     }
     s.yon_count = min(n + 1.0, 64.0)
@@ -167,6 +200,12 @@ pub(package) fn sized(s: mut State, width: u32, height: u32) {
         s.past_colour = texture(width: width, height: height)
         s.past_marks = texture(width: width, height: height)
         s.past_normal = texture(width: width, height: height)
+        s.low_colour = texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE)
+        s.low_marks = texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE)
+        s.low_normal = texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE)
+        s.half_colour = texture(width: (width + 1) / 2, height: height)
+        s.half_marks = texture(width: (width + 1) / 2, height: height)
+        s.half_normal = texture(width: (width + 1) / 2, height: height)
         s.yon_count = 0.0
         s.width = width
         s.height = height
@@ -227,28 +266,127 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         s: s.ocean.s,
     }
     let width = s.width
-    let f = begin_pass3(mut s.yon_colour, mut s.yon_marks, mut s.yon_normal, keep: true)
-    f.scissor(0, from, width, to - from)
-    draw(
-        f,
-        cover,
-        yonder.bind(
-            shot: shot,
-            yon: s.yon,
-            light: hv.light,
-            clouds: hv.clouds,
-            view: hv.tables.view,
-            aerial: hv.tables.aerial,
-            dome: hv.sky.dome,
-            cloud: hv.sky.shadow,
-            smp: hv.linear,
-            past_colour: s.past_colour,
-            past_marks: s.past_marks,
-            past_normal: s.past_normal,
-        ),
-        vertices: 3,
-    )
-    f.end()
+    if s.isle_cooked < FIELD_SLABS {
+        label("cook isle")
+        dispatch(cook_isle.bind(slab: s.isle_cooked, out: mut s.isle_field), over: s.isle_field)
+        s.isle_cooked += 1
+    }
+    label("yonder")
+    if QUARTER {
+        // (A row of the half-size pass either side of the band's own: the rebuild reads the
+        // pixels round each.)
+        let lw = (width + SPARSE - 1) / SPARSE
+        let lh = (s.height + SPARSE - 1) / SPARSE
+        let lfrom = if from / SPARSE > 0 { from / SPARSE - 1 } else { 0 }
+        let lto = min((to + SPARSE - 1) / SPARSE + 1, lh)
+        let f = begin_pass3(mut s.low_colour, mut s.low_marks, mut s.low_normal, keep: true)
+        f.scissor(0, lfrom, lw, lto - lfrom)
+        draw(
+            f,
+            cover,
+            yonder_low.bind(
+                shot: shot,
+                yon: s.yon,
+                light: hv.light,
+                clouds: hv.clouds,
+                view: hv.tables.view,
+                aerial: hv.tables.aerial,
+                dome: hv.sky.dome,
+                cloud: hv.sky.shadow,
+                smp: hv.linear,
+                field: s.isle_field,
+            ),
+            vertices: 3,
+        )
+        f.end()
+        let r = begin_pass3(mut s.yon_colour, mut s.yon_marks, mut s.yon_normal, keep: true)
+        r.scissor(0, from, width, to - from)
+        draw(
+            r,
+            cover,
+            yonder_rebuild.bind(
+                shot: shot,
+                yon: s.yon,
+                smp: hv.linear,
+                low_colour: s.low_colour,
+                low_marks: s.low_marks,
+                low_normal: s.low_normal,
+                past_colour: s.past_colour,
+                past_marks: s.past_marks,
+                past_normal: s.past_normal,
+            ),
+            vertices: 3,
+        )
+        r.end()
+    } else {
+        let f = begin_pass3(mut s.yon_colour, mut s.yon_marks, mut s.yon_normal, keep: true)
+        f.scissor(0, from, width, to - from)
+        draw(
+            f,
+            cover,
+            yonder.bind(
+                shot: shot,
+                yon: s.yon,
+                light: hv.light,
+                clouds: hv.clouds,
+                view: hv.tables.view,
+                aerial: hv.tables.aerial,
+                dome: hv.sky.dome,
+                cloud: hv.sky.shadow,
+                smp: hv.linear,
+                past_colour: s.past_colour,
+                past_marks: s.past_marks,
+                past_normal: s.past_normal,
+                field: s.isle_field,
+            ),
+            vertices: 3,
+        )
+        f.end()
+    }
+    label("paint")
+    if HALF_PAINT {
+        // (A row of the half either side of the band's own: the fill reads the rows round each.)
+        let hfrom = if from > 0 { from - 1 } else { 0 }
+        let hto = min(to + 1, s.height)
+        let hp = begin_pass3(mut s.half_colour, mut s.half_marks, mut s.half_normal, keep: true)
+        hp.scissor(0, hfrom, (width + 1) / 2, hto - hfrom)
+        draw(
+            hp,
+            cover,
+            paint_half.bind(
+                shot: shot,
+                light: hv.light,
+                clouds: hv.clouds,
+                view: hv.tables.view,
+                aerial: hv.tables.aerial,
+                dome: hv.sky.dome,
+                cloud: hv.sky.shadow,
+                smp: hv.linear,
+                waves: waves,
+                yon_colour: s.yon_colour,
+                yon_marks: s.yon_marks,
+                yon_normal: s.yon_normal,
+            ),
+            vertices: 3,
+        )
+        hp.end()
+        let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, keep: true)
+        p.scissor(0, from, width, to - from)
+        draw(
+            p,
+            cover,
+            paint_fill.bind(
+                shot: shot,
+                size: vec2(f32(width), f32(s.height)),
+                half_colour: s.half_colour,
+                half_marks: s.half_marks,
+                half_normal: s.half_normal,
+            ),
+            vertices: 3,
+        )
+        p.end()
+        return
+    }
     let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, keep: true)
     p.scissor(0, from, width, to - from)
     draw(
@@ -276,7 +414,12 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
 /// The weather laid over the painted scene (`weather`), into `aired`, for the ink.
 pub(package) fn weathered(s: mut State, shot: Shot) {
     borrow hv = s.heavens
+    label("weather")
     let p = begin_pass(mut s.aired, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    if (OFF & 256) != 0 {
+        p.end()
+        return
+    }
     draw(
         p,
         cover,
@@ -349,6 +492,7 @@ pub fn play(
     }
     weathered(mut s, shot)
     borrow hv = s.heavens
+    label("ink")
     let p = begin_pass(mut s.spare, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         p,

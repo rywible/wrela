@@ -12,10 +12,14 @@ use std::math::PI
 use look::{BREAK, LIFT, OVERCAST, SUN, THIN, VEIL}
 use wind::{cleared_at, climates, gale, mean_wind}
 
-/// The engine's approved switches: the sky's march at full size.
+/// The engine's approved switches: the sky's march at full size, or at half each way where
+/// `main::HALF_SKY` asks.
 pub struct Approved {}
 
-impl Switches for Approved {}
+impl Switches for Approved {
+    const HALVED: bool = main::HALF_SKY
+    const DOME_PHASES: u32 = main::DOME_PHASES
+}
 
 /// The heavens: the air and its light, its tables, the clouds, and how far their cook has come.
 pub struct Heavens {

@@ -4,7 +4,7 @@
 
 use look::{Shot, fbm, hash2, noise}
 use sail::{BOOM, BOW_OUT, FOOT, LASHED}
-use main::{FREEBOARD, PLANING, SAIL}
+use main::{FREEBOARD, OFF, PLANING, SAIL}
 use hero::{Joints, hero, hero_material}
 
 fn sd_box(p: vec3, b: vec3) -> f32 {
@@ -315,7 +315,7 @@ fn parts(s: Shot, q: vec3) -> vec4 {
     let body = sd_capsule(q, j.hips, j.neck + (j.neck - j.hips) * 0.6, 0.45)
     let arms = min(sd_capsule(q, j.neck, j.fore_hand, 0.32), sd_capsule(q, j.neck, j.aft_hand, 0.32))
     let bound = min(min(legs, body), arms)
-    let man = if bound > 0.3 { bound } else { hero(j, q, blow, s.held) }
+    let man = if (OFF & 32) != 0 { 1.0e3 } else if bound > 0.3 { bound } else { hero(j, q, blow, s.held) }
     vec4(wood, sail, rig, man)
 }
 
