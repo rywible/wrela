@@ -109,6 +109,12 @@ pub const SPARSE: u32 = 2
 /// `paint::paint_fill`): about half the paint's cost.
 pub const HALF_PAINT: bool = true
 
+/// How many frames march the clouds' dome whole, a share of its tiles each
+/// (`engine::switches::Switches::DOME_PHASES`; 32, 64 or 128): at 128 a frame's march costs a
+/// quarter of 32's, and at 120 frames a second the dome is still marched whole about once a
+/// second (`--set DOME_PHASES=32` for the engine's own).
+pub const DOME_PHASES: u32 = 128
+
 /// Whether the clouds' dome is marched at half its size each way (`--set HALF_SKY=false` for full): a
 /// quarter of the clouds' cost, a little softer.
 pub const HALF_SKY: bool = true

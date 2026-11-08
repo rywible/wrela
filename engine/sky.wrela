@@ -180,6 +180,9 @@ pub struct Clouds: Copy + GpuData {
     /// the cloud over each point all the way to its column's top, so a thick deck's underside
     /// goes dark; its sky light dimmed below the tops, and the air in front of it lit less.
     pub gloom: f32 = 0.0,
+    /// How many frames march the dome whole, a share of its tiles each (`PHASES`, or the
+    /// program's `switches::Switches::DOME_PHASES`).
+    pub phases: u32 = PHASES,
 }
 
 /// How many rounds a tile out of sight waits between its marches: it's marched one round in
@@ -728,7 +731,7 @@ const STORM_AIR: f32 = 0.25
 /// frame's (the tiles numbered `phase` modulo `PHASES`), and in it, rows of `TILE` / `scale`.
 fn phase_texel(c: Clouds, k: u32) -> vec2u {
     let side = TILE / c.scale
-    let tile = (k / (side * side)) * PHASES + c.phase % PHASES
+    let tile = (k / (side * side)) * c.phases + c.phase % c.phases
     let within = k % (side * side)
     vec2u(side * (tile % TILES_W) + within % side, side * (tile / TILES_W) + within / side)
 }
@@ -755,7 +758,7 @@ pub fn march_dome(
     out: mut Slots<vec4>,
     id: GlobalId,
 ) {
-    if id.x >= PHASE_TEXELS / (c.scale * c.scale) {
+    if id.x >= SKY_W * SKY_H / c.phases / (c.scale * c.scale) {
         return
     }
     let t = phase_texel(c, id.x)
@@ -767,7 +770,7 @@ pub fn march_dome(
     let tile = (t.y / side) * TILES_W + t.x / side
     if c.blend < 1.0 &&
         !in_sight(c, t * vec2u(c.scale)) &&
-        (c.round + tile / PHASES) % RESTING != 0 {
+        (c.round + tile / c.phases) % RESTING != 0 {
         out[id] = old
         return
     }
@@ -806,10 +809,10 @@ pub fn scatter(c: Clouds, marched: [vec4], out: mut Texels<Rgba16Float>, id: Glo
     }
     let side = TILE / c.scale
     let tile = (id.y / side) * TILES_W + id.x / side
-    if tile % PHASES != c.phase % PHASES {
+    if tile % c.phases != c.phase % c.phases {
         return
     }
-    out.store(id, marched[(tile / PHASES) * side * side + (id.y % side) * side + id.x % side])
+    out.store(id, marched[(tile / c.phases) * side * side + (id.y % side) * side + id.x % side])
 }
 
 /// The dome's texels of the frame's tiles, from the half dome, bilinearly: round the dome's
@@ -821,7 +824,7 @@ pub fn upsample(c: Clouds, half: Texture<Rgba16Float>, out: mut Texels<Rgba16Flo
         return
     }
     let tile = (id.y / TILE) * TILES_W + id.x / TILE
-    if tile % PHASES != c.phase % PHASES {
+    if tile % c.phases != c.phase % c.phases {
         return
     }
     // The texel's middle in the half dome's texels, and the four round it.
@@ -956,6 +959,8 @@ pub struct Sky {
     pub half: Texture<Rgba16Float>,
     pub marched: GpuBuffer<vec4>,
     pub frames: u32,
+    /// How many frames march the dome whole (`switches::Switches::DOME_PHASES`).
+    pub phases: u32,
     /// The storm's share, 0 by default (`Clouds::gloom`).
     pub gloom: f32,
     /// The regions with weather of their own (`Region`, `set_regions`) and how many.
@@ -977,6 +982,7 @@ pub fn new_sky<Q: Switches>() -> Sky {
         },
         marched: buffer(if Q::HALVED { PHASE_TEXELS / 4 } else { PHASE_TEXELS }),
         frames: 0,
+        phases: Q::DOME_PHASES,
         gloom: 0.0,
         regions: buffer_of(Vec::<Region>::new(), at_least: 1),
         region_count: 0,
@@ -1118,7 +1124,7 @@ impl Sky {
                 region_count: self.region_count,
                 out: mut self.marched,
             ),
-            over: PHASE_TEXELS / (scale * scale),
+            over: SKY_W * SKY_H / c.phases / (scale * scale),
         )
         let groups = ((SKY_W / scale + 7) / 8, (SKY_H / scale + 7) / 8, 1)
         if Q::HALVED {
@@ -1155,22 +1161,23 @@ impl Sky {
     ) -> Clouds {
         Clouds {
             eye,
-            phase: self.frames % PHASES,
+            phase: self.frames % Q::DOME_PHASES,
             sun: light.sun,
-            blend: if self.frames < PHASES { 1.0 } else { 0.75 },
+            blend: if self.frames < Q::DOME_PHASES { 1.0 } else { 0.75 },
             drift,
-            seed: if still { 0 } else { self.frames / PHASES },
+            seed: if still { 0 } else { self.frames / Q::DOME_PHASES },
             forward,
             sight: cos(min(view + TURN + TILE_RADIUS, PI)),
-            round: self.frames / PHASES,
+            round: self.frames / Q::DOME_PHASES,
             scale: if Q::HALVED { 2 } else { 1 },
             gloom: self.gloom,
+            phases: Q::DOME_PHASES,
         }
     }
 
     /// Whether every texel of the dome has been marched.
     pub fn done(self) -> bool {
-        self.frames >= PHASES
+        self.frames >= self.phases
     }
 }
 

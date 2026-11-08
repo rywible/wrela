@@ -18,6 +18,7 @@ pub struct Approved {}
 
 impl Switches for Approved {
     const HALVED: bool = main::HALF_SKY
+    const DOME_PHASES: u32 = main::DOME_PHASES
 }
 
 /// The heavens: the air and its light, its tables, the clouds, and how far their cook has come.
