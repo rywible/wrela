@@ -23,12 +23,14 @@ pub const SEA = SeaState {
     swell: vec2(0.17007, 0.98543),
     swell_height: 5.5,
     swell_period: 10.5,
-    chop: 1.0,
+    chop: 2.5,
     seed: 7,
 }
 
-/// How many of the long waves the CPU sums where the skiff rides (`engine::ocean::Swell`).
-pub const RIDDEN: u32 = 512
+/// How many of the long waves the CPU sums where the skiff rides (`engine::ocean::Swell`): in
+/// the gale, 4096 hold 98 % of the two long tiles' height variance (512 held 71 %, a metre
+/// short of what's drawn, and the hull sat in a trench of it).
+pub const RIDDEN: u32 = 4096
 
 /// One of the long waves the drawn looks (`look` under 3) lay their crests' strokes along: a
 /// direction, a length (m) and a height (m). (The clean look's sea is the ocean's alone.)

@@ -1,0 +1,168 @@
+// The opening's rock and cathedral realized through the engine's realizer (`realize_rigid`) at
+// a few cells, one at a time: each mesh's vertices and quads, its live blocks, how far its
+// surface strays from the field, and the host's time from its dispatch to its readback.
+
+use engine::look::Level
+use engine::realize::{Eye, solid}
+use engine::solids::{Tiles, tiles}
+use opening::isle::{bounds, isle}
+use std::derive::{Box3, Interval}
+use std::field::{Field, Surface}
+use opening::look::ISLE
+use engine::realize::SkinVertex
+use std::gpu::{
+    ClipPosition, Cull, DepthTexture, VertexIndex, begin_screen_pass_with_depth, depth_texture,
+    draw, read,
+}
+use std::transform::{look_at, perspective}
+use std::io::print
+use std::time::now
+
+/// The rock and its cathedral as a surface: the traced field's distance.
+pub struct Isle: Copy + GpuData {
+    pub unused: f32,
+}
+
+impl Surface for Isle {
+    fn distance(self, p: vec3) -> f32 {
+        isle(p).x
+    }
+
+    /// From its distance at the box's centre and a bound on its steepness, not interval
+    /// arithmetic through the whole field (whose kernel would pass the 256 KiB a pipeline may be).
+    fn interval(self, over: Box3) -> Interval {
+        let r = STEEP * 0.5 * length(over.hi - over.lo)
+        let d = isle(over.center()).x
+        Interval { lo: d - r, hi: d + r }
+    }
+}
+
+/// A bound on how steep the isle's distance is (its pieces are scaled, some unevenly).
+const STEEP: f32 = 1.5
+
+/// Its channel: which material (`look`'s ids).
+impl Field<f32> for Isle {
+    fn channels(self, p: vec3) -> f32 {
+        isle(p).y
+    }
+}
+
+/// The levels (cells, m), coarse to fine, and each's estimated cost a block (us).
+pub const LEVELS = [
+    Level { cell: 32.0, cost_us: 0.3 },
+    Level { cell: 16.0, cost_us: 0.3 },
+    Level { cell: 8.0, cost_us: 0.3 },
+    Level { cell: 4.0, cost_us: 0.3 },
+]
+
+/// A level every tile is realized at whatever it looks (a still to judge it by), or 4: as
+/// they look.
+pub const FORCE: u32 = 4
+
+/// A tile's side (m).
+pub const SIDE: f32 = 512.0
+
+pub struct State {
+    rock: Tiles<engine::creature::CreatureField<engine::creature::Placed<Isle>>>,
+    depth: DepthTexture,
+    size: vec2u,
+    started: f64,
+    pub whole_at: f64,
+    pub frames: u32,
+}
+
+pub fn init() -> State {
+    let b = bounds()
+    let half = vec3(b.w)
+    let shape = solid(
+        Isle { unused: 0.0 },
+        Box3 { lo: b.xyz - half, hi: b.xyz + half },
+        name: "isle",
+    )
+    let rock = tiles(
+        shape.field(),
+        Box3 { lo: b.xyz - half, hi: b.xyz + half },
+        SIDE,
+        LEVELS,
+        max_cell_px: 2.5,
+        budget_us: 8000.0,
+    )
+    print(f"{rock.len()} tiles")
+    State {
+        rock,
+        depth: depth_texture(1, 1),
+        size: vec2u(1, 1),
+        started: now(),
+        whole_at: -1.0,
+        frames: 0,
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    s.frames += 1
+    if s.size.x != width || s.size.y != height {
+        s.depth = depth_texture(width, height)
+        s.size = vec2u(width, height)
+    }
+    // From near the sea as the opening sees it, lit flat.
+    let eye = vec3(0.0, 25.0, 0.0)
+    let at = ISLE + vec3(0.0, -300.0, 0.0)
+    let fovy = 0.45
+    let vp = perspective(fovy, f32(width) / f32(height), near: 50.0, far: 30000.0) *
+        look_at(eye, at)
+    if FORCE < 4 {
+        let _ = s.rock.realize_all(FORCE)
+    } else {
+        s.rock.frame(Eye { at: eye, view_proj: vp, height: f32(height), fovy })
+    }
+    if s.whole_at < 0.0 && s.rock.whole() {
+        s.whole_at = now() - s.started
+    }
+    let pass = begin_screen_pass_with_depth(mut s.depth, clear: vec4(0.55, 0.62, 0.7, 1.0))
+    for i in 0..s.rock.len() {
+        if !s.rock.drawn(i) {
+            continue
+        }
+        borrow m = s.rock.mesh(i)
+        draw(
+            pass,
+            rigid.bind(verts: m.verts.items(), view_proj: vp),
+            flat.bind(),
+            indices: m.quads.items(),
+            indirect: m.draw.items(),
+            cull: Cull::None,
+        )
+    }
+    pass.present()
+}
+
+pub struct Seen: Copy {
+    pub clip: ClipPosition,
+    pub normal: vec3,
+}
+
+@vertex
+pub fn rigid(v: VertexIndex, verts: [SkinVertex], view_proj: mat4) -> Seen {
+    let sv = verts[v.index]
+    Seen { clip: ClipPosition { position: view_proj * vec4(sv.pos, 1.0) }, normal: sv.normal }
+}
+
+@fragment
+pub fn flat(c: Seen) -> vec4 {
+    let n = normalize(c.normal)
+    let l = max(dot(n, normalize(vec3(0.5, 0.6, -0.4))), 0.0)
+    vec4(vec3(0.12 + 0.8 * l) * vec3(0.9, 0.85, 0.8), 1.0)
+}
+
+@test(frames: 400, gpu: true)
+fn the_rock_realizes(s: State) {
+    var levels = [0, 0, 0, 0, 0]
+    for i in 0..s.rock.len() {
+        let l = s.rock.realizer.drawn(i)
+        levels[if l > 3 { 4 } else { l }] += 1
+    }
+    print(
+        f"{s.rock.len()} tiles; at levels 32/16/8/4 m and none: {levels[0]} {levels[1]} {levels[2]} {levels[3]} {levels[4]}; whole after {s.whole_at * 1000.0:.0} ms; {s.rock.realizer.realizations} realizations, {s.rock.realizer.overflows} overflows, {s.rock.realizer.holes} holes, {s.rock.realizer.bytes() / 1048576} MiB",
+    )
+    assert(s.rock.whole(), "a tile has no mesh")
+}

@@ -1,0 +1,229 @@
+// The rock and its cathedral as meshes: the isle's field (`isle::isle`) realized by the engine in
+// tiles (`engine::solids`), each at the level its size on screen asks for, and drawn each drawing
+// into how far each pixel is from the eye (`reach`). The far pass (`yonder`) starts its march
+// there, a little short, instead of from the isle's bounds: it meets the surface in a few steps,
+// and a pixel the mesh doesn't cover (nor any pixel round it) doesn't march the isle at all. Its
+// light is the traced field's still: the mesh only says where to look.
+
+use main::MESHED
+use isle::{bounds, isle, isle_ao, isle_shadow}
+use look::Shot
+use engine::creature::{CreatureField, Placed}
+use engine::look::Level
+use engine::realize::{Eye, SkinVertex, solid}
+use engine::solids::{Bake, Tiles, tiles}
+use std::derive::{Box3, Interval}
+use std::field::{Field, Surface}
+use std::gpu::{
+    ClipPosition, Cull, DepthTexture, GpuBuffer, Rg32Float, Texture, VertexIndex,
+    begin_pass_with_depth, draw,
+}
+
+/// The rock and its cathedral as a surface: the traced field's distance, and its material.
+pub struct Isle: Copy + GpuData {
+    pub unused: f32,
+}
+
+impl Surface for Isle {
+    fn distance(self, p: vec3) -> f32 {
+        isle(p).x
+    }
+
+    /// From its distance at the box's centre and a bound on its steepness, not interval
+    /// arithmetic through the whole field (whose kernel would pass the 256 KiB a pipeline may be).
+    fn interval(self, over: Box3) -> Interval {
+        let r = STEEP * 0.5 * length(over.hi - over.lo)
+        let d = isle(over.center()).x
+        Interval { lo: d - r, hi: d + r }
+    }
+}
+
+impl Field<f32> for Isle {
+    fn channels(self, p: vec3) -> f32 {
+        isle(p).y
+    }
+}
+
+/// A bound on how steep the isle's distance is (its pieces are scaled, some unevenly).
+const STEEP: f32 = 1.5
+
+/// The isle's meshes, kept by the engine.
+pub type Rock = Tiles<CreatureField<Placed<Isle>>>
+
+/// The levels (cells, m), coarse to fine, and each's estimated cost a block (us).
+pub const LEVELS = [
+    Level { cell: 32.0, cost_us: 0.3 },
+    Level { cell: 16.0, cost_us: 0.3 },
+    Level { cell: 8.0, cost_us: 0.3 },
+    Level { cell: 4.0, cost_us: 0.3 },
+]
+
+/// A tile's side (m).
+pub const SIDE: f32 = 512.0
+
+/// How far short of the mesh the march starts (m): past the coarsest level's error.
+pub const SHORT: f32 = 40.0
+
+/// What's cooked onto the rock's meshes (`engine::solids::Bake`): how much of the sun reaches
+/// each vertex past the isle, and how much of the sky (the far pass's `isle_shadow`, `isle_ao`,
+/// marched once a mesh, not once a pixel a drawing). The sun doesn't move.
+pub struct Shade: Copy + GpuData {
+    pub sun: vec3,
+}
+
+impl Bake for Shade {
+    fn at(self, p: vec3, n: vec3) -> vec4 {
+        vec4(isle_shadow(p + n * LIFT, self.sun, LIFT, 0.5), isle_ao(p, n), 0.0, 0.0)
+    }
+}
+
+/// How far off its surface a vertex's shadow starts (m): the far pass's, 8 km off.
+const LIFT: f32 = 10.0
+
+/// The tiles a drawing cooks `Shade` onto.
+const BAKES: u32 = 24
+
+/// The isle's box: its bounding sphere's.
+pub fn isle_box() -> Box3 {
+    let b = bounds()
+    Box3 { lo: b.xyz - vec3(b.w), hi: b.xyz + vec3(b.w) }
+}
+
+/// The isle's tiles, none realized yet.
+pub fn rock() -> Rock {
+    let shape = solid(Isle { unused: 0.0 }, isle_box(), name: "isle")
+    tiles(shape.field(), isle_box(), SIDE, LEVELS, max_cell_px: 2.0, budget_us: 6000.0)
+}
+
+/// The near and far planes of `reach`'s depth (m).
+const NEAR: f32 = 20.0
+const FAR: f32 = 100000.0
+
+/// `s`'s camera as a view-projection: the pixel a point lands on is the one whose `ray` meets it.
+pub fn view_proj(s: Shot) -> mat4 {
+    let a = s.focal * s.resolution.y / s.resolution.x
+    let k = FAR / (FAR - NEAR)
+    let row0 = vec4(s.right * a, -dot(s.right, s.eye) * a)
+    let row1 = vec4(s.up * s.focal, -dot(s.up, s.eye) * s.focal)
+    let row3 = vec4(s.forward, -dot(s.forward, s.eye))
+    let row2 = row3 * k - vec4(0.0, 0.0, 0.0, NEAR * k)
+    mat4(
+        vec4(row0.x, row1.x, row2.x, row3.x),
+        vec4(row0.y, row1.y, row2.y, row3.y),
+        vec4(row0.z, row1.z, row2.z, row3.z),
+        vec4(row0.w, row1.w, row2.w, row3.w),
+    )
+}
+
+/// The rock's tiles stepped on for `s`: each tile's level, what the budget realizes, and the
+/// sun's shade cooked onto what's new. Whether every tile has a mesh.
+pub fn step_rock(rock: mut Rock, s: Shot, sun: vec3) -> bool {
+    let fovy = 2.0 * atan(1.0 / s.focal)
+    rock.frame(Eye { at: s.eye, view_proj: view_proj(s), height: s.resolution.y, fovy })
+    let _ = rock.bake(Shade { sun }, BAKES)
+    rock.whole()
+}
+
+/// How far each pixel of `s` is from the eye to the rock's mesh (m), `FAR` where it sees none,
+/// and the shade cooked there (`Shade`, packed: `pack`; -1 on a tile not cooked yet, whose mesh
+/// is new: `unbaked` stands in for its numbers): drawn into `out`. Only once every tile has a
+/// mesh (`ready`); until then `out` says nothing and the far pass marches and shades as it did.
+/// Whether it drew.
+pub fn reach(
+    rock: Rock,
+    s: Shot,
+    ready: bool,
+    unbaked: GpuBuffer<vec4>,
+    out: mut Texture<Rg32Float>,
+    depth: mut DepthTexture,
+) -> bool {
+    if !MESHED || !ready {
+        return false
+    }
+    let vp = view_proj(s)
+    let pass = begin_pass_with_depth(mut out, mut depth, clear: vec4(FAR, 0.0, 0.0, 0.0))
+    for i in 0..rock.len() {
+        borrow m = rock.mesh(i)
+        let cooked = rock.has_baked(i)
+        draw(
+            pass,
+            placed.bind(
+                verts: m.verts.items(),
+                shade: if cooked { rock.baked(i).items() } else { unbaked.items() },
+                cooked: if cooked { 1 } else { 0 },
+                view_proj: vp,
+                eye: s.eye,
+            ),
+            how_far.bind(),
+            indices: m.quads.items(),
+            indirect: m.draw.items(),
+            cull: Cull::None,
+        )
+    }
+    pass.end()
+    true
+}
+
+pub struct Reached: Copy {
+    pub clip: ClipPosition,
+    pub far: f32,
+    pub shade: vec2,
+}
+
+@vertex
+pub fn placed(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    shade: [vec4],
+    cooked: u32,
+    view_proj: mat4,
+    eye: vec3,
+) -> Reached {
+    let p = verts[v.index].pos
+    Reached {
+        clip: ClipPosition { position: view_proj * vec4(p, 1.0) },
+        far: length(p - eye),
+        shade: if cooked == 1 { shade[v.index].xy } else { vec2(-1.0) },
+    }
+}
+
+@fragment
+pub fn how_far(r: Reached) -> vec2 {
+    vec2(r.far, if r.shade.x < 0.0 { -1.0 } else { pack(r.shade) })
+}
+
+/// Two numbers from 0 to 1 in one, a part in 4095 each (an `f32` holds every whole number of
+/// its 24 bits).
+pub fn pack(v: vec2) -> f32 {
+    let q = round(clamp(v, vec2(0.0), vec2(1.0)) * 4095.0)
+    q.x * 4096.0 + q.y
+}
+
+pub fn unpack(x: f32) -> vec2 {
+    let hi = floor(x / 4096.0)
+    vec2(hi, x - hi * 4096.0) / 4095.0
+}
+
+/// The shade cooked where the mesh is at pixel `pf` (`Shade`: the sun, the sky), if the mesh
+/// there is the surface the march met `t` off; (-1, -1) where it isn't (an edge, where the
+/// mesh shows what's behind or nothing), and it's marched.
+pub fn baked_at(reach: Texture<Rg32Float>, pf: vec2, size: vec2, t: f32) -> vec2 {
+    let q = clamp(floor(pf), vec2(0.0), size - vec2(1.0))
+    let r = reach.load(u32(q.x), u32(q.y))
+    if r.x >= FAR || abs(r.x - t) > SHORT || r.y < 0.0 { vec2(-1.0) } else { unpack(r.y) }
+}
+
+/// Where the march through pixel `pf` (px, the full drawing's) should start along the ray, by
+/// the mesh's `reach`: a little short of the nearest the mesh is in the pixel and the eight round
+/// it; past `hi` (the isle's bounds' far side) where none of them sees it.
+pub fn march_from(reach: Texture<Rg32Float>, pf: vec2, size: vec2, lo: f32, hi: f32) -> f32 {
+    let q = floor(pf)
+    var near = FAR
+    for j in 0..3 {
+        for i in 0..3 {
+            let at = clamp(q + vec2(f32(i) - 1.0, f32(j) - 1.0), vec2(0.0), size - vec2(1.0))
+            near = min(near, reach.load(u32(at.x), u32(at.y)).x)
+        }
+    }
+    if near >= FAR { hi + 1.0 } else { max(lo, near - SHORT) }
+}

@@ -11,14 +11,16 @@ use engine::ocean::{Ocean, Waves}
 use paint::{paint, paint_fill, paint_half}
 use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder, yonder_low, yonder_rebuild}
 use ink::ink
+use rock::{Rock, reach, rock, step_rock}
 use weather::weather
 use sail::{Rig, key, let_go, rest, step}
 use std::collections::swap
 use std::io::Pending
 use std::input::Event
 use std::gpu::{
-    ClipPosition, R32Float, Rgba16Float, Rgba8, Texture, Texture3d, VertexIndex, begin_pass,
-    begin_pass3, dispatch, draw, label, texture, texture3d,
+    ClipPosition, DepthTexture, GpuBuffer, buffer, R32Float, Rg32Float, Rgba16Float, Rgba8, Texture,
+    Texture3d, VertexIndex, begin_pass, begin_pass3, depth_texture, dispatch, draw, label, texture,
+    texture3d,
 }
 
 /// How finely a live page meets the scene (`Shot::fine`): the rock and the cathedral four times
@@ -61,6 +63,13 @@ pub struct State {
     /// of its slabs have been.
     pub(package) isle_field: Texture3d<R32Float>,
     pub(package) isle_cooked: u32,
+    /// The rock and the cathedral as meshes (`rock`), and how far each pixel is to them, drawn
+    /// each drawing, with its depth.
+    pub(package) rock: Rock,
+    pub(package) reach: Texture<Rg32Float>,
+    pub(package) reach_depth: DepthTexture,
+    /// What a tile not yet cooked reads for its shade (`rock::reach`).
+    pub(package) unbaked: GpuBuffer<vec4>,
     /// The passes' times asked for and not yet answered (which, the ask, its frame), and the
     /// frames drawn (`main::TIMINGS`).
     pub(package) asks: Vec<(u32, Pending<f32>, u32)>,
@@ -100,9 +109,18 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         past_colour: texture(width: width, height: height),
         past_marks: texture(width: width, height: height),
         past_normal: texture(width: width, height: height),
-        low_colour: texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE),
-        low_marks: texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE),
-        low_normal: texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE),
+        low_colour: texture(
+            width: (width + SPARSE - 1) / SPARSE,
+            height: (height + SPARSE - 1) / SPARSE,
+        ),
+        low_marks: texture(
+            width: (width + SPARSE - 1) / SPARSE,
+            height: (height + SPARSE - 1) / SPARSE,
+        ),
+        low_normal: texture(
+            width: (width + SPARSE - 1) / SPARSE,
+            height: (height + SPARSE - 1) / SPARSE,
+        ),
         half_colour: texture(width: (width + 1) / 2, height: height),
         half_marks: texture(width: (width + 1) / 2, height: height),
         half_normal: texture(width: (width + 1) / 2, height: height),
@@ -112,6 +130,10 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         yon_seq: 0,
         isle_field: texture3d::<R32Float>(FIELD_SIDE, FIELD_SIDE, FIELD_SIDE),
         isle_cooked: 0,
+        rock: rock(),
+        reach: texture(width: width, height: height),
+        reach_depth: depth_texture(width, height),
+        unbaked: buffer(1),
         asks: Vec::new(),
         frames: 0,
         image: texture(width: 1, height: 1),
@@ -146,6 +168,8 @@ fn afresh(shot: Shot) -> Yon {
         held: 0.0,
         jitter: vec2(0.0),
         turn: 0,
+        meshed: 0,
+        rock_turn: 0,
     }
 }
 
@@ -176,11 +200,14 @@ fn next_yon(s: mut State, shot: Shot) {
     // (Met a quarter at a time, or the rock a block in four (`yonder::REFRESH`), each pixel's
     // offset steps on once in its four drawings: stepped each drawing, the four would each run
     // through only a part of the sequence.)
-    let i = (if QUARTER { s.yon_seq / (SPARSE * SPARSE) } else if (OFF & 4096) == 0 { s.yon_seq / REFRESH } else { s.yon_seq }) % 16 + 1
+    let i = (if QUARTER { s.yon_seq / (SPARSE * SPARSE) } else if (OFF & 4096) == 0 {
+        s.yon_seq / REFRESH
+    } else { s.yon_seq }) % 16 + 1
     s.yon = Yon {
         held: n,
         jitter: vec2(halton(i, 2), halton(i, 3)) - vec2(0.5),
         turn: if QUARTER { s.yon_seq % (SPARSE * SPARSE) } else { s.yon_seq % REFRESH },
+        rock_turn: (s.yon_seq / (SPARSE * SPARSE)) % 4,
         ..afresh(s.yon_shot),
     }
     s.yon_count = min(n + 1.0, 64.0)
@@ -200,12 +227,23 @@ pub(package) fn sized(s: mut State, width: u32, height: u32) {
         s.past_colour = texture(width: width, height: height)
         s.past_marks = texture(width: width, height: height)
         s.past_normal = texture(width: width, height: height)
-        s.low_colour = texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE)
-        s.low_marks = texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE)
-        s.low_normal = texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE)
+        s.low_colour = texture(
+            width: (width + SPARSE - 1) / SPARSE,
+            height: (height + SPARSE - 1) / SPARSE,
+        )
+        s.low_marks = texture(
+            width: (width + SPARSE - 1) / SPARSE,
+            height: (height + SPARSE - 1) / SPARSE,
+        )
+        s.low_normal = texture(
+            width: (width + SPARSE - 1) / SPARSE,
+            height: (height + SPARSE - 1) / SPARSE,
+        )
         s.half_colour = texture(width: (width + 1) / 2, height: height)
         s.half_marks = texture(width: (width + 1) / 2, height: height)
         s.half_normal = texture(width: (width + 1) / 2, height: height)
+        s.reach = texture(width: width, height: height)
+        s.reach_depth = depth_texture(width, height)
         s.yon_count = 0.0
         s.width = width
         s.height = height
@@ -247,6 +285,11 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     next_yon(mut s, shot)
     // The sea as it is at this drawing.
     s.ocean.step(held(START + time))
+    // The rock's meshes, and how far each pixel is to them.
+    label("rock")
+    let ready = step_rock(mut s.rock, shot, s.heavens.light.sun)
+    let meshed = reach(s.rock, shot, ready, s.unbaked, mut s.reach, mut s.reach_depth)
+    s.yon.meshed = if meshed { 1 } else { 0 }
     shot
 }
 
@@ -305,6 +348,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 cloud: hv.sky.shadow,
                 smp: hv.linear,
                 field: s.isle_field,
+                reach: s.reach,
             ),
             vertices: 3,
         )
@@ -348,6 +392,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 past_marks: s.past_marks,
                 past_normal: s.past_normal,
                 field: s.isle_field,
+                reach: s.reach,
             ),
             vertices: 3,
         )

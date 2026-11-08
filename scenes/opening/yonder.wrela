@@ -11,17 +11,19 @@
 // falls move each drawing, so they're not added up here, which would smear them: the paint draws
 // them fresh, with `falls`.)
 
-use main::{OFF, RELIT, SPARSE}
+use main::{OFF, RELIT, ROCK_SPARSE, SPARSE}
 use look::{GILT, GLASS, ISLE, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
-use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
+use isle::{FALLS, SCALE, bounds, isle, isle_ao, isle_material, isle_normal, isle_shadow}
 use far::far_off
+use rock::{baked_at, march_from}
 use stacks::{march_stacks, stacks_albedo, stacks_ao, stacks_normal, stacks_shadow}
 use paint::{Heaven, aired, hazed_far, heaven, lit_solid, sphere}
 use engine::far::foot
 use engine::light::{Light, sky as clear_sky}
 use engine::sky::{Clouds, cloud_shadow}
 use std::gpu::{
-    FragCoord, GlobalId, R32Float, Rgba16Float, Rgba8, Sampler, Targets3, Texels3d, Texture, Texture3d,
+    FragCoord, GlobalId, R32Float, Rg32Float, Rgba16Float, Rgba8, Sampler, Targets3, Texels3d,
+    Texture, Texture3d,
 }
 
 /// What the drawings before left, and where from: the camera of the last drawing (its eye, its
@@ -38,14 +40,27 @@ pub struct Yon: Copy + GpuData {
     pub jitter: vec2,
     /// Which of each 2x2 of 8x8-pixel blocks this drawing meets the rock in afresh (`REFRESH`).
     pub turn: u32,
+    /// Whether the rock's meshes say where its march starts (`rock::reach`): 1, or 0.
+    pub meshed: u32,
+    /// Which of each 2x2 of blocks (`ROCK_BLOCK` of the half-size pass's pixels) meets the rock
+    /// and the cathedral this drawing, when they're met more sparsely than the stacks
+    /// (`main::ROCK_SPARSE`).
+    pub rock_turn: u32,
 }
+
+/// The side of the blocks the rock is met in by turns (`Yon::rock_turn`), in the half-size
+/// pass's pixels: wide enough that a wave of the GPU's threads falls in one.
+pub const ROCK_BLOCK: u32 = 16
+
+/// What the half-size pass says of a pixel whose turn to meet the rock this isn't, where no
+/// stack stands nearer (`Yon::rock_turn`): keep what was carried.
+pub const KEEP: f32 = -2.0
 
 /// The rock and the cathedral met afresh in one block of each 2x2 a drawing, in turn: the
 /// others keep what the drawings before met there, carried to where the camera has gone. They
 /// don't move and they're kilometres off, so what was met is still true; the mean over the
 /// drawings only builds up four times as slowly.
 pub const REFRESH: u32 = 4
-
 
 /// The most drawings a pixel holds: a new one weighs at least one part in so many.
 const HOLD: f32 = 12.0
@@ -165,34 +180,6 @@ fn march_isle(field: Texture3d<R32Float>, o: vec3, d: vec3, lo: f32, hi: f32) ->
     hit
 }
 
-/// How much of the sun reaches `p` past the isle: a soft shadow marched toward it.
-/// (Its first step jittered by `jit` (0 to 1), a pixel's own: else the steps of neighbouring
-/// pixels fall together and a face the sun rakes is banded in a fan of stripes.)
-fn isle_shadow(p: vec3, l: vec3, start: f32, jit: f32) -> f32 {
-    var t = start * (1.0 + 2.0 * jit)
-    var lit = 1.0
-    var i = 0
-    while i < 72 && t < 5600.0 && lit > 0.02 {
-        let h = isle(p + l * t).x
-        lit = min(lit, 10.0 * h / t)
-        t += clamp(h, 1.5, 170.0)
-        i += 1
-    }
-    clamp(lit, 0.0, 1.0)
-}
-
-/// How much of the sky reaches `p` on the isle, facing `n`: five taps out along its normal.
-fn isle_ao(p: vec3, n: vec3) -> f32 {
-    var hidden = 0.0
-    var w = 1.0
-    for i in 1..6 {
-        let h = 5.6 * f32(i * i)
-        hidden += w * max(h - isle(p + n * h).x, 0.0) / h
-        w *= 0.6
-    }
-    clamp(1.0 - hidden * 0.55, 0.0, 1.0)
-}
-
 /// The rock or the cathedral (`id`) where the ray `o` + `d` met it, `t` off, at pixel `px`: its
 /// light, in its air, its line and weight, and the normal the ink reads.
 fn isle_shade(
@@ -209,6 +196,7 @@ fn isle_shade(
     t: f32,
     id: f32,
     px: vec2,
+    baked: vec2,
 ) -> (vec3, f32, f32, vec3) {
     let light = h.light
     var c = vec3(0.0)
@@ -241,10 +229,13 @@ fn isle_shade(
                 far_
     } else if id == GLASS { glow0 * (1.0 + 20.0 * s.lantern) } else { glow0 }
     // (Its shadows likewise: none from a recess too small for a pixel to hold.)
+    // (Cooked onto the rock's meshes, where they have it (`rock::Shade`): read, not marched.)
     let lift = max(2.0, t * 0.0012)
-    let sun = isle_shadow(p + n * lift, light.sun, lift, hash2(px * 1.37)) *
-        mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, light.storm))
-    let ao = isle_ao(p, n)
+    let shadow = if baked.x >= 0.0 { baked.x } else {
+        isle_shadow(p + n * lift, light.sun, lift, hash2(px * 1.37))
+    }
+    let sun = shadow * mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, light.storm))
+    let ao = if baked.y >= 0.0 { baked.y } else { isle_ao(p, n) }
     // The rock and the cathedral on it in the same air: all the air their 8 km holds, and a
     // little past it toward the sky's own colour, as a painter pushes back what's far; so the
     // building sits on its rock, not over it, and both sit far off, not near and small.
@@ -419,6 +410,7 @@ pub fn yonder(
     past_marks: Texture<Rgba16Float>,
     past_normal: Texture<Rgba8>,
     field: Texture3d<R32Float>,
+    reach: Texture<Rg32Float>,
 ) -> Targets3<vec4, vec4, vec4> {
     let s = shot
     let h = Heaven { light, clouds }
@@ -448,8 +440,9 @@ pub fn yonder(
             }
         }
     }
-    if is.x < is.y && (OFF & 1) == 0 && !rest {
-        let ti = march_isle(field, o, d, is.x, is.y)
+    let from = if yon.meshed == 1 { march_from(reach, px, s.resolution, is.x, is.y) } else { is.x }
+    if from < is.y && (OFF & 1) == 0 && !rest {
+        let ti = march_isle(field, o, d, from, is.y)
         if ti < is.y {
             t = ti
             id = isle(o + d * ti).y
@@ -539,6 +532,7 @@ pub fn yonder(
             t,
             id,
             px,
+            if yon.meshed == 1 { baked_at(reach, px, s.resolution, t) } else { vec2(-1.0) },
         )
         c = ic
         cover = 1.0
@@ -612,6 +606,9 @@ fn meet(
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     field: Texture3d<R32Float>,
+    reach: Texture<Rg32Float>,
+    meshed: u32,
+    skip_rock: bool,
     pf: vec2,
 ) -> (vec4, vec4, vec4) {
     let o = s.eye
@@ -620,8 +617,9 @@ fn meet(
     var t = far
     var id = SKY
     let is = sphere(o, d, bounds(), far)
-    if is.x < is.y && (OFF & 1) == 0 {
-        let ti = march_isle(field, o, d, is.x, is.y)
+    let from = if meshed == 1 { march_from(reach, pf, s.resolution, is.x, is.y) } else { is.x }
+    if from < is.y && (OFF & 1) == 0 && !skip_rock {
+        let ti = march_isle(field, o, d, from, is.y)
         if ti < is.y {
             t = ti
             id = isle(o + d * ti).y
@@ -633,12 +631,29 @@ fn meet(
     var cover = 0.0
     var marks = vec4(log2(far), SKY, 1.0, 0.0)
     var n = -d
+    // (Only where the rock could be: past its bounds, the far islands are met as ever.)
+    if skip_rock && ts >= t && is.x < is.y {
+        // (As far as the rock: where the rebuild carries what was met from.)
+        return (vec4(0.0), vec4(log2(length(ISLE - o)), KEEP, 0.0, 0.0), vec4(0.0))
+    }
     if ts < t && (OFF & 1024) != 0 {
         c = vec3(0.05)
         cover = 1.0
         marks = vec4(log2(ts), ROCK, 1.0, 0.5)
     } else if ts < t {
-        let (sc, sn) = stacks_shade(s, h, clouds, view, aerial, dome, cloud, smp, o + d * ts, d, ts * k)
+        let (sc, sn) = stacks_shade(
+            s,
+            h,
+            clouds,
+            view,
+            aerial,
+            dome,
+            cloud,
+            smp,
+            o + d * ts,
+            d,
+            ts * k,
+        )
         c = sc
         cover = 1.0
         marks = vec4(log2(ts), ROCK, 1.0, 0.5)
@@ -649,7 +664,25 @@ fn meet(
             let p = o + d * tf
             let sun = mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, h.light.storm))
             let albedo = vec3(0.07, 0.072, 0.08) * (0.85 + 0.3 * noise(vec2(p.x + p.z, p.y) * 0.02))
-            let lit = lit_solid(s, h, view, aerial, dome, smp, p, fnn, d, albedo, 0.9, 0.0, vec3(0.0), sun, 1.0, 1.0, 0.0)
+            let lit = lit_solid(
+                s,
+                h,
+                view,
+                aerial,
+                dome,
+                smp,
+                p,
+                fnn,
+                d,
+                albedo,
+                0.9,
+                0.0,
+                vec3(0.0),
+                sun,
+                1.0,
+                1.0,
+                0.0,
+            )
             c = pushed_back(h, view, dome, smp, lit, d, 0.4 * smoothstep(3000.0, 10000.0, tf))
             cover = 1.0
             marks = vec4(log2(tf), ROCK, 1.0, 0.3)
@@ -660,7 +693,22 @@ fn meet(
         cover = 1.0
         marks = vec4(log2(t), id, 1.0, 0.5)
     } else {
-        let (ic, il, iw, inn) = isle_shade(s, h, clouds, view, aerial, dome, cloud, smp, o + d * t, d, t, id, pf)
+        let (ic, il, iw, inn) = isle_shade(
+            s,
+            h,
+            clouds,
+            view,
+            aerial,
+            dome,
+            cloud,
+            smp,
+            o + d * t,
+            d,
+            t,
+            id,
+            pf,
+            if meshed == 1 { baked_at(reach, pf, s.resolution, t) } else { vec2(-1.0) },
+        )
         c = ic
         cover = 1.0
         marks = vec4(log2(t), id, il, iw)
@@ -690,16 +738,29 @@ fn shuffled(q: vec2) -> u32 {
 
 /// The 4x4 ordered-dither (Bayer) matrix's places, by their number.
 const SPOTS = [
-    vec2(0.0, 0.0), vec2(2.0, 2.0), vec2(2.0, 0.0), vec2(0.0, 2.0),
-    vec2(1.0, 1.0), vec2(3.0, 3.0), vec2(3.0, 1.0), vec2(1.0, 3.0),
-    vec2(1.0, 0.0), vec2(3.0, 2.0), vec2(3.0, 0.0), vec2(1.0, 2.0),
-    vec2(0.0, 1.0), vec2(2.0, 3.0), vec2(2.0, 1.0), vec2(0.0, 3.0),
+    vec2(0.0, 0.0),
+    vec2(2.0, 2.0),
+    vec2(2.0, 0.0),
+    vec2(0.0, 2.0),
+    vec2(1.0, 1.0),
+    vec2(3.0, 3.0),
+    vec2(3.0, 1.0),
+    vec2(1.0, 3.0),
+    vec2(1.0, 0.0),
+    vec2(3.0, 2.0),
+    vec2(3.0, 0.0),
+    vec2(1.0, 2.0),
+    vec2(0.0, 1.0),
+    vec2(2.0, 3.0),
+    vec2(2.0, 1.0),
+    vec2(0.0, 3.0),
 ]
 
 /// The far things met a quarter at a time (`main::QUARTER`): a pixel of this pass's, half the
 /// drawing's size each way, meets one pixel of its 2x2 in the drawing (`quarter_of` the turn),
 /// a little off its centre. `yonder_rebuild` lays them over what the drawings before met.
 @fragment
+@standin(yonder_low_flat)
 pub fn yonder_low(
     pixel: FragCoord,
     shot: Shot,
@@ -712,11 +773,117 @@ pub fn yonder_low(
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     field: Texture3d<R32Float>,
+    reach: Texture<Rg32Float>,
 ) -> Targets3<vec4, vec4, vec4> {
     let q = floor(pixel.position.xy)
     let pf = q * f32(SPARSE) + spot(yon.turn + shuffled(q)) + vec2(0.5) + yon.jitter
-    let (now, marks, third) = meet(shot, Heaven { light, clouds }, clouds, view, aerial, dome, cloud, smp, field, pf)
+    // (Not this block's turn to meet the rock: only the stacks are met, and where none is, what
+    // was carried is kept.)
+    let block = (u32(q.x) / ROCK_BLOCK % 2) + 2 * (u32(q.y) / ROCK_BLOCK % 2)
+    let skip = ROCK_SPARSE && yon.held > 0.0 && block != yon.rock_turn
+    let (now, marks, third) = meet(
+        shot,
+        Heaven { light, clouds },
+        clouds,
+        view,
+        aerial,
+        dome,
+        cloud,
+        smp,
+        field,
+        reach,
+        yon.meshed,
+        skip,
+        pf,
+    )
     Targets3 { first: now, second: marks, third }
+}
+
+/// What `yonder_low` draws while the browser builds it (seconds, on a first load): the rock, a
+/// flat shape in the open sky's haze, where its mesh is (`rock::reach`) or, before it has one,
+/// where the cooked field (`cook_isle`) says it is, a little fat; the sky elsewhere.
+@fragment
+pub fn yonder_low_flat(
+    pixel: FragCoord,
+    shot: Shot,
+    yon: Yon,
+    light: Light,
+    _clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    _aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    _cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    field: Texture3d<R32Float>,
+    reach: Texture<Rg32Float>,
+) -> Targets3<vec4, vec4, vec4> {
+    let pf = floor(pixel.position.xy) * f32(SPARSE) + vec2(0.5)
+    let d = ray(shot, pf)
+    let q = clamp(pf, vec2(0.0), shot.resolution - vec2(1.0))
+    let t = if yon.meshed == 1 {
+        reach.load(u32(q.x), u32(q.y)).x
+    } else { rough_isle(field, shot.eye, d) }
+    if t >= 9.0e4 {
+        return Targets3 {
+            first: vec4(0.0),
+            second: vec4(log2(1.0e5), SKY, 1.0, 0.0),
+            third: vec4(-d * 0.5 + 0.5, 0.0),
+        }
+    }
+    let up = normalize(vec3(d.x, max(d.y, 0.02), d.z))
+    let open = clear_sky(view, smp, light, up)
+    let haze = mix(open, heaven(view, light, up, dome, smp).rgb, light.storm)
+    let c = haze * mix(0.35, 0.7, smoothstep(3000.0, 10000.0, t))
+    Targets3 {
+        first: vec4(c, 1.0),
+        second: vec4(log2(t), ROCK, 1.0, 0.3),
+        third: vec4(-d * 0.5 + 0.5, 0.0),
+    }
+}
+
+/// How far along `d` from `o` the isle's cooked field (`cook_isle`) says its surface is (m), 1e5
+/// where it doesn't: the field at the cells' middles, given back what the cook took off, and
+/// read between them. A cell not cooked yet (0) reads as air.
+fn rough_isle(field: Texture3d<R32Float>, o: vec3, d: vec3) -> f32 {
+    let b = bounds()
+    let is = sphere(o, d, b, 1.0e5)
+    let cell = 2.0 * b.w / f32(FIELD_SIDE)
+    var t = is.x
+    for _i in 0..96 {
+        if t >= is.y {
+            return 1.0e5
+        }
+        let f = cooked_at(field, o + d * t) + STEEP * 0.8660254 * cell + JUMPS
+        if f < 0.0 {
+            return t
+        }
+        t += max(f * 0.5, cell * 0.25)
+    }
+    1.0e5
+}
+
+/// The cooked field at `p`, read between the cells' middles.
+fn cooked_at(field: Texture3d<R32Float>, p: vec3) -> f32 {
+    let b = bounds()
+    let n = f32(FIELD_SIDE)
+    let g = clamp(
+        (p - (b.xyz - vec3(b.w))) / (2.0 * b.w) * n - vec3(0.5),
+        vec3(0.0),
+        vec3(n - 1.001),
+    )
+    let i = floor(g)
+    let f = g - i
+    let x0 = u32(i.x)
+    let y0 = u32(i.y)
+    let z0 = u32(i.z)
+    let x1 = min(x0 + 1, FIELD_SIDE - 1)
+    let y1 = min(y0 + 1, FIELD_SIDE - 1)
+    let z1 = min(z0 + 1, FIELD_SIDE - 1)
+    let a = mix(field.load(x0, y0, z0), field.load(x1, y0, z0), f.x)
+    let bb = mix(field.load(x0, y1, z0), field.load(x1, y1, z0), f.x)
+    let c = mix(field.load(x0, y0, z1), field.load(x1, y0, z1), f.x)
+    let e = mix(field.load(x0, y1, z1), field.load(x1, y1, z1), f.x)
+    mix(mix(a, bb, f.y), mix(c, e, f.y), f.z)
 }
 
 /// Of the most drawings a pixel holds met a quarter at a time: a new one weighs at least one
@@ -762,9 +929,11 @@ pub fn yonder_rebuild(
     let bm = past_marks.load(u32(bq.x), u32(bq.y))
     let bn = past_normal.sample_level(smp, was.xy / yon.resolution)
     // (The same thing as this drawing met beside it: as far, give or take.)
-    let agree = abs(bm.x - lm.x) < 0.25
+    // (Kept: this drawing didn't meet the rock here (`KEEP`), so what was carried stands.)
+    let kept = lm.y == KEEP
+    let agree = kept || abs(bm.x - lm.x) < 0.25
     let off = ip - q * side - spot(yon.turn + shuffled(q))
-    let mine = off.x == 0.0 && off.y == 0.0
+    let mine = off.x == 0.0 && off.y == 0.0 && !kept
     var now = before
     var marks = bm
     var third = bn
@@ -784,9 +953,12 @@ pub fn yonder_rebuild(
         for j in 0..3 {
             for i in 0..3 {
                 let at = clamp(q + vec2(f32(i) - 1.0, f32(j) - 1.0), vec2(0.0), lsize - vec2(1.0))
-                let v = low_colour.load(u32(at.x), u32(at.y))
-                lo = min(lo, v)
-                hi = max(hi, v)
+                // (A neighbour kept says nothing of what's there.)
+                if low_marks.load(u32(at.x), u32(at.y)).y != KEEP {
+                    let v = low_colour.load(u32(at.x), u32(at.y))
+                    lo = min(lo, v)
+                    hi = max(hi, v)
+                }
             }
         }
         now = clamp(before, lo, hi)
