@@ -2,7 +2,7 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use arms::{Drape, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body, trailed}
+use arms::{Drape, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body}
 use hakuro::{Cloth, body_paint, coat, hands, head, hero, jacket_paint, skeleton}
 use engine::character::{ByChannels, colours}
 use engine::character::skin_matrix
@@ -466,13 +466,12 @@ pub struct Fielded: Copy {
     pub hi: Flat<u32>,
 }
 
-/// His coat's tails' vertex: as `fielded`, trailing its weight (`arms::trailed`) and draped over his
-/// legs (`arms::draped`, its grid worked out each frame by `arms::Drape::work`).
+/// His coat's tails' vertex: as `fielded`, hanging as the tails' cloth does this frame
+/// (`arms::draped`, the cloth moved on each frame by `arms::Drape::work`).
 @vertex
 pub fn coat_fielded(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], grid: [vec4], first: u32, view: View) -> Fielded {
     var f = fielded_at(v, verts, palettes, first, view)
-    let then = (skin_matrix(verts[v.index], palettes, first + LAGGED) * vec4(f.rest, 1.0)).xyz
-    f.world = draped(trailed(f.world, then, f.rest), f.rest, grid, first / MAX_BONES)
+    f.world = draped(f.world, f.rest, grid, first / MAX_BONES)
     f.clip = ClipPosition { position: view.view_proj * vec4(f.world, 1.0) }
     f
 }

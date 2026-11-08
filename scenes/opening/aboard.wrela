@@ -9,7 +9,7 @@
 // as fine as his fields, however coarse his mesh. He's lit as the skiff is (`paint::lit_solid`,
 // its sea bounce and its rim), shadowed by the rig and the clouds.
 
-use hakuro::arms::{Drape, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body, trailed}
+use hakuro::arms::{Drape, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body}
 use hakuro::hakuro::{Cloth, FINGER_JOINTS, body_paint, coat, head, hero, jacket_paint}
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
 use engine::character::skin_matrix
@@ -54,8 +54,7 @@ pub struct Aboard {
     coat: Mesh,
     arms: [Mesh; 6],
     palette: GpuBuffer<mat4>,
-    // (His palette a moment ago, each frame eased toward his: the coat's tails trail toward
-    // where they were, `hakuro::arms::trailed`. Drawn after his own in `palette`.)
+    // (His palette a moment ago, each frame eased toward his. Drawn after his own in `palette`.)
     lagged: [mat4; 64],
     // (Where his coat's tails are draped over his legs this frame: `hakuro::arms::draped`.)
     drape: Drape,
@@ -400,13 +399,12 @@ pub fn hero_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: S
     hero_at(v, verts, palette, shot)
 }
 
-/// His coat's tails' vertex: as `hero_vertex`, trailing its weight (`hakuro::arms::trailed`) and draped
-/// over his legs (`hakuro::arms::draped`).
+/// His coat's tails' vertex: as `hero_vertex`, hanging as the tails' cloth does this frame
+/// (`hakuro::arms::draped`).
 @vertex
 pub fn coat_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], grid: [vec4], shot: Shot) -> HeroVertex {
     var h = hero_at(v, verts, palette, shot)
-    let then = (skin_matrix(verts[v.index], palette, MAX_BONES) * vec4(h.rest, 1.0)).xyz
-    h.world = draped(trailed(h.world, then, h.rest), h.rest, grid, 0)
+    h.world = draped(h.world, h.rest, grid, 0)
     h.clip = ClipPosition { position: clip_of(shot, h.world) }
     h
 }

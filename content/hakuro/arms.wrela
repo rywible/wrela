@@ -210,109 +210,260 @@ fn tails_skinned(rest: vec3, palettes: [mat4], first: u32) -> vec3 {
     (m * vec4(rest, 1.0)).xyz
 }
 
-/// Each node's drape, for `views` views (each view's palette `MAX`-bone strides from `first`,
-/// its palette a moment ago `lagged` after it): how far it moves off his legs from where his
-/// hips and the cloth's lag put it.
+/// How much of the cloth's own shape it keeps each frame: drawn this far toward where his hips
+/// carry it at rest (its A-line and pleats), the rest left to its weight, its swing and his legs.
+const SHAPE: f32 = 0.15
+/// How much of its swing it keeps from frame to frame (air and its own stiffness take the rest).
+const KEEP: f32 = 0.85
+/// How many times a frame each node is pulled back to its neighbours' distances.
+const RELAXES: u32 = 16
+
+/// How firmly a node is held where his hips carry it: wholly up under the jacket's hem (it's
+/// tucked there), free from a hand's width below it.
+fn pinned(rest: vec3) -> f32 {
+    let u = clamp((rest.y - 0.78) / 0.08, 0.0, 1.0)
+    u * u * (3.0 - 2.0 * u)
+}
+
+/// A node's place in `views` views' grids: its view, its column and row, its first bone.
+fn node_of(i: u32, stride: u32) -> (u32, u32, u32, u32) {
+    let view = i / DRAPE_NODES
+    let n = i % DRAPE_NODES
+    (view, n % DRAPE_COLS, n / DRAPE_COLS, view * stride)
+}
+
+/// The cloth's step: each node swung on from where it was (`pos`, a frame ago `prev`) by its
+/// own momentum and its weight, and drawn a little toward its shape on him. The first frame
+/// (`fresh`) it starts where his hips carry it.
 @compute(64)
-pub fn drape(palettes: [mat4], views: u32, stride: u32, lagged: u32, out: mut Slots<vec4>, id: GlobalId) {
+pub fn cloth_step(
+    palettes: [mat4],
+    views: u32,
+    stride: u32,
+    dt: f32,
+    fresh: u32,
+    pos: [vec4],
+    prev: [vec4],
+    out_pos: mut Slots<vec4>,
+    out_prev: mut Slots<vec4>,
+    id: GlobalId,
+) {
     if id.x >= views * DRAPE_NODES {
         return
     }
-    let view = id.x / DRAPE_NODES
-    let n = id.x % DRAPE_NODES
-    let first = view * stride
-    let rest = drape_node(n % DRAPE_COLS, n / DRAPE_COLS)
-    let now = tails_skinned(rest, palettes, first)
-    let then = tails_skinned(rest, palettes, first + lagged)
-    let hung = trailed(now, then, rest)
-    out[id] = vec4(off_legs(hung, rest, palettes, first) - hung, 0.0)
-}
-
-/// The drape smoothed over its neighbours (a binomial 5 by 5): where a node's push changed
-/// sharply from its neighbours' (a leg's edge, a capsule giving way to the next) the hem crumpled
-/// and snapped back a frame later.
-@compute(64)
-pub fn smooth_drape(views: u32, ease: f32, grid: [vec4], before: [vec4], out: mut Slots<vec4>, id: GlobalId) {
-    let all = views * DRAPE_NODES
-    if id.x >= all {
+    let (_, c, r, first) = node_of(id.x, stride)
+    let rest = drape_node(c, r)
+    let target = tails_skinned(rest, palettes, first)
+    if fresh == 1 {
+        out_pos[id] = vec4(target, 0.0)
+        out_prev[id] = vec4(target, 0.0)
         return
     }
-    let base = (id.x / DRAPE_NODES) * DRAPE_NODES
-    let n = id.x % DRAPE_NODES
-    let c = i32(n % DRAPE_COLS)
-    let r = i32(n / DRAPE_COLS)
-    let kw = [1.0, 4.0, 6.0, 4.0, 1.0]
-    var sum = vec4(0.0)
-    var w = 0.0
-    for j in 0..5 {
-        for i in 0..5 {
-            let cc = c + i32(i) - 2
-            let rr = r + i32(j) - 2
-            if cc >= 0 && cc < i32(DRAPE_COLS) && rr >= 0 && rr < i32(DRAPE_ROWS) {
-                let k = kw[i] * kw[j]
-                sum += grid[base + u32(rr) * DRAPE_COLS + u32(cc)] * k
-                w += k
-            }
-        }
-    }
-    // (Eased from where it was a frame ago: the cloth's own weight, so a hem caught by a knee
-    // for a frame doesn't snap there and back.)
-    out[id] = mix(before[id.x], sum / w, ease)
+    let p = pos[id.x].xyz
+    let swing = (p - prev[id.x].xyz) * KEEP
+    var q = p + swing + vec3(0.0, -9.8, 0.0) * dt * dt
+    q = mix(q, target, mix(SHAPE, 1.0, pinned(rest)))
+    out_pos[id] = vec4(q, 0.0)
+    out_prev[id] = vec4(p, 0.0)
 }
 
-/// A drape's room: each node's raw drape, and smoothed and eased (two, a frame's and the last's:
-/// `grid` is what `draped` reads).
+/// The cloth relaxed once: each node pulled toward its neighbours' distances at rest (beside it
+/// and above and below, and two along for its stiffness), then kept off his legs and arms.
+@compute(64)
+pub fn cloth_relax(palettes: [mat4], views: u32, stride: u32, pos: [vec4], out: mut Slots<vec4>, id: GlobalId) {
+    if id.x >= views * DRAPE_NODES {
+        return
+    }
+    let (view, c, r, first) = node_of(id.x, stride)
+    let rest = drape_node(c, r)
+    let pin = pinned(rest)
+    let target = tails_skinned(rest, palettes, first)
+    let p = pos[id.x].xyz
+    let base = view * DRAPE_NODES
+    var pull = vec3(0.0)
+    var weight = 0.0
+    let steps = [vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0), vec2(-2.0, 0.0), vec2(2.0, 0.0), vec2(0.0, -2.0), vec2(0.0, 2.0)]
+    for k in 0..8 {
+        let cc = i32(c) + i32(steps[k].x)
+        let rr = i32(r) + i32(steps[k].y)
+        if cc >= 0 && cc < i32(DRAPE_COLS) && rr >= 0 && rr < i32(DRAPE_ROWS) {
+            let o = pos[base + u32(rr) * DRAPE_COLS + u32(cc)].xyz
+            let want = length(drape_node(u32(cc), u32(rr)) - rest)
+            let d = o - p
+            let l = length(d)
+            let w = if k < 4 { 1.0 } else { 0.5 }
+            if l > 1.0e-6 {
+                pull += d * ((l - want) / l) * 0.5 * w
+            }
+            weight += w
+        }
+    }
+    var q = p + pull / max(weight, 1.0) * 1.6
+    q = off_legs_now(q, rest, palettes, first)
+    q = mix(q, target, pin)
+    out[id] = vec4(q, 0.0)
+}
+
+/// Each node's drape: how far the cloth is from where his hips alone would carry it.
+@compute(64)
+pub fn cloth_drape(palettes: [mat4], views: u32, stride: u32, pos: [vec4], out: mut Slots<vec4>, id: GlobalId) {
+    if id.x >= views * DRAPE_NODES {
+        return
+    }
+    let (_, c, r, first) = node_of(id.x, stride)
+    out[id] = vec4(pos[id.x].xyz - tails_skinned(drape_node(c, r), palettes, first), 0.0)
+}
+
+/// The tails' cloth for `views` views: each node of the drape's grid where it is (two, this
+/// frame's and the last's), where it was a frame before, and how far it hangs from where his
+/// hips carry it (`grid`, what `draped` reads).
 pub struct Drape {
-    raw: GpuBuffer<vec4>,
-    smooth_a: GpuBuffer<vec4>,
-    smooth_b: GpuBuffer<vec4>,
+    pos_a: GpuBuffer<vec4>,
+    pos_b: GpuBuffer<vec4>,
+    prev_a: GpuBuffer<vec4>,
+    prev_b: GpuBuffer<vec4>,
+    out: GpuBuffer<vec4>,
     flip: u32,
     fresh: bool,
 }
 
-/// Room for the drape of `views` views.
+/// Room for the cloth of `views` views.
 pub fn drape_room(views: u32) -> Drape {
+    let n = views * DRAPE_NODES
     Drape {
-        raw: buffer(views * DRAPE_NODES),
-        smooth_a: buffer(views * DRAPE_NODES),
-        smooth_b: buffer(views * DRAPE_NODES),
+        pos_a: buffer(n),
+        pos_b: buffer(n),
+        prev_a: buffer(n),
+        prev_b: buffer(n),
+        out: buffer(n),
         flip: 0,
         fresh: true,
     }
 }
 
-/// How quickly the drape catches up with his legs (s): about two frames at 30 a second.
-const DRAPE_EASE: f32 = 0.05
+/// One frame of the cloth: stepped from `pos` and `prev` into `next` and `next_prev`, relaxed
+/// back and forth between `next` and `pos` (ending in `next`), its drape into `out`.
+fn cloth_frame(
+    palettes: GpuBuffer<mat4>,
+    views: u32,
+    stride: u32,
+    dt: f32,
+    fresh: u32,
+    pos: mut GpuBuffer<vec4>,
+    prev: GpuBuffer<vec4>,
+    next: mut GpuBuffer<vec4>,
+    next_prev: mut GpuBuffer<vec4>,
+    out: mut GpuBuffer<vec4>,
+) {
+    let groups = (views * DRAPE_NODES + 63) / 64
+    dispatch(
+        cloth_step.bind(
+            palettes: palettes.items(),
+            views: views,
+            stride: stride,
+            dt: dt,
+            fresh: fresh,
+            pos: pos.items(),
+            prev: prev.items(),
+            out_pos: mut next,
+            out_prev: mut next_prev,
+        ),
+        groups: groups,
+    )
+    for _ in 0..RELAXES / 2 {
+        dispatch(cloth_relax.bind(palettes: palettes.items(), views: views, stride: stride, pos: next.items(), out: mut pos), groups: groups)
+        dispatch(cloth_relax.bind(palettes: palettes.items(), views: views, stride: stride, pos: pos.items(), out: mut next), groups: groups)
+    }
+    dispatch(cloth_drape.bind(palettes: palettes.items(), views: views, stride: stride, pos: next.items(), out: mut out), groups: groups)
+}
 
 impl Drape {
-    /// The drape for `views` views (each view's palette `stride` bones on from the last, its
-    /// palette a moment ago `lagged` after it), worked out `dt` seconds after the last.
+    /// The cloth for `views` views (each view's palette `stride` bones on from the last), moved
+    /// on `dt` seconds. (`lagged` is unused: the cloth carries its own swing.)
     pub fn work(mut self, palettes: GpuBuffer<mat4>, views: u32, stride: u32, lagged: u32, dt: f32) {
-        dispatch(
-            drape.bind(palettes: palettes.items(), views: views, stride: stride, lagged: lagged, out: mut self.raw),
-            groups: (views * DRAPE_NODES + 63) / 64,
-        )
-        let ease = if self.fresh { 1.0 } else { 1.0 - exp(-max(dt, 0.0) / DRAPE_EASE) }
+        let fresh: u32 = if self.fresh { 1 } else { 0 }
         self.fresh = false
-        self.flip = 1 - self.flip
-        let groups = (views * DRAPE_NODES + 63) / 64
-        if self.flip == 1 {
-            dispatch(
-                smooth_drape.bind(views: views, ease: ease, grid: self.raw.items(), before: self.smooth_a.items(), out: mut self.smooth_b),
-                groups: groups,
-            )
+        let step = clamp(dt, 0.0, 1.0 / 20.0)
+        if self.flip == 0 {
+            cloth_frame(palettes, views, stride, step, fresh, mut self.pos_a, self.prev_a, mut self.pos_b, mut self.prev_b, mut self.out)
         } else {
-            dispatch(
-                smooth_drape.bind(views: views, ease: ease, grid: self.raw.items(), before: self.smooth_b.items(), out: mut self.smooth_a),
-                groups: groups,
-            )
+            cloth_frame(palettes, views, stride, step, fresh, mut self.pos_b, self.prev_b, mut self.pos_a, mut self.prev_a, mut self.out)
         }
+        self.flip = 1 - self.flip
     }
 
-    /// The drape as it is this frame, for `draped`.
+    /// How far the cloth hangs from where his hips carry it this frame, for `draped`.
     pub fn grid(self) -> GpuSpan<vec4> {
-        if self.flip == 1 { self.smooth_b.items() } else { self.smooth_a.items() }
+        self.out.items()
     }
+}
+
+/// `p` (a node of the cloth, at rest `rest`) kept off his legs and arms as `palette` (from
+/// `first`) poses them: straight off each thigh, shin, boot, forearm and hand, a couple of
+/// centimetres clear (less however far into it the cloth already hangs at rest, so the
+/// capsules can be as fat as his baggy trousers).
+fn off_legs_now(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
+    var q = p
+    // His middle, between his hips: the cloth hangs outside his legs, out from it.
+    let mid = ((palette[first + 18] * vec4(0.114, 0.971, -0.036, 1.0)).xyz +
+        (palette[first + 19] * vec4(-0.114, 0.971, -0.036, 1.0)).xyz) * 0.5
+    for side in 0..2 {
+        let sx = if side == 0 { 1.0 } else { -1.0 }
+        let hip = (palette[first + 18 + side] * vec4(0.114 * sx, 0.971, -0.036, 1.0)).xyz
+        let knee = (palette[first + 20 + side] * vec4(0.114 * sx, 0.542, -0.036, 1.0)).xyz
+        let ankle = (palette[first + 22 + side] * vec4(0.114 * sx, 0.086, -0.088, 1.0)).xyz
+        let heel = (palette[first + 22 + side] * vec4(0.124 * sx, 0.065, -0.13, 1.0)).xyz
+        let toe = (palette[first + 22 + side] * vec4(0.124 * sx, 0.055, 0.14, 1.0)).xyz
+        let elbow = (palette[first + 10 + side] * vec4(0.463 * sx, 1.455, -0.073, 1.0)).xyz
+        let wrist = (palette[first + 12 + side] * vec4(0.706 * sx, 1.455, -0.065, 1.0)).xyz
+        let knuckle = (palette[first + 12 + side] * vec4(0.86 * sx, 1.45, -0.05, 1.0)).xyz
+        for k in 0..5 {
+            let a = if k == 0 { hip } else if k == 1 { knee } else if k == 2 { heel } else if k == 3 { elbow } else { wrist }
+            let b = if k == 0 { knee } else if k == 1 { ankle } else if k == 2 { toe } else if k == 3 { wrist } else { knuckle }
+            let ra = if k == 0 { 0.135 } else if k == 1 { 0.125 } else if k == 2 { 0.085 } else if k == 3 { 0.055 } else { 0.042 }
+            let rb = if k == 0 { 0.125 } else if k == 1 { 0.22 } else if k == 2 { 0.075 } else if k == 3 { 0.042 } else { 0.045 }
+            // (How far in the capsule the cloth hangs at rest: legs only, the arms are clear.)
+            var inside = 0.0
+            if k < 3 {
+                let ar = if k == 0 { vec3(0.114 * sx, 0.971, -0.036) } else if k == 1 { vec3(0.114 * sx, 0.542, -0.036) } else { vec3(0.124 * sx, 0.065, -0.13) }
+                let br = if k == 0 { vec3(0.114 * sx, 0.542, -0.036) } else if k == 1 { vec3(0.114 * sx, 0.086, -0.088) } else { vec3(0.124 * sx, 0.055, 0.14) }
+                let er = br - ar
+                let hr = clamp(dot(rest - ar, er) / dot(er, er), 0.0, 1.0)
+                inside = max(mix(ra, rb, hr) + 0.02 - length(rest - (ar + er * hr)), 0.0)
+            }
+            let e = b - a
+            let h = clamp(dot(q - a, e) / dot(e, e), 0.0, 1.0)
+            let at = a + e * h
+            let off = q - at
+            let d = length(off)
+            let r = mix(ra, rb, h) + 0.02 - inside
+            if r - d > 0.0 && d > 1.0e-5 {
+                var n = off / d
+                // (Off a leg always to its outer side, seen from his middle: pushed straight off
+                // it, cloth just beside a leg kicked back slid round it and the leg came out
+                // behind the coat.)
+                if k < 3 {
+                    let flat = vec3(q.x - mid.x, 0.0, q.z - mid.z)
+                    let fl = length(flat)
+                    if fl > 1.0e-4 {
+                        let o = flat / fl
+                        let side = dot(n, o)
+                        if side < 0.3 {
+                            n = normalize(n + o * (0.3 - side) * 2.0)
+                        }
+                    }
+                }
+                // Out along it until clear of the capsule.
+                let along = dot(off, n)
+                let across = length(off - n * along)
+                let need = sqrt(max(r * r - across * across, 0.0)) - along
+                if need > 0.0 {
+                    q = q + n * need
+                }
+            }
+        }
+    }
+    q
 }
 
 /// A point of the tails (`hung`: posed and trailing, at rest `rest`) moved as the drape's nodes
