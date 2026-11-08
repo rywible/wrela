@@ -157,6 +157,21 @@ pub fn leaning(sea: SeaState) -> vec2 {
     sea.wind * (LEAN * sea.chop)
 }
 
+/// How high water `h` m over the level stands, for its crest's lean: `h` over it, none under,
+/// rounded through the level over `KNEE` m so the lean (and the stretches it brings) has no
+/// crease along the level's line.
+pub fn standing(h: f32) -> f32 {
+    0.5 * (h + sqrt(h * h + KNEE * KNEE))
+}
+
+/// How fast `standing` rises with `h` (0 well under the level, 1 well over it).
+fn standing_slope(h: f32) -> f32 {
+    0.5 * (1.0 + h / sqrt(h * h + KNEE * KNEE))
+}
+
+/// How far through the level a crest's lean is rounded (m).
+const KNEE: f32 = 0.3
+
 /// The share of the sea's face white with breaking crests and their foam, from its wind (Monahan
 /// and O'Muircheartaigh 1980: W = 3.84 × 10⁻⁶ U¹⁰^3.41): a few thousandths in a moderate
 /// breeze, near a tenth in a gale, a quarter in a storm.
@@ -487,8 +502,8 @@ fn settle(
     // (The crests leaned on down the wind, `lean` m per metre they stand over the level, so
     // their lee faces steepen and their backs lengthen, as a wind's waves are: the water over
     // the level carried that far further, and its stretches with it.)
-    let up = step(0.0, hq.y)
-    let carried = lean * max(hq.y, 0.0)
+    let up = standing_slope(hq.y)
+    let carried = lean * standing(hq.y)
     let dxx = sq.z * chop + lean.x * sq.x * up
     let dzz = sq.w * chop + lean.y * sq.y * up
     let dxz = hq.w * chop + lean.x * sq.y * up
@@ -866,6 +881,11 @@ pub struct Mode: Copy {
     pub w: f32,
     pub a: vec2,
     pub power: f32,
+    /// Which tile it's from (0 the big, 1 the mid): each tile's crests lean on their own height
+    /// (`settle`).
+    pub tile: u32,
+    /// The way it runs (`k` made a unit vector).
+    pub u: vec2,
 }
 
 fn louder(a: Mode, b: Mode) -> bool {
@@ -901,7 +921,9 @@ impl Swell {
                     if power > 0.0 {
                         let k = wavenumber(b, n)
                         total += power
-                        all.push(Mode { k, w: sqrt(G * length(k)), a, power })
+                        all.push(
+                            Mode { k, w: sqrt(G * length(k)), a, power, tile: i, u: k / length(k) },
+                        )
                     }
                 }
             }
@@ -927,16 +949,18 @@ impl Swell {
     /// time `t`: each wave 2 Re(a e^(i(k·p - ωt))), carried toward its crests (2 Re(iκ̂ a e^(...))).
     pub fn shape(self, p: vec2, t: f32) -> vec3 {
         var d = vec3(0.0)
+        var tiles = vec2(0.0)
         for m in self.modes {
             let phase = dot(m.k, p) - m.w * t
             let c = cos(phase)
             let s = sin(phase)
             let re = m.a.x * c - m.a.y * s
             let im = m.a.x * s + m.a.y * c
-            let u = m.k / length(m.k)
-            d += vec3(-u.x * im, re, -u.y * im) * 2.0
+            d += vec3(-m.u.x * im, re, -m.u.y * im) * 2.0
+            if m.tile == 0 { tiles.x += re * 2.0 } else { tiles.y += re * 2.0 }
         }
-        let carried = self.lean * max(d.y, 0.0)
+        // (Each tile's crests leaned on their own height, as the GPU leans them.)
+        let carried = self.lean * (standing(tiles.x) + standing(tiles.y))
         vec3(d.x * self.chop + carried.x, d.y, d.z * self.chop + carried.y)
     }
 
