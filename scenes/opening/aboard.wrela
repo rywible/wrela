@@ -20,7 +20,7 @@ use engine::realize::{Mesh, SkinVertex, realize_once}
 use engine::sky::{Clouds, cloud_shadow, sky_uv}
 use heavens::Heavens
 use look::{OVERCAST, SKIFF, Shot}
-use main::{HERO_POP, INKED}
+use main::{FREEBOARD, HERO_POP, INKED}
 use paint::{Heaven, lit_solid, storm_sky}
 use played::cover
 use skiff::vessel_shadow
@@ -59,6 +59,8 @@ pub struct Aboard {
     // (Where his coat's tails are draped over his legs this frame: `hakuro::arms::draped`.)
     drape: Drape,
     fresh: bool,
+    // (The drawing's time he was last stepped to.)
+    held: f32,
     colour: Texture<Rgba16Float>,
     marks: Texture<Rgba16Float>,
     normal: Texture<Rgba8>,
@@ -88,6 +90,7 @@ pub fn aboard() -> Aboard {
         lagged: [mat4(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0)); 64],
         drape: drape_room(1),
         fresh: true,
+        held: 0.0,
         colour: texture(width: 1, height: 1),
         marks: texture(width: 1, height: 1),
         normal: texture(width: 1, height: 1),
@@ -203,6 +206,25 @@ fn bend(root: vec3, goal: vec3, l1: f32, l2: f32, pole: vec3) -> vec3 {
     root + dir * a + side * h
 }
 
+/// `foot` (planted on the deck) drawn in toward under `hips`: softly, never further than
+/// `STANCE` out across the deck from them.
+fn drawn_in(foot: vec3, hips: vec3) -> vec3 {
+    let across = vec2(foot.x - hips.x, foot.z - hips.z)
+    let k = 1.0 / sqrt(1.0 + dot(across, across) / (STANCE * STANCE))
+    vec3(hips.x + across.x * k, foot.y, hips.z + across.y * k)
+}
+
+/// How far out across the deck from his hips his feet ever stand (m).
+const STANCE: f32 = 0.3
+
+/// The highest his pelvis can stand over `foot` (where it's planted) with a leg `leg` long from
+/// hip to ankle, his hips where `hips` is across the deck.
+fn stood_over(hips: vec3, foot: vec3, leg: f32) -> f32 {
+    let ankle = foot + vec3(0.0, FOOT.y + 0.02, 0.0)
+    let across = vec2(hips.x - ankle.x, hips.z - ankle.z)
+    ankle.y + sqrt(max(leg * leg - dot(across, across), 0.0)) - (THIGH.y - PELVIS.y)
+}
+
 /// His palette as the shot holds the traveller (in the skiff's frame), into the world: each of
 /// his bones' matrices, rest space to world.
 pub fn bones(s: Shot) -> [mat4; 64] {
@@ -225,11 +247,25 @@ pub fn bones(s: Shot) -> [mat4; 64] {
     let over = clamp(length(mid - chest) - 0.97 * length(HAND - UPPER), -0.45, 1.0)
     let lean = toward / max(length(toward), 1.0e-4) * over
     // Sunk a little into his knees, braced against the sea.
-    let hips = s.hips + lean * 0.35 - vec3(0.0, 0.04, 0.0)
+    var hips = s.hips + lean * 0.35 - vec3(0.0, 0.04, 0.0)
     let neck_at = s.neck + lean * 1.15
+    // The sailing holds a slighter figure's hips low under a neck at the boom; his own trunk is
+    // its length, so stood that low his shoulders fell a hand's span under the boom and his arms
+    // were wrung up over his head to it. So he rises out of the crouch till his trunk reaches up
+    // toward where the sailing wants his neck, as far as his legs, near straight, let him.
+    let torso = length(NECK - PELVIS)
+    let leg = 0.96 * (length(CALF - THIGH) + length(FOOT - CALF))
+    // (His feet drawn in under him a little, as wide a stance as his legs keep strength in:
+    // spread as wide as the sailing sets them, he'd have had to squat to reach the deck.)
+    let fore_foot = drawn_in(s.fore_foot, hips)
+    let aft_foot = drawn_in(s.aft_foot, hips)
+    let top = min(stood_over(hips, fore_foot, leg), stood_over(hips, aft_foot, leg))
+    hips.y = max(hips.y, min(neck_at.y - torso * 0.97, top))
     // His trunk: the pelvis half way to the spine's lean, the chest along it.
     let spine = normalize(neck_at - hips)
-    let r_pelvis = aim(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), normalize(up + spine), facing)
+    // (The pelvis kept nearer upright than the chest: tipped as far, it swung the coat's tails
+    // out behind him like a seat.)
+    let r_pelvis = aim(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), normalize(up * 3.0 + spine), facing)
     let r_chest = aim(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), spine, facing)
     let r_spine1 = aim(
         vec3(0.0, 1.0, 0.0),
@@ -342,10 +378,10 @@ pub fn bones(s: Shot) -> [mat4; 64] {
     }
     // His legs: each foot planted on the deck where the sailing sets it (the fore foot the one
     // on the bow's side of him), the knees sprung forward and out.
-    let left_fore_foot = dot(left, s.fore_foot - s.aft_foot) > 0.0
+    let left_fore_foot = dot(left, fore_foot - aft_foot) > 0.0
     for k in 0..2 {
         let side = if k == 0 { 1.0 } else { -1.0 }
-        let planted = if (k == 0) == left_fore_foot { s.fore_foot } else { s.aft_foot }
+        let planted = if (k == 0) == left_fore_foot { fore_foot } else { aft_foot }
         let hip = pelvis + r_pelvis * (mirrored(THIGH, side) - PELVIS)
         let ankle = planted + vec3(0.0, FOOT.y + 0.02, 0.0)
         let l1 = length(CALF - THIGH)
@@ -372,7 +408,7 @@ pub fn bones(s: Shot) -> [mat4; 64] {
         vec4(s.boat_x, 0.0),
         vec4(s.boat_y, 0.0),
         vec4(s.boat_z, 0.0),
-        vec4(s.boat, 1.0),
+        vec4(s.boat + s.boat_y * FREEBOARD, 1.0),
     )
     for i in 0..26 {
         m[i] = world * m[i]
@@ -762,15 +798,23 @@ impl Aboard {
             self.width = width
             self.height = height
         }
-        let now = bones(shot)
-        write(mut self.palette, 0, now)
-        // (A frame's ease: about a tenth of a second behind at 60 frames a second.)
-        for k in 0..64 {
-            self.lagged[k] = if self.fresh { now[k] } else { self.lagged[k] + (now[k] - self.lagged[k]) * 0.16 }
+        // (The scene moves on its own drawings, `sea::held`: his cloth and his lagged palette
+        // step only when the drawing does, by the time it moved. Stepped every frame, a drawing
+        // held over two frames let the cloth run on and then jump, a pop every fifth frame.)
+        let moved = shot.held - self.held
+        if self.fresh || moved != 0.0 {
+            let now = bones(shot)
+            write(mut self.palette, 0, now)
+            // (About a tenth of a second behind: 0.16 of the way each 60th of a second.)
+            let ease = 1.0 - pow(0.84, clamp(moved, 0.0, 0.1) * 60.0)
+            for k in 0..64 {
+                self.lagged[k] = if self.fresh { now[k] } else { self.lagged[k] + (now[k] - self.lagged[k]) * ease }
+            }
+            write(mut self.palette, MAX_BONES, self.lagged)
+            self.drape.work(self.palette, 1, MAX_BONES, MAX_BONES, if self.fresh { 1.0 / 60.0 } else { moved })
+            self.fresh = false
+            self.held = shot.held
         }
-        self.fresh = false
-        write(mut self.palette, MAX_BONES, self.lagged)
-        self.drape.work(self.palette, 1, MAX_BONES, MAX_BONES, 1.0 / 60.0)
         let p = begin_pass3_with_depth(
             mut self.colour,
             mut self.marks,
