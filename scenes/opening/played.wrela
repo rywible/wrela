@@ -3,12 +3,12 @@
 // it the keys while the player sails (`input`), and each frame draws it into its `image` (`play`),
 // which it lays on its own screen.
 
-use main::{CHECKER, KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, START, STYLE}
+use main::{HALF_PAINT, KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, START, STYLE}
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
-use paint::{paint, paint_fill, paint_half}
+use paint::{paint, paint_fill, paint_half, paint_patch}
 use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder, yonder_low, yonder_rebuild}
 use ink::ink
 use weather::weather
@@ -49,7 +49,7 @@ pub struct State {
     pub(package) low_colour: Texture<Rgba16Float>,
     pub(package) low_marks: Texture<Rgba16Float>,
     pub(package) low_normal: Texture<Rgba8>,
-    /// Half the paint's pixels, a checkerboard's, at half the width (`main::CHECKER`).
+    /// Every other column of the paint, at half the width (`main::HALF_PAINT`).
     pub(package) half_colour: Texture<Rgba16Float>,
     pub(package) half_marks: Texture<Rgba16Float>,
     pub(package) half_normal: Texture<Rgba8>,
@@ -344,7 +344,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         f.end()
     }
     label("paint")
-    if CHECKER {
+    if HALF_PAINT {
         // (A row of the half either side of the band's own: the fill reads the rows round each.)
         let hfrom = if from > 0 { from - 1 } else { 0 }
         let hto = min(to + 1, s.height)
@@ -376,10 +376,36 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
             p,
             cover,
             paint_fill.bind(
+                shot: shot,
                 size: vec2(f32(width), f32(s.height)),
                 half_colour: s.half_colour,
                 half_marks: s.half_marks,
                 half_normal: s.half_normal,
+            ),
+            vertices: 3,
+        )
+        p.end()
+        // (Across edges, every column, over the fill.)
+        let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, keep: true)
+        p.scissor(0, from, width, to - from)
+        draw(
+            p,
+            cover,
+            paint_patch.bind(
+                size: vec2(f32(width), f32(s.height)),
+                half_marks: s.half_marks,
+                shot: shot,
+                light: hv.light,
+                clouds: hv.clouds,
+                view: hv.tables.view,
+                aerial: hv.tables.aerial,
+                dome: hv.sky.dome,
+                cloud: hv.sky.shadow,
+                smp: hv.linear,
+                waves: waves,
+                yon_colour: s.yon_colour,
+                yon_marks: s.yon_marks,
+                yon_normal: s.yon_normal,
             ),
             vertices: 3,
         )
