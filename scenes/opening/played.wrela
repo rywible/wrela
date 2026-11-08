@@ -3,7 +3,8 @@
 // it the keys while the player sails (`input`), and each frame draws it into its `image` (`play`),
 // which it lays on its own screen.
 
-use main::{HALF_PAINT, KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, START, STYLE}
+use main::{HALF_PAINT, HERO, KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, START, STYLE}
+use aboard::{Aboard, aboard}
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
@@ -113,6 +114,8 @@ pub struct State {
     pub(package) drawn: f32,
     pub(package) shot: Shot,
     pub(package) band: u32,
+    /// The hero, realized, and what he's drawn into before he's laid over the paint (`aboard`).
+    pub(package) aboard: Aboard,
 }
 
 pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State {
@@ -180,6 +183,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         drawn: -1.0,
         shot,
         band: 0,
+        aboard: aboard(),
         width,
         height,
     }
@@ -318,10 +322,22 @@ pub(package) fn painted(
     framing: f32,
     fine: f32,
 ) -> Shot {
-    step(mut s.rig, START + time, s.ocean.swell)
+    // (The rig stepped to the drawing's own time, as all else in it is: stepped to the frame's,
+    // a drawing held over two frames carried two frames' motion into the next, every fifth frame
+    // at 30 a second, a jolt the coat's cloth threw out wide for a frame.)
+    step(mut s.rig, held(START + time), s.ocean.swell)
     let shot = prepared(mut s, time, view, orbit, framing, fine)
     paint_rows(mut s, shot, from: 0, to: s.height)
+    stood(mut s, shot)
     shot
+}
+
+/// The hero drawn into the painted drawing (`aboard`), where he stands to the sail (`HERO`).
+fn stood(s: mut State, shot: Shot) {
+    if HERO > 0.5 {
+        let (width, height) = (s.width, s.height)
+        s.aboard.draw(shot, s.heavens, mut s.colour, mut s.marks, mut s.normal, width, height, s.overhead)
+    }
 }
 
 /// The shot at `time`, the camera at `framing` (`Rig::framing`), the sky and the sea stepped on
@@ -592,7 +608,10 @@ pub fn play(
     framing: f32,
     bands: u32,
 ) -> bool {
-    step(mut s.rig, START + time, s.ocean.swell)
+    // (The rig stepped to the drawing's own time, as all else in it is: stepped to the frame's,
+    // a drawing held over two frames carried two frames' motion into the next, every fifth frame
+    // at 30 a second, a jolt the coat's cloth threw out wide for a frame.)
+    step(mut s.rig, held(START + time), s.ocean.swell)
     if width != s.width || height != s.height {
         sized(mut s, width, height)
         s.band = 0
@@ -618,6 +637,7 @@ pub fn play(
         return false
     }
     s.band = 0
+    stood(mut s, shot)
     if s.spare_size != (width, height) {
         s.spare = texture(width: width, height: height)
         s.spare_size = (width, height)

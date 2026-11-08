@@ -5,7 +5,7 @@
 // (`engine::light::hazed`). Beside the colour it writes what the ink reads: how far, what it is,
 // a line field, the line's weight, the normal and the moment's energy.
 
-use main::{FREEBOARD, LOOK, LOW_CLOUD, OFF}
+use main::{FREEBOARD, HERO, LOOK, LOW_CLOUD, OFF}
 use look::{
     STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot,
     band, cells, hash2, luma, fbm, noise, ray,
@@ -15,7 +15,7 @@ use wind::{air_over}
 use engine::ocean::{Waves, foam_at, level_at, surface_at, whitecaps}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use yonder::falls
-use skiff::{dry, skiff, skiff_material, skiff_normal}
+use skiff::{dry, skiff, skiff_material, skiff_normal, vessel}
 use wake::{lifted, marks, spray, stirred}
 use engine::far::foot
 use engine::light::{Light, Lit, gloss, hazed, matte, sun_disc, world}
@@ -119,7 +119,7 @@ pub fn overhead_once(
 /// The sky along `d` and its clouds from the dome (their cover in alpha), the sun's disc on it
 /// if `disc`. Under the overcast, the sky seen through the deck's thinner places is the deck's
 /// own dim light, not the open sky's glare, and the sun's disc is gone.
-fn storm_sky(
+pub(package) fn storm_sky(
     view: Texture<Rgba16Float>,
     light: Light,
     d: vec3,
@@ -441,7 +441,9 @@ fn march_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
     var hit = hi
     var i = 0
     while i < 80 && t < hi {
-        let h = skiff(s, o + d * t)
+        // (Where the hero is drawn himself, the eye meets the rig alone: the traveller's figure
+        // stays for the shadows and the reflection he casts.)
+        let h = if HERO > 0.5 { vessel(s, o + d * t) } else { skiff(s, o + d * t) }
         if h < 0.002 {
             hit = t
             t = hi

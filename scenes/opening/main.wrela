@@ -36,7 +36,8 @@ pub const START: f32 = 0.0
 pub const KINETIC: f32 = 0.0
 
 /// Which view draws: 0 the opening's, 1 the rock near, 2 the skiff near, 3 the cathedral, 4
-/// the sea from over it, 5 toward the sun (`--set VIEW=1`).
+/// the sea from over it, 5 toward the sun, 8 the traveller close, 9 him from off the starboard
+/// quarter, 10 from off the port bow (`--set VIEW=1`).
 pub const VIEW: u32 = 0
 
 /// How much of the drawing lies over the render: 1, all of it; 0, the physical render alone
@@ -151,6 +152,19 @@ pub const TIMINGS: bool = false
 
 /// The passes `TIMINGS` prints.
 const TIMED: [Text; 7] = ["clouds", "ocean", "rock", "yonder", "paint", "weather", "ink"]
+
+/// Whether the hero (Hakuro, content/hakuro: his fields realized and drawn into the painted
+/// scene, `aboard`) stands to the sail: 1, him; 0 a few plain solids in his place, traced, to
+/// see what drawing him costs (`--set HERO=0`).
+pub const HERO: f32 = 1.0
+
+/// How the hero is drawn: 1 (Ryan's pick, Nov 7) illustrated, a cool rim of the sky round his
+/// form and an ink line at his outline and where his parts cross; 0 lit as the skiff is
+/// (`--set INKED=0`).
+pub const INKED: f32 = 1.0
+
+/// 1 for the A/B's B: the hero's rim a narrow bright cool line round his silhouette; 0 as before.
+pub const HERO_POP: f32 = 0.0
 
 pub fn init() -> State {
     targets(heavens(SUN, 3.0), 640, 360)

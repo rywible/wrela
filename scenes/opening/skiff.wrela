@@ -3,9 +3,10 @@
 // and its traveller standing to it; where the sea holds it (`Shot::boat` and its axes).
 
 use look::{Shot, fbm, hash2, noise}
+use main::HERO
 use sail::{BOOM, BOW_OUT, FOOT, LASHED}
 use main::{FREEBOARD, OFF, PLANING, SAIL}
-use hero::{Joints, hero, hero_material}
+use hero::Joints
 
 fn sd_box(p: vec3, b: vec3) -> f32 {
     let q = abs(p) - b
@@ -271,9 +272,9 @@ fn rider(s: Shot) -> (Joints, vec3) {
     (j, blow)
 }
 
-/// The skiff's parts at `q` (the skiff's frame): the hull and its thwart, the sail, the spars
-/// and the traveller.
-fn parts(s: Shot, q: vec3) -> vec4 {
+/// The skiff's parts without its traveller at `q` (the skiff's frame): the hull and its thwart,
+/// the sail and the spars.
+fn rig_parts(s: Shot, q: vec3) -> vec3 {
     // (Its laps eased out where a pixel can't hold them: smaller than one, they shimmered.)
     let lapk = 1.0 - smoothstep(0.012, 0.025, footprint(s, q))
     var wood = hull(q, lapk)
@@ -298,7 +299,6 @@ fn parts(s: Shot, q: vec3) -> vec4 {
         wood = min(wood, sd_box(q - vec3(0.0, step_at + 0.03, FOOT.z), vec3(0.09, 0.04, 0.13)) - 0.01)
     }
     let (sail, _) = cloth(s, q)
-    let (j, blow) = rider(s)
     var rig = spars(s, q)
     if PLANING > 0.5 {
         // The coil of rope by the mast, a flattened ring.
@@ -306,17 +306,79 @@ fn parts(s: Shot, q: vec3) -> vec4 {
         let ring = vec2(length(vec2(c.x, c.z)) - 0.13, c.y)
         rig = min(rig, length(ring * vec2(1.0, 1.5)) / 1.5 - 0.028)
     }
+    vec3(wood, sail, rig)
+}
+
+/// The traveller at `q` (the skiff's frame): his distance. Where the hero is drawn himself
+/// (`main::HERO`), the eye never meets this figure, only the sea's checks of his shadow and his
+/// mirror do, so a few plain solids stand in for him there.
+fn figure(s: Shot, q: vec3) -> f32 {
+    let (j, _) = rider(s)
     // (The rider only where he can be: capsules round his legs and coat, his body and head,
     // and each arm out to its hand; well outside them, their distance stands for his. Every
     // sea pixel's checks call this, and the whole rider there cost more than the hull. Near
-    // them he's drawn whole, so what reads his distance close by (his shadow, the dark of the
-    // water against the hull) reads his own, not the capsules'.)
+    // them he's drawn whole (or, where the hero is drawn himself, his stand-in), so what reads
+    // his distance close by (his shadow, the dark of the water against the hull) reads a figure,
+    // not the capsules'.)
     let legs = min(sd_capsule(q, j.fore_foot, j.hips, 0.42), sd_capsule(q, j.aft_foot, j.hips, 0.42))
     let body = sd_capsule(q, j.hips, j.neck + (j.neck - j.hips) * 0.6, 0.45)
     let arms = min(sd_capsule(q, j.neck, j.fore_hand, 0.32), sd_capsule(q, j.neck, j.aft_hand, 0.32))
     let bound = min(min(legs, body), arms)
-    let man = if (OFF & 32) != 0 { 1.0e3 } else if bound > 0.3 { bound } else { hero(j, q, blow, s.held) }
-    vec4(wood, sail, rig, man)
+    let man = if (OFF & 32) != 0 {
+        1.0e3
+    } else if bound > 0.3 {
+        bound
+    } else {
+        stand_in(j, q)
+    }
+    man
+}
+
+/// The hero as a few solids, for his shadow and his mirror on the sea: his long coat, his legs
+/// under it, his arms out to the boom, his head. (Their sizes his: content/hakuro.)
+fn stand_in(j: Joints, q: vec3) -> f32 {
+    let spine = normalize(j.neck - j.hips)
+    let coat = min(
+        sd_capsule(q, j.hips, j.neck - spine * 0.06, 0.2),
+        sd_capsule(q, j.hips - spine * 0.55, j.hips, 0.19),
+    )
+    let legs = min(
+        sd_capsule(q, j.fore_foot + vec3(0.0, 0.08, 0.0), j.hips, 0.085),
+        sd_capsule(q, j.aft_foot + vec3(0.0, 0.08, 0.0), j.hips, 0.085),
+    )
+    let shoulders = j.neck - spine * 0.1
+    let arms = min(
+        sd_capsule(q, shoulders, j.fore_hand, 0.06),
+        sd_capsule(q, shoulders, j.aft_hand, 0.06),
+    )
+    let head = length(q - j.neck - spine * 0.17) - 0.13
+    min(min(coat, legs), min(arms, head))
+}
+
+/// The skiff's parts at `q` (the skiff's frame): the hull and its thwart, the sail, the spars
+/// and the traveller.
+fn parts(s: Shot, q: vec3) -> vec4 {
+    vec4(rig_parts(s, q), figure(s, q))
+}
+
+/// The skiff without its traveller at `p` (the world's): the hull, the sail and the spars, as
+/// the eye meets them where the hero is drawn himself (`main::HERO`), and as they shadow him.
+pub fn vessel(s: Shot, p: vec3) -> f32 {
+    let k = rig_parts(s, local(s, p))
+    min(min(k.x, k.y), k.z)
+}
+
+/// How much of the sun reaches `p` past the hull, the sail and the spars (1 all of it), toward
+/// `l`: the hero's shadows from the rig.
+pub fn vessel_shadow(s: Shot, p: vec3, l: vec3) -> f32 {
+    var t = 0.02
+    var lit = 1.0
+    for _ in 0..24 {
+        let h = vessel(s, p + l * t)
+        lit = min(lit, 12.0 * h / t)
+        t += clamp(h, 0.02, 0.4)
+    }
+    clamp(lit, 0.0, 1.0)
 }
 
 /// The skiff at `p` (the world's): its distance.
@@ -327,10 +389,15 @@ pub fn skiff(s: Shot, p: vec3) -> f32 {
 
 pub fn skiff_normal(s: Shot, p: vec3) -> vec3 {
     let e = 0.004
-    let dx = skiff(s, p + vec3(e, 0.0, 0.0)) - skiff(s, p - vec3(e, 0.0, 0.0))
-    let dy = skiff(s, p + vec3(0.0, e, 0.0)) - skiff(s, p - vec3(0.0, e, 0.0))
-    let dz = skiff(s, p + vec3(0.0, 0.0, e)) - skiff(s, p - vec3(0.0, 0.0, e))
+    let dx = seen(s, p + vec3(e, 0.0, 0.0)) - seen(s, p - vec3(e, 0.0, 0.0))
+    let dy = seen(s, p + vec3(0.0, e, 0.0)) - seen(s, p - vec3(0.0, e, 0.0))
+    let dz = seen(s, p + vec3(0.0, 0.0, e)) - seen(s, p - vec3(0.0, 0.0, e))
     normalize(vec3(dx, dy, dz))
+}
+
+/// What the camera sees of the skiff: the vessel alone where the hero stands in for the figure.
+fn seen(s: Shot, p: vec3) -> f32 {
+    if HERO > 0.5 { vessel(s, p) } else { skiff(s, p) }
 }
 
 /// What the skiff is made of at `p` (the world's), facing `n`: its albedo, roughness and the
@@ -395,6 +462,9 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
     let soaked = (1.0 - smoothstep(0.04, 0.16, wash)) * outside
     a *= 1.0 - 0.6 * soaked
     rough = mix(rough, 0.2, soaked)
+    // (The figure left out where the hero stands in for it.)
+    // (His stand-in kept even with the hero drawn himself: the sea's mirror meets it, and without
+    // it there his reflection took the hull's wood.)
     let k = parts(s, q)
     // The sail: a heavy cloth, bone-pale and weathered, its panels seamed across, a broad band
     // of the cloak's madder through it and a dark leech tape; lit through when the light's
@@ -462,11 +532,9 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
         }
         return (c, mix(0.6, 0.9, rope), 1.0 - 0.9 * rope * (1.0 - strand))
     }
-    // The hero.
+    // His stand-in (seen only with `main::HERO` off): his coat's black.
     if k.w < 0.006 {
-        let (j, blow) = rider(s)
-        let (c, r) = hero_material(j, q, blow, s.held)
-        return (c, r, 1.0)
+        return (vec3(0.03, 0.03, 0.035), 0.7, 1.0)
     }
     (a, rough, seam)
 }
