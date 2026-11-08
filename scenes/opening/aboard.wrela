@@ -29,7 +29,7 @@ use skiff::vessel_shadow
 use std::gpu::{
     ClipPosition, DepthTexture, Flat, FragCoord, GpuBuffer, Rgba16Float, Rgba8, Sampler, Targets3,
     Texture, Texture3d, VertexIndex, begin_pass3, begin_pass3_with_depth, buffer, depth_texture,
-    Cull, discard, draw, texture, write,
+    Cull, GlobalId, Slots, discard, dispatch, draw, texture, write,
 }
 use std::math::PI
 
@@ -56,6 +56,8 @@ pub struct Aboard {
     coat: Mesh,
     arms: [Mesh; 6],
     palette: GpuBuffer<mat4>,
+    // (The sky's light from his three fixed directions, once a frame: `hero_skies`.)
+    skies: GpuBuffer<vec4>,
     // (His palette a moment ago, each frame eased toward his. Drawn after his own in `palette`.)
     lagged: [mat4; 64],
     // (Where his coat's tails are draped over his legs this frame: `hakuro::arms::draped`.)
@@ -98,6 +100,7 @@ pub fn aboard() -> Aboard {
         // (His arms and body are sampled from the reference's own surface: `hakuro::arms`.)
         arms: [arm(0), arm(1), sampled_body(), jacket(), hand(0), hand(1)],
         palette: buffer(2 * MAX_BONES),
+        skies: buffer(SKIES),
         lagged: [mat4(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0)); 64],
         drape: drape_room(1),
         fresh: true,
@@ -585,6 +588,7 @@ pub fn hero_pixel<F: Parts<Cloth>>(
     dome: Texture<Rgba16Float>,
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
+    skies: [vec4],
     painted: Texture<Rgba16Float>,
     pixel: FragCoord,
 ) -> Targets3<vec4, vec4, vec4> {
@@ -616,7 +620,7 @@ pub fn hero_pixel<F: Parts<Cloth>>(
         hidden += max(step - e, 0.0) / step * (if i == 1 { 1.0 } else { 0.6 })
     }
     let ao = clamp(1.0 - hidden * 0.6, 0.0, 1.0)
-    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, v.world, n, d, t, c, ao)
+    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, skies, v.world, n, d, t, c, ao)
 }
 
 /// His sampled arms' pixel: as `hero_pixel`, but with no fields behind them, their own normal
@@ -632,6 +636,7 @@ pub fn arm_pixel(
     dome: Texture<Rgba16Float>,
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
+    skies: [vec4],
     painted: Texture<Rgba16Float>,
     jacket: u32,
     pixel: FragCoord,
@@ -649,7 +654,7 @@ pub fn arm_pixel(
     }
     // (1 for his jacket, whose paint carries on down over his trousers: `jacket_paint`.)
     let c = if jacket == 1 { jacket_paint(v.rest) } else { body_paint(v.rest) }
-    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, v.world, n, d, t, c, 0.9)
+    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, skies, v.world, n, d, t, c, 0.9)
 }
 
 /// His light, illustrated: the world's own sky and sun, but the sky's light taken from fixed
@@ -660,19 +665,15 @@ pub fn arm_pixel(
 fn illustrated(
     s: Shot,
     light: Light,
-    view: Texture<Rgba16Float>,
-    dome: Texture<Rgba16Float>,
-    smp: Sampler,
+    skies: [vec4],
     p: vec3,
     n: vec3,
     c: Cloth,
     sun: f32,
     ao: f32,
 ) -> vec3 {
-    let up = vec3(0.0, 1.0, 0.0)
     let side = normalize(vec3(light.sun.x, 0.35, light.sun.z))
-    let deck = (storm_sky(view, light, up, dome, smp, disc: false).rgb +
-        storm_sky(view, light, side, dome, smp, disc: false).rgb) * 0.5
+    let deck = (skies[0].xyz + skies[1].xyz) * 0.5
     // Two values of shade: the faces turned up, and the rest, a soft step between.
     let open = 0.20 + 0.20 * smoothstep(0.15, 0.35, n.y)
     let under = max(-n.y, 0.0)
@@ -697,6 +698,35 @@ fn illustrated(
     world(light, lit, p, s.eye) + keyed
 }
 
+/// How many of the sky's lights `hero_skies` keeps: the deck's overhead, the sky toward the sun's
+/// side, and the light over the sea toward the sun.
+const SKIES: u32 = 3
+
+/// The sky's light from his fixed directions, once a frame (the same for every pixel of him, so
+/// looked up once, not in each): `out[0]` overhead, `[1]` toward the sun's side, `[2]` low over the
+/// sea toward the sun.
+@compute(64)
+pub fn hero_skies(
+    light: Light,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    smp: Sampler,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= SKIES {
+        return
+    }
+    let dir = if id.x == 0 {
+        vec3(0.0, 1.0, 0.0)
+    } else if id.x == 1 {
+        normalize(vec3(light.sun.x, 0.35, light.sun.z))
+    } else {
+        normalize(vec3(light.sun.x, 0.25, light.sun.z))
+    }
+    out[id] = vec4(storm_sky(view, light, dir, dome, smp, disc: false).rgb, 0.0)
+}
+
 /// His pixel lit, from its normal `n`, cloth `c` and how open it is to the sky `ao`: as the skiff
 /// is, a character's way.
 fn lit_hero(
@@ -708,6 +738,7 @@ fn lit_hero(
     dome: Texture<Rgba16Float>,
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
+    skies: [vec4],
     p: vec3,
     n: vec3,
     d: vec3,
@@ -719,7 +750,7 @@ fn lit_hero(
     let cast = vessel_shadow(s, p + n * 0.01, light.sun)
     let sun = cast * cloud_shadow(clouds, cloud, smp, p)
     var col = if INKED > 0.5 {
-        illustrated(s, light, view, dome, smp, p, n, c, sun, ao)
+        illustrated(s, light, skies, p, n, c, sun, ao)
     } else {
         lit_solid(
             s,
@@ -743,14 +774,7 @@ fn lit_hero(
     }
     // Lit as the skiff is, a character's way: the sea's light thrown up under him, and a rim of
     // the sun (its numbers, for the clean look).
-    let sea_light = storm_sky(
-        view,
-        light,
-        normalize(vec3(light.sun.x, 0.25, light.sun.z)),
-        dome,
-        smp,
-        disc: false,
-    ).rgb
+    let sea_light = skies[2].xyz
     let toward = max(dot(n, normalize(vec3(light.sun.x, -0.4, light.sun.z))), 0.0)
     let bounce = sea_light *
         PI *
@@ -941,6 +965,10 @@ impl Aboard {
             self.fresh = false
             self.held = shot.held
         }
+        dispatch(
+            hero_skies.bind(light: hv.light, view: hv.tables.view, dome: hv.sky.dome, smp: hv.linear, out: mut self.skies),
+            groups: 1,
+        )
         let p = begin_pass3_with_depth(
             mut self.colour,
             mut self.marks,
@@ -970,6 +998,7 @@ impl Aboard {
                 dome: hv.sky.dome,
                 cloud: hv.sky.shadow,
                 smp: hv.linear,
+                skies: self.skies.items(),
                 painted: marks,
             ),
             indices: self.body.quads.items(),
@@ -993,6 +1022,7 @@ impl Aboard {
                 dome: hv.sky.dome,
                 cloud: hv.sky.shadow,
                 smp: hv.linear,
+                skies: self.skies.items(),
                 painted: marks,
             ),
             indices: self.head.quads.items(),
@@ -1018,6 +1048,7 @@ impl Aboard {
                 dome: hv.sky.dome,
                 cloud: hv.sky.shadow,
                 smp: hv.linear,
+                skies: self.skies.items(),
                 painted: marks,
             ),
             indices: self.coat.quads.items(),
@@ -1041,6 +1072,7 @@ impl Aboard {
                     dome: hv.sky.dome,
                     cloud: hv.sky.shadow,
                     smp: hv.linear,
+                skies: self.skies.items(),
                     painted: marks,
                     jacket: if a == 3 { 1 } else { 0 },
                 ),
