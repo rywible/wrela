@@ -4,6 +4,7 @@
 use sea::{HELD, SEA as WATER, bob, held}
 use engine::ocean::Swell
 use sail::{Rig, Pose, pose}
+use main::{CAMERA, OPEN_SIDE}
 
 /// Where the rock floats (the world's, m: its plateau's centre), and the sun.
 pub const ISLE = vec3(-1890.0, 1806.0, 7560.0)
@@ -165,7 +166,7 @@ pub fn shot_at(
     let (b1, _, _, _) = bob(t - dt, r.shown_at, r.shown_steer, swell)
     let (b2, _, _, _) = bob(t - 2.0 * dt, r.shown_at, r.shown_steer, swell)
     let lift = (boat.y - 2.0 * b1.y + b2.y) / (dt * dt)
-    let behind = turned(vec2(0.5, -21.0), r.shown_look)
+    let behind = turned(vec2(0.5 - OPEN_SIDE, -21.0), r.shown_look)
     let ahead = turned(vec2(-530.5, 5421.0), r.shown_look)
     let low = vec3(r.shown_at.x + behind.x, 1.9 + boat.y * 0.6, r.shown_at.y + behind.y)
     let rock = normalize(vec3(ahead.x, 622.0 - low.y, ahead.y))
@@ -176,17 +177,17 @@ pub fn shot_at(
     // little lower the faster it runs.)
     let run = smoothstep(2.0, 10.0, r.shown_rush)
     let surge = clamp(r.shown_speed - r.shown_rush, -1.0, 3.0)
-    let back = PLAY_BACK - 0.3 * run + max(surge, 0.0) * 0.35 + min(surge, 0.0) * 0.15
-    let beside = vec2(heading.y, -heading.x) * (PLAY_SIDE * r.shown_perch)
+    let back = PLAY_BACK + 0.8 * CAMERA - 0.3 * run + max(surge, 0.0) * 0.35 + min(surge, 0.0) * 0.15
+    let beside = vec2(heading.y, -heading.x) * ((PLAY_SIDE + 2.2 * CAMERA) * r.shown_perch)
     let high = vec3(
         r.shown_at.x - heading.x * back + beside.x,
-        PLAY_UP - 0.35 * run + boat.y * 0.5,
+        PLAY_UP + 1.4 * CAMERA - 0.35 * run + boat.y * 0.5,
         r.shown_at.y - heading.y * back + beside.y,
     )
     let ahead_of = vec3(
-        r.shown_at.x + heading.x * 24.0 + beside.x * 0.4,
+        r.shown_at.x + heading.x * (24.0 - 6.0 * CAMERA) + beside.x * 0.4,
         0.9,
-        r.shown_at.y + heading.y * 24.0 + beside.y * 0.4,
+        r.shown_at.y + heading.y * (24.0 - 6.0 * CAMERA) + beside.y * 0.4,
     )
     let k = smoothstep(0.0, 1.0, clamp(r.framing, 0.0, 1.0))
     // (Running, the camera shakes a little with the hull's chatter over the chop, and with a

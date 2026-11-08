@@ -43,12 +43,12 @@ pub fn lifted(s: Shot, p: vec3) -> f32 {
     let from = bow - along
     // (The pile-up at the stem, the water shoved ahead of it.)
     let stem = vec2(across / 0.35, (along - bow - 0.05) / 0.3)
-    let pile = 0.05 * way * (1.0 - 0.4 * run) * exp(-dot(stem, stem))
+    let pile = 0.12 * way * (1.0 - 0.4 * run) * exp(-dot(stem, stem))
     // (The wave off each bow: a steep ridge hard by the hull, lowering and broadening aft.)
     let f = max(from, 0.0)
     let out = across - crest_out(s, f)
     let wide = 0.02 + 0.035 * f
-    let rise = (0.07 * way + 0.06 * run) * smoothstep(-0.15, 0.25, from) * exp(-f / (1.4 + 1.6 * run))
+    let rise = (0.11 * way + 0.09 * run) * smoothstep(-0.15, 0.25, from) * exp(-f / (1.4 + 1.6 * run))
     let ridge = rise * (0.6 + 0.8 * noise(vec2(f * 1.7 - s.held * 2.0, across * 2.0))) * exp(-out * out / wide) * (1.0 + 0.6 * smoothstep(0.0, -0.2, out) * (1.0 - smoothstep(0.0, 1.0, f)))
     // (The water drawn down along the quarters, and filling back in behind the transom.)
     let quarter = -0.05 * way * exp(-pow(across - 0.5, 2.0) / 0.06) * smoothstep(0.6, -0.2, along) * smoothstep(-2.8, -1.8, along)
