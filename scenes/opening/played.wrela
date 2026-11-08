@@ -10,7 +10,7 @@ use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
 use engine::upscale::{Body, NO_BODY, Pinhole}
-use paint::{paint, paint_fill, paint_half}
+use paint::{OVERHEAD, overhead_once, paint, paint_fill, paint_half}
 use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder, yonder_low, yonder_rebuild}
 use ink::ink
 use rock::{Rock, reach, rock, step_rock}
@@ -92,6 +92,8 @@ pub struct State {
     pub(package) last_body: Body,
     /// What a tile not yet cooked reads for its shade (`rock::reach`).
     pub(package) unbaked: GpuBuffer<vec4>,
+    /// The sky's colours the same for every pixel of the drawing (`paint::overhead_once`).
+    pub(package) overhead: GpuBuffer<vec4>,
     /// The passes' times asked for and not yet answered (which, the ask, its frame), and the
     /// frames drawn (`main::TIMINGS`).
     pub(package) asks: Vec<(u32, Pending<f32>, u32)>,
@@ -171,6 +173,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         last_body: NO_BODY,
         plain: shot,
         unbaked: buffer(1),
+        overhead: buffer(OVERHEAD),
         asks: Vec::new(),
         frames: 0,
         image: texture(width: 1, height: 1),
@@ -399,6 +402,17 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         )
         s.isle_cooked += 1
     }
+    label("overhead")
+    dispatch(
+        overhead_once.bind(
+            view: hv.tables.view,
+            light: hv.light,
+            dome: hv.sky.dome,
+            smp: hv.linear,
+            out: mut s.overhead,
+        ),
+        over: OVERHEAD,
+    )
     label("yonder")
     if QUARTER {
         // (A row of the half-size pass either side of the band's own: the rebuild reads the
@@ -424,6 +438,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 smp: hv.linear,
                 field: s.isle_field,
                 reach: s.reach,
+                once: s.overhead.items(),
             ),
             vertices: 3,
         )
@@ -468,6 +483,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 past_normal: s.past_normal,
                 field: s.isle_field,
                 reach: s.reach,
+                once: s.overhead.items(),
             ),
             vertices: 3,
         )
@@ -494,6 +510,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 yon_colour: s.yon_colour,
                 yon_marks: s.yon_marks,
                 yon_normal: s.yon_normal,
+                once: s.overhead.items(),
             ),
             vertices: 3,
         )
@@ -533,6 +550,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
             yon_colour: s.yon_colour,
             yon_marks: s.yon_marks,
             yon_normal: s.yon_normal,
+            once: s.overhead.items(),
         ),
         vertices: 3,
     )
@@ -560,6 +578,7 @@ pub(package) fn weathered(s: mut State, shot: Shot) {
             smp: hv.linear,
             colour: s.colour,
             marks: s.marks,
+            once: s.overhead.items(),
         ),
         vertices: 3,
     )
