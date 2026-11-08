@@ -1,0 +1,544 @@
+// Hakuro's turnaround in plain light, as his look was locked (hero-masks v17's sheet): his fields
+// realized once as the engine realizes a character, posed as the sheet poses him (his weight on
+// his right leg, his left hand on his hip) and drawn five times round, front to back.
+
+use arms::{Drape, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body}
+use hakuro::{Cloth, body_paint, coat, hands, head, hero, jacket_paint, skeleton}
+use engine::character::{ByChannels, colours}
+use engine::character::skin_matrix
+use engine::creature::{Bone, Creature, MAX_BONES, PartMask, Parts, Skeleton}
+use engine::look::CreatureLook
+use engine::look::Mesh as Tolerance
+use engine::plain::{LIGHTS, Lights, View, unlit_shadow, view}
+use engine::realize::{Mesh, SkinVertex, Tally, realize_once}
+use std::gpu::{
+    ClipPosition, ComparisonSampler, Cull, DepthTexture, Flat, GpuBuffer, Unorm8x4, VertexIndex,
+    begin_screen_pass_with_depth,
+    buffer, comparison_sampler, depth_texture, draw, read, write,
+}
+use std::io::{Pending, print}
+use std::transform::{rotate_y, translate}
+use reference_rig::{HAKURO_BONE, reference_rig}
+use clear::{fists_off_mask, hands_off_hips}
+use engine::humanoid::{Clip, Pose, Rig, palette}
+use moves::idle::IDLE
+use moves::punch::PUNCH
+use moves::rest::REST
+use moves::roll::ROLL
+use moves::run::RUN
+use moves::stance::STANCE
+use moves::start::START
+use moves::stop::STOP
+use moves::walk::WALK
+
+/// A move to play on him, as the game's moves are written (content/moves, fitted to the
+/// reference's rig, whose joints are his): 0 none (the sheet's pose), 1 the fighting stance's
+/// bounce, 2 the loose idle out of a fight, 3 the idle, 4 the walk, 5 the run, 6 the cross,
+/// 7 the roll, 8 setting off, 9 stopping (`--set MOVE=1`). Each plays in place.
+pub const MOVE: u32 = 0
+
+/// The rig the moves are fitted to, and the move `MOVE` names as a clip.
+const RIG: Rig = reference_rig()
+const PLAYED: Clip = match MOVE {
+    1 => STANCE.clip(RIG.clone(), 30.0),
+    2 => REST.clip(RIG.clone(), 30.0),
+    3 => IDLE.clip(RIG.clone(), 30.0),
+    4 => WALK.clip(RIG.clone(), 30.0),
+    5 => RUN.clip(RIG.clone(), 30.0),
+    6 => PUNCH.clip(RIG.clone(), 30.0),
+    7 => ROLL.clip(RIG.clone(), 30.0),
+    8 => START.clip(RIG.clone(), 30.0),
+    9 => STOP.clip(RIG.clone(), 30.0),
+    _ => STANCE.clip(RIG.clone(), 30.0),
+}
+
+/// His palette as the move has him at `time`: each of the rig's bones' matrix to his, the
+/// fingers he has that it doesn't (none) left with their hand, his walk kept in place.
+fn moved(time: f32) -> [mat4; 64] {
+    var pose = PLAYED.smooth_pose(time)
+    // (In place: a walk's travel taken off, its sway kept.)
+    let loops = if PLAYED.looped { floor(time * PLAYED.fps / f32(PLAYED.frames - 1)) } else { 0.0 }
+    pose.hips = pose.hips - PLAYED.travel_local * loops - PLAYED.travel_local * fract(time * PLAYED.fps / f32(max(PLAYED.frames, 2) - 1))
+    let rig_m = palette(RIG.clone(), pose, translate(vec3(0.0)))
+    var m = [translate(vec3(0.0)); 64]
+    for b in 0..52 {
+        m[HAKURO_BONE[b]] = rig_m[b]
+    }
+    // His old single finger and thumb bones (14 to 17), unused by his skin, with his hands.
+    for side in 0..2 {
+        m[14 + side] = m[12 + side]
+        m[16 + side] = m[12 + side]
+    }
+    // (The fighting moves' captures hold no fingers: his hands closed into fists.)
+    if MOVE == 1 || MOVE == 6 {
+        m = curled(m, FIST_CURL)
+    } else {
+        // (And loosely closed out of a fight: the captures' own fingers, laid straight on his
+        // rig, splayed.)
+        m = curled(m, RELAXED_CURL)
+    }
+    fists_off_mask(hands_off_hips(m))
+}
+
+/// 1 to stand him in the sheet's pose; 0 at rest, a T-pose (`--set POSED=0`).
+pub const POSED: f32 = 1.0
+
+/// The body's grid: cells of about 13 mm (what a realization's scratch has room for over a
+/// T-pose's span); the coat's tails', about 7 mm; the head's, about 5 mm.
+const HOW = CreatureLook { surface: Tolerance { tolerance: 1.0e-3, radius: 0.021, largest: 0.013 } }
+/// His hands' grid: cells of about 6 mm (their fingers are thin).
+const HOW_HANDS = CreatureLook {
+    surface: Tolerance { tolerance: 0.5e-3, radius: 0.010, largest: 0.006 },
+}
+const HOW_COAT = CreatureLook {
+    surface: Tolerance { tolerance: 0.5e-3, radius: 0.012, largest: 0.007 },
+}
+const HOW_HEAD = CreatureLook {
+    surface: Tolerance { tolerance: 0.5e-3, radius: 0.007, largest: 0.005 },
+}
+
+/// The sheet's pose: each bone turned about a world axis by degrees, root to leaf, as the design
+/// posed him (hero-masks v17's scene.py).
+const POSE: [(Text, vec3, f32); 25] = [
+    ("pelvis", vec3(0.0, 0.0, 1.0), 3.0),
+    ("pelvis", vec3(0.0, 1.0, 0.0), -6.0),
+    ("spine 1", vec3(0.0, 0.0, 1.0), -4.0),
+    ("spine 2", vec3(0.0, 0.0, 1.0), -2.0),
+    ("spine 3", vec3(1.0, 0.0, 0.0), -3.0),
+    ("thigh left", vec3(0.0, 0.0, 1.0), 6.0),
+    ("thigh right", vec3(0.0, 0.0, 1.0), -2.0),
+    ("thigh left", vec3(1.0, 0.0, 0.0), -6.0),
+    ("calf left", vec3(1.0, 0.0, 0.0), 10.0),
+    ("foot left", vec3(0.0, 1.0, 0.0), 12.0),
+    ("foot right", vec3(0.0, 1.0, 0.0), -8.0),
+    ("collarbone left", vec3(0.0, 0.0, 1.0), -6.0),
+    ("collarbone right", vec3(0.0, 0.0, 1.0), 4.0),
+    ("upper arm left", vec3(0.0, 0.0, 1.0), -53.0),
+    ("upper arm right", vec3(0.0, 0.0, 1.0), 78.0),
+    ("upper arm left", vec3(0.0, 1.0, 0.0), 4.0),
+    ("upper arm right", vec3(1.0, 0.0, 0.0), 4.0),
+    ("forearm left", vec3(0.0, 0.0, 1.0), -58.0),
+    ("forearm left", vec3(0.0, 1.0, 0.0), 12.0),
+    ("hand left", vec3(0.0, 0.0, 1.0), -32.0),
+    ("forearm right", vec3(1.0, 0.0, 0.0), -14.0),
+    ("neck", vec3(1.0, 0.0, 0.0), 6.0),
+    ("head", vec3(1.0, 0.0, 0.0), 10.0),
+    ("head", vec3(0.0, 1.0, 0.0), -10.0),
+    ("head", vec3(0.0, 0.0, 1.0), 4.0),
+]
+
+/// A turn of `degrees` about `axis` (unit) about the point `at`.
+fn turn_about(axis: vec3, degrees: f32, at: vec3) -> mat4 {
+    let a = degrees * 0.0174532925
+    let c = cos(a)
+    let s = sin(a)
+    let t = 1.0 - c
+    let x = axis.x
+    let y = axis.y
+    let z = axis.z
+    let r = mat4(
+        vec4(t * x * x + c, t * x * y + s * z, t * x * z - s * y, 0.0),
+        vec4(t * x * y - s * z, t * y * y + c, t * y * z + s * x, 0.0),
+        vec4(t * x * z + s * y, t * y * z - s * x, t * z * z + c, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    )
+    translate(at) * r * translate(-at)
+}
+
+/// Whether bone `b` is `of` or below it.
+fn below(s: Skeleton, b: u32, of: u32) -> bool {
+    var i = b
+    loop {
+        if i == of {
+            return true
+        }
+        let p = s.parent(Bone { index: i }).index
+        if p == i {
+            return false
+        }
+        i = p
+    }
+}
+
+/// His palette in the sheet's pose.
+fn posed() -> [mat4; 64] {
+    let s = skeleton()
+    var m = [translate(vec3(0.0)); 64]
+    if POSED < 0.5 {
+        return m
+    }
+    for (name, axis, degrees) in POSE {
+        let b = s.find(name).index
+        let at = (m[b] * vec4(s.rest(Bone { index: b }), 1.0)).xyz
+        let r = turn_about(axis, degrees, at)
+        for k in 0..s.len() {
+            if below(s, k, b) {
+                m[k] = r * m[k]
+            }
+        }
+    }
+    // His hands turned about their length, palm in to his hip (the knuckles out).
+    for side in 0..2 {
+        let sign = if side == 0 { 1.0 } else { -1.0 }
+        let b = 12 + side
+        let at = (m[b] * vec4(s.rest(Bone { index: b }), 1.0)).xyz
+        let axis = normalize((m[b] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
+        let r = turn_about(axis, HIP_TWIST * sign, at)
+        for k in 0..s.len() {
+            if below(s, k, b) {
+                m[k] = r * m[k]
+            }
+        }
+    }
+    // His fingers, each joint curled toward his palm (about its own rest z, carried by his hand's
+    // turn): the hand at his hip relaxed, the fingers round over it, the thumb nearly straight;
+    // his other hand hanging relaxed (`RELAXED_CURL`).
+    // (The same turn on both sides: his right's finger bones lie as his left's, unmirrored, so a
+    // mirrored turn bent its fingers back, splayed.)
+    for side in 0..2 {
+        for j in 0..15 {
+            let b = 26 + 2 * j + side
+            let at = (m[b] * vec4(s.rest(Bone { index: b }), 1.0)).xyz
+            let axis = normalize((m[b] * vec4(if j >= 12 { THUMB_AXIS } else { vec3(0.0, 0.0, 1.0) }, 0.0)).xyz)
+            let r = turn_about(axis, if side == 0 { HIP_CURL[j] } else { RELAXED_CURL[j] }, at)
+            for k in 0..s.len() {
+                if below(s, k, b) {
+                    m[k] = r * m[k]
+                }
+            }
+        }
+    }
+    m
+}
+
+/// `m` with each finger's joints set by its hand's, curled toward the palm by `curl` (degrees a
+/// joint, as `HIP_CURL`), each joint about its own rest z (the thumb's, `THUMB_AXIS`).
+fn curled(m: [mat4; 64], curl: [f32; 15]) -> [mat4; 64] {
+    let s = skeleton()
+    var out = m
+    for side in 0..2 {
+        for j in 0..15 {
+            out[26 + 2 * j + side] = out[12 + side]
+        }
+    }
+    for side in 0..2 {
+        for j in 0..15 {
+            let b = 26 + 2 * j + side
+            let at = (out[b] * vec4(s.rest(Bone { index: b }), 1.0)).xyz
+            let axis = normalize((out[b] * vec4(if j >= 12 { THUMB_AXIS } else { vec3(0.0, 0.0, 1.0) }, 0.0)).xyz)
+            let r = turn_about(axis, curl[j], at)
+            for k in 26..56 {
+                if below(s, k, b) {
+                    out[k] = r * out[k]
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A hand hanging relaxed (degrees, as `HIP_CURL`): the fingers curled more toward the little
+/// one, the thumb resting along the index.
+const RELAXED_CURL = [30.0, 40.0, 25.0, 36.0, 46.0, 25.0, 42.0, 50.0, 28.0, 48.0, 55.0, 30.0, 10.0, 22.0, 18.0]
+
+/// A closed fist's curl (degrees; index, middle, ring, little, thumb): knuckles square, the
+/// thumb folded across the middle bones.
+const FIST_CURL = [88.0, 105.0, 70.0, 90.0, 108.0, 70.0, 92.0, 108.0, 70.0, 94.0, 108.0, 70.0, 35.0, 50.0, 40.0]
+
+/// How far his hands turn about their length at his hip (degrees).
+const HIP_TWIST: f32 = 0.0
+
+/// How far each finger joint curls at his hip (degrees; index, middle, ring, little, thumb).
+const HIP_CURL = [28.0, 34.0, 18.0, 30.0, 36.0, 20.0, 32.0, 38.0, 20.0, 36.0, 40.0, 22.0, 4.0, 12.0, 12.0]
+
+/// The thumb's joints' axis at rest (his left's): across its pad, so it closes toward the palm.
+const THUMB_AXIS = vec3(-0.35, 0.55, 0.76)
+
+/// The sheet's five views: front, three-quarter, side, back, the other side.
+const TURNS = [0.0, -0.7853982, -1.5707963, 3.1415927, 1.5707963]
+
+pub struct State {
+    meshes: [Mesh; 10],
+    colours: [GpuBuffer<Unorm8x4>; 4],
+    palettes: GpuBuffer<mat4>,
+    drape: Drape,
+    last: f32,
+    tallies: Vec<Pending<Tally>>,
+    shadow: DepthTexture,
+    smp: ComparisonSampler,
+}
+
+pub fn init() -> State {
+    let h = hero()
+    let body = realize_once(h, HOW)
+    let c0 = colours(body, h.field(), ByChannels {}, cell: 0.005)
+    let hd = head()
+    let head_mesh = realize_once(hd, HOW_HEAD)
+    let c1 = colours(head_mesh, hd.field(), ByChannels {}, cell: 0.002)
+    let ct = coat()
+    let coat_mesh = follow_legs(realize_once(ct, HOW_COAT))
+    let c2 = colours(coat_mesh, ct.field(), ByChannels {}, cell: 0.003)
+    let ar = hands()
+    let hands_mesh = realize_once(ar, HOW_HANDS)
+    let c3 = colours(hands_mesh, ar.field(), ByChannels {}, cell: 0.003)
+    let pose = posed()
+    // (Each view's palette, then each one's a moment ago: `LAGGED`.)
+    var palettes: GpuBuffer<mat4> = buffer(10 * MAX_BONES)
+    for v in 0..5 {
+        let place = translate(vec3(f32(v) * 1.15 - 2.3, 0.0, 0.0)) * rotate_y(TURNS[v])
+        var m = pose
+        for k in 0..64 {
+            m[k] = place * pose[k]
+        }
+        write(mut palettes, v * MAX_BONES, m)
+        write(mut palettes, v * MAX_BONES + LAGGED, m)
+    }
+    var tallies: Vec<Pending<Tally>> = Vec::new()
+    tallies.push(read(body.tally.items()))
+    tallies.push(read(head_mesh.tally.items()))
+    tallies.push(read(coat_mesh.tally.items()))
+    tallies.push(read(hands_mesh.tally.items()))
+    let left_arm = arm(0)
+    let right_arm = arm(1)
+    tallies.push(read(left_arm.tally.items()))
+    tallies.push(read(right_arm.tally.items()))
+    let skin = sampled_body()
+    tallies.push(read(skin.tally.items()))
+    State {
+        meshes: [body, head_mesh, coat_mesh, hands_mesh, left_arm, right_arm, skin, jacket(), hand(0), hand(1)],
+        colours: [c0, c1, c2, c3],
+        palettes,
+        drape: drape_room(5),
+        last: 0.0,
+        tallies,
+        shadow: unlit_shadow(),
+        smp: comparison_sampler(),
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if MOVE > 0 {
+        let pose = moved(time)
+        let before = moved(max(time - LAG, 0.0))
+        for v in 0..5 {
+            let place = translate(vec3(f32(v) * 1.15 - 2.3, 0.0, 0.0)) * rotate_y(TURNS[v])
+            var m = pose
+            var b = before
+            for k in 0..64 {
+                m[k] = place * pose[k]
+                b[k] = place * before[k]
+            }
+            write(mut s.palettes, v * MAX_BONES, m)
+            write(mut s.palettes, v * MAX_BONES + LAGGED, b)
+        }
+    }
+    s.drape.work(s.palettes, 5, MAX_BONES, LAGGED, time - s.last)
+    s.last = time
+    for i in 0..s.tallies.len() {
+        if let Some(Ok(v)) = s.tallies[i].poll() {
+            let t = v[0]
+            print(
+                f"mesh {i}: {t.vertices} vertices, {t.pushed_quads} quads, {t.live_blocks} blocks, flags {t.flags}, holes {t.holes}",
+            )
+        }
+    }
+    let v = view(
+        vec3(0.0, 1.0, 9.0),
+        vec3(0.0, 0.95, 0.0),
+        0.36,
+        f32(width) / f32(height),
+        vec3(0.5, 0.8, 0.6),
+        4.0,
+    )
+    var depth = depth_texture(width: width, height: height)
+    let pass = begin_screen_pass_with_depth(mut depth, clear: vec4(0.85, 0.82, 0.76, 1.0))
+    // (Each of his meshes with its own creature's fields: they're of different types.)
+    let fields = (hero(), head(), coat(), hands())
+    for k in 0..5 {
+        draw(
+            pass,
+            fielded.bind(
+                verts: s.meshes[0].verts.items(),
+                palettes: s.palettes.items(),
+                first: k * MAX_BONES,
+                view: v,
+            ),
+            fielded_pixel.bind(
+                field: fields.0.field(),
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.smp,
+            ),
+            indices: s.meshes[0].quads.items(),
+            indirect: s.meshes[0].draw.items(),
+            cull: Cull::Back,
+        )
+    }
+    for k in 0..5 {
+        draw(
+            pass,
+            fielded.bind(
+                verts: s.meshes[1].verts.items(),
+                palettes: s.palettes.items(),
+                first: k * MAX_BONES,
+                view: v,
+            ),
+            fielded_pixel.bind(
+                field: fields.1.field(),
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.smp,
+            ),
+            indices: s.meshes[1].quads.items(),
+            indirect: s.meshes[1].draw.items(),
+            cull: Cull::Back,
+        )
+    }
+    for k in 0..5 {
+        draw(
+            pass,
+            coat_fielded.bind(
+                verts: s.meshes[2].verts.items(),
+                palettes: s.palettes.items(),
+                grid: s.drape.grid(),
+                facing: s.drape.facing(),
+                first: k * MAX_BONES,
+                view: v,
+            ),
+            fielded_pixel.bind(
+                field: fields.2.field(),
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.smp,
+            ),
+            indices: s.meshes[2].quads.items(),
+            indirect: s.meshes[2].draw.items(),
+            cull: Cull::Back,
+        )
+    }
+    // (His hands, the old fitted ones (`meshes[3]`), are no longer drawn: `hand` samples them.)
+    // (His arms and body, sampled from the reference: no fields to read, so their own normals and his
+    // body's paint at their place at rest.)
+    for m in 4..10 {
+        for k in 0..5 {
+            draw(
+                pass,
+                fielded.bind(
+                    verts: s.meshes[m].verts.items(),
+                    palettes: s.palettes.items(),
+                    first: k * MAX_BONES,
+                    view: v,
+                ),
+                painted_pixel.bind(
+                    view: v,
+                    lights: LIGHTS,
+                    shadow: s.shadow,
+                    shadow_sampler: s.smp,
+                    jacket: if m == 7 { 1 } else { 0 },
+                ),
+                indices: s.meshes[m].quads.items(),
+                indirect: s.meshes[m].draw.items(),
+                cull: Cull::Back,
+            )
+        }
+    }
+    pass.present()
+}
+
+/// How long ago the coat's tails' lag looks back (s), and where in `palettes` a view's palette
+/// of that moment sits after its own.
+const LAG: f32 = 0.12
+const LAGGED: u32 = 5 * MAX_BONES
+
+/// What his vertex passes on: where it is, where it is on him at rest, its skin's turn and which
+/// of his parts are near (so his pixel reads his fields there, as the opening draws him).
+pub struct Fielded: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub rest: vec3,
+    pub tx: vec3,
+    pub ty: vec3,
+    pub tz: vec3,
+    pub normal: vec3,
+    pub lo: Flat<u32>,
+    pub hi: Flat<u32>,
+}
+
+/// His coat's tails' vertex: as `fielded`, hanging as the tails' cloth does this frame
+/// (`arms::draped`, the cloth moved on each frame by `arms::Drape::work`).
+@vertex
+pub fn coat_fielded(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], grid: [vec4], facing: [vec4], first: u32, view: View) -> Fielded {
+    var f = fielded_at(v, verts, palettes, first, view)
+    f.world = draped(f.world, f.rest, mat3(f.tx, f.ty, f.tz), grid, facing, first / MAX_BONES)
+    f.clip = ClipPosition { position: view.view_proj * vec4(f.world, 1.0) }
+    f
+}
+
+@vertex
+pub fn fielded(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, view: View) -> Fielded {
+    fielded_at(v, verts, palettes, first, view)
+}
+
+fn fielded_at(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, view: View) -> Fielded {
+    let sv = verts[v.index]
+    let m = skin_matrix(sv, palettes, first)
+    let world = (m * vec4(sv.pos, 1.0)).xyz
+    Fielded {
+        clip: ClipPosition { position: view.view_proj * vec4(world, 1.0) },
+        world,
+        rest: sv.pos,
+        tx: m[0].xyz,
+        ty: m[1].xyz,
+        tz: m[2].xyz,
+        normal: mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal,
+        lo: Flat { value: sv.mask.lo },
+        hi: Flat { value: sv.mask.hi },
+    }
+}
+
+/// His pixel in plain light, its normal and cloth read from his fields at that point of him (his
+/// finer relief, his clothes' edges and folds, finer than his mesh's cells).
+@fragment
+pub fn fielded_pixel<F: Parts<Cloth>>(
+    v: Fielded,
+    field: F,
+    view: View,
+    lights: Lights,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+) -> vec4 {
+    let mask = PartMask { lo: v.lo.value, hi: v.hi.value }
+    let (_, grad, c) = field.sample_masked(v.rest, mask, 0.002)
+    var n = normalize(mat3(v.tx, v.ty, v.tz) * grad)
+    let d = normalize(v.world - view.eye)
+    if dot(n, d) > 0.0 {
+        n = normalize(n - d * (dot(n, d) + 0.05))
+    }
+    let lit = lights.shadow(view, v.world, n, shadow, shadow_sampler)
+    vec4(lights.light(c.albedo, c.rough, n, v.world, view, lit), 1.0)
+}
+
+/// A pixel of a mesh with no fields behind it (his sampled arms), in plain light: its own
+/// normal, and his body's paint where it is on him at rest.
+@fragment
+pub fn painted_pixel(
+    v: Fielded,
+    view: View,
+    lights: Lights,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+    jacket: u32,
+) -> vec4 {
+    // (1 for his jacket, whose paint carries on down over his trousers: `jacket_paint`.)
+    let c = if jacket == 1 { jacket_paint(v.rest) } else { body_paint(v.rest) }
+    var n = normalize(v.normal)
+    let d = normalize(v.world - view.eye)
+    if dot(n, d) > 0.0 {
+        n = normalize(n - d * (dot(n, d) + 0.05))
+    }
+    let lit = lights.shadow(view, v.world, n, shadow, shadow_sampler)
+    vec4(lights.light(c.albedo, c.rough, n, v.world, view, lit), 1.0)
+}

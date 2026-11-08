@@ -1,0 +1,128 @@
+// His skin's weights as the reference's rig has them: each bone's share of the reference body's
+// surface, written by /mnt/project-files/hakuro-fit/ (gridlib.py `write_weights`) on a sparse
+// lattice round the surface, and read back anywhere on the GPU as the 8 nearest points' shares
+// blended, so a realized vertex moves with the bones the reference's own vertex there does.
+
+use std::gpu::{GpuBuffer, buffer, write}
+
+/// A weight lattice: its first point, the step between points, and its size in blocks of 4³
+/// points; `fallback`, the bone a point off the lattice's kept blocks goes whole to.
+pub struct Weights: Copy + GpuData {
+    pub origin: vec3,
+    pub cell: f32,
+    pub size: vec3u,
+    pub fallback: u32,
+}
+
+/// The words a stored block takes: 64 points, two words each (four bones, then their weights,
+/// a byte each).
+pub const WEIGHT_BLOCK_WORDS: u32 = 128
+
+/// A weight lattice's tables on the CPU, as the tool wrote them.
+pub struct WeightTables {
+    pub grid: Weights,
+    pub slots: Vec<u32>,
+    pub words: Vec<u32>,
+}
+
+/// A weight lattice's tables on the GPU.
+pub struct WeightsOnGpu {
+    pub grid: Weights,
+    pub slots: GpuBuffer<u32>,
+    pub words: GpuBuffer<u32>,
+}
+
+impl WeightTables {
+    pub fn upload(self) -> WeightsOnGpu {
+        var s: GpuBuffer<u32> = buffer(self.slots.len())
+        write(mut s, 0, self.slots)
+        var w: GpuBuffer<u32> = buffer(max(self.words.len(), 1))
+        if self.words.len() > 0 {
+            write(mut w, 0, self.words)
+        }
+        WeightsOnGpu { grid: self.grid, slots: s, words: w }
+    }
+}
+
+/// The bones and weights at `p` (rest space), packed as a `SkinVertex`'s: the lattice's eight
+/// points round `p`, each one's shares by how near it is, the four largest kept.
+pub fn weights_at(g: Weights, slots: [u32], words: [u32], p: vec3) -> (u32, u32) {
+    let n = vec3(g.size * 4)
+    let q = clamp((p - g.origin) / g.cell, vec3(0.0), n - vec3(1.001))
+    let c = vec3u(q)
+    let f = q - vec3(c)
+    var ids = [0; 16]
+    var acc = [0.0; 16]
+    var used = 0
+    for j in 0..8 {
+        let o = vec3u(j & 1, (j >> 1) & 1, (j >> 2) & 1)
+        let t = (if o.x == 1 { f.x } else { 1.0 - f.x }) *
+            (if o.y == 1 { f.y } else { 1.0 - f.y }) *
+            (if o.z == 1 { f.z } else { 1.0 - f.z })
+        if t <= 0.0 {
+            continue
+        }
+        let k = c + o
+        let b = k / 4
+        let slot = slots[b.x + g.size.x * (b.y + g.size.y * b.z)]
+        if slot == 0 {
+            continue
+        }
+        let l = k - b * 4
+        let i = (slot - 1) * WEIGHT_BLOCK_WORDS + ((l.z * 4 + l.y) * 4 + l.x) * 2
+        let bw = words[i]
+        let ww = words[i + 1]
+        for e in 0..4 {
+            let w = f32((ww >> (e * 8)) & 255) * t
+            if w <= 0.0 {
+                continue
+            }
+            let id = (bw >> (e * 8)) & 255
+            var found = false
+            for u in 0..16 {
+                if u < used && ids[u] == id {
+                    acc[u] += w
+                    found = true
+                }
+            }
+            if !found && used < 16 {
+                ids[used] = id
+                acc[used] = w
+                used += 1
+            }
+        }
+    }
+    if used == 0 {
+        return (g.fallback, 255)
+    }
+    // The four largest, in order.
+    var top = [0; 4]
+    var topw = [0.0; 4]
+    for e in 0..4 {
+        var best = 0
+        var bw = -1.0
+        for u in 0..16 {
+            if u < used && acc[u] > bw {
+                bw = acc[u]
+                best = u
+            }
+        }
+        if bw > 0.0 {
+            top[e] = ids[best]
+            topw[e] = bw
+            acc[best] = -1.0
+        } else {
+            top[e] = top[0]
+            topw[e] = 0.0
+        }
+    }
+    let total = topw[0] + topw[1] + topw[2] + topw[3]
+    let w1 = u32(round(topw[1] / total * 255.0))
+    let w2 = u32(round(topw[2] / total * 255.0))
+    let w3 = u32(round(topw[3] / total * 255.0))
+    let w0 = 255 - min(w1 + w2 + w3, 255)
+    (
+        top[0] | (top[1] << 8) | (top[2] << 16) | (top[3] << 24),
+        w0 | (w1 << 8) | (w2 << 16) | (w3 << 24),
+    )
+}

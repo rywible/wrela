@@ -17,7 +17,7 @@ use isle::{FALLS, SCALE, bounds, isle, isle_ao, isle_material, isle_normal, isle
 use far::far_off
 use rock::{baked_at, march_from}
 use stacks::{march_stacks_from, stacks_albedo, stacks_ao, stacks_normal, stacks_shadow}
-use paint::{Heaven, aired, hazed_far, heaven, lit_solid, sphere}
+use paint::{Heaven, aired, hazed_far, heaven, lit_solid, overhead, sphere}
 use engine::far::foot
 use engine::light::{Light, sky as clear_sky}
 use engine::sky::{Clouds, cloud_shadow}
@@ -145,10 +145,13 @@ pub fn cook_isle(slab: u32, out: mut Texels3d<R32Float>, id: GlobalId) {
     out.store(id, isle(at).x - STEEP * 0.8660254 * cell - JUMPS)
 }
 
+/// The cooked field's low corner (the world's), and how wide it is (m).
+const FIELD_LO: vec3 = bounds().xyz - vec3(bounds().w)
+const FIELD_WIDE: f32 = 2.0 * bounds().w
+
 /// How far the isle is from `p` at least (m), by its cooked field (`cook_isle`); 0 outside it.
 fn isle_far(field: Texture3d<R32Float>, p: vec3) -> f32 {
-    let b = bounds()
-    let g = (p - (b.xyz - vec3(b.w))) / (2.0 * b.w) * f32(FIELD_SIDE)
+    let g = (p - FIELD_LO) / FIELD_WIDE * f32(FIELD_SIDE)
     let n = f32(FIELD_SIDE)
     if g.x < 0.0 || g.y < 0.0 || g.z < 0.0 || g.x >= n || g.y >= n || g.z >= n {
         return 0.0
@@ -342,7 +345,14 @@ fn pushed_back(
     d: vec3,
     k: f32,
 ) -> vec3 {
-    let stormy = heaven(view, h.light, normalize(vec3(d.x, max(d.y, 0.0), d.z)), dome, smp).rgb
+    let stormy = heaven(
+        view,
+        h.light,
+        normalize(vec3(d.x, max(d.y, 0.0), d.z)),
+        dome,
+        smp,
+        h.over,
+    ).rgb
     // (Under an open sky, less, and toward the open sky's own colour, not the clouds' behind
     // it: the far clouds' pattern, capped into a stack, showed through it as if it were glass.)
     let open = clear_sky(view, smp, h.light, normalize(vec3(d.x, max(d.y, 0.02), d.z)))
@@ -414,9 +424,10 @@ pub fn yonder(
     past_normal: Texture<Rgba8>,
     field: Texture3d<R32Float>,
     reach: Texture<Rg32Float>,
+    once: [vec4],
 ) -> Targets3<vec4, vec4, vec4> {
     let s = shot
-    let h = Heaven { light, clouds }
+    let h = Heaven { light, clouds, over: overhead(once) }
     let px = pixel.position.xy
     let o = s.eye
     let far = 1.0e5
@@ -794,6 +805,7 @@ pub fn yonder_low(
     smp: Sampler,
     field: Texture3d<R32Float>,
     reach: Texture<Rg32Float>,
+    once: [vec4],
 ) -> Targets3<vec4, vec4, vec4> {
     let q = floor(pixel.position.xy)
     let pf = q * f32(SPARSE) + spot(yon.turn + shuffled(q)) + vec2(0.5) + yon.jitter
@@ -805,7 +817,7 @@ pub fn yonder_low(
     let skip = ROCK_SPARSE && yon.held > 0.0 && block != yon.rock_turn && seen
     let (now, marks, third) = meet(
         shot,
-        Heaven { light, clouds },
+        Heaven { light, clouds, over: overhead(once) },
         clouds,
         view,
         aerial,
@@ -839,6 +851,7 @@ pub fn yonder_low_flat(
     smp: Sampler,
     field: Texture3d<R32Float>,
     reach: Texture<Rg32Float>,
+    once: [vec4],
 ) -> Targets3<vec4, vec4, vec4> {
     let pf = floor(pixel.position.xy) * f32(SPARSE) + vec2(0.5)
     let d = ray(shot, pf)
@@ -855,7 +868,7 @@ pub fn yonder_low_flat(
     }
     let up = normalize(vec3(d.x, max(d.y, 0.02), d.z))
     let open = clear_sky(view, smp, light, up)
-    let haze = mix(open, heaven(view, light, up, dome, smp).rgb, light.storm)
+    let haze = mix(open, heaven(view, light, up, dome, smp, overhead(once)).rgb, light.storm)
     let c = haze * mix(0.35, 0.7, smoothstep(3000.0, 10000.0, t))
     Targets3 {
         first: vec4(c, 1.0),
@@ -949,7 +962,10 @@ pub fn yonder_rebuild(
     if lm.y == KEEP && was.z > 0.0 {
         let bq0 = clamp(floor(was.xy), vec2(0.0), yon.resolution - vec2(1.0))
         let d0 = exp2(past_marks.load(u32(bq0.x), u32(bq0.y)).x)
-        let again = was_at(yon, s.eye + ray(s, ip + vec2(0.5)) * min(d0, length(ISLE - s.eye) * 1.2))
+        let again = was_at(
+            yon,
+            s.eye + ray(s, ip + vec2(0.5)) * min(d0, length(ISLE - s.eye) * 1.2),
+        )
         if again.z > 0.0 {
             was = again
         }

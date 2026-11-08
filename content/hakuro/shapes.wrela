@@ -1,0 +1,501 @@
+// Hakuro's hard parts as fields, ported from the shapes his look was designed and locked with
+// (hero-masks v17): the Hakuro fox mask, the swept spiked hair, the combat boots and the coat's
+// tails, and how each is painted. Each is written in the body's rest space (metres; +y up, +z
+// ahead, +x his left; his head 1.10 times the body's, about the head's joint), as the design
+// had them; a part on a bone moves it to its bone's space (`Abs`).
+
+use std::field::{Surface, smax, smin}
+
+// ---- small fields ---------------------------------------------------------------------------
+
+/// An ellipsoid's distance (the design's: its usual bound, k0 (k0 − 1) / k1).
+pub fn ellip(p: vec3, c: vec3, r: vec3) -> f32 {
+    let q = (p - c) / r
+    let k0 = length(q)
+    let k1 = length(q / r)
+    k0 * (k0 - 1.0) / max(k1, 1.0e-9)
+}
+
+/// The hull of two spheres along a straight axis, its radius changing evenly along it (the
+/// design's cone: not the exact hull, near it where the radii are close).
+pub fn cone(p: vec3, a: vec3, b: vec3, ra: f32, rb: f32) -> f32 {
+    let ba = b - a
+    let h = clamp(dot(p - a, ba) / dot(ba, ba), 0.0, 1.0)
+    length(p - a - ba * h) - (ra + (rb - ra) * h)
+}
+
+/// A 2D triangle's signed distance.
+pub fn tri2(p: vec2, a: vec2, b: vec2, c: vec2) -> f32 {
+    let e0 = b - a
+    let e1 = c - b
+    let e2 = a - c
+    let v0 = p - a
+    let v1 = p - b
+    let v2 = p - c
+    let pq0 = v0 - e0 * clamp(dot(v0, e0) / dot(e0, e0), 0.0, 1.0)
+    let pq1 = v1 - e1 * clamp(dot(v1, e1) / dot(e1, e1), 0.0, 1.0)
+    let pq2 = v2 - e2 * clamp(dot(v2, e2) / dot(e2, e2), 0.0, 1.0)
+    let s = sign(e0.x * e2.y - e0.y * e2.x)
+    let d = min(
+        min(
+            vec2(dot(pq0, pq0), s * (v0.x * e0.y - v0.y * e0.x)),
+            vec2(dot(pq1, pq1), s * (v1.x * e1.y - v1.y * e1.x)),
+        ),
+        vec2(dot(pq2, pq2), s * (v2.x * e2.y - v2.y * e2.x)),
+    )
+    -sqrt(d.x) * sign(d.y)
+}
+
+/// How far `p` is outside a brush stroke along the quadratic curve A, B, C, `w0` wide at A
+/// tapering to `w1` at C (negative inside): the design's painted marks.
+pub fn stroke(p: vec2, a: vec2, b: vec2, c: vec2, w0: f32, w1: f32) -> f32 {
+    var best = 1.0e9
+    var at = 0.0
+    var last = a
+    for i in 1..13 {
+        let t = f32(i) / 12.0
+        let u = 1.0 - t
+        let q = a * (u * u) + b * (2.0 * u * t) + c * (t * t)
+        let e = q - last
+        let h = clamp(dot(p - last, e) / max(dot(e, e), 1.0e-12), 0.0, 1.0)
+        let d = length(p - last - e * h)
+        if d < best {
+            best = d
+            at = (f32(i - 1) + h) / 12.0
+        }
+        last = q
+    }
+    best - mix(w0, w1, at)
+}
+
+/// The head's joint, which the head is scaled 1.10 about.
+pub const HEAD_JOINT = vec3(0.0, 1.6, -0.017)
+pub const HEAD_SCALE: f32 = 1.1
+
+/// A point of the scaled head in the unscaled head's space, where the design wrote the mask and
+/// the hair.
+pub fn unscaled(p: vec3) -> vec3 {
+    HEAD_JOINT + (p - HEAD_JOINT) / HEAD_SCALE
+}
+
+// ---- the mask -------------------------------------------------------------------------------
+
+/// The snout's tip.
+pub const TIP = vec3(0.0, 1.6295, 0.20875)
+
+/// An ear: a flattened triangle cupped on its front, `side` 1 his left, -1 his right.
+fn ear(p: vec3, side: f32) -> f32 {
+    let base = vec3(side * 0.060, 1.775, 0.015)
+    let d0 = p - base
+    // Its frame: turned 18° out about z and 8° back about x (the design's R; q = Rᵀ (p − base)).
+    let q = vec3(
+        0.951057 * d0.x - side * 0.309017 * d0.y,
+        side * 0.30601 * d0.x + 0.941801 * d0.y - 0.139173 * d0.z,
+        side * 0.043007 * d0.x + 0.132361 * d0.y + 0.990268 * d0.z,
+    )
+    let h = 0.15
+    let w = 0.055
+    let d2 = tri2(q.xy, vec2(-w / 2.0, 0.0), vec2(w / 2.0, 0.0), vec2(side * 0.004, h))
+    let across = clamp(abs(q.x) / (w / 2.0), 0.0, 1.0)
+    let z = q.z + 0.012 * (1.0 - across * across) * clamp(q.y / h, 0.0, 1.0)
+    max(d2 - 0.004, abs(z) - 0.005) - 0.002
+}
+
+/// Hakuro's mask, in the unscaled head's space: a fox's face with a long snout, a brow ridge,
+/// tall ears and two slit eyes, cut behind its rim and under the chin.
+pub fn fox(p: vec3) -> f32 {
+    var face = ellip(p, vec3(0.0, 1.69, -0.004), vec3(0.110, 0.140, 0.132))
+    for s in [1.0, -1.0] {
+        face = smin(
+            face,
+            ellip(p, vec3(s * 0.066, 1.628, 0.060), vec3(0.048, 0.040, 0.052)),
+            0.03,
+        )
+    }
+    let w = vec3(1.0 / 1.04, 1.0, 1.0)
+    var sn = cone(p * w, vec3(0.0, 1.672, 0.070), TIP * w, ra: 0.052, rb: 0.017)
+    sn = smax(sn, -(p.y - 1.6), 0.01)
+    face = smin(face, sn, 0.035 * 0.6)
+    for s in [1.0, -1.0] {
+        face = smin(
+            face,
+            cone(
+                p,
+                vec3(s * 0.012, 1.735, 0.112),
+                vec3(s * 0.070, 1.745, 0.085),
+                ra: 0.010,
+                rb: 0.006,
+            ),
+            0.02,
+        )
+    }
+    var d = smax(face, -(p.z - 0.040), 0.006)
+    d = smax(d, -(p.y - 1.560), 0.004)
+    d = smin(d, min(ear(p, 1.0), ear(p, -1.0)), 0.010)
+    // The eye slits, tilted 16°.
+    for s in [1.0, -1.0] {
+        let q0 = vec2(s * (p.x - s * 0.036), p.y - 1.700)
+        let q = vec2(0.961262 * q0.x + 0.275637 * q0.y, -0.275637 * q0.x + 0.961262 * q0.y)
+        var e = (length(q / vec2(0.024, 0.0065)) - 1.0) * 0.0065
+        e = max(e, -(p.z - 0.02))
+        d = smax(d, -e, 0.0015)
+    }
+    d
+}
+
+/// The mask's lacquer and its paint, at `p` (the unscaled head's space): white, vermilion fire
+/// marks over the eyes and up the brow, the ears' insides red, a black nose, a red mouth line.
+pub fn fox_paint(p: vec3) -> (vec3, f32) {
+    let q = vec3(abs(p.x), p.y, p.z)
+    let white = vec3(0.66, 0.63, 0.57)
+    let red = vec3(0.57, 0.016, 0.007)
+    var marks = stroke(
+        q.xy,
+        vec2(0.012, 1.694),
+        vec2(0.044, 1.716),
+        vec2(0.086, 1.748),
+        w0: 0.0045,
+        w1: 0.0006,
+    )
+    marks = min(
+        marks,
+        stroke(
+            q.xy,
+            vec2(0.022, 1.689),
+            vec2(0.044, 1.686),
+            vec2(0.066, 1.7),
+            w0: 0.0018,
+            w1: 0.0004,
+        ),
+    )
+    marks = min(
+        marks,
+        stroke(
+            q.xy,
+            vec2(0.0, 1.718),
+            vec2(0.002, 1.745),
+            vec2(0.020, 1.790),
+            w0: 0.0055,
+            w1: 0.0008,
+        ),
+    )
+    marks = min(
+        marks,
+        stroke(
+            q.xy,
+            vec2(0.020, 1.732),
+            vec2(0.030, 1.752),
+            vec2(0.040, 1.776),
+            w0: 0.0035,
+            w1: 0.0006,
+        ),
+    )
+    if p.y > 1.775 && p.z > 0.0 {
+        marks = min(
+            marks,
+            tri2(q.xy, vec2(0.0458, 1.7931), vec2(0.0835, 1.7808), vec2(0.1004, 1.8878)),
+        )
+    }
+    if p.y < 1.636 {
+        marks = min(
+            marks,
+            stroke(
+                vec2(p.z, p.y),
+                vec2(TIP.z - 0.012, 1.618),
+                vec2(0.150, 1.612),
+                vec2(0.115, 1.618),
+                w0: 0.0016,
+                w1: 0.0006,
+            ),
+        )
+    }
+    var c = if marks < 0.0 { red } else { white }
+    if length((p - TIP) * vec3(1.0, 1.3, 1.0)) < 0.016 {
+        c = vec3(0.007, 0.006, 0.007)
+    }
+    (c, 0.25)
+}
+
+// ---- the hair -------------------------------------------------------------------------------
+
+/// The spikes: each a base, a tip, the base's radius and how far it arcs up (m), in the
+/// unscaled head's space.
+const CLUMPS: [(vec3, vec3, f32, f32); 15] = [
+    (vec3(0.0, 1.84, 0.0), vec3(0.0, 1.975, -0.17), 0.040, 0.030),
+    (vec3(0.03, 1.82, -0.07), vec3(0.035, 1.905, -0.3), 0.038, 0.030),
+    (vec3(-0.03, 1.775, -0.11), vec3(-0.03, 1.765, -0.325), 0.036, 0.022),
+    (vec3(0.0, 1.712, -0.12), vec3(0.0, 1.615, -0.255), 0.034, 0.010),
+    (vec3(0.035, 1.745, -0.125), vec3(0.085, 1.560, -0.205), 0.040, 0.004),
+    (vec3(-0.035, 1.745, -0.125), vec3(-0.085, 1.560, -0.205), 0.040, 0.004),
+    (vec3(0.0, 1.790, -0.110), vec3(0.0, 1.735, -0.335), 0.036, 0.015),
+    (vec3(0.06, 1.83, -0.02), vec3(0.135, 1.955, -0.14), 0.034, 0.025),
+    (vec3(0.08, 1.79, -0.06), vec3(0.205, 1.845, -0.225), 0.034, 0.022),
+    (vec3(0.08, 1.73, -0.1), vec3(0.165, 1.675, -0.265), 0.032, 0.012),
+    (vec3(0.09, 1.8, -0.02), vec3(0.215, 1.885, -0.06), 0.028, 0.020),
+    (vec3(-0.06, 1.83, -0.02), vec3(-0.135, 1.955, -0.14), 0.034, 0.025),
+    (vec3(-0.08, 1.79, -0.06), vec3(-0.205, 1.845, -0.225), 0.034, 0.022),
+    (vec3(-0.08, 1.73, -0.1), vec3(-0.165, 1.675, -0.265), 0.032, 0.012),
+    (vec3(-0.09, 1.8, -0.02), vec3(-0.215, 1.885, -0.06), 0.028, 0.020),
+]
+
+/// The hair's centre, which each spike's flat side faces.
+const HAIR_CENTRE = vec3(0.0, 1.70, -0.01)
+
+/// A spike from `a` toward `b` (the design's, shortened to 0.64 of its length), arcing up by
+/// `arc`, `r0` thick at its base and flattened 2:1 across its sweep.
+fn blade(p: vec3, a: vec3, b0: vec3, r0: f32, arc: f32) -> f32 {
+    let flat = 2.0
+    let b = a + (b0 - a) * 0.64
+    let r = r0 * 0.82
+    let up = arc * 0.7
+    let t = normalize(a - HAIR_CENTRE)
+    let q = p + t * ((flat - 1.0) * dot(p - a, t))
+    let ctrl = (a + b) * 0.5 + vec3(0.0, up, 0.0)
+    var d = 1.0e9
+    var last = a
+    var rl = r + 0.002
+    for i in 1..6 {
+        let s = f32(i) / 5.0
+        let pt = a * ((1.0 - s) * (1.0 - s)) + ctrl * (2.0 * (1.0 - s) * s) + b * (s * s)
+        let ri = r * pow(1.0 - s, 0.8) + 0.002
+        let pa = a + (last - a) + t * ((flat - 1.0) * dot(last - a, t))
+        let pb = a + (pt - a) + t * ((flat - 1.0) * dot(pt - a, t))
+        d = min(d, cone(q, pa, pb, rl * flat, ri * flat) / flat)
+        last = pt
+        rl = ri
+    }
+    d
+}
+
+/// The hair, in the unscaled head's space: a cap over the skull behind the mask, and fifteen
+/// separate spikes fanned back from it. `skull` is the skull's distance there.
+pub fn hair(p: vec3, skull: f32) -> f32 {
+    var cap = skull - 0.012
+    cap = smax(cap, -(p.y - 1.690), 0.01)
+    cap = smax(cap, p.z - 0.005, 0.01)
+    // (Far from every spike's reach, the cap alone: the spikes are evaluated near the head.)
+    if length(p - vec3(0.0, 1.76, -0.12)) < 0.32 {
+        for c in CLUMPS {
+            cap = smin(cap, blade(p, c.0, c.1, c.2, c.3), 0.0025)
+        }
+    }
+    smax(cap, p.z + 0.012, 0.008)
+}
+
+// ---- the boots ------------------------------------------------------------------------------
+
+fn upper(p: vec3) -> f32 {
+    let toe = ellip(p, vec3(0.125, 0.048, 0.082), vec3(0.057, 0.044, 0.080))
+    let heel = ellip(p, vec3(0.120, 0.068, -0.090), vec3(0.054, 0.068, 0.058))
+    let instep = cone(
+        p,
+        vec3(0.123, 0.058, 0.025),
+        vec3(0.116, 0.140, -0.062),
+        ra: 0.056,
+        rb: 0.058,
+    )
+    smin(smin(toe, heel, 0.05), instep, 0.05)
+}
+
+/// The left boot's foot (written for x ≥ 0, in the body's rest space): a rounded toe box and
+/// heel on a chunky sole with an arch gap.
+pub fn boot_foot(p: vec3) -> f32 {
+    var up = upper(p)
+    up = smax(up, -(p.y - 0.034), 0.003)
+    let fp = upper(vec3(p.x, 0.055, p.z)) - 0.010
+    var sole = smax(smax(fp, p.y - 0.036, 0.004), -p.y - 0.004, 0.002)
+    let arch = smax(
+        smax(abs(p.z + 0.012) - 0.030, p.y - 0.012, 0.004),
+        abs(p.x - 0.12) - 0.2,
+        0.002,
+    )
+    sole = smax(sole, -arch, 0.004)
+    smax(smin(up, sole, 0.003), p.y - 0.19, 0.01)
+}
+
+/// The left boot's shaft: an oval tube hugging the shin, pinched at the ankle, flaring over the
+/// calf, a padded collar and a pull tab.
+pub fn boot_shaft(p: vec3) -> f32 {
+    let q = vec3((p.x - 0.120) * 1.22 + 0.120, p.y, p.z)
+    var s = cone(q, vec3(0.120, 0.115, -0.068), vec3(0.120, 0.200, -0.066), ra: 0.050, rb: 0.054)
+    s = smin(
+        s,
+        cone(q, vec3(0.120, 0.200, -0.066), vec3(0.120, 0.285, -0.062), ra: 0.054, rb: 0.060),
+        0.02,
+    )
+    let collar = cone(
+        q,
+        vec3(0.120, 0.282, -0.062),
+        vec3(0.120, 0.300, -0.062),
+        ra: 0.063,
+        rb: 0.063,
+    )
+    let tab = cone(p, vec3(0.120, 0.282, -0.128), vec3(0.120, 0.318, -0.126), ra: 0.010, rb: 0.008)
+    let d = smin(smin(s, collar, 0.005), tab, 0.004)
+    smax(d, -(p.y - 0.11), 0.01)
+}
+
+/// The boot's leather and its details at `p` (x ≥ 0): matte black, a grey rubber sole and welt,
+/// a toe cap seam, light laces criss-crossed down the front between gold eyelets, a padded
+/// collar.
+pub fn boot_paint(p: vec3) -> (vec3, f32, f32) {
+    let ax = abs(p.x)
+    var c = vec3(0.010, 0.010, 0.012)
+    var rough = 0.75
+    var metal = 0.0
+    if p.y < 0.0345 {
+        c = vec3(0.019, 0.019, 0.024)
+    }
+    if abs(p.y - 0.0355) < 0.0022 {
+        c = vec3(0.055, 0.055, 0.063)
+    }
+    let cap = abs(length(vec2((ax - 0.125) * 0.9, p.z - 0.105)) - 0.055) - 0.0020
+    if cap < 0.0 && p.y > 0.036 && p.y < 0.10 && p.z > 0.05 {
+        c = vec3(0.0)
+    }
+    let zf = mix(0.072, 0.012, clamp((p.y - 0.06) / 0.13, 0.0, 1.0))
+    if p.y > 0.058 && p.y < 0.292 && p.z > zf - 0.020 {
+        let dx = ax - 0.120
+        let u = p.y / 0.020
+        if abs(dx) < 0.020 {
+            c = vec3(0.022, 0.022, 0.031)
+        }
+        let l1 = abs(fract(u + dx / 0.040) - 0.5)
+        let l2 = abs(fract(u - dx / 0.040) - 0.5)
+        if min(l1, l2) < 0.09 && abs(dx) < 0.019 {
+            c = vec3(0.21, 0.19, 0.16)
+        }
+        if length(vec2(abs(dx) - 0.024, (fract(u) - 0.5) * 0.020)) < 0.0032 {
+            c = vec3(0.69, 0.45, 0.08)
+            rough = 0.3
+            metal = 1.0
+        }
+    }
+    if p.y > 0.283 {
+        c = vec3(0.022, 0.022, 0.027)
+    }
+    (c, rough, metal)
+}
+
+// ---- the coat's tails -----------------------------------------------------------------------
+
+/// Where the tails hang from: the pelvis's joint, and the band round the hips they start at.
+pub const TAILS_AXIS = vec3(0.0, 0.949, -0.043)
+pub const TAILS_TOP: f32 = 0.93
+
+/// Where the long jacket's hem is (rest height): the tails carry on below it.
+pub const JACKET_HEM: f32 = 0.865
+
+/// How far the tails flare out for each metre they fall (the sheet's A-line).
+pub const FLARE: f32 = 0.06
+
+/// The back vent's top (rest height) and half its width at the hem (m).
+pub const VENT_TOP: f32 = 0.0
+pub const VENT_HALF: f32 = 0.004
+
+/// How far round from straight ahead the tails' edges are (degrees): open in front between.
+pub const TAILS_FROM: f32 = 42.0
+pub const TAILS_TO: f32 = 318.0
+
+/// The tails' girth, from `TAILS_FROM` to `TAILS_TO` every 12° (m from the axis): the long
+/// jacket's outside just above its hem (measured by jacket_long.py), so they carry on its line.
+pub const TAILS_GIRTH: [f32; 24] = [
+    0.184, 0.202, 0.216, 0.222, 0.228, 0.232, 0.228, 0.214, 0.190, 0.168, 0.152, 0.146, 0.146,
+    0.152, 0.168, 0.190, 0.214, 0.228, 0.232, 0.228, 0.222, 0.216, 0.202, 0.184,
+]
+
+fn girth(deg: f32) -> f32 {
+    let f = clamp((deg - TAILS_FROM) / 12.0, 0.0, 22.999)
+    let i = u32(f)
+    mix(TAILS_GIRTH[i], TAILS_GIRTH[i + 1], f - f32(i))
+}
+
+/// Where the hem is at `deg` round (y, m): a long back tail, shorter at the front edges,
+/// lopsided (his left shorter).
+pub fn hem(deg: f32) -> f32 {
+    let f = abs(deg - 180.0) / 138.0
+    0.30 + 0.26 * pow(f, 1.6) + 0.06 * sin((deg) * 0.0174532925)
+}
+
+/// The tails at `p` (the body's rest space): a curtain hanging from the hips round the sides
+/// and the back, flaring and folding as it falls, open in front; and how far through it `p` is
+/// from its lining (negative on the lining's side).
+pub fn tails(p: vec3) -> (f32, f32) {
+    let rel = p - TAILS_AXIS
+    let r = length(rel.xz)
+    var deg = atan2(rel.x, rel.z) * 57.2957795
+    if deg < 0.0 {
+        deg += 360.0
+    }
+    let inside = clamp(deg, TAILS_FROM, TAILS_TO)
+    let low = hem(inside)
+    let tt = clamp((TAILS_TOP - p.y) / (TAILS_TOP - low), 0.0, 1.0)
+    let s = (inside - TAILS_FROM) / (TAILS_TO - TAILS_FROM)
+    // The sheet's folds: knife pleats, each a panel stepping out over the next with a crisp
+    // edge (a sawtooth round, its drop eased so the cloth stays whole), deeper as they fall.
+    let f = fract(s * 5.0 + 0.5)
+    let saw = f - smoothstep(0.72, 1.0, f) - 0.5 + 0.14
+    let fold = (0.05 * pow(tt, 0.6) + 0.006) * saw * 1.4
+    // The sheet's drape: on from the long jacket's hem at its line, then straight out to the
+    // hem, an A-line, falling in long folds. (Eased out over his hips from his belt and then
+    // hanging straight read as a kilt.) Tucked in under the jacket above its hem.
+    // (Out to the jacket's line well above its hem, so no ledge shows under it.)
+    // (Drawn well in above the hem: the jacket narrows to his waist above it, and the tails' top
+    // standing proud of it read as a belt.)
+    let tuck = clamp((JACKET_HEM + 0.035 - p.y) / 0.04, 0.0, 1.0)
+    let rr = girth(inside) - 0.083 + 0.06 * tuck * tuck * (3.0 - 2.0 * tuck) + FLARE * max(JACKET_HEM - p.y, 0.0) + fold * clamp((JACKET_HEM - p.y) / 0.06, 0.0, 1.0)
+    var d = abs(r - rr) - 0.009
+    // Its front edges: the distance round to the nearer (negative between them).
+    d = max(d, max(TAILS_FROM - deg, deg - TAILS_TO) * 0.0174532925 * r)
+    d = max(d, max(p.y - TAILS_TOP, low - p.y))
+    // Its vent: split up the middle of the back from the hem, so each side follows its own leg.
+    let vent = max(abs(deg - 180.0) * 0.0174532925 * r - VENT_HALF, p.y - VENT_TOP)
+    d = max(d, -vent)
+    (d, r - rr)
+}
+
+/// A box of half-extents `b` round `c`, its edges rounded by `r`.
+fn round_box(p: vec3, c: vec3, b: vec3, r: f32) -> f32 {
+    let q = abs(p - c) - b + vec3(r)
+    length(max(q, vec3(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - r
+}
+
+/// The left hand's palm (in the body's rest space, the hand out along +x, palm down, the thumb's
+/// side +z): a rounded slab, broader at the knuckles than the wrist.
+pub fn palm(p: vec3) -> f32 {
+    let taper = clamp((p.x - 0.712) / 0.10, 0.0, 1.0)
+    let q = vec3(p.x, p.y, -0.055 + (p.z + 0.055) / (0.82 + 0.18 * taper))
+    smin(
+        round_box(q, vec3(0.765, 1.449, -0.055), vec3(0.050, 0.013, 0.036), r: 0.011),
+        // The heel of the thumb.
+        ellip(p, vec3(0.742, 1.441, -0.025), vec3(0.030, 0.016, 0.018)),
+        0.012,
+    )
+}
+
+/// The left hand's four fingers from their knuckles, each in two joints with the rest's slight
+/// curl, little to index (−z to +z).
+pub fn digits(p: vec3) -> f32 {
+    var d = 1.0e3
+    for i in 0..4 {
+        let f = f32(i)
+        let long = mix(0.80, 1.0, min(f, 2.0) * 0.5) * (if i == 3 { 0.96 } else { 1.0 })
+        let r = mix(0.0082, 0.0098, min(f, 2.0) * 0.5)
+        let k = vec3(0.814, 1.452, -0.083 + f * 0.0185)
+        let m = k + vec3(0.046 * long, -0.004, 0.002 * (f - 1.5))
+        let t = m + vec3(0.034 * long, -0.013 * long, 0.001 * (f - 1.5))
+        d = min(
+            d,
+            min(cone(p, k, m, ra: r, rb: r * 0.95), cone(p, m, t, ra: r * 0.95, rb: r * 0.82)),
+        )
+    }
+    d
+}
+
+/// The left hand's thumb, out from its heel toward the index, in two joints.
+pub fn thumb(p: vec3) -> f32 {
+    let a = vec3(0.742, 1.436, -0.018)
+    let b = vec3(0.778, 1.428, 0.006)
+    let c = vec3(0.806, 1.422, 0.012)
+    min(cone(p, a, b, ra: 0.0125, rb: 0.0105), cone(p, b, c, ra: 0.0105, rb: 0.0088))
+}

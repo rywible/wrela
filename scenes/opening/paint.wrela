@@ -5,7 +5,7 @@
 // (`engine::light::hazed`). Beside the colour it writes what the ink reads: how far, what it is,
 // a line field, the line's weight, the normal and the moment's energy.
 
-use main::{FREEBOARD, LOOK, LOW_CLOUD, OFF}
+use main::{FREEBOARD, HERO, LOOK, LOW_CLOUD, OFF}
 use look::{
     STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot,
     band, cells, hash2, luma, fbm, noise, ray,
@@ -15,26 +15,111 @@ use wind::{air_over}
 use engine::ocean::{Waves, foam_at, level_at, surface_at, whitecaps}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use yonder::falls
-use skiff::{dry, skiff, skiff_material, skiff_normal}
+use skiff::{dry, skiff, skiff_material, skiff_normal, vessel}
 use wake::{lifted, marks, spray, stirred}
 use engine::far::foot
 use engine::light::{Light, Lit, gloss, hazed, matte, sun_disc, world}
 use engine::air::aerial_uvw
 use engine::light::sky as clear_sky
 use engine::sky::{Clouds, cloud_shadow, sky_uv, stormy_air}
-use std::gpu::{FragCoord, Rgba16Float, Rgba8, Sampler, Targets3, Texture, Texture3d}
+use std::gpu::{
+    FragCoord, GlobalId, Rgba16Float, Rgba8, Sampler, Slots, Targets3, Texture, Texture3d,
+}
+use weather::horizon_air
 use std::math::PI
 
 /// What the sky's light reads beside its textures: the light, and where the clouds are.
 pub struct Heaven: Copy {
     pub(package) light: Light,
     pub(package) clouds: Clouds,
+    pub(package) over: Overhead,
+}
+
+/// The sky's few colours that are the same for every pixel of a drawing, worked out once for it
+/// (`overhead_once`) rather than again in each: the storm's air low on the horizon
+/// (`into_the_air`'s, unlifted), the deck's light and cover low all round
+/// (`under_the_far_deck`'s), the sky straight up (`storm_sky`'s, no disc), and the air's light
+/// at the horizon under the deck (`weather::horizon_air`), and the sky low toward the sun (the
+/// sea's light thrown up on the skiff).
+pub struct Overhead: Copy {
+    pub(package) air: vec3,
+    pub(package) low: vec4,
+    pub(package) up: vec3,
+    pub(package) horizon: vec3,
+    pub(package) sunward: vec3,
+}
+
+/// How many `vec4`s `overhead_once` writes.
+pub const OVERHEAD: u32 = 5
+
+/// The drawing's `Overhead`, as `overhead_once` wrote it.
+pub(package) fn overhead(once: [vec4]) -> Overhead {
+    Overhead {
+        air: once[0].rgb,
+        low: once[1],
+        up: once[2].rgb,
+        horizon: once[3].rgb,
+        sunward: once[4].rgb,
+    }
+}
+
+/// The drawing's `Overhead`, into `out` (`overhead`): an invocation for each of its `OVERHEAD`
+/// colours, once a drawing, after the dome's march.
+@compute(1)
+pub fn overhead_once(
+    view: Texture<Rgba16Float>,
+    light: Light,
+    dome: Texture<Rgba16Float>,
+    smp: Sampler,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x == 0 {
+        var far = vec3(0.0)
+        for k in 0..8 {
+            let a = f32(k) * 0.785398
+            far += storm_sky(
+                view,
+                light,
+                normalize(vec3(cos(a), STORM_LOW * 1.4, sin(a))),
+                dome,
+                smp,
+                disc: false,
+            ).rgb
+        }
+        out[id] = vec4(vec3(luma(far / 8.0)) * vec3(0.92, 0.96, 1.0), 0.0)
+    } else if id.x == 1 {
+        var low = vec4(0.0)
+        for k in 0..8 {
+            let a = f32(k) * 0.785398
+            let lo = dome.sample_level(smp, sky_uv(normalize(vec3(cos(a), 0.035, sin(a)))))
+            let hi = dome.sample_level(smp, sky_uv(normalize(vec3(cos(a), 0.06, sin(a)))))
+            low += (if hi.a > lo.a { hi } else { lo }) * 0.125
+        }
+        out[id] = low
+    } else if id.x == 2 {
+        out[id] = vec4(storm_sky(view, light, vec3(y: 1.0), dome, smp, disc: false).rgb, 0.0)
+    } else if id.x == 3 {
+        out[id] = vec4(horizon_air(view, light, dome, smp), 0.0)
+    } else if id.x == 4 {
+        out[id] = vec4(
+            storm_sky(
+                view,
+                light,
+                normalize(vec3(light.sun.x, 0.25, light.sun.z)),
+                dome,
+                smp,
+                disc: false,
+            ).rgb,
+            0.0,
+        )
+    }
 }
 
 /// The sky along `d` and its clouds from the dome (their cover in alpha), the sun's disc on it
 /// if `disc`. Under the overcast, the sky seen through the deck's thinner places is the deck's
 /// own dim light, not the open sky's glare, and the sun's disc is gone.
-fn storm_sky(
+pub(package) fn storm_sky(
     view: Texture<Rgba16Float>,
     light: Light,
     d: vec3,
@@ -83,26 +168,15 @@ fn into_the_air(
     d: vec3,
     dome: Texture<Rgba16Float>,
     smp: Sampler,
+    over: Overhead,
 ) -> vec4 {
     if light.storm <= 0.0 || d.y > STORM_LOW {
         return sky
     }
-    var far = vec3(0.0)
-    for k in 0..8 {
-        let a = f32(k) * 0.785398
-        far += storm_sky(
-            view,
-            light,
-            normalize(vec3(cos(a), STORM_LOW * 1.4, sin(a))),
-            dome,
-            smp,
-            disc: false,
-        ).rgb
-    }
     // (Lighter toward the horizon itself, where the eye looks out under the deck's edge into
     // farther air: the band the cathedral and the skiff stand dark against.)
     let lift = mix(mix(1.0, STORM_HORIZON, LOW_CLOUD), 1.0, smoothstep(0.0, STORM_LOW, d.y))
-    let air = vec3(luma(far / 8.0)) * vec3(0.92, 0.96, 1.0) * lift
+    let air = over.air * lift
     let deck_k = smoothstep(STORM_LOW * 0.35, STORM_LOW, d.y)
     vec4(mix(air, sky.rgb, deck_k), mix(1.0, sky.a, deck_k))
 }
@@ -124,17 +198,12 @@ fn under_the_far_deck(
     d: vec3,
     dome: Texture<Rgba16Float>,
     smp: Sampler,
+    over: Overhead,
 ) -> vec3 {
     let clear = sea_day_horizon(view, light, d, smp)
     // (The deck's light and cover low all round, eight directions' mean: one colour along the
     // whole horizon, so no cloud streaks down into it.)
-    var low = vec4(0.0)
-    for k in 0..8 {
-        let a = f32(k) * 0.785398
-        let lo = dome.sample_level(smp, sky_uv(normalize(vec3(cos(a), 0.035, sin(a)))))
-        let hi = dome.sample_level(smp, sky_uv(normalize(vec3(cos(a), 0.06, sin(a)))))
-        low += (if hi.a > lo.a { hi } else { lo }) * 0.125
-    }
+    let low = over.low
     let cloud = low.rgb / max(low.a, 1.0e-3)
     let toward = smoothstep(0.03, 0.0, d.y)
     let air = mix(cloud, clear, 0.25 + 0.35 * toward)
@@ -167,15 +236,18 @@ pub(package) fn heaven(
     d: vec3,
     dome: Texture<Rgba16Float>,
     smp: Sampler,
+    over: Overhead,
 ) -> vec4 {
     let cloudy = storm_sky(view, light, d, dome, smp, disc: true)
     // (Under the overcast, the deck goes on down to the horizon: its far repeats are lost in
     // its own air.)
     let lost = mix(smoothstep(LOST_LOW, LOST_HIGH, d.y), 1.0, light.storm)
     // (Under the storm all of it's lost in the deck: not read.)
-    let clear = if lost >= 1.0 { vec3(0.0) } else { under_the_far_deck(view, light, d, dome, smp) }
+    let clear = if lost >= 1.0 { vec3(0.0) } else {
+        under_the_far_deck(view, light, d, dome, smp, over)
+    }
     let open = vec4(mix(clear, cloudy.rgb, lost), cloudy.a * lost)
-    into_the_air(open, view, light, d, dome, smp)
+    into_the_air(open, view, light, d, dome, smp, over)
 }
 
 /// `colour` at `world`, seen from `eye` through the air (`engine::light::hazed`'s), the storm's
@@ -216,14 +288,17 @@ fn mirrored_sky(
     d: vec3,
     dome: Texture<Rgba16Float>,
     smp: Sampler,
+    over: Overhead,
 ) -> vec3 {
     let cloudy = storm_sky(view, light, d, dome, smp, disc: false).rgb
     // (Under the overcast, the deck goes on down to the horizon: its far repeats are lost in
     // its own air.)
     let lost = mix(smoothstep(LOST_LOW, LOST_HIGH, d.y), 1.0, light.storm)
     // (Under the storm all of it's lost in the deck: not read.)
-    let clear = if lost >= 1.0 { vec3(0.0) } else { under_the_far_deck(view, light, d, dome, smp) }
-    into_the_air(vec4(mix(clear, cloudy, lost), 1.0), view, light, d, dome, smp).rgb
+    let clear = if lost >= 1.0 { vec3(0.0) } else {
+        under_the_far_deck(view, light, d, dome, smp, over)
+    }
+    into_the_air(vec4(mix(clear, cloudy, lost), 1.0), view, light, d, dome, smp, over).rgb
 }
 
 /// Where the ray from `o` along `d` meets the sea (`d` going down), or `far`. Near, found on the
@@ -366,7 +441,9 @@ fn march_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
     var hit = hi
     var i = 0
     while i < 80 && t < hi {
-        let h = skiff(s, o + d * t)
+        // (Where the hero is drawn himself, the eye meets the rig alone: the traveller's figure
+        // stays for the shadows and the reflection he casts.)
+        let h = if HERO > 0.5 { vessel(s, o + d * t) } else { skiff(s, o + d * t) }
         if h < 0.002 {
             hit = t
             t = hi
@@ -882,7 +959,7 @@ fn sea_shade(
         let rk = vec3(ak.x * cos(e), sin(e), ak.y * cos(e))
         let facing = sqrt(max((1.0 + dot(-d, rk)) * 0.5, 0.0))
         let f = 0.02 + 0.98 * pow(1.0 - facing, 5.0)
-        mirrored += mirrored_sky(view, h.light, rk, dome, smp) * w * f
+        mirrored += mirrored_sky(view, h.light, rk, dome, smp, h.over) * w * f
         fresnel += w * f
         seen += w
     }
@@ -925,10 +1002,7 @@ fn sea_shade(
             let q = p + vec3(0.0, 0.02, 0.0) + r * min(mr.x, 7.0)
             let qn = skiff_normal(s, q)
             let (albedo, _, _) = skiff_material(s, q, qn)
-            let shade = storm_sky(view, h.light, vec3(y: 1.0), dome, smp, disc: false).rgb *
-                PI *
-                0.35 +
-                h.light.sun_colour * 0.12
+            let shade = h.over.up * PI * 0.35 + h.light.sun_colour * 0.12
             // (What the water mirrors there is the hull's lower side, turned from the sky and
             // wet: darker than its lit topsides, or the mirror reads as a bright gap under it.)
             mirrored = mix(mirrored, albedo * shade * 0.45, 0.6 * cover)
@@ -1024,10 +1098,8 @@ fn sea_shade(
     // crests lit from behind.
     // (Under the rock, less of it: the rock's mass hides a great piece of the sky over the water
     // there, a darker pool on the sea round its foot.)
-    let sky_up = storm_sky(view, h.light, vec3(y: 1.0), dome, smp, disc: false).rgb *
-        PI *
-        (1.0 - under_isle(p))
-    let horizon_sky = heaven(view, h.light, normalize(vec3(d.x, 0.006, d.z)), dome, smp).rgb
+    let sky_up = h.over.up * PI * (1.0 - under_isle(p))
+    let horizon_sky = heaven(view, h.light, normalize(vec3(d.x, 0.006, d.z)), dome, smp, h.over).rgb
     let body = vec3(0.088, 0.22, 0.19) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
     let behind = pow(max(dot(normalize(vec3(-d.x, 0.0, -d.z)), -l) * 0.5 + 0.5, 0.0), 4.0)
     // The sun through the waves' crests: their thin tops, where the waves crowd and sharpen,
@@ -1409,6 +1481,7 @@ fn sample(
     s: Shot,
     light: Light,
     clouds: Clouds,
+    over: Overhead,
     view: Texture<Rgba16Float>,
     aerial: Texture3d<Rgba16Float>,
     dome: Texture<Rgba16Float>,
@@ -1420,7 +1493,7 @@ fn sample(
     yon_normal: Texture<Rgba8>,
     px: vec2,
 ) -> (vec3, vec4, vec4) {
-    let h = Heaven { light, clouds }
+    let h = Heaven { light, clouds, over }
     let d = ray(s, px)
     let o = s.eye
     let far = 1.0e5
@@ -1451,7 +1524,7 @@ fn sample(
     var energy = 0.0
     let p = o + d * t
     if id == SKY {
-        let sky = heaven(view, light, d, dome, smp)
+        let sky = heaven(view, light, d, dome, smp, h.over)
         c = sky.rgb
         line = 0.45 - sky.a
         weight = 0.0
@@ -1506,14 +1579,7 @@ fn sample(
         )
         // The player's skiff is lit as a character is, never lost in the shade: the bright sea's
         // light thrown up onto it, warm off the sun's path on the water, and a rim of the sun.
-        let sea_light = storm_sky(
-            view,
-            light,
-            normalize(vec3(light.sun.x, 0.25, light.sun.z)),
-            dome,
-            smp,
-            disc: false,
-        ).rgb
+        let sea_light = h.over.sunward
         // (The CG looks light it as a hero is against the sun: less fill, so its shade side
         // holds its value against the bright sea, and a stronger rim; the cel look's both hard.)
         let cg = LOOK > 0.5
@@ -1602,6 +1668,7 @@ fn paint_at(
     shot: Shot,
     light: Light,
     clouds: Clouds,
+    over: Overhead,
     view: Texture<Rgba16Float>,
     aerial: Texture3d<Rgba16Float>,
     dome: Texture<Rgba16Float>,
@@ -1641,6 +1708,7 @@ fn paint_at(
             s,
             light,
             clouds,
+            over,
             view,
             aerial,
             dome,
@@ -1686,11 +1754,13 @@ pub fn paint(
     yon_colour: Texture<Rgba16Float>,
     yon_marks: Texture<Rgba16Float>,
     yon_normal: Texture<Rgba8>,
+    once: [vec4],
 ) -> Targets3<vec4, vec4, vec4> {
     let (first, second, third) = paint_at(
         shot,
         light,
         clouds,
+        overhead(once),
         view,
         aerial,
         dome,
@@ -1726,6 +1796,7 @@ pub fn paint_half(
     yon_colour: Texture<Rgba16Float>,
     yon_marks: Texture<Rgba16Float>,
     yon_normal: Texture<Rgba8>,
+    once: [vec4],
 ) -> Targets3<vec4, vec4, vec4> {
     let q = floor(pixel.position.xy)
     let x = q.x * 2.0 + f32(shift(shot, u32(q.x), u32(q.y)))
@@ -1733,6 +1804,7 @@ pub fn paint_half(
         shot,
         light,
         clouds,
+        overhead(once),
         view,
         aerial,
         dome,

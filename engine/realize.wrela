@@ -987,7 +987,7 @@ pub fn record_finish<C, F: Parts<C>>(
 
 /// A realization's mesh finished from its placed vertices: its quads, and its tally and draw's
 /// arguments.
-fn record_mesh(grid: Grid, scratch: mut Scratch, mesh: mut Mesh) {
+pub fn record_mesh(grid: Grid, scratch: mut Scratch, mesh: mut Mesh) {
     let room = mesh.room()
     if grid.blocks <= GROUPS_MOST {
         // Every live block, in one dispatch: its count is the group count.

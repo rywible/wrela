@@ -3,13 +3,14 @@
 // it the keys while the player sails (`input`), and each frame draws it into its `image` (`play`),
 // which it lays on its own screen.
 
-use main::{HALF_PAINT, KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, STACKED, START, STYLE}
+use main::{HALF_PAINT, HERO, KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, STACKED, START, STYLE}
+use aboard::{Aboard, aboard}
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
 use engine::upscale::{Body, NO_BODY, Pinhole}
-use paint::{paint, paint_fill, paint_half}
+use paint::{OVERHEAD, overhead_once, paint, paint_fill, paint_half}
 use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder, yonder_low, yonder_rebuild}
 use ink::ink
 use rock::{Rock, reach, rock, step_rock}
@@ -94,6 +95,8 @@ pub struct State {
     pub(package) last_body: Body,
     /// What a tile not yet cooked reads for its shade (`rock::reach`).
     pub(package) unbaked: GpuBuffer<vec4>,
+    /// The sky's colours the same for every pixel of the drawing (`paint::overhead_once`).
+    pub(package) overhead: GpuBuffer<vec4>,
     /// The passes' times asked for and not yet answered (which, the ask, its frame), and the
     /// frames drawn (`main::TIMINGS`).
     pub(package) asks: Vec<(u32, Pending<f32>, u32)>,
@@ -114,6 +117,8 @@ pub struct State {
     pub(package) drawn: f32,
     pub(package) shot: Shot,
     pub(package) band: u32,
+    /// The hero, realized, and what he's drawn into before he's laid over the paint (`aboard`).
+    pub(package) aboard: Aboard,
 }
 
 pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State {
@@ -172,6 +177,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         last_body: NO_BODY,
         plain: shot,
         unbaked: buffer(1),
+        overhead: buffer(OVERHEAD),
         asks: Vec::new(),
         frames: 0,
         image: texture(width: 1, height: 1),
@@ -181,6 +187,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         drawn: -1.0,
         shot,
         band: 0,
+        aboard: aboard(),
         width,
         height,
     }
@@ -320,10 +327,22 @@ pub(package) fn painted(
     framing: f32,
     fine: f32,
 ) -> Shot {
-    step(mut s.rig, START + time, s.ocean.swell)
+    // (The rig stepped to the drawing's own time, as all else in it is: stepped to the frame's,
+    // a drawing held over two frames carried two frames' motion into the next, every fifth frame
+    // at 30 a second, a jolt the coat's cloth threw out wide for a frame.)
+    step(mut s.rig, held(START + time), s.ocean.swell)
     let shot = prepared(mut s, time, view, orbit, framing, fine)
     paint_rows(mut s, shot, from: 0, to: s.height)
+    stood(mut s, shot)
     shot
+}
+
+/// The hero drawn into the painted drawing (`aboard`), where he stands to the sail (`HERO`).
+fn stood(s: mut State, shot: Shot) {
+    if HERO > 0.5 {
+        let (width, height) = (s.width, s.height)
+        s.aboard.draw(shot, s.heavens, mut s.colour, mut s.marks, mut s.normal, width, height, s.overhead)
+    }
 }
 
 /// The shot at `time`, the camera at `framing` (`Rig::framing`), the sky and the sea stepped on
@@ -393,6 +412,17 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         )
         s.isle_cooked += 1
     }
+    label("overhead")
+    dispatch(
+        overhead_once.bind(
+            view: hv.tables.view,
+            light: hv.light,
+            dome: hv.sky.dome,
+            smp: hv.linear,
+            out: mut s.overhead,
+        ),
+        over: OVERHEAD,
+    )
     label("yonder")
     if QUARTER {
         // (A row of the half-size pass either side of the band's own: the rebuild reads the
@@ -418,6 +448,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 smp: hv.linear,
                 field: s.isle_field,
                 reach: s.reach,
+                once: s.overhead.items(),
             ),
             vertices: 3,
         )
@@ -462,6 +493,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 past_normal: s.past_normal,
                 field: s.isle_field,
                 reach: s.reach,
+                once: s.overhead.items(),
             ),
             vertices: 3,
         )
@@ -488,6 +520,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 yon_colour: s.yon_colour,
                 yon_marks: s.yon_marks,
                 yon_normal: s.yon_normal,
+                once: s.overhead.items(),
             ),
             vertices: 3,
         )
@@ -527,6 +560,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
             yon_colour: s.yon_colour,
             yon_marks: s.yon_marks,
             yon_normal: s.yon_normal,
+            once: s.overhead.items(),
         ),
         vertices: 3,
     )
@@ -554,6 +588,7 @@ pub(package) fn weathered(s: mut State, shot: Shot) {
             smp: hv.linear,
             colour: s.colour,
             marks: s.marks,
+            once: s.overhead.items(),
         ),
         vertices: 3,
     )
@@ -583,7 +618,10 @@ pub fn play(
     framing: f32,
     bands: u32,
 ) -> bool {
-    step(mut s.rig, START + time, s.ocean.swell)
+    // (The rig stepped to the drawing's own time, as all else in it is: stepped to the frame's,
+    // a drawing held over two frames carried two frames' motion into the next, every fifth frame
+    // at 30 a second, a jolt the coat's cloth threw out wide for a frame.)
+    step(mut s.rig, held(START + time), s.ocean.swell)
     if width != s.width || height != s.height {
         sized(mut s, width, height)
         s.band = 0
@@ -609,6 +647,7 @@ pub fn play(
         return false
     }
     s.band = 0
+    stood(mut s, shot)
     if s.spare_size != (width, height) {
         s.spare = texture(width: width, height: height)
         s.spare_size = (width, height)
