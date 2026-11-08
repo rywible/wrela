@@ -41,6 +41,36 @@ pub struct Upscale: Copy + GpuData {
     pub jitter: vec2,
     pub out: vec2,
     pub fresh: u32,
+    /// The kind (`far`'s second channel) of the one body that moves rigidly (a boat, a cart),
+    /// and its frames now and last: its points carried with it. -1: none.
+    pub mover: f32,
+    pub body: Body,
+    pub last_body: Body,
+    /// The kind of a surface whose pattern moves of itself (a sea's waves), carried as if still
+    /// but taken mostly afresh (`RESTLESS`). -1: none.
+    pub restless: f32,
+}
+
+/// A rigid body's frame: where its origin is and its axes.
+pub struct Body: Copy + GpuData {
+    pub at: vec3,
+    pub x: vec3,
+    pub y: vec3,
+    pub z: vec3,
+}
+
+/// No body.
+pub const NO_BODY = Body {
+    at: vec3(0.0),
+    x: vec3(1.0, 0.0, 0.0),
+    y: vec3(0.0, 1.0, 0.0),
+    z: vec3(0.0, 0.0, 1.0),
+}
+
+/// Where `p`, a point of the body at frame `now`, was at frame `last`.
+pub fn carried(now: Body, last: Body, p: vec3) -> vec3 {
+    let v = p - now.at
+    last.at + last.x * dot(v, now.x) + last.y * dot(v, now.y) + last.z * dot(v, now.z)
 }
 
 /// Frame `frame`'s jitter within a pixel (each way, -0.5 to 0.5): Halton 2, 3, eight frames
@@ -80,6 +110,9 @@ const MOST: f32 = 0.2
 /// Of each frame, the share where the scene settled the pixel itself: enough to keep it as sharp
 /// as one drawing, the history only steadying it.
 const SETTLED: f32 = 0.5
+
+/// Of each frame, the share on a restless surface (`Upscale::restless`), and how tight its box.
+const RESTLESS: f32 = 0.6
 
 fn ycocg(c: vec3) -> vec3 {
     vec3(
@@ -141,6 +174,7 @@ pub fn upscaled(
     var mean = vec3(0.0)
     var square = vec3(0.0)
     var nearest = 1.0e9
+    var kind = -1.0
     for j in 0..3 {
         for i in 0..3 {
             let at = clamp(base + vec2(f32(i) - 1.0, f32(j) - 1.0), vec2(0.0), size - vec2(1.0))
@@ -160,20 +194,29 @@ pub fn upscaled(
             let yc = ycocg(c)
             mean += yc
             square += yc * yc
-            nearest = min(nearest, far.load(x, y).x)
+            let f = far.load(x, y)
+            if f.x < nearest {
+                nearest = f.x
+                kind = f.y
+            }
         }
     }
     // (Where the scene settled the pixel itself (its alpha 0), the jitter gathers nothing new
     // there: it's read as one drawing is, Catmull-Rom, and more of it taken each frame.)
     let settled = 1.0 - scene.load(u32(base.x), u32(base.y)).a
-    let now = mix(sum / max(weight, 1.0e-4), history_at(scene, smp, q, size), settled)
+    let restless = kind == u.restless
+    // (A restless surface's samples are as fresh as the history is stale: read as one drawing is.)
+    let read_once = if restless { 1.0 } else { settled }
+    let now = mix(sum / max(weight, 1.0e-4), history_at(scene, smp, q, size), read_once)
     mean /= 9.0
     let spread = sqrt(max(square / 9.0 - mean * mean, vec3(0.0)))
     // Where the pixel's point was: its ray (unjittered), as far as the nearest sample round it met.
     let dist = exp2(nearest)
     let dir = ray_of(u.now, q)
     let is_far = dist >= FAR_ENOUGH
-    let p = if is_far { dir } else { u.now.eye + dir * dist }
+    let here = if is_far { dir } else { u.now.eye + dir * dist }
+    let moved = !is_far && kind == u.mover
+    let p = if moved { carried(u.body, u.last_body, here) } else { here }
     let was = landing(u.last, p, is_far)
     let was_px = was.xy / k
     if u.fresh == 1 ||
@@ -186,14 +229,18 @@ pub fn upscaled(
     }
     // The history, clipped toward the neighbourhood's mean into its box.
     let h = ycocg(history_at(history, smp, was_px, u.out))
-    let lo = mean - spread * 1.25
-    let hi = mean + spread * 1.25
+    let wide = if restless { 0.75 } else { 1.25 }
+    let lo = mean - spread * wide
+    let hi = mean + spread * wide
     let centre = (lo + hi) * 0.5
     let half = max((hi - lo) * 0.5, vec3(1.0e-4))
     let off = h - centre
     let reach = max(max(abs(off.x) / half.x, abs(off.y) / half.y), abs(off.z) / half.z)
     let clipped = if reach > 1.0 { centre + off / reach } else { h }
-    let share = mix(mix(LEAST, MOST, most), SETTLED, settled)
+    var share = mix(mix(LEAST, MOST, most), SETTLED, settled)
+    if restless {
+        share = max(share, RESTLESS)
+    }
     vec4(max(mix(rgb(clipped), now, share), vec3(0.0)), 1.0)
 }
 

@@ -16,7 +16,7 @@
 // fly, A and D steer, and the camera swings round after it.
 
 use heavens::heavens
-use look::SUN
+use look::{SEA, SKIFF, SUN}
 use ink::ink
 use engine::upscale::{Upscale, jitter_of, shown, upscaled}
 use played::{State, cover, painted, sized, targets, weathered}
@@ -220,6 +220,10 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         jitter: s.jitter,
         out: vec2(f32(width), f32(height)),
         fresh: if s.fresh { 1 } else { 0 },
+        mover: SKIFF,
+        body: s.body,
+        last_body: s.last_body,
+        restless: SEA,
     }
     if s.flip {
         let p = begin_pass(mut s.history_b, clear: vec4(0.0))
@@ -247,6 +251,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     s.flip = !s.flip
     s.fresh = false
     s.last_pinhole = s.pinhole
+    s.last_body = s.body
     s.upscaled_frames += 1
     s.jitter = jitter_of(s.upscaled_frames)
 }

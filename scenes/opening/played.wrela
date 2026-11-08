@@ -8,7 +8,7 @@ use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
-use engine::upscale::Pinhole
+use engine::upscale::{Body, NO_BODY, Pinhole}
 use paint::{paint, paint_fill, paint_half}
 use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder, yonder_low, yonder_rebuild}
 use ink::ink
@@ -86,6 +86,9 @@ pub struct State {
     /// This drawing's shot unjittered: the far pass's, which settles its own pixels.
     pub(package) plain: Shot,
     pub(package) upscaled_frames: u32,
+    /// The skiff's frame this drawing and the last, for the upscaler.
+    pub(package) body: Body,
+    pub(package) last_body: Body,
     /// What a tile not yet cooked reads for its shade (`rock::reach`).
     pub(package) unbaked: GpuBuffer<vec4>,
     /// The passes' times asked for and not yet answered (which, the ask, its frame), and the
@@ -161,6 +164,8 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         pinhole: pinhole_of(shot),
         last_pinhole: pinhole_of(shot),
         upscaled_frames: 0,
+        body: NO_BODY,
+        last_body: NO_BODY,
         plain: shot,
         unbaked: buffer(1),
         asks: Vec::new(),
@@ -335,6 +340,7 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     // is, for the upscaler.)
     s.pinhole = pinhole_of(shot)
     s.plain = shot
+    s.body = Body { at: shot.boat, x: shot.boat_x, y: shot.boat_y, z: shot.boat_z }
     next_yon(mut s, shot)
     // The sea as it is at this drawing.
     s.ocean.step(held(START + time))
