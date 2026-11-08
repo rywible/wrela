@@ -366,9 +366,9 @@ impl<G: Game> Engine<G> {
                     self.refuse(conn, "That isn't a fight.")
                     return
                 }
-                // Its room wrote down each winner, by name: the account's own name's row of it.
-                let inner = Inner::Won { name: a.name, fight: fight.clone() }
-                self.ask(progress::ROOMS, take inner, Step::RecordWon, take job)
+                // A persistent receipt already proves this account counted it. Check it before
+                // asking the room, so a retry needs no room RPC and survives a room outage.
+                self.get(key(progress::RECEIPTS, fight), Step::RecordReceipt, take job)
             },
             _ => self.refuse(conn, "That isn't something an account answers."),
         }
@@ -391,6 +391,20 @@ impl<G: Game> Engine<G> {
             None => Vec::new(),
         }
         self.reply(conn, Reply::Welcome { me, csrf })
+    }
+
+    /// Missing progress is empty; a stored format this build cannot read is preserved. Treating
+    /// an unknown save as empty would let the next credited win erase the previous history.
+    fn saved_progress(mut self, conn: u32, answer: [u8]) -> Option<progress::Progress> {
+        let Some(bytes) = self.latest(key(progress::PROGRESS, []), answer) else {
+            return Some(progress::no_progress())
+        }
+        if let Some(p) = progress::read(bytes) { return Some(take p) }
+        self.refuse(
+            conn,
+            "We couldn't read your progress. Nothing was changed. Try reloading the page.",
+        )
+        None
     }
 
     /// The request's session, if it is signed in with a session whose CSRF token is `csrf` (none:
@@ -463,6 +477,9 @@ impl<G: Game> Engine<G> {
         if let Some((owner, secret)) = held_parts(old) {
             let was = hashed(secret)
             if same_bytes(owner, self.handle) {
+                // Replacing the cookie ends this session just like signing out does: requests
+                // already bound to it must not complete after the new session takes its place.
+                self.unbind(was.clone())
                 self.forget(session_key(was))
             } else {
                 // Another account's session in this browser: its cookie is replaced, so it ends.
@@ -834,6 +851,38 @@ impl<G: Game> Engine<G> {
     pub(package) fn account_answer(mut self, job: take Job, answer: Vec<u8>) {
         var j = take job
         let conn = j.conn
+        // Reads, authenticator work and room calls may answer after sign-out, revocation or
+        // recovery ended the session. Recheck before returning private data or committing a
+        // signed-in action. Deletion deliberately continues after ending its own session, and
+        // a stale name claim follows its existing release path instead of leaking the claim.
+        let recovery = match j.step {
+            Step::BeginAddScan | Step::AddCredential | Step::AddCount | Step::AddSession => Some(
+                true,
+            ),
+            Step::PasskeysScan | Step::SessionsScan | Step::RevokeScan => Some(true),
+            Step::ExportScan | Step::ExportRuns | Step::PostingRead | Step::PostingBest => Some(
+                true,
+            ),
+            Step::CharacterRead | Step::ProgressRead => Some(true),
+            Step::RemoveScan | Step::CodesCounters | Step::CodesRandom | Step::CodesScan => Some(
+                false,
+            ),
+            Step::TokenPrune | Step::TokenRandom | Step::BestRunsRead => Some(false),
+            Step::CharacterSave | Step::RecordWon | Step::RecordReceipt | Step::RecordProgress => Some(
+                false,
+            ),
+            _ => if j.account.is_some() {
+                match j.request {
+                    Request::Begin { ceremony: ADD_PASSKEY, .. } | Request::AddPasskey {
+                        ..
+                    } => Some(true),
+                    _ => None,
+                }
+            } else { None },
+        }
+        if let Some(recovery) = recovery {
+            let Some(_) = self.signed_in(conn, None, recovery) else { return }
+        }
         match j.step {
             Step::HelloSession => {
                 let s: Option<Session> = got(answer)
@@ -1436,10 +1485,20 @@ impl<G: Game> Engine<G> {
             Step::NameCommit => self.name_commit(take j, answer),
             Step::ReleaseAccount => {
                 if let Some(a) = self.account_of(answer) {
-                    let release = Note::Release {
-                        name: a.name,
-                        owner: self.handle.clone(),
-                        generation: a.generation,
+                    // Explicit even if the shard has not heard Keep yet: message order must not
+                    // let an old pass or a persisted room identity become a new account's name.
+                    let release = if a.fixed {
+                        Note::Retire {
+                            name: a.name,
+                            owner: self.handle.clone(),
+                            generation: a.generation,
+                        }
+                    } else {
+                        Note::Release {
+                            name: a.name,
+                            owner: self.handle.clone(),
+                            generation: a.generation,
+                        }
                     }
                     self.pend(under("n"), names_instance(a.name).as_str(), release)
                     self.keep(under(SWEPT), Vec::from([NAME_RELEASED]))
@@ -1457,15 +1516,8 @@ impl<G: Game> Engine<G> {
                 self.reply(conn, take reply)
             },
             Step::ProgressRead => {
-                let p: Option<progress::Progress> = self.latest_as(
-                    key(progress::PROGRESS, []),
-                    answer,
-                )
-                let beaten = match p {
-                    Some(p) => p.beaten.clone(),
-                    None => Vec::new(),
-                }
-                self.reply(conn, Reply::Progress { beaten })
+                let Some(p) = self.saved_progress(conn, answer) else { return }
+                self.reply(conn, Reply::Progress { beaten: p.beaten.clone() })
             },
             Step::RecordWon => {
                 let back: Option<Back> = read(answer)
@@ -1480,21 +1532,33 @@ impl<G: Game> Engine<G> {
                         conn,
                         "its room has no win of your character's in that fight.",
                     ),
-                    _ => self.refuse(conn, "the fights couldn't be reached."),
+                    _ => self.reply(conn, Reply::RecordPending),
                 }
             },
-            Step::RecordProgress => {
-                let k = key(progress::PROGRESS, [])
-                let was: Option<progress::Progress> = self.latest_as(k, answer)
-                let p = match was {
-                    Some(p) => p.clone(),
-                    None => progress::no_progress(),
+            Step::RecordReceipt => {
+                j.message = answer.clone()
+                let Request::Record { fight, .. } = j.request.clone() else { return }
+                if self.latest(key(progress::RECEIPTS, fight), answer).is_some() {
+                    self.get(key(progress::PROGRESS, []), Step::ProgressRead, take j)
+                    return
                 }
+                let Some(a) = j.account else { return }
+                // Its room wrote down each winner, by name: only this account's row counts.
+                let inner = Inner::Won { name: a.name, fight: fight.clone() }
+                self.ask(progress::ROOMS, take inner, Step::RecordWon, take j)
+            },
+            Step::RecordProgress => {
+                let Some(p) = self.saved_progress(conn, answer) else { return }
                 let won = progress::Won { boss: j.n, frames: j.ticks, at: j.expires }
-                // Counted once: a fight that ended no later than the last counted counts nothing.
-                let now = match progress::credited(p.clone(), won) {
+                let Request::Record { fight, .. } = j.request.clone() else { return }
+                let receipt = key(progress::RECEIPTS, fight)
+                // A concurrent request may have written its receipt while this read was pending.
+                let counted = self.latest(receipt, j.message).is_some()
+                let next = if counted { None } else { progress::credited(p.clone(), won) }
+                let now = match take next {
                     Some(q) => {
                         self.keep(key(progress::PROGRESS, []), save(q.clone()))
+                        self.keep(take receipt, Vec::new())
                         take q
                     },
                     None => take p,
@@ -1925,7 +1989,7 @@ impl<G: Game> Engine<G> {
         if after.is_empty() {
             j.text = export_head(a)
             j.n = 0
-            self.scan_range(Vec::new(), under("u/"), EXPORT_RECORDS, Step::ExportScan, take j)
+            self.export_records(Vec::new(), take j)
             return
         }
         if after[0] > 2 {
@@ -1937,6 +2001,18 @@ impl<G: Game> Engine<G> {
         self.export_from(take j, at)
     }
 
+    /// Account records before the runs, excluding internal per-fight receipts. Their keys can
+    /// grow with every win, but none contributes to the export, so skip their whole interval.
+    fn export_records(mut self, from: take Vec<u8>, job: take Job) {
+        let receipts = under(progress::RECEIPTS)
+        let to = if from < receipts { receipts.clone() } else { under("u/") }
+        let from = if from >= receipts {
+            let end = past(receipts).unwrap_or(under("u/"))
+            if from < end { take end } else { take from }
+        } else { take from }
+        self.scan_range(take from, take to, EXPORT_RECORDS, Step::ExportScan, take job)
+    }
+
     /// The next of an export's scans, after key `at` in its phase.
     fn export_from(mut self, job: take Job, at: [u8]) {
         let j = take job
@@ -1944,7 +2020,7 @@ impl<G: Game> Engine<G> {
         from.push(0)
         let runs_end = past(under("u/")).unwrap_or(Vec::new())
         if j.n == 0 {
-            self.scan_range(take from, under("u/"), EXPORT_RECORDS, Step::ExportScan, take j)
+            self.export_records(take from, take j)
         } else if j.n == 2 {
             if from < runs_end {
                 from = runs_end.clone()
@@ -1969,11 +2045,15 @@ impl<G: Game> Engine<G> {
                 return
             }
         }
-        if !scan.last.is_empty() {
+        if scan.full && !scan.last.is_empty() {
             self.export_from(take j, scan.last.clone())
             return
         }
         if j.n == 0 {
+            if j.range.to == under(progress::RECEIPTS) {
+                self.export_records(past(under(progress::RECEIPTS)).unwrap_or(under("u/")), take j)
+                return
+            }
             // The records after the runs.
             j.n = 2
             self.export_from(take j, Vec::new())
@@ -2005,7 +2085,7 @@ impl<G: Game> Engine<G> {
                 return
             }
         }
-        if !scan.last.is_empty() {
+        if scan.full && !scan.last.is_empty() {
             self.export_from(take j, scan.last.clone())
             return
         }
@@ -2239,7 +2319,7 @@ fn export_entry(out: mut String, k: [u8], value: [u8]) {
         one.push_str("}")
     } else if same_bytes(k, under(progress::PROGRESS)) {
         one.push_str("{\"mmo_progress\":")
-        match read::<progress::Progress>(value) {
+        match progress::read(value) {
             Some(p) => {
                 one.push_str("[")
                 for i in 0..p.beaten.len() {

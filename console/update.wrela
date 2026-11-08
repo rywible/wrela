@@ -17,7 +17,7 @@ pub const IDLE: f32 = 30.0
 
 /// What the console knows of its release and the live one.
 pub struct Update {
-    /// The console's own release, once read: none outside a release (`wrela run console`).
+    /// The console's own release, once read: none until valid metadata arrives.
     pub own: Option<String>,
     own_load: Option<Pending<u8>>,
     live_load: Option<Pending<u8>>,
@@ -30,12 +30,20 @@ pub struct Update {
     reload: Option<Pending<u8>>,
     /// When it next asks while the MMO waits for the new release (`confirm_newer`).
     soon_at: f32,
+    /// A failed or malformed own-release read is retried, never mistaken for a development build.
+    own_at: f32 = 0.0,
 }
 
 pub fn new() -> Update {
+    var u = unloaded()
+    u.own_load = Some(fetch("release.txt"))
+    u
+}
+
+fn unloaded() -> Update {
     Update {
         own: None,
-        own_load: Some(fetch("release.txt")),
+        own_load: None,
         live_load: None,
         next: EVERY,
         newer: false,
@@ -43,6 +51,22 @@ pub fn new() -> Update {
         reload: None,
         soon_at: 0.0,
     }
+}
+
+fn own_read(u: mut Update, bytes: take Option<Vec<u8>>, now: f32) {
+    u.own = match take bytes {
+        Some(b) => release_of(b),
+        None => None,
+    }
+    u.own_at = now + SOON
+}
+
+fn own_due(u: Update, now: f32) -> bool {
+    !u.asked && u.own.is_none() && u.own_load.is_none() && now >= u.own_at
+}
+
+fn confirmed(u: Update) -> bool {
+    u.newer && u.own.is_some()
 }
 
 fn is_release(id: str) -> bool {
@@ -98,13 +122,17 @@ pub fn due(newer: bool, safe: bool, now: f32, active_at: f32) -> bool {
 
 /// Each frame, at `now` (seconds of the console's presentation): reads what came, asks which
 /// release is live when it's time, and reloads once it's `due`. The console's own release is read
-/// once; an answer that isn't one asks again at the next turn. The host's answer to the reload is
-/// read and dropped: a host that declines (the native one, or a console in another's surface)
+/// until it succeeds; a failed or malformed answer retries after `SOON` seconds. The host's
+/// answer to the reload is read and dropped: a host that declines (the native one, or a console in another's surface)
 /// leaves it where it is, and it doesn't ask again.
 pub fn update(u: mut Update, now: f32, safe: bool, active_at: f32) {
-    if let Some(Ok(bytes)) = answer_of(mut u.own_load) {
-        u.own = release_of(bytes)
+    if let Some(result) = answer_of(mut u.own_load) {
+        own_read(mut u, match take result {
+            Ok(b) => Some(take b),
+            Err(_) => None,
+        }, now)
     }
+    if own_due(u, now) { u.own_load = Some(fetch("release.txt")) }
     if let Some(result) = answer_of(mut u.live_load) {
         if let Ok(answer) = result {
             if let Some(r) = http::response(answer) {
@@ -139,17 +167,17 @@ pub const SOON: f32 = 20.0
 /// another build (`mmo::client::reload_due`), and that's only worth a reload once `deploys.json`
 /// lists another release live. A deploy sends the rooms' Worker out before the console's, and
 /// one that fails between them leaves only this release to load; a reload then would load this
-/// one again and again. Until it's newer, it asks every `SOON` seconds. Outside a release (no
-/// `release.txt`) there's nothing to ask, and any reload is the newest.
+/// one again and again. Until it's newer, it asks every `SOON` seconds. Without a readable
+/// `release.txt`, it cannot prove that a reload updates the page: the read retries instead.
 pub fn confirm_newer(u: mut Update, now: f32) -> bool {
-    if u.newer {
+    if confirmed(u) {
         return true
     }
     if u.own_load.is_some() {
         return false
     }
     if u.own.is_none() {
-        return true
+        return false
     }
     if u.live_load.is_none() && now >= u.soon_at {
         u.soon_at = now + SOON
@@ -215,4 +243,22 @@ fn a_tab_reloads_only_when_a_newer_release_is_live_and_its_home_was_left_alone()
     assert(!due(newer: false, safe: true, now: 100.0, active_at: 0.0), "its own release is live")
     assert(!due(newer: true, safe: false, now: 100.0, active_at: 0.0), "a game, a save, a sign-in")
     assert(!due(newer: true, safe: true, now: 100.0, active_at: 100.0 - IDLE + 1.0), "touched")
+}
+
+@test
+fn a_failed_release_read_cannot_turn_a_server_deploy_into_a_reload_loop() {
+    var u = unloaded()
+    own_read(mut u, None, now: 10.0)
+    assert(!confirmed(u), "a failed read is not evidence that a reload can update the page")
+    assert(!own_due(u, now: 10.0) && !own_due(u, now: 10.0 + SOON - 0.1), "wait before retrying")
+    assert(own_due(u, now: 10.0 + SOON), "the release read is retried")
+    own_read(mut u, Some(Vec::from(String::from("not a release").as_bytes())), now: 30.0)
+    assert(!confirmed(u), "malformed metadata is not a development build")
+    own_read(mut u, Some(Vec::from(String::from(OWN).as_bytes())), now: 50.0)
+    assert(
+        !own_due(u, now: 100.0) && !confirmed(u),
+        "the current release is known, but no newer one",
+    )
+    u.newer = true
+    assert(confirmed(u), "another live release can now be loaded")
 }

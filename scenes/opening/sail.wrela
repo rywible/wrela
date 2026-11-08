@@ -53,7 +53,11 @@ pub struct Rig: Copy {
     /// the sky) to 1 for the player's (up behind it, the skiff and the sea ahead); between, on
     /// its way from one to the other (`look::shot_at`).
     pub framing: f32,
-    /// The keys held.
+    /// Each key and pad kept independently: releasing one alias or centring a stick never
+    /// releases another control still held.
+    keyboard: u32,
+    pad_buttons: [u32; 4],
+    pad_sticks: [vec2; 4],
     forward: bool,
     back: bool,
     left: bool,
@@ -207,6 +211,9 @@ pub fn rest() -> Rig {
         look: 0.0,
         perch: 1.0,
         framing: 0.0,
+        keyboard: 0,
+        pad_buttons: [0; 4],
+        pad_sticks: [vec2(0.0); 4],
         forward: false,
         back: false,
         left: false,
@@ -235,24 +242,29 @@ pub fn key(r: mut Rig, e: Event) {
     match e {
         Event::KeyDown { key, .. } => hold(mut r, key, down: true),
         Event::KeyUp { key, .. } => hold(mut r, key, down: false),
-        Event::PadButton { button, pressed, .. } => {
-            if button == PadButton::Up { r.forward = pressed }
-            if button == PadButton::Down { r.back = pressed }
-            if button == PadButton::Left { r.left = pressed }
-            if button == PadButton::Right { r.right = pressed }
+        Event::PadButton { pad, button, pressed, .. } => {
+            if pad < 4 {
+                let bit = match button {
+                    PadButton::Up => 1,
+                    PadButton::Down => 4,
+                    PadButton::Left => 16,
+                    PadButton::Right => 64,
+                    _ => 0,
+                }
+                if pressed { r.pad_buttons[pad] |= bit } else { r.pad_buttons[pad] &= !bit }
+            }
         },
         // (The stick past a third of its throw holds the way it leans; back in the middle, lets
-        // go. Up is negative.)
-        Event::PadAxis { axis: PadAxis::LeftY, value, .. } => {
-            r.forward = value < -STICK
-            r.back = value > STICK
+        // that stick go. Up is negative.)
+        Event::PadAxis { pad, axis: PadAxis::LeftY, value } => {
+            if pad < 4 { r.pad_sticks[pad].y = value }
         },
-        Event::PadAxis { axis: PadAxis::LeftX, value, .. } => {
-            r.left = value < -STICK
-            r.right = value > STICK
+        Event::PadAxis { pad, axis: PadAxis::LeftX, value } => {
+            if pad < 4 { r.pad_sticks[pad].x = value }
         },
         _ => {},
     }
+    held_keys(mut r)
 }
 
 /// How far the stick leans before it holds a way.
@@ -260,23 +272,41 @@ const STICK: f32 = 0.35
 
 /// Every key let go: the hands keep the sail as it's trimmed.
 pub fn let_go(r: mut Rig) {
-    r.forward = false
-    r.back = false
-    r.left = false
-    r.right = false
+    r.keyboard = 0
+    r.pad_buttons = [0; 4]
+    r.pad_sticks = [vec2(0.0); 4]
+    held_keys(mut r)
 }
 
 fn hold(r: mut Rig, key: Key, down: bool) {
-    match key {
-        Key::W => r.forward = down,
-        Key::Up => r.forward = down,
-        Key::S => r.back = down,
-        Key::Down => r.back = down,
-        Key::A => r.left = down,
-        Key::Left => r.left = down,
-        Key::D => r.right = down,
-        Key::Right => r.right = down,
-        _ => {},
+    let bit = match key {
+        Key::W => 1,
+        Key::Up => 2,
+        Key::S => 4,
+        Key::Down => 8,
+        Key::A => 16,
+        Key::Left => 32,
+        Key::D => 64,
+        Key::Right => 128,
+        _ => 0,
+    }
+    if down { r.keyboard |= bit } else { r.keyboard &= !bit }
+    held_keys(mut r)
+}
+
+/// Which ways are held by at least one key, D-pad or stick.
+fn held_keys(r: mut Rig) {
+    r.forward = (r.keyboard & 3) != 0
+    r.back = (r.keyboard & 12) != 0
+    r.left = (r.keyboard & 48) != 0
+    r.right = (r.keyboard & 192) != 0
+    for pad in 0..4 {
+        let buttons = r.pad_buttons[pad]
+        let stick = r.pad_sticks[pad]
+        r.forward = r.forward || (buttons & 1) != 0 || stick.y < -STICK
+        r.back = r.back || (buttons & 4) != 0 || stick.y > STICK
+        r.left = r.left || (buttons & 16) != 0 || stick.x < -STICK
+        r.right = r.right || (buttons & 64) != 0 || stick.x > STICK
     }
 }
 
@@ -729,3 +759,35 @@ fn moved(r: mut Rig, time: f32, dt: f32, swell: Swell, off: f32) {
     m.look_v = lkv.xy
     r.m = m
 }
+
+@test
+fn sailing_keeps_a_held_keyboard_alias() {
+    var r = rest()
+    hold(mut r, Key::W, down: true)
+    hold(mut r, Key::Up, down: true)
+    hold(mut r, Key::W, down: false)
+    assert(r.forward)
+    hold(mut r, Key::Up, down: false)
+    assert(!r.forward)
+}
+
+@test
+fn sailing_keeps_keyboard_input_when_a_pad_centres() {
+    var r = rest()
+    hold(mut r, Key::A, down: true)
+    key(mut r, Event::PadAxis { pad: 0, axis: PadAxis::LeftX, value: 0.0 })
+    assert(r.left)
+    let_go(mut r)
+    assert(!r.left)
+}
+
+@test
+fn sailing_keeps_a_held_pad_button_when_its_stick_centres() {
+    var r = rest()
+    key(mut r, Event::PadButton { pad: 0, button: PadButton::Up, value: 1.0, pressed: true })
+    key(mut r, Event::PadAxis { pad: 0, axis: PadAxis::LeftY, value: 0.0 })
+    assert(r.forward)
+    let_go(mut r)
+    assert(!r.forward)
+}
+

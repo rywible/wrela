@@ -3,8 +3,10 @@
 //
 // - **`names/<00..3f>`** is the authority on its names: `Claim` gives a free name to an account with
 //   a new generation, and a `Keep` or a `Release` changes it only if its owner and generation are
-//   still the name's, so a late release never frees a name a later owner holds. A released name
-//   keeps its generation, so the next claim's is higher.
+//   still the name's, so a late release never frees a name a later owner holds. A released
+//   unkept name keeps its generation, so the next claim's is higher. A kept name is retired when
+//   its account is deleted: an old pass or a verified room identity may live indefinitely, so
+//   no later account may hold that name. Its tombstone keeps no account handle.
 // - **`codes/<00..3f>`** keeps each recovery code's hash and its account, which only that account
 //   writes (an upsert with its revision), and finds a code's account for a recovery, within
 //   `ALL_TRIES` a minute a shard.
@@ -25,7 +27,7 @@ use std::serialize::{Serialize, save}
 use wire::{Found, MOST_FOUND, Reply, Request}
 
 /// A name at its shard (`n<name's key>`): its owner (none: free, released), the generation of its
-/// last claim, and whether its owner kept it for good.
+/// last claim, and whether it was kept for good (with no owner: permanently retired).
 pub struct NameEntry: Clone + Serialize {
     pub owner: Vec<u8>,
     pub generation: u64,
@@ -186,6 +188,12 @@ impl<G: Game> Engine<G> {
                     return
                 }
             },
+            Note::Retire { name, .. } => {
+                if self.kind == Kind::Names {
+                    self.get(name_key(name), Step::NameNoteRead, take j)
+                    return
+                }
+            },
             Note::Code { hash, .. } => {
                 if self.kind == Kind::Codes {
                     self.get(code_key(hash), Step::CodeNoteRead, take j)
@@ -316,7 +324,7 @@ impl<G: Game> Engine<G> {
                 let e: Option<NameEntry> = self.latest_as(k, answer)
                 let generation = match e {
                     Some(e) => {
-                        if !e.owner.is_empty() {
+                        if !e.owner.is_empty() || e.kept {
                             self.back(conn, Back::Taken)
                             return
                         }
@@ -341,17 +349,29 @@ impl<G: Game> Engine<G> {
                         generation,
                         false,
                     ),
+                    Note::Retire { name, owner, generation } => (
+                        name,
+                        owner.clone(),
+                        generation,
+                        false,
+                    ),
                     _ => return,
                 }
                 let k = name_key(name)
                 let e: Option<NameEntry> = self.latest_as(k, answer)
+                let retiring = match j.note {
+                    Note::Retire { .. } => true,
+                    _ => false,
+                }
                 // Only its owner's, at its generation: a late one changes nothing of a later
                 // claim's.
                 if let Some(e) = e {
                     if server::same_bytes(e.owner, owner) && e.generation == generation {
                         let next = if kept {
                             NameEntry { owner: owner.clone(), generation, kept: true }
-                        } else { NameEntry { owner: Vec::new(), generation, kept: false } }
+                        } else {
+                            NameEntry { owner: Vec::new(), generation, kept: e.kept || retiring }
+                        }
                         self.keep(take k, save(next))
                     }
                 }

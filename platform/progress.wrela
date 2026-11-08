@@ -9,20 +9,20 @@
 // - **Recording a win.** The player's client, once its fight settles won, asks its account to
 //   record it (`Request::Record`, by the fight's id). The account asks the instance `server`
 //   (`Inner::Won`) for its own name's row of that fight. If there is one, it's counted on the
-//   account's progress (`f`, a `Progress`) once: a fight counts only if it ended after the last
-//   one counted, so a record asked again (or by a second tab) counts nothing more.
+//   account's progress (`f`, a `Progress`) once, with a receipt (`f/<fight>`): a record asked
+//   again (or by a second tab) counts nothing more, while distinct fights may arrive in any order.
 // - **Deleting an account.** The deletion's sweep tells `server` to forget the name's rows
 //   (`Note::Forget`), and its name is let go only once that's said done, so a later holder of
-//   the name never reads them. A pass outlives its account by `pass::LIFE_MS` at most, so a win
-//   written in that while is left in `server`'s store under a name no account has, unread unless
-//   the name's next holder records that very fight.
+//   the name never reads them. Its kept name is permanently retired (shards.wrela): a pass can
+//   outlive its account, and a previously verified room identity can outlive even the pass. A
+//   win written later remains under a name no account may ever hold again.
 //
 // The rows are the room's to write and the store's to keep: nothing in the browser says who won.
 
 use account::{key, under}
 use names::Name
 use server::{Back, Engine, Game, Inner, Job, Kind, Note, Step, blank_job}
-use std::serialize::{Serialize, save}
+use std::serialize::{Serialize, load, save}
 use wire::{Beaten, Request}
 
 /// Where a room writes its fights' winners, in the instance `server`'s store.
@@ -33,6 +33,8 @@ pub const ROOMS: Text = "server"
 pub const MAX_FIGHT: u32 = 269
 /// The account's record of its progress.
 pub const PROGRESS: Text = "f"
+/// A fight's receipt in its account's store: one small row, so reads stay bounded as wins grow.
+pub const RECEIPTS: Text = "f/"
 /// The most bosses an account's progress counts.
 pub const MOST_BOSSES: u32 = 64
 /// The rows a forget deletes a call.
@@ -46,14 +48,32 @@ pub struct Won: Clone + Eq + Serialize {
     pub at: u64,
 }
 
-/// An account's progress: each boss it has beaten, and when the last fight it counted ended.
+/// An account's progress: each boss it has beaten, and when its latest counted fight ended.
 pub struct Progress: Clone + Eq + Serialize {
     pub beaten: Vec<Beaten>,
     pub latest: u64,
+    /// Old saves counted by time alone. Until receipts began, fights through this boundary were
+    /// already counted or skipped; keep it so an old win cannot count twice.
+    pub legacy: u64 = 0,
 }
 
 pub fn no_progress() -> Progress {
-    Progress { beaten: Vec::new(), latest: 0 }
+    Progress { beaten: Vec::new(), latest: 0, legacy: 0 }
+}
+
+/// The progress format before fight receipts: its last time was the only duplicate check.
+struct TimeProgress: Serialize {
+    beaten: Vec<Beaten>,
+    latest: u64,
+}
+
+/// A progress record, migrating the time-only format without recounting its older fights.
+pub fn read(bytes: [u8]) -> Option<Progress> {
+    if let Ok(p) = load::<Progress>(Vec::from(bytes)) {
+        return Some(take p)
+    }
+    let Ok(p) = load::<TimeProgress>(Vec::from(bytes)) else { return None }
+    Some(Progress { beaten: p.beaten.clone(), latest: p.latest, legacy: p.latest })
 }
 
 /// A fight's id: its room's name, `/`, the room's time it began (8 bytes, big-endian) and its
@@ -97,20 +117,20 @@ pub fn won_row(boss: u32, frames: u32, at: u64) -> Vec<u8> {
     save(Won { boss, frames, at })
 }
 
-/// `p` with win `w` counted, if it ended after the last fight `p` counted: then it's another of
-/// its boss's wins, and its best if it's quicker. None if it counts nothing (counted before, or
-/// a boss past `MOST_BOSSES` new ones).
+/// `p` with an unrecorded win `w` counted: its caller checks and writes the fight's receipt.
+/// None for an old save's time boundary, or a boss past `MOST_BOSSES` new ones.
 pub fn credited(p: Progress, w: Won) -> Option<Progress> {
-    if w.at <= p.latest {
+    var out = p.clone()
+    if w.at <= out.legacy {
         return None
     }
-    var out = p.clone()
-    out.latest = w.at
+    out.latest = max(out.latest, w.at)
     for i in 0..out.beaten.len() {
         if out.beaten[i].boss == w.boss {
             out.beaten[i].wins += 1
             out.beaten[i].best = min(out.beaten[i].best, w.frames)
-            out.beaten[i].last = w.at
+            out.beaten[i].first = min(out.beaten[i].first, w.at)
+            out.beaten[i].last = max(out.beaten[i].last, w.at)
             return Some(out)
         }
     }
@@ -183,18 +203,35 @@ impl<G: Game> Engine<G> {
 // ---- tests --------------------------------------------------------------------------------------
 
 @test
-fn a_win_counts_once_and_keeps_the_best_time() {
+fn unrecorded_wins_keep_the_best_and_the_first_and_last_fight_times() {
     let p = no_progress()
     let Some(p) = credited(p, Won { boss: 1, frames: 900, at: 100 }) else { panic("a first win") }
     assert(p.beaten.len() == 1 && p.beaten[0].wins == 1 && p.beaten[0].best == 900)
-    assert(credited(p, Won { boss: 1, frames: 10, at: 100 }).is_none(), "the same fight again")
-    assert(credited(p, Won { boss: 1, frames: 10, at: 50 }).is_none(), "an older one")
     let Some(p) = credited(p, Won { boss: 1, frames: 1200, at: 200 }) else { panic("slower") }
     assert(p.beaten[0].wins == 2 && p.beaten[0].best == 900 && p.beaten[0].last == 200)
     let Some(p) = credited(p, Won { boss: 1, frames: 600, at: 300 }) else { panic("quicker") }
     assert(p.beaten[0].best == 600 && p.beaten[0].first == 100, "the best, and the first kept")
     let Some(p) = credited(p, Won { boss: 2, frames: 5, at: 400 }) else { panic("another boss") }
     assert(p.beaten.len() == 2 && p.beaten[1].wins == 1 && p.latest == 400)
+    let Some(p) = credited(p, Won { boss: 1, frames: 500, at: 50 }) else { panic("older") }
+    assert(p.beaten[0].wins == 4 && p.beaten[0].best == 500)
+    assert(p.beaten[0].first == 50 && p.beaten[0].last == 300 && p.latest == 400)
+}
+
+@test
+fn old_progress_keeps_its_boundary_when_fight_receipts_begin() {
+    let old = TimeProgress {
+        beaten: Vec::from([Beaten { boss: 1, wins: 2, best: 900, first: 50, last: 100 }]),
+        latest: 100,
+    }
+    let Some(p) = read(save(take old)) else { panic("the old progress still loads") }
+    assert(p.legacy == 100 && p.latest == 100)
+    assert(credited(p, Won { boss: 1, frames: 10, at: 100 }).is_none(), "old receipts stay spent")
+    let Some(p) = credited(p, Won { boss: 1, frames: 800, at: 200 }) else { panic("new win") }
+    assert(p.legacy == 100 && p.beaten[0].wins == 3)
+    let Some(p) = credited(p, Won { boss: 1, frames: 600, at: 150 }) else { panic("late new win") }
+    assert(p.latest == 200 && p.beaten[0].wins == 4 && p.beaten[0].best == 600)
+    assert(credited(p, Won { boss: 1, frames: 10, at: 100 }).is_none(), "the old boundary stays")
 }
 
 @test
