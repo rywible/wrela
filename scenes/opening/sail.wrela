@@ -470,12 +470,23 @@ pub const BOOM: f32 = 2.15
 /// How far either arm of the wishbone bows out from the sail, at its middle (m).
 pub const BOW_OUT: f32 = 0.22
 
-/// The rig as `r`'s drawing holds it: its spars and the hands where the sail's pull has them,
+/// How far into a pull on the boom the traveller is at drawing time `t` (0 eased out, 1 sheeted
+/// in): a pull every 1.2 to 1.6 s, a third of a second in, half a second out. (The boom comes in
+/// with it, `pose`, and the hero sits back against it, `aboard`.)
+pub fn trimming(t: f32) -> f32 {
+    let phase = fract(t / 1.4 + 0.12 * sin(t * 0.73))
+    smoothstep(0.0, 0.3, phase) * smoothstep(0.8, 0.4, phase)
+}
+
+/// The rig as `r`'s drawing holds it at drawing time `t`: its spars and the hands where the sail's pull has them,
 /// the body as it's caught up with them, its knees giving to the heave, its head glancing round.
-pub fn pose(r: Rig) -> Pose {
+pub fn pose(r: Rig, t: f32) -> Pose {
     let yaw = -0.22 + r.shown_steer
     let m = r.shown_m
-    let g = rigged(wind_off(yaw + r.veer), r.shown_turn, r.shown_power, r.shown_boom, r.jolt)
+    // (Pumped: the boom drawn in a little toward the centreline with each pull on it, its side
+    // kept, so it never crosses.)
+    let pumped = r.shown_boom * (1.0 - 0.14 * trimming(t) * smoothstep(0.1, 0.5, r.shown_power))
+    let g = rigged(wind_off(yaw + r.veer), r.shown_turn, r.shown_power, pumped, r.jolt)
     // (The old mast whips as the hull's knocked about: its head swung, the sail and the boom on
     // it carried round.)
     let mast = normalize(g.mast + vec3(m.whip.x, 0.0, m.whip.y))
@@ -525,7 +536,9 @@ fn rigged(off: f32, turn: f32, p: f32, phi: f32, jolt: f32) -> Pose {
     // (Eased to nothing as the wind comes dead ahead or astern: a sign flipped there raked the
     // mast over in a frame as the wind crossed the stern.)
     let up_into = turn * clamp(sin(off) / 0.3, -1.0, 1.0)
-    let rake = clamp(-up_into / TURN_RATE, -1.0, 1.0) * 0.16 + 0.05
+    // (Raked a fifth of a radian as he pushes the rig forward to bear away and pulls it back to
+    // head up: a board's steering, the boom and his hands with it.)
+    let rake = clamp(-up_into / TURN_RATE, -1.0, 1.0) * 0.22 + 0.05
     let tilt = (0.1 + 0.32 * smoothstep(0.6, 1.5, a)) * smoothstep(0.1, 0.6, p)
     let mast = normalize(vec3(wind * sin(tilt), cos(tilt) * cos(rake), sin(rake)))
     let b0 = vec3(side * sin(a), 0.0, -cos(a))

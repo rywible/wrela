@@ -23,7 +23,7 @@ use look::{OVERCAST, SKIFF, Shot}
 use main::{FREEBOARD, HERO_POP, INKED}
 use paint::{Heaven, lit_solid, storm_sky}
 use played::cover
-use sail::{BOOM, BOW_OUT, LASHED}
+use sail::{BOOM, BOW_OUT, LASHED, trimming}
 use sail::FOOT as RIG_FOOT
 use skiff::vessel_shadow
 use std::gpu::{
@@ -247,13 +247,6 @@ fn stood_over(hips: vec3, foot: vec3, leg: f32) -> f32 {
     ankle.y + sqrt(max(leg * leg - dot(across, across), 0.0)) - (THIGH.y - PELVIS.y)
 }
 
-/// How far into a pull on the boom he is at drawing time `t` (0 eased out, 1 pulled in): a
-/// pull every 1.2 to 1.6 s, a third of a second in, half a second out.
-fn trimming(t: f32) -> f32 {
-    let phase = fract(t / 1.4 + 0.12 * sin(t * 0.73))
-    smoothstep(0.0, 0.3, phase) * smoothstep(0.8, 0.4, phase)
-}
-
 /// His palette as the shot holds the traveller (in the skiff's frame), into the world: each of
 /// his bones' matrices, rest space to world.
 pub fn bones(s: Shot, give: vec3) -> [mat4; 64] {
@@ -340,7 +333,9 @@ pub fn bones(s: Shot, give: vec3) -> [mat4; 64] {
     let fore_foot = drawn_in(s.fore_foot, hips)
     let aft_foot = drawn_in(s.aft_foot, hips)
     let top = min(stood_over(hips, fore_foot, leg), stood_over(hips, aft_foot, leg))
-    hips.y = min(hung.y, top)
+    // (Never deeper than a ready crouch: with the boom low, as the rig's raked back, he bends at
+    // the waist to it rather than squatting down on his heels.)
+    hips.y = clamp(hung.y, top - 0.06, top)
     neck_at = hips + lay * torso
     // His give: the hull's lurches taken in his knees and hips (`Aboard::ride`), his hips moved
     // the whole of it, his shoulders less, so his trunk sways over his feet.
@@ -380,7 +375,14 @@ pub fn bones(s: Shot, give: vec3) -> [mat4; 64] {
     // (Glancing up at the sail's luff as he trims it.)
     let at_sail = normalize(s.mast * 1.6 + RIG_FOOT - neck)
     let gaze = normalize(mix(normalize(s.gaze), at_sail, 0.45 * trimming(s.held - 0.08)))
-    let look = normalize(gaze - plumb * dot(gaze, plumb) * 0.7)
+    let level_look = normalize(gaze - plumb * dot(gaze, plumb) * 0.7)
+    // (Turned at most 55 degrees from where his chest faces: led by the sailing's gaze over the
+    // bow while he faces across the boat to the boom, his head swung round near backwards.)
+    let flat = vec3(level_look.x, 0.0, level_look.z)
+    let ahead_of = atan2(dot(cross(facing, flat), up), dot(facing, flat))
+    let turn_to = clamp(ahead_of, -0.96, 0.96)
+    let swung = facing * cos(turn_to) + cross(up, facing) * sin(turn_to)
+    let look = normalize(swung * length(flat) + up * level_look.y)
     let r_head = aim(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), look, plumb * 3.0 + spine)
     let r_neck = aim(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), normalize(spine + up), look)
     m[B_NECK] = placed(r_neck, neck, NECK)
