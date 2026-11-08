@@ -379,8 +379,10 @@ pub fn bones(s: Shot, give: vec3) -> [mat4; 64] {
     // (Turned at most 45 degrees from where his chest faces: led by the sailing's gaze over the
     // bow while he faces across the boat to the boom, his head swung round near backwards.)
     let flat = vec3(level_look.x, 0.0, level_look.z)
-    let ahead_of = atan2(dot(cross(facing, flat), up), dot(facing, flat))
-    let turn_to = clamp(ahead_of, -0.78, 0.78)
+    // (By the sine of the turn, not its angle: a gaze passing behind him eases his head back
+    // to the front, never snaps it across from one shoulder to the other.)
+    let across = dot(cross(facing, flat), up) / max(length(flat), 1.0e-4)
+    let turn_to = 0.78 * clamp(across / 0.7071, -1.0, 1.0)
     let swung = facing * cos(turn_to) + cross(up, facing) * sin(turn_to)
     let look = normalize(swung * length(flat) + up * level_look.y)
     let r_head = aim(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), look, plumb * 3.0 + spine)
@@ -895,6 +897,14 @@ impl Aboard {
     /// a sprung, damped give, his knees taking the heave and his hips the surge and the sway,
     /// and it springs back, about one and a half times a second, a little past and settling.
     fn ride(mut self, s: Shot, dt: f32) {
+        // (Started afresh after a jump: the time run back or skipped on, or the hull put down
+        // somewhere else, as the live page does restoring a saved spot. Felt as a lurch, that
+        // threw his hips to their limits for a second.)
+        if dt < 0.0 || dt > 0.25 || (self.rode >= 2 && length(s.boat - self.last_boat) > 15.0 * max(dt, 1.0 / 60.0)) {
+            self.rode = 0
+            self.give = vec3(0.0)
+            self.give_v = vec3(0.0)
+        }
         if self.rode < 2 || dt <= 0.0 {
             // (A start, or a held drawing: nothing felt yet.)
             let v = if self.rode == 0 || dt <= 0.0 { vec3(0.0) } else { (s.boat - self.last_boat) / dt }
@@ -907,7 +917,7 @@ impl Aboard {
             return
         }
         let v = (s.boat - self.last_boat) / dt
-        let a = (v - self.last_v) / dt
+        let a = clamp((v - self.last_v) / dt, vec3(-40.0), vec3(40.0))
         self.last_boat = s.boat
         self.last_v = v
         // (Felt in the hull's frame: heave in his knees, surge and sway in his hips.)

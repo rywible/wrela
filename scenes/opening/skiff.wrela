@@ -463,7 +463,9 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
     a *= 1.0 - 0.6 * soaked
     rough = mix(rough, 0.2, soaked)
     // (The figure left out where the hero stands in for it.)
-    let k = if HERO > 0.5 { vec4(rig_parts(s, q), 1.0e3) } else { parts(s, q) }
+    // (His stand-in kept even with the hero drawn himself: the sea's mirror meets it, and without
+    // it there his reflection took the hull's wood.)
+    let k = parts(s, q)
     // The sail: a heavy cloth, bone-pale and weathered, its panels seamed across, a broad band
     // of the cloak's madder through it and a dark leech tape; lit through when the light's
     // behind it.
