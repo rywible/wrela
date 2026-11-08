@@ -23,8 +23,8 @@
 
 use noise::hash2u
 use std::gpu::{
-    Address, GlobalId, Rgba16Float, Rgba32Float, Sampler, Texels, Texture, dispatch, generate_mips,
-    label, mip_levels, sampler, writable_texture,
+    Address, GlobalId, LocalId, Rgba16Float, Rgba32Float, Sampler, Shared, Texels, Texture,
+    barrier, dispatch, generate_mips, label, mip_levels, sampler, writable_texture,
 }
 use std::io::print
 use std::math::{PI, TAU}
@@ -32,6 +32,10 @@ use std::math::{PI, TAU}
 /// A tile's side in texels, each way, and the FFT's passes each way (log₂ of it).
 pub const SIDE: u32 = 256
 const PASSES: u32 = 8
+
+/// Whether the FFT runs a line at a time in workgroup memory (`fft_rows`, `fft_columns`), or a
+/// pass a dispatch (`butterfly`, kept to check it by).
+const LINES: bool = true
 
 /// Gravity (m/s²).
 const G: f32 = 9.81
@@ -364,6 +368,84 @@ fn butterfly(
     to_b.store(id, vec4(bt.xy + cmul(w, bb.xy), bt.zw + cmul(w, bb.zw)))
 }
 
+/// All `PASSES` passes of the inverse FFT along one line of `SIDE` texels, in workgroup memory:
+/// the line's element `x` (this invocation's) read in bit-reversed order into `sa`, `sb` by the
+/// caller, each pass as `butterfly`'s, two barriers a pass (all read before any writes). Its
+/// result for `x`. (One dispatch a line in place of a pass a dispatch: the tiles' texels go
+/// through memory twice a direction, not `PASSES` times, and the sea's step is mostly that.)
+fn line_fft(
+    sa: mut Shared<vec4, SIDE>,
+    sb: mut Shared<vec4, SIDE>,
+    lid: LocalId,
+    x: u32,
+    a0: vec4,
+    b0: vec4,
+) -> (vec4, vec4) {
+    let ca = sa.chunk(lid)
+    let cb = sb.chunk(lid)
+    sa.write(ca, 0, a0)
+    sb.write(cb, 0, b0)
+    barrier(mut sa)
+    var na = a0
+    var nb = b0
+    for pass in 0..PASSES {
+        let half: u32 = 1 << pass
+        let j = x & (2 * half - 1)
+        let jj = j & (half - 1)
+        let top = x - j + jj
+        let bottom = top + half
+        let angle = TAU * f32(jj) / f32(2 * half)
+        let w = vec2(cos(angle), sin(angle)) * (if j < half { 1.0 } else { -1.0 })
+        let at = sa.get(top)
+        let ab = sa.get(bottom)
+        let bt = sb.get(top)
+        let bb = sb.get(bottom)
+        na = vec4(at.xy + cmul(w, ab.xy), at.zw + cmul(w, ab.zw))
+        nb = vec4(bt.xy + cmul(w, bb.xy), bt.zw + cmul(w, bb.zw))
+        barrier(mut sa)
+        sa.write(ca, 0, na)
+        sb.write(cb, 0, nb)
+        barrier(mut sa)
+    }
+    (na, nb)
+}
+
+/// The inverse FFT along x of every row (`line_fft`), a workgroup a row.
+@compute(256, 1)
+fn fft_rows(
+    a: Texture<Rgba32Float>,
+    b: Texture<Rgba32Float>,
+    to_a: mut Texels<Rgba32Float>,
+    to_b: mut Texels<Rgba32Float>,
+    sa: mut Shared<vec4, SIDE>,
+    sb: mut Shared<vec4, SIDE>,
+    lid: LocalId,
+    id: GlobalId,
+) {
+    let r = reversed(id.x)
+    let (na, nb) = line_fft(mut sa, mut sb, lid, id.x, a.load(x: r, y: id.y), b.load(x: r, y: id.y))
+    to_a.store(id, na)
+    to_b.store(id, nb)
+}
+
+/// The inverse FFT along z of every column (`line_fft`), a workgroup a column.
+@compute(1, 256)
+fn fft_columns(
+    a: Texture<Rgba32Float>,
+    b: Texture<Rgba32Float>,
+    to_a: mut Texels<Rgba32Float>,
+    to_b: mut Texels<Rgba32Float>,
+    sa: mut Shared<vec4, SIDE>,
+    sb: mut Shared<vec4, SIDE>,
+    lid: LocalId,
+    id: GlobalId,
+) {
+    let r = reversed(id.y)
+    let (na, nb) = line_fft(mut sa, mut sb, lid, id.y, a.load(x: id.x, y: r), b.load(x: id.x, y: r))
+    to_a.store(id, na)
+    to_b.store(id, nb)
+}
+
 /// A tile's fields from the inverse FFT (`heights`, `slopes`), as the surface reads them. Into
 /// `shape`: its displacement (x, height, z; the crests leaned by `chop`) and its foam, the last
 /// frame's (`before`) faded over `dt` s (to a third in `fade` s), and fresh where a crest breaks: where the water is
@@ -482,21 +564,30 @@ struct Scratch {
 /// along z, settled into its surface and its mips filled.
 fn run(sea: SeaState, t: f32, dt: f32, tile: mut Tile, f: mut Scratch, s: Sampler) {
     dispatch(evolve.bind(sea, tile.band, t, heights: mut f.a, slopes: mut f.b), over: (SIDE, SIDE))
-    for d in 0..2 {
-        for pass in 0..PASSES {
-            dispatch(
-                butterfly.bind(
-                    pass,
-                    1 - d,
-                    a: f.a,
-                    b: f.b,
-                    to_a: mut f.to_a,
-                    to_b: mut f.to_b,
-                ),
-                over: (SIDE, SIDE),
-            )
-            swap(mut f.a, mut f.to_a)
-            swap(mut f.b, mut f.to_b)
+    if LINES {
+        dispatch(fft_rows.bind(a: f.a, b: f.b, to_a: mut f.to_a, to_b: mut f.to_b), groups: (1, SIDE, 1))
+        swap(mut f.a, mut f.to_a)
+        swap(mut f.b, mut f.to_b)
+        dispatch(fft_columns.bind(a: f.a, b: f.b, to_a: mut f.to_a, to_b: mut f.to_b), groups: (SIDE, 1, 1))
+        swap(mut f.a, mut f.to_a)
+        swap(mut f.b, mut f.to_b)
+    } else {
+        for d in 0..2 {
+            for pass in 0..PASSES {
+                dispatch(
+                    butterfly.bind(
+                        pass,
+                        1 - d,
+                        a: f.a,
+                        b: f.b,
+                        to_a: mut f.to_a,
+                        to_b: mut f.to_b,
+                    ),
+                    over: (SIDE, SIDE),
+                )
+                swap(mut f.a, mut f.to_a)
+                swap(mut f.b, mut f.to_b)
+            }
         }
     }
     swap(mut tile.shape, mut tile.before)
