@@ -544,6 +544,11 @@ fn physique_keeps_disconnected_parts_with_known_bounds() {
 struct UnknownBoundSphere: Copy + GpuData {}
 
 impl std::field::Surface for UnknownBoundSphere {
+    /// Unbounded, as its name says: what a creature's cover does with a part that states none.
+    fn bound(self) -> std::field::Bound {
+        std::field::UNBOUNDED
+    }
+
     fn distance(self, p: vec3) -> f32 {
         length(p) - 0.5
     }

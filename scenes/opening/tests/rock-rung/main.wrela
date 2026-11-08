@@ -7,7 +7,7 @@ use engine::realize::{Eye, solid}
 use engine::solids::{Tiles, tiles}
 use opening::isle::{bounds, isle}
 use std::derive::{Box3, Interval}
-use std::field::{Field, Surface}
+use std::field::{Bound, Field, Surface, UNBOUNDED}
 use opening::look::ISLE
 use engine::realize::SkinVertex
 use std::gpu::{
@@ -24,6 +24,11 @@ pub struct Isle: Copy + GpuData {
 }
 
 impl Surface for Isle {
+    /// Unbounded: the scene culls it by its tiles, not by a sphere.
+    fn bound(self) -> Bound {
+        UNBOUNDED
+    }
+
     fn distance(self, p: vec3) -> f32 {
         isle(p).x
     }
