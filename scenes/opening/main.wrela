@@ -150,12 +150,19 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let shot = painted(mut s, time, VIEW, 0.0, framing: FRAMING, fine: FINE)
     weathered(mut s, shot)
     borrow hv = s.heavens
+    borrow colour = if (OFF & 256) != 0 { s.colour } else { s.aired }
     label("ink")
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         screen,
         cover,
-        ink.bind(shot: shot, light: hv.light, colour: s.aired, marks: s.marks, normal: s.normal),
+        ink.bind(
+            shot: shot,
+            light: hv.light,
+            colour: colour,
+            marks: s.marks,
+            normal: s.normal,
+        ),
         vertices: 3,
     )
     screen.present()

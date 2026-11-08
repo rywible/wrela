@@ -23,8 +23,8 @@
 
 use noise::hash2u
 use std::gpu::{
-    Address, GlobalId, LocalId, Rgba16Float, Rgba32Float, Sampler, Shared, Texels, Texture,
-    barrier, dispatch, generate_mips, label, mip_levels, sampler, writable_texture,
+    Address, GlobalId, LocalId, Rgba16Float, Rgba32Float, Sampler, Shared, Texels, Texture, barrier,
+    dispatch, generate_mips, label, mip_levels, sampler, writable_texture,
 }
 use std::io::print
 use std::math::{PI, TAU}
@@ -151,6 +151,12 @@ pub fn tail_alpha(sea: SeaState) -> f32 {
     0.076 * pow(G * sea.fetch / (sea.speed * sea.speed), -0.22)
 }
 
+/// How far the sea's crests are carried down its wind (m along x and z) per metre they stand
+/// over the level (`LEAN` times its chop).
+pub fn leaning(sea: SeaState) -> vec2 {
+    sea.wind * (LEAN * sea.chop)
+}
+
 /// The share of the sea's face white with breaking crests and their foam, from its wind (Monahan
 /// and O'Muircheartaigh 1980: W = 3.84 × 10⁻⁶ U¹⁰^3.41): a few thousandths in a moderate
 /// breeze, near a tenth in a gale, a quarter in a storm.
@@ -190,6 +196,11 @@ fn held_slopes(sea: SeaState) -> f32 {
 /// gale's lies in streaks long after its crest broke).
 pub fn foam_fade(sea: SeaState) -> f32 {
     FOAM_FADE * (1.0 + 15.0 * whitecaps(sea))
+}
+
+/// How much of a sea's foam is left after `gap` s (`foam_fade`): all of it after none.
+pub fn kept_over(sea: SeaState, gap: f32) -> f32 {
+    exp(-max(gap, 0.0) / foam_fade(sea))
 }
 
 /// The sea's directional spectrum at wavenumber `k` (rad/m, on x and z): its height's variance
@@ -448,15 +459,15 @@ fn fft_columns(
 
 /// A tile's fields from the inverse FFT (`heights`, `slopes`), as the surface reads them. Into
 /// `shape`: its displacement (x, height, z; the crests leaned by `chop`) and its foam, the last
-/// frame's (`before`) faded over `dt` s (to a third in `fade` s), and fresh where a crest breaks: where the water is
-/// squeezed toward folding over, its Jacobian under `breaks` (white `WHITENS` of a deviation,
+/// frame's (`before`) carried `drift` texels down the wind and `kept` of it left after the time
+/// since (faded once on the CPU, one number for every texel), and fresh where a crest breaks:
+/// where the water is squeezed toward folding over, its Jacobian under `breaks` (white `WHITENS` of a deviation,
 /// `spread`, past it). Into `tilt`: its slopes and
 /// stretches (∂h/∂x, ∂h/∂z, ∂Dx/∂x, ∂Dz/∂z, leaned as the crests are).
 @compute(8, 8)
 fn settle(
     chop: f32,
-    dt: f32,
-    fade: f32,
+    kept: f32,
     drift: vec2,
     lean: vec2,
     breaks: f32,
@@ -495,7 +506,7 @@ fn settle(
         before.load(x: id.x, y: back_z).w * az * (1.0 - ax) +
         before.load(x: back_x, y: back_z).w * ax * az
     let broke = clamp((breaks - squeezed) / (spread * WHITENS), 0.0, 1.0)
-    let foam = max(old * exp(-dt / fade), broke)
+    let foam = max(old * kept, broke)
     shape.store(id, vec4(hq.x * chop + carried.x, hq.y, hq.z * chop + carried.y, foam))
     tilt.store(id, vec4(sq.x, sq.y, dxx, dzz))
 }
@@ -560,15 +571,22 @@ struct Scratch {
     to_b: Texture<Rgba32Float>,
 }
 
-/// Tile `tile` at time `t`, `dt` s after the last: its waves (`evolve`), summed along x and then
-/// along z, settled into its surface and its mips filled.
-fn run(sea: SeaState, t: f32, dt: f32, tile: mut Tile, f: mut Scratch, s: Sampler) {
+/// Tile `tile` at time `t`, `dt` s after the last (at most a quarter second: how far its foam
+/// drifts), its old foam kept by `kept`: its waves (`evolve`), summed along x and then along z,
+/// settled into its surface and its mips filled.
+fn run(sea: SeaState, t: f32, dt: f32, kept: f32, tile: mut Tile, f: mut Scratch, s: Sampler) {
     dispatch(evolve.bind(sea, tile.band, t, heights: mut f.a, slopes: mut f.b), over: (SIDE, SIDE))
     if LINES {
-        dispatch(fft_rows.bind(a: f.a, b: f.b, to_a: mut f.to_a, to_b: mut f.to_b), groups: (1, SIDE, 1))
+        dispatch(
+            fft_rows.bind(a: f.a, b: f.b, to_a: mut f.to_a, to_b: mut f.to_b),
+            groups: (1, SIDE, 1),
+        )
         swap(mut f.a, mut f.to_a)
         swap(mut f.b, mut f.to_b)
-        dispatch(fft_columns.bind(a: f.a, b: f.b, to_a: mut f.to_a, to_b: mut f.to_b), groups: (SIDE, 1, 1))
+        dispatch(
+            fft_columns.bind(a: f.a, b: f.b, to_a: mut f.to_a, to_b: mut f.to_b),
+            groups: (SIDE, 1, 1),
+        )
         swap(mut f.a, mut f.to_a)
         swap(mut f.b, mut f.to_b)
     } else {
@@ -594,10 +612,9 @@ fn run(sea: SeaState, t: f32, dt: f32, tile: mut Tile, f: mut Scratch, s: Sample
     dispatch(
         settle.bind(
             sea.chop,
-            dt,
-            foam_fade(sea),
+            kept,
             sea.wind * (BLOWN * sea.speed * dt * f32(SIDE) / tile.band.side),
-            sea.wind * (LEAN * sea.chop),
+            leaning(sea),
             tile.breaks,
             tile.spread,
             heights: f.a,
@@ -699,22 +716,25 @@ impl Ocean {
             let span = foam_fade(self.sea) * 2.0
             for k in 0..WARM {
                 let at = t - span * f32(WARM - k) / f32(WARM)
-                self.all(at, if k == 0 { 0.0 } else { span / f32(WARM) })
+                let gap = if k == 0 { 0.0 } else { span / f32(WARM) }
+                self.all(at, gap, kept_over(self.sea, gap))
             }
             self.last = t - span / f32(WARM)
         }
-        let dt = clamp(t - self.last, 0.0, 0.25)
+        // (Faded over the whole time since, however long: a long gap leaves no old foam looking
+        // fresh. Drifted at most a quarter second's worth.)
+        let gap = max(t - self.last, 0.0)
         self.last = t
         label("ocean")
-        self.all(t, dt)
+        self.all(t, min(gap, 0.25), kept_over(self.sea, gap))
     }
 
-    /// Each tile at `t`, `dt` s after the last.
-    fn all(mut self, t: f32, dt: f32) {
-        run(self.sea, t, dt, mut self.big, mut self.scratch, self.mips)
-        run(self.sea, t, dt, mut self.mid, mut self.scratch, self.mips)
-        run(self.sea, t, dt, mut self.fine, mut self.scratch, self.mips)
-        run(self.sea, t, dt, mut self.ripple, mut self.scratch, self.mips)
+    /// Each tile at `t`, `dt` s after the last, `kept` of its old foam left.
+    fn all(mut self, t: f32, dt: f32, kept: f32) {
+        run(self.sea, t, dt, kept, mut self.big, mut self.scratch, self.mips)
+        run(self.sea, t, dt, kept, mut self.mid, mut self.scratch, self.mips)
+        run(self.sea, t, dt, kept, mut self.fine, mut self.scratch, self.mips)
+        run(self.sea, t, dt, kept, mut self.ripple, mut self.scratch, self.mips)
     }
 
     /// What a shader needs of it beside its textures.
@@ -898,7 +918,7 @@ impl Swell {
             modes,
             chop: sea.chop,
             held: if total > 0.0 { held / total } else { 0.0 },
-            lean: sea.wind * (LEAN * sea.chop),
+            lean: leaning(sea),
         }
     }
 
@@ -1014,4 +1034,20 @@ fn the_crests_break_as_the_wind_whitens_the_sea() {
     // (Half a gale's 8.8 %: 4.4 % past 1.71 deviations.)
     assert(abs(breaking(gale) - 1.71) < 0.02, f"{breaking(gale)}")
     assert(breaking(gentle()) > 3.0, f"{breaking(gentle())}")
+}
+
+/// Old foam fades over the whole time between drawings, however long, and alike however often
+/// it's drawn.
+@test
+fn foam_fades_over_the_actual_gap_between_drawings() {
+    var gale = gentle()
+    gale.speed = 19.0
+    assert(
+        kept_over(gale, foam_fade(gale) * 5.0) < 0.01,
+        "a long gap leaves no fresh-looking old foam",
+    )
+    let one = kept_over(gale, 1.0)
+    let two = kept_over(gale, 0.5) * kept_over(gale, 0.5)
+    assert(abs(one - two) < 1.0e-6, "the same elapsed time fades equally at different draw rates")
+    assert(kept_over(gale, 0.0) == 1.0, "no time, no fade")
 }

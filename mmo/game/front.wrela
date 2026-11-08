@@ -21,6 +21,7 @@ use std::gpu::{
     ClipPosition, FragCoord, Rgba8, Sampler, Texture, VertexIndex, begin_screen_pass, draw, sampler,
 }
 use std::input::{Button, Event, Key, PadButton, events}
+use std::collections::replace
 use std::io::{Pending, load, store}
 use ui::draw::{DrawList, Rect, Renderer}
 use ui::kit
@@ -182,6 +183,8 @@ pub struct Front {
     /// Continue), and when it was last written (s).
     save_load: Option<Pending<u8>>,
     save_write: Option<Pending<u8>>,
+    save_next: Option<Vec<u8>>,
+    online: bool,
     saved: bool,
     saved_at: f32,
     reduced: bool,
@@ -229,6 +232,8 @@ pub fn init(fonts: take Fonts) -> Front {
         orbit: 0.0,
         save_load: Some(load(SAVE)),
         save_write: None,
+        save_next: None,
+        online: false,
         saved: false,
         saved_at: 0.0,
         reduced: false,
@@ -308,6 +313,42 @@ fn phone(w: f32, h: f32) -> bool {
     min(w, h) < PHONE_SIDE
 }
 
+/// Calibrates to the first window, including a 30 Hz screen, then keeps the quickest cadence
+/// observed: a heavier scene must not redefine its own slow frames as the screen's pace.
+/// Frame times alone cannot distinguish a screen from rendering already slow at startup.
+fn frame_base(base: f32, quickest: f32, first: bool) -> f32 {
+    if first { quickest } else { min(base, quickest) }
+}
+
+/// The slow and quick frame limits for the observed screen cadence.
+fn frame_limits(title: bool, base: f32) -> (f32, f32) {
+    (max(if title { TITLE_SLOW } else { SLOW }, base * 1.25), max(if title { TITLE_QUICK } else {
+        QUICK
+    }, base * 1.06))
+}
+
+@test
+fn front_slow_rendering_cannot_relax_a_previously_observed_frame_budget() {
+    let initial = 1.0 / 60.0
+    // A native 30 Hz screen is calibrated by its first window, instead of being forced
+    // to the initial 60 Hz guess and having its resolution needlessly reduced.
+    let native30 = frame_base(initial, quickest: 1.0 / 30.0, first: true)
+    assert(native30 == 1.0 / 30.0)
+    let steady30 = frame_base(native30, quickest: 1.0 / 30.0, first: false)
+    let (slow30, _) = frame_limits(title: false, base: steady30)
+    assert(1.0 / 30.0 < slow30, "a steady 30 Hz screen is within its budget")
+    // Once 60 Hz was seen, later windows taking 50 ms are slow rendering. The rowing and
+    // title budgets must both reduce resolution, rather than growing it at the new pace.
+    var known60 = frame_base(initial, quickest: initial, first: true)
+    for _ in 0..4 {
+        known60 = frame_base(known60, quickest: 0.05, first: false)
+    }
+    for title in [false, true] {
+        let (slow, quick) = frame_limits(title, known60)
+        assert(0.05 > slow && 0.05 > quick, "slow rendering must lower resolution")
+    }
+}
+
 /// The scene's height next: smaller when the frames have run slow, larger again when quick, in
 /// steps, at least a second and a half after the last change to go smaller and three to grow.
 /// A screen that shows fewer than 60 frames a second (`base`, its quickest frame) is held to its
@@ -316,8 +357,7 @@ fn budget(f: mut Front, height: f32) {
     // (Under the title the shot is all but still: it's drawn sharp at a slower pace, down to
     // `TITLE_SLOW`, rather than smaller and soft.)
     let title = f.stage == Stage::Page
-    let slow = max(if title { TITLE_SLOW } else { SLOW }, f.base * 1.25)
-    let quick = max(if title { TITLE_QUICK } else { QUICK }, f.base * 1.06)
+    let (slow, quick) = frame_limits(title, f.base)
     let most = min(height, TALLEST)
     let least = min(SHORTEST, most)
     // A size that ran slow isn't tried again for a while: the scene would only pop between two.
@@ -362,13 +402,55 @@ fn read_save(bytes: take Vec<u8>) -> Option<(vec2, f32)> {
     Some((vec2(v[0], v[1]), v[2]))
 }
 
-/// Saves where the skiff is on this device, unless a save is still being written.
+/// The latest save can start once the preceding write has answered. Taking it once also
+/// bounds failures: a failed write is not retried every frame.
+fn next_save(
+    queued: mut Option<Vec<u8>>,
+    writing: bool,
+    snapshot: take Option<Vec<u8>>,
+) -> Option<Vec<u8>> {
+    if snapshot.is_some() { let _ = replace(mut queued, take snapshot) }
+    if writing { return None }
+    replace(mut queued, None)
+}
+
+/// Finishes the preceding write and starts the latest snapshot, if one is waiting.
+fn flush_save(f: mut Front) {
+    let _ = answer_of(mut f.save_write)
+    if let Some(bytes) = next_save(mut f.save_next, f.save_write.is_some(), None) {
+        f.save_write = Some(store(SAVE, bytes))
+    }
+}
+
+/// Saves where the skiff is on this device, keeping the latest snapshot while another write
+/// finishes: a pause or a return to the title must not lose its final position.
 fn save(f: mut Front) {
-    if f.save_write.is_some() { return }
     let (at, steer) = whereabouts(f.scene)
     let text = f"{at.x} {at.y} {steer}"
-    f.save_write = Some(store(SAVE, text.as_bytes()))
+    let snapshot = Some(Vec::from(text.as_bytes()))
+    if let Some(bytes) = next_save(mut f.save_next, f.save_write.is_some(), take snapshot) {
+        f.save_write = Some(store(SAVE, bytes))
+    }
     f.saved_at = f.time
+}
+
+@test
+fn front_final_save_waits_for_a_pending_write_and_keeps_the_latest_snapshot() {
+    var queued: Option<Vec<u8>> = None
+    let first = Some(Vec::from([u8(1)]))
+    assert(next_save(mut queued, writing: false, snapshot: take first) == Some(Vec::from([u8(1)])))
+    // A periodic save is pending when pause saves, and title saves again. Only the latest
+    // of those positions should follow it; neither may overwrite an unfinished write.
+    assert(next_save(mut queued, writing: true, snapshot: Some(Vec::from([u8(2)]))).is_none())
+    assert(next_save(mut queued, writing: true, snapshot: Some(Vec::from([u8(3)]))).is_none())
+    assert(next_save(mut queued, writing: true, snapshot: None).is_none())
+    assert(
+        next_save(mut queued, writing: false, snapshot: None) == Some(Vec::from([u8(3)])),
+        "the final save survives",
+    )
+    // The answer to that write, including an error, must not retry it forever.
+    assert(next_save(mut queued, writing: false, snapshot: None).is_none())
+    assert(queued.is_none())
 }
 
 /// Plays the title, the player's rowing or the pause menu for a frame, `width` by `height`
@@ -396,10 +478,11 @@ pub fn frame<A: Account>(
     f.reduced = reduced
     if f.drawings > 2 && dt > 0.0 {
         f.spent += (dt - f.spent) * 0.1
-        // The screen's own frame: the quickest of each second's frames, a second at a time.
+        // Infer the screen's pace from its fastest window; later rendering load must not
+        // make a known faster display appear slower.
         f.quickest = min(f.quickest, dt)
         if f.time - f.window_began >= 1.0 {
-            f.base = f.quickest
+            f.base = frame_base(f.base, f.quickest, first: f.window_began == 0.0)
             f.quickest = 1.0
             f.window_began = f.time
         }
@@ -413,11 +496,15 @@ pub fn frame<A: Account>(
             }
         }
     }
-    let _ = answer_of(mut f.save_write)
+    flush_save(mut f)
+    // The front is dropped when it returns Online, so give its last queued save a chance to
+    // finish first. An error still releases it; no failed write is retried without a new save.
+    if f.online && f.save_write.is_none() { return Next::Online }
     let k = zoom
     let (w, h) = (max(f32(width), 1.0), max(f32(height), 1.0))
     let on_phone = phone(w / k, h / k)
     for e in events() {
+        if f.online { break }
         if f.stage == Stage::Rowing {
             match e {
                 Event::KeyDown { key: Key::Escape, .. } => pause(mut f),
@@ -439,7 +526,8 @@ pub fn frame<A: Account>(
         let chosen = choice(mut f, e, on_phone)
         if chosen == ONLINE {
             save(mut f)
-            return Next::Online
+            f.online = true
+            break
         }
         if chosen == PLAY && !on_phone {
             // At once, so the rest of this frame's input rows: and a stroke that chose it is

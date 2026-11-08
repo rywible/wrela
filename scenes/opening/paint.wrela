@@ -43,7 +43,11 @@ fn storm_sky(
     disc: bool,
 ) -> vec4 {
     let c = dome.sample_level(smp, sky_uv(d))
-    let open = mix(sea_day_sky(view, light, d, smp), clear_sky(view, smp, light, d), light.storm) + (if disc {
+    // Under the full deck the sea-day colour has zero weight. Avoid its two additional sky
+    // reads in every reflection sample (and every direction of the horizon's mean).
+    let open = (if light.storm >= 1.0 { clear_sky(view, smp, light, d) } else {
+        mix(sea_day_sky(view, light, d, smp), clear_sky(view, smp, light, d), light.storm)
+    }) + (if disc {
         (sun_disc(light, d) + sun_glow(light, d)) * (1.0 - light.storm)
     } else { vec3(0.0) })
     let behind = mix(open, vec3(luma(open)) * vec3(0.8, 0.85, 0.9) * STORM_BEHIND, light.storm)
@@ -333,7 +337,9 @@ fn sea_level(s: Shot, waves: Waves, p: vec3, foot: f32) -> f32 {
     // that reached the hull was cut flat to one straight line along it, and it read as laid on
     // the sea; now the waves climb its planks and fall back. A soft cap, so a crest under it
     // rounds over rather than ending in a crease.)
-    let gunwale = s.boat.y + FREEBOARD - (s.boat_y.x * rel.x + s.boat_y.z * rel.z) / max(s.boat_y.y, 0.5)
+    let gunwale = s.boat.y +
+        FREEBOARD -
+        (s.boat_y.x * rel.x + s.boat_y.z * rel.z) / max(s.boat_y.y, 0.5)
     let near = 1.0 - smoothstep(1.0, 2.6, e)
     // (Heaped by the hull as it makes way: its bow wave, its quarters' hollow, the hump astern:
     // `wake::lifted`; the cap over that too, so the bow wave never stands over the deck.)
@@ -1072,6 +1078,14 @@ fn sea_shade(
     // (Most of the sea's bare of foam: where there's none within a few pixels, nor upwind, its
     // froth's not worked out at all.)
     let near_foam = foam_at(waves, rest, du * 8.0, dv * 8.0, tiles(calm).xy)
+    // (How high it stands on the waves a boat rides, over the long swell under them, or on the
+    // swell's own crest: there the sea breaks white; in the troughs between it lies clean, the
+    // foam swept off.)
+    // (Its height as the pixel's footprint holds it, `wave`, not the traced point's: far off the
+    // trace is found on the swell alone, and a crest test on it speckled pixel to pixel.)
+    let above = wave - level_at(waves, xz, max(px_m * 3.0, 2.0), 0.0)
+    let crest_k = max(smoothstep(-0.5, 0.7, above), smoothstep(0.8, 2.6, wave)) *
+        smoothstep(-2.5, 0.3, wave)
     let (white, bright_, bubbles, veil) = if max(near_foam, max(torn, upwind)) > 0.004 {
         // (The froth's height: bubble domes, two sizes, drawn out a little down the wind, and the
         // lace over them.)
@@ -1100,7 +1114,10 @@ fn sea_shade(
         // (Each break's foam trails down the wind behind it, in streaks: the foam a few metres upwind,
         // drawn out to here, so a whitecap's a head with a torn tail, not an oval.)
         // (Thin: read blurred from upwind, a heavy tail smeared the whole sea into soft streaks.)
-        let tail = max(torn, upwind * 0.8) * smoothstep(0.35, 0.75, streak + lace * 0.3) * 0.35
+        let tail = max(torn, upwind * 0.8) *
+            smoothstep(0.35, 0.75, streak + lace * 0.3) *
+            0.35 *
+            mix(0.3, 1.0, crest_k)
         // (Its outline torn: the foam read a metre or two off where it lies, wandering, so a break's
         // edge is ragged, tongues and holes, never a smooth oval.)
         let ragged = foam_at(
@@ -1112,7 +1129,12 @@ fn sea_shade(
         )
         // (The big waves break at their crests: there their foam's thickest, in their troughs it's
         // thinned and swept on, so the white sits on the swell's crests, not anywhere.)
-        let on_crest = mix(0.4, mix(1.0, 2.2, smoothstep(4.0, 14.0, t)), smoothstep(-0.4, 1.2, p.y))
+        // (Where it breaks now it's a crest whatever its height.)
+        let on_crest = mix(
+            0.22,
+            mix(1.7, 3.2, smoothstep(4.0, 14.0, t)),
+            max(crest_k, smoothstep(0.4, 0.8, foam_k)),
+        )
         let dense_ = clamp(
             max(mix(foam_k, ragged, 0.75) * on_crest, tail) * (2.1 + 1.0 * gusting),
             0.0,
@@ -1212,7 +1234,7 @@ fn sea_shade(
     // white in broken caps along the ridge, a cap here and there, never a sheet.)
     let far_caps = smoothstep(12.0, 45.0, t) *
         (1.0 - smoothstep(0.12, 0.35, -d.y)) *
-        smoothstep(0.2, 0.8, p.y) *
+        crest_k *
         smoothstep(
             0.5,
             0.78,
@@ -1635,7 +1657,21 @@ pub fn paint(
     yon_marks: Texture<Rgba16Float>,
     yon_normal: Texture<Rgba8>,
 ) -> Targets3<vec4, vec4, vec4> {
-    let (first, second, third) = paint_at(shot, light, clouds, view, aerial, dome, cloud, smp, waves, yon_colour, yon_marks, yon_normal, pixel.position.xy)
+    let (first, second, third) = paint_at(
+        shot,
+        light,
+        clouds,
+        view,
+        aerial,
+        dome,
+        cloud,
+        smp,
+        waves,
+        yon_colour,
+        yon_marks,
+        yon_normal,
+        pixel.position.xy,
+    )
     Targets3 { first, second, third }
 }
 
@@ -1663,7 +1699,21 @@ pub fn paint_half(
 ) -> Targets3<vec4, vec4, vec4> {
     let q = floor(pixel.position.xy)
     let x = q.x * 2.0 + f32(shift(shot, u32(q.x), u32(q.y)))
-    let (first, second, third) = paint_at(shot, light, clouds, view, aerial, dome, cloud, smp, waves, yon_colour, yon_marks, yon_normal, vec2(x + 0.5, q.y + 0.5))
+    let (first, second, third) = paint_at(
+        shot,
+        light,
+        clouds,
+        view,
+        aerial,
+        dome,
+        cloud,
+        smp,
+        waves,
+        yon_colour,
+        yon_marks,
+        yon_normal,
+        vec2(x + 0.5, q.y + 0.5),
+    )
     Targets3 { first, second, third }
 }
 
