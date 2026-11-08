@@ -551,11 +551,13 @@ pub fn ink(
         let toward_sun = max(dot(normalize(vec3(dv.x, dv.y * 0.5, dv.z)), light.sun), 0.0)
         let kept = if m0.y == SEA { 1.0 - smoothstep(0.8, 0.97, luma(c)) } else { 1.0 }
         let open = 1.0 - light.storm
-        c *= mix(vec3(1.0), vec3(1.02, 0.99, 0.94), pow(toward_sun, 6.0) * s.style * kept * open)
+        // (Near white: a sea day's sun is white, and a gilded tint toward it turned the heaps
+        // there beige.)
+        c *= mix(vec3(1.0), vec3(1.01, 1.0, 0.98), pow(toward_sun, 6.0) * s.style * kept * open)
         let hot = if m0.y == SEA { 0.0 } else { 1.0 }
         c = mix(
             c,
-            vec3(1.0, 0.88, 0.64),
+            vec3(1.0, 0.97, 0.92),
             clamp(pow(toward_sun, 90.0) * 0.4, 0.0, 0.45) * s.style * hot * open,
         )
     }

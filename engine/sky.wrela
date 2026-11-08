@@ -159,6 +159,11 @@ const FAIR_AIR: f32 = 0.35
 /// (its octaves stop short of all the light a thick cumulus scatters back).
 const FAIR_SUN: f32 = 1.5
 
+/// How fine fair weather's billows are against the field's detail as its heaps read it (their
+/// field read at `FAIR_SCALE`): about 600 m across, a cumulus's turrets (finer, and the dome's texels
+/// can't hold them: they alias into specks and streaks).
+const FAIR_DETAIL: f32 = 0.5
+
 /// How much denser fair weather's heaps are than the field's own cloud.
 const FAIR_DENSITY: f32 = 6.0
 
@@ -515,7 +520,9 @@ fn field_in(
     let carved = saturate(above(base.r, from: 1.0 - cover)) * cover
     var s = mix(cover * (0.4 + 0.8 * base.r), carved, w.a)
     if detailed && s > 0.0 {
-        let d = detail.sample_level(rep, q / DETAIL_SPAN)
+        // (Fair weather's heaps, broad as `FAIR_SCALE` reads them, still billow at a cumulus's
+        // own small scale: their detail read finer, not broadened with them.)
+        let d = detail.sample_level(rep, q / (DETAIL_SPAN * mix(1.0, FAIR_DETAIL, flat)))
         let fine = d.r * 0.625 + d.g * 0.25 + d.b * 0.125
         let wisp = mix(fine, 1.0 - fine, saturate(hf * 4.0))
         // (A storm's deck, its map's alpha a little under 1, torn harder at its edges.)
@@ -524,7 +531,8 @@ fn field_in(
     }
     // Dense a little way in: a cloud's edge is sharp. (An overcast's deck thickens slowly into
     // its base, wisps and scud first: no hard floor for the march's steps to terrace.)
-    min(s * mix(1.1, 3.0, w.a), 1.0)
+    // (A fair heap's edge sharper still: its outline crisp, not airbrushed.)
+    min(s * mix(mix(1.1, 3.0, w.a), 6.0, flat), 1.0)
 }
 
 /// The planet's radius under the world's y = 0 (m).
