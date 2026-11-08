@@ -111,7 +111,7 @@ pub fn body_paint(p: vec3) -> Cloth {
     // The head: under the mask a dark void, behind it a black wrap.
     // (His nape bare between his collar and his hair, as the sheet's back view.)
     // Its edges: the collar's top curving up round his neck, his hairline above.
-    let nape = p.y - (1.598 + 0.04 * (p.x / 0.06) * (p.x / 0.06))
+    let nape = p.y - 1.645
     if nape > 0.0 && p.y < 1.70 && p.z < -0.02 {
         return SKIN
     }
