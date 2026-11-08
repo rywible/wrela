@@ -166,7 +166,10 @@ fn cloth(s: Shot, q: vec3) -> (f32, vec2) {
     // the rays step through the cloth and it reads torn.)
     // (A junk's bamboo battens stand proud of its cloth.)
     let ribs = if SAIL == 1 { 0.014 * (1.0 - smoothstep(0.0, 0.06, abs(fract(up * 6.0 + 0.5) - 0.5) / 6.0 * 3.6)) } else { 0.0 }
-    let face = abs(off) * 0.85 / (1.0 + 1.6 * loose) - 0.011 - ribs
+    // (Full under way, its belly between the battens is steeper than the cloth's own distance
+    // says: at 0.85 the rays stepped through its top panels and it read torn, scraps of it
+    // hanging off the leech.)
+    let face = abs(off) * 0.6 / (1.0 + 1.6 * loose) - 0.011 - ribs
     (length(max(vec2(face, edge), vec2(0.0))) + min(max(face, edge), 0.0), vec2(u, v))
 }
 
