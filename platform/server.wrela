@@ -382,6 +382,9 @@ pub enum Note: Clone + Serialize {
     Forget { name: Name },
     /// Nothing.
     Nothing,
+    /// Retires a kept name as its account is deleted: old passes and verified room identities
+    /// may outlive the account, so the name can never identify a different account.
+    Retire { name: Name, owner: Vec<u8>, generation: u64 },
 }
 
 /// A call's bytes: when its request was taken (the host's wall clock; an instance's clock is the
@@ -626,6 +629,7 @@ pub enum Step: Copy + Eq {
     EdgeRecord,
     EdgeRank,
     EdgeSearch,
+    RoomTokenRandom,
     // An account (accounts.wrela).
     HelloSession,
     HelloAccount,
@@ -679,6 +683,7 @@ pub enum Step: Copy + Eq {
     CharacterSave,
     ProgressRead,
     RecordWon,
+    RecordReceipt,
     RecordProgress,
     WatchAccount,
     WatchRun,
@@ -1547,4 +1552,27 @@ fn a_challenge_reads_back_and_its_message_names_what_it_is_for() {
     let f = ceremony_message(0, [3; 16], [4; 16], nonce, expires, wire::NOT_AGREED)
     let g = ceremony_message(0, [3; 16], [4; 16], nonce, expires + 1, agreed)
     assert(a != b && a != d && a != e && b != e && a != f && a != g, "each part counts")
+}
+
+@test
+fn stored_notes_keep_their_bytes_when_new_variants_are_appended() {
+    // The pre-Retire wire bytes: Serialize records variant and field names, never their indices.
+    let disown = Vec::from(
+        [
+            6, 0, 0, 0, 68, 105, 115, 111, 119, 110, 4, 0, 0, 0, 104, 97, 115, 104, 2, 0, 0, 0, 1,
+            2, 5, 0, 0, 0, 111, 119, 110, 101, 114, 1, 0, 0, 0, 3,
+        ],
+    )
+    let ended = Vec::from(
+        [
+            10, 0, 0, 0, 69, 110, 100, 83, 101, 115, 115, 105, 111, 110, 4, 0, 0, 0, 104, 97, 115,
+            104, 2, 0, 0, 0, 4, 5,
+        ],
+    )
+    assert(save(Note::Disown { hash: Vec::from([1, 2]), owner: Vec::from([3]) }) == disown)
+    assert(save(Note::EndSession { hash: Vec::from([4, 5]) }) == ended)
+    let Some(Note::Disown { hash, owner }) = read::<Note>(disown) else { panic("old Disown") }
+    assert(hash == Vec::from([1, 2]) && owner == Vec::from([3]))
+    let Some(Note::EndSession { hash }) = read::<Note>(ended) else { panic("old EndSession") }
+    assert(hash == Vec::from([4, 5]))
 }

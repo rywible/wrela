@@ -245,7 +245,9 @@ pub fn heard(c: mut Character, reply: Option<Reply>) -> Option<Request> {
             Some(Reply::Character { made: true, .. }) => true,
             _ => false,
         }
-        if !fresh {
+        // The maker may have opened since the background request began. Its current
+        // choices belong to the player; an answer for the old look must not replace them.
+        if !fresh || c.stage != Stage::Ready {
             return None
         }
     }
@@ -358,11 +360,11 @@ pub fn maker_input(
         return None
     }
     if dy != 0 {
-        c.part = u32((i32(c.part) + dy + i32(PARTS)) % i32(PARTS))
+        c.part = u32((i32(c.part) + dy % i32(PARTS) + i32(PARTS)) % i32(PARTS))
     }
     if dx != 0 {
         let now = part_of(c.making, c.part)
-        let next = u32((i32(now) + dx + i32(LOOK_CHOICES)) % i32(LOOK_CHOICES))
+        let next = u32((i32(now) + dx % i32(LOOK_CHOICES) + i32(LOOK_CHOICES)) % i32(LOOK_CHOICES))
         c.making = with_part(c.making, c.part, next)
     }
     if enter {
@@ -508,6 +510,41 @@ pub fn figure(list: mut DrawList, look: Look, feet: vec2, tall: f32) {
 }
 
 // ---- tests --------------------------------------------------------------------------------------
+
+@test
+fn character_maker_wraps_a_burst_of_keys_without_losing_its_part_or_look() {
+    var c = blank()
+    c.stage = Stage::Making
+    let _ = maker_input(mut c, dx: -17, dy: -9, enter: false, escape: false)
+    assert(c.part == PARTS - 1, "many Up presses still select a part")
+    assert(c.making.cloth == LOOK_CHOICES - 1, "many Left presses still select a look")
+    let _ = maker_input(mut c, dx: 19, dy: 13, enter: false, escape: false)
+    assert(c.part == 0 && c.making.build == 3, "both directions wrap")
+}
+
+@test
+fn character_refresh_does_not_close_the_character_maker() {
+    var c = blank()
+    c.stage = Stage::Ready
+    c.made = true
+    c.refreshing = true
+    let before = c.look
+    change(mut c)
+    let _ = maker_input(mut c, dx: 1, dy: 0, enter: false, escape: false)
+    // The island reconnected and asked for a pass before C opened the maker. Its answer
+    // arrives at the next frame's update, before that frame can cancel the pending request.
+    let _ = heard(
+        mut c,
+        Some(Reply::Character {
+            made: true,
+            name: c.name,
+            look: before,
+            pass: Vec::new(),
+        }),
+    )
+    assert(c.stage == Stage::Making, "a refresh must not take away the maker")
+    assert(c.making.build == 1 && c.look == before, "the unsaved choices are kept")
+}
 
 fn me(signed_in: bool, fixed: bool) -> Reply {
     Reply::Welcome {

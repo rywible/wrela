@@ -181,7 +181,13 @@ pub enum Request: Clone + Serialize {
     /// on the account, if its room wrote that the account's character won it: answered by
     /// `Progress`, with it counted once.
     Record { csrf: Vec<u8>, fight: Vec<u8> },
+    /// A fresh, unpredictable bearer token for this page's room connections, including guests.
+    /// The server answers `RoomToken` without an account or any stored state.
+    RoomToken,
 }
+
+/// A room peer's bearer token is a nonzero `u64`, encoded as eight little-endian bytes.
+pub const ROOM_TOKEN_BYTES: u32 = 8
 
 /// A boss the account's character has beaten: which (the game's number for it), how many times,
 /// its best time (the fight's frames, at the game's rate), and when it was first and last beaten
@@ -328,6 +334,8 @@ pub enum Reply: Clone + Serialize {
     Progress { beaten: Vec<Beaten> },
     /// The request isn't one the server takes now: why, said for a person.
     Refused { why: String },
+    /// A host-random room bearer token. Keep it private: knowing it permits resuming its peer.
+    RoomToken { token: Vec<u8> },
 }
 
 /// The path of run `run`'s replay: `RUNS`, its account's handle in hexadecimal, `/`, its number.

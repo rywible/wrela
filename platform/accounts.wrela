@@ -834,6 +834,18 @@ impl<G: Game> Engine<G> {
     pub(package) fn account_answer(mut self, job: take Job, answer: Vec<u8>) {
         var j = take job
         let conn = j.conn
+        // These reads and room calls may answer after sign-out, revocation or a recovery ended
+        // the session. Recheck its binding before issuing a room pass or changing MMO records.
+        let recovery = match j.step {
+            Step::CharacterRead | Step::ProgressRead => Some(true),
+            Step::CharacterSave | Step::RecordWon | Step::RecordReceipt | Step::RecordProgress => Some(
+                false,
+            ),
+            _ => None,
+        }
+        if let Some(recovery) = recovery {
+            let Some(_) = self.signed_in(conn, None, recovery) else { return }
+        }
         match j.step {
             Step::HelloSession => {
                 let s: Option<Session> = got(answer)
@@ -1436,10 +1448,20 @@ impl<G: Game> Engine<G> {
             Step::NameCommit => self.name_commit(take j, answer),
             Step::ReleaseAccount => {
                 if let Some(a) = self.account_of(answer) {
-                    let release = Note::Release {
-                        name: a.name,
-                        owner: self.handle.clone(),
-                        generation: a.generation,
+                    // Explicit even if the shard has not heard Keep yet: message order must not
+                    // let an old pass or a persisted room identity become a new account's name.
+                    let release = if a.fixed {
+                        Note::Retire {
+                            name: a.name,
+                            owner: self.handle.clone(),
+                            generation: a.generation,
+                        }
+                    } else {
+                        Note::Release {
+                            name: a.name,
+                            owner: self.handle.clone(),
+                            generation: a.generation,
+                        }
                     }
                     self.pend(under("n"), names_instance(a.name).as_str(), release)
                     self.keep(under(SWEPT), Vec::from([NAME_RELEASED]))
@@ -1457,10 +1479,10 @@ impl<G: Game> Engine<G> {
                 self.reply(conn, take reply)
             },
             Step::ProgressRead => {
-                let p: Option<progress::Progress> = self.latest_as(
-                    key(progress::PROGRESS, []),
-                    answer,
-                )
+                let p = match self.latest(key(progress::PROGRESS, []), answer) {
+                    Some(bytes) => progress::read(bytes),
+                    None => None,
+                }
                 let beaten = match p {
                     Some(p) => p.beaten.clone(),
                     None => Vec::new(),
@@ -1474,7 +1496,8 @@ impl<G: Game> Engine<G> {
                         j.n = won.boss
                         j.ticks = won.frames
                         j.expires = won.at
-                        self.get(key(progress::PROGRESS, []), Step::RecordProgress, take j)
+                        let Request::Record { fight, .. } = j.request.clone() else { return }
+                        self.get(key(progress::RECEIPTS, fight), Step::RecordReceipt, take j)
                     },
                     Some(Back::Missing) => self.refuse(
                         conn,
@@ -1483,18 +1506,30 @@ impl<G: Game> Engine<G> {
                     _ => self.refuse(conn, "the fights couldn't be reached."),
                 }
             },
+            Step::RecordReceipt => {
+                j.message = answer.clone()
+                self.get(key(progress::PROGRESS, []), Step::RecordProgress, take j)
+            },
             Step::RecordProgress => {
                 let k = key(progress::PROGRESS, [])
-                let was: Option<progress::Progress> = self.latest_as(k, answer)
+                let was = match self.latest(k, answer) {
+                    Some(bytes) => progress::read(bytes),
+                    None => None,
+                }
                 let p = match was {
                     Some(p) => p.clone(),
                     None => progress::no_progress(),
                 }
                 let won = progress::Won { boss: j.n, frames: j.ticks, at: j.expires }
-                // Counted once: a fight that ended no later than the last counted counts nothing.
-                let now = match progress::credited(p.clone(), won) {
+                let Request::Record { fight, .. } = j.request.clone() else { return }
+                let receipt = key(progress::RECEIPTS, fight)
+                // A concurrent request may have written its receipt while this read was pending.
+                let counted = self.latest(receipt, j.message).is_some()
+                let next = if counted { None } else { progress::credited(p.clone(), won) }
+                let now = match take next {
                     Some(q) => {
                         self.keep(key(progress::PROGRESS, []), save(q.clone()))
+                        self.keep(take receipt, Vec::new())
                         take q
                     },
                     None => take p,
@@ -2239,7 +2274,7 @@ fn export_entry(out: mut String, k: [u8], value: [u8]) {
         one.push_str("}")
     } else if same_bytes(k, under(progress::PROGRESS)) {
         one.push_str("{\"mmo_progress\":")
-        match read::<progress::Progress>(value) {
+        match progress::read(value) {
             Some(p) => {
                 one.push_str("[")
                 for i in 0..p.beaten.len() {

@@ -278,12 +278,13 @@ pub fn decode(bytes: [u8]) -> Option<Packet> {
 
 // ---- sending ------------------------------------------------------------------------------------
 
-/// A change the sender made: the frame it first went, and whether a resend carried it (then its
-/// ack doesn't say how long a round trip takes). Change `n` is `made[n - 1]`.
+/// A change the sender made: the frames it first and last went, and whether it went more than
+/// once (then its ack cannot measure a round trip). Change `n` is `made[n - 1]`.
 struct Made: Clone {
     change: Change,
     sent: bool,
     first_sent: u32,
+    last_sent: u32,
     resent: bool,
 }
 
@@ -414,7 +415,15 @@ impl Sender {
             return
         }
         let change = Change { frame: frame - 1, input }
-        self.made.push(Made { change, sent: false, first_sent: frame - 1, resent: false })
+        self.made.push(
+            Made {
+                change,
+                sent: false,
+                first_sent: frame - 1,
+                last_sent: frame - 1,
+                resent: false,
+            },
+        )
         self.input = input
         self.dirty = true
     }
@@ -446,6 +455,7 @@ impl Sender {
                     change: Change { frame, input },
                     sent: false,
                     first_sent: frame,
+                    last_sent: frame,
                     resent: false,
                 },
             )
@@ -456,7 +466,12 @@ impl Sender {
         let floor = self.floor()
         let unheard = floor != NONE && seq > floor
         let due = self.dirty && since >= COALESCE
-        let resend = !due && unheard && since >= self.rto
+        // New input may go every COALESCE frames. Its traffic must not restart the timeout
+        // of an older change still missing: otherwise a lost burst never recovers mid-fight.
+        let resend = unheard &&
+            since >= COALESCE &&
+            self.made[floor].sent &&
+            frame - self.made[floor].last_sent >= self.rto
         let go = due ||
             resend ||
             since >= KEEPALIVE ||
@@ -489,13 +504,14 @@ impl Sender {
             if !self.made[i].sent {
                 self.made[i].sent = true
                 self.made[i].first_sent = frame
-            } else if resend {
+            } else {
                 self.made[i].resent = true
             }
+            self.made[i].last_sent = frame
         }
         self.last_sent = frame
         self.sent_any = true
-        self.dirty = false
+        self.dirty = seq > 0 && !self.made[seq - 1].sent
         self.owed = false
         var heard: Vec<u32> = Vec::new()
         for j in 0..MAX_PARTY {
@@ -591,22 +607,21 @@ impl Receiver {
         while keep > 0 && self.numbers[keep - 1] >= from {
             keep -= 1
         }
-        var log: Vec<Change> = Vec::new()
-        var numbers: Vec<u32> = Vec::new()
-        for k in 0..keep {
-            log.push(self.log[k].clone())
-            numbers.push(self.numbers[k])
-        }
         var last: u32 = 0
         var prev: u32 = 0
         var any = keep > 0
         if any {
-            last = log[keep - 1].frame
-            prev = log[keep - 1].input
+            last = self.log[keep - 1].frame
+            prev = self.log[keep - 1].input
         }
-        let start = if keep > 0 { numbers[keep - 1] + 1 } else { 1 }
+        let start = if keep > 0 { self.numbers[keep - 1] + 1 } else { 1 }
+        // Keep the prefix in place and overwrite only the rebuilt suffix. In the usual case,
+        // all new changes follow it: receiving a packet appends without copying the whole log.
+        let old_len = self.log.len()
+        var out = keep
+        var changed: Option<u32> = None
         for n in start..(self.have.len() + 1) {
-            if !self.have[n - 1] || log.len() >= MAX_CHANGES {
+            if !self.have[n - 1] || out >= MAX_CHANGES {
                 continue
             }
             let c = self.got[n - 1].clone()
@@ -616,34 +631,26 @@ impl Receiver {
             last = c.frame
             prev = c.input
             any = true
-            log.push(take c)
-            numbers.push(n)
+            if out < old_len {
+                if changed.is_none() && self.log[out] != c {
+                    changed = Some(min(self.log[out].frame, c.frame))
+                }
+                self.log[out] = take c
+                self.numbers[out] = n
+            } else {
+                if changed.is_none() {
+                    changed = Some(c.frame)
+                }
+                self.log.push(take c)
+                self.numbers.push(n)
+            }
+            out += 1
         }
-        // The first entry that differs from the old log, old or new.
-        var changed: Option<u32> = None
-        var k = keep
-        loop {
-            let old = k < self.log.len()
-            let new = k < log.len()
-            if !old && !new {
-                break
-            }
-            if old && new && self.log[k] == log[k] {
-                k += 1
-                continue
-            }
-            var f = NONE
-            if old {
-                f = self.log[k].frame
-            }
-            if new && log[k].frame < f {
-                f = log[k].frame
-            }
-            changed = Some(f)
-            break
+        if changed.is_none() && out < old_len {
+            changed = Some(self.log[out].frame)
         }
-        self.log = take log
-        self.numbers = take numbers
+        self.log.truncate(out)
+        self.numbers.truncate(out)
         changed
     }
 
@@ -1044,4 +1051,88 @@ fn a_player_back_in_a_fight_sends_a_change_from_the_input_it_was_handed() {
     var other = Link::new(me: 1, party: 2)
     let _ = other.heard(0, bytes, 100)
     assert(other.change_at(0, 100) == Some(Change { frame: 100, input: 0 }), "it's heard")
+}
+
+@test
+fn a_busy_sender_recovers_missing_changes_before_play_stops() {
+    var tx = Sender::new(me: 0, party: 2)
+    var rx = Receiver::new()
+    let acks: [u32; 4] = [0, 0, 0, 0]
+    // A lost burst leaves more changes missing than the newest packet carries. The player
+    // keeps turning the stick, so recovery must run while new changes continue to go out.
+    for frame in 0..360 {
+        let input = 1 + frame % 2
+        if let Some(bytes) = tx.frame(frame, input, acks) {
+            if frame >= 60 {
+                let Some(_) = rx.heard(bytes) else { panic("a sender makes valid packets") }
+                tx.acked(slot: 1, ack: rx.contig, now: frame)
+            }
+        }
+    }
+    assert(rx.contig >= 240, "old missing changes are retried during active play")
+    assert(rx.at(239) == 2, "the recovered input history agrees")
+}
+
+@test
+fn repeated_changes_do_not_measure_a_round_trip() {
+    var tx = Sender::new(me: 0, party: 2)
+    let acks: [u32; 4] = [0, 0, 0, 0]
+    assert(tx.frame(frame: 0, input: 1, acks: acks).is_some())
+    assert(tx.frame(frame: 2, input: 2, acks: acks).is_some())
+    // The first change rode on both packets: its ack cannot tell which one arrived.
+    tx.acked(slot: 1, ack: 1, now: 3)
+    assert(tx.samples == 0, "a repeated change's ack is not a round-trip measurement")
+}
+
+@test
+fn reordered_changes_repair_the_log_from_the_first_difference() {
+    var rx = Receiver::new()
+    let newest = Change { frame: 30, input: 1 }
+    let oldest = Change { frame: 10, input: 1 }
+    let middle = Change { frame: 20, input: 0 }
+    let Some(late) = encode(
+        Packet {
+            through: 30,
+            seq: 3,
+            skip: 0,
+            changes: Vec::from([take newest]),
+            acks: Vec::new(),
+        },
+    ) else { panic("the newest change encodes") }
+    let Some(first) = rx.heard(late) else { panic("the newest change decodes") }
+    assert(first.changed == Some(30))
+    let Some(early) = encode(
+        Packet {
+            through: 30,
+            seq: 3,
+            skip: 2,
+            changes: Vec::from([take oldest]),
+            acks: Vec::new(),
+        },
+    ) else { panic("the oldest change encodes") }
+    let Some(second) = rx.heard(early) else { panic("the oldest change decodes") }
+    assert(second.changed == Some(10), "the predicted press moves to its actual frame")
+    assert(rx.log().len() == 1, "the now redundant newest press is omitted")
+    let Some(gap) = encode(
+        Packet {
+            through: 30,
+            seq: 3,
+            skip: 1,
+            changes: Vec::from([take middle]),
+            acks: Vec::new(),
+        },
+    ) else { panic("the middle change encodes") }
+    let Some(third) = rx.heard(gap) else { panic("the middle change decodes") }
+    assert(third.changed == Some(20), "filling the gap restores the later press")
+    assert(
+        rx.log() ==
+            Vec::from(
+                [
+                    Change { frame: 10, input: 1 },
+                    Change { frame: 20, input: 0 },
+                    Change { frame: 30, input: 1 },
+                ],
+            ),
+    )
+    assert(rx.contig == 3 && rx.known() == 30)
 }
