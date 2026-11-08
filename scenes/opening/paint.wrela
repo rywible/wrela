@@ -1059,9 +1059,18 @@ fn sea_shade(
     // into a sliver, and froth laid on rest there would stretch along it, a smeared texture.)
     let laid = mix(rest, xz, mix(1.0, 0.7, smoothstep(10.0, 40.0, t)))
     let wa = vec2(dot(laid, wind), dot(laid, vec2(-wind.y, wind.x)))
-    let lace = noise(wa * vec2(1.0, 2.4) + vec2(3.0, 9.0)) * 0.5 +
-        noise(wa * vec2(4.0, 9.0) + vec2(7.0, 1.0)) * 0.32 +
-        noise(wa * vec2(13.0, 24.0)) * 0.18
+    // (Each octave fading to its mean as the pixel's footprint, foreshortened down the view, grows
+    // past it: a finer pattern than a pixel holds draws a grain that crawls frame to frame.)
+    let foot_l = max(length(du), length(dv))
+    let lace = mix(
+        noise(wa * vec2(1.0, 2.4) + vec2(3.0, 9.0)),
+        0.5,
+        smoothstep(0.15, 0.5, foot_l * 2.4),
+    ) *
+        0.5 +
+        mix(noise(wa * vec2(4.0, 9.0) + vec2(7.0, 1.0)), 0.5, smoothstep(0.15, 0.5, foot_l * 9.0)) *
+            0.32 +
+        mix(noise(wa * vec2(13.0, 24.0)), 0.5, smoothstep(0.15, 0.5, foot_l * 24.0)) * 0.18
     let wq = wa * vec2(0.55, 2.0)
     let warp = vec2(noise(wq * 0.5 + vec2(2.1, 8.3)), noise(wq * 0.5 + vec2(6.7, 3.9))) - vec2(0.5)
     // The foam upwind, read blurred, a few metres back and further: what the wind has drawn out
@@ -1074,7 +1083,7 @@ fn sea_shade(
         dv * 12.0,
         tiles(calm).xy,
     )
-    let web_k = clamp(1.0 - px_m * 2.0, 0.0, 1.0)
+    let web_k = clamp(1.0 - foot_l * 2.0, 0.0, 1.0)
     // (Most of the sea's bare of foam: where there's none within a few pixels, nor upwind, its
     // froth's not worked out at all.)
     let near_foam = foam_at(waves, rest, du * 8.0, dv * 8.0, tiles(calm).xy)
@@ -1132,7 +1141,7 @@ fn sea_shade(
         // (Where it breaks now it's a crest whatever its height.)
         let on_crest = mix(
             0.22,
-            mix(1.7, 3.2, smoothstep(4.0, 14.0, t)),
+            mix(1.7, 3.2, smoothstep(4.0, 14.0, t)) * mix(1.0, 0.55, smoothstep(60.0, 250.0, t)),
             max(crest_k, smoothstep(0.4, 0.8, foam_k)),
         )
         let dense_ = clamp(
@@ -1170,8 +1179,18 @@ fn sea_shade(
         let lines = smoothstep(0.9 - blown * 0.06, 0.96 - blown * 0.04, ridge) * (0.4 + 0.6 * lace)
         // (Too far for its froth, a whitecap still breaks up: torn by a coarser pattern a pixel there
         // can hold, metres across, not a smooth lens of white.)
-        let coarse = noise(wa * vec2(0.12, 0.4) + vec2(5.0, 3.0)) * 0.6 +
-            noise(wa * vec2(0.4, 1.1) + vec2(1.0, 8.0)) * 0.4
+        let coarse = mix(
+            noise(wa * vec2(0.12, 0.4) + vec2(5.0, 3.0)),
+            0.5,
+            smoothstep(0.3, 0.9, foot_l * 0.4),
+        ) *
+            0.6 +
+            mix(
+                noise(wa * vec2(0.4, 1.1) + vec2(1.0, 8.0)),
+                0.5,
+                smoothstep(0.15, 0.5, foot_l * 1.1),
+            ) *
+                0.4
         let far_white = clamp((dense - (1.0 - coarse) * 0.8) / 0.3, 0.0, 1.0) * (0.6 + 0.4 * coarse)
         let froth = mix(coarse, froth_h, web_k)
         // (Never one smooth white even where it's densest: a fresh cap's a heap of bubble domes, its
