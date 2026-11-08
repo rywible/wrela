@@ -910,3 +910,31 @@ pub fn isle_material(p: vec3, n: vec3, id: f32, foot: f32) -> (vec3, f32, f32, v
         (a, 0.85, 0.0, vec3(0.0), 1.0)
     }
 }
+
+/// How much of the sun reaches `p` past the isle: a soft shadow marched toward it.
+/// (Its first step jittered by `jit` (0 to 1), a pixel's own: else the steps of neighbouring
+/// pixels fall together and a face the sun rakes is banded in a fan of stripes.)
+pub fn isle_shadow(p: vec3, l: vec3, start: f32, jit: f32) -> f32 {
+    var t = start * (1.0 + 2.0 * jit)
+    var lit = 1.0
+    var i = 0
+    while i < 72 && t < 5600.0 && lit > 0.02 {
+        let h = isle(p + l * t).x
+        lit = min(lit, 10.0 * h / t)
+        t += clamp(h, 1.5, 170.0)
+        i += 1
+    }
+    clamp(lit, 0.0, 1.0)
+}
+
+/// How much of the sky reaches `p` on the isle, facing `n`: five taps out along its normal.
+pub fn isle_ao(p: vec3, n: vec3) -> f32 {
+    var hidden = 0.0
+    var w = 1.0
+    for i in 1..6 {
+        let h = 5.6 * f32(i * i)
+        hidden += w * max(h - isle(p + n * h).x, 0.0) / h
+        w *= 0.6
+    }
+    clamp(1.0 - hidden * 0.55, 0.0, 1.0)
+}
