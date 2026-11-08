@@ -2,7 +2,7 @@
 // inverse FFT at a time, a few of their texels read back, and the same waves summed one by one
 // on the CPU at the places those texels hold (texel m at m L / SIDE).
 
-use engine::ocean::{Ocean, SIDE, SeaState, amplitude, band, wavenumber}
+use engine::ocean::{Ocean, SIDE, SeaState, amplitude, band, leaning, wavenumber}
 use std::gpu::{GlobalId, GpuBuffer, Rgba16Float, Slots, Texture, buffer, dispatch, read}
 use std::io::{Pending, print}
 
@@ -75,8 +75,8 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
 }
 
 /// Tile `i`'s displacement along x (leaned by the chop), height and displacement along z at
-/// its texel `at`, each of its waves summed: 2 Re(a e^(i(k·x - ωt))), and the displacement
-/// carried toward the crests.
+/// its texel `at`, each of its waves summed: 2 Re(a e^(i(k·x - ωt))), the displacement carried
+/// toward the crests, and the crests leaned on down the wind (`leaning`).
 fn summed(i: u32, at: vec2u) -> vec3 {
     let b = band(i)
     let x = vec2(f32(at.x), f32(at.y)) * (b.side / f32(SIDE))
@@ -98,7 +98,9 @@ fn summed(i: u32, at: vec2u) -> vec3 {
             }
         }
     }
-    d
+    // (The crests leaned on down the wind: the water over the level carried further.)
+    let carried = leaning(SEA) * max(d.y, 0.0)
+    d + vec3(carried.x, 0.0, carried.y)
 }
 
 /// Each probed texel of the big and mid tiles holds what its waves sum to there, within the

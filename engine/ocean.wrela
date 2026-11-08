@@ -23,8 +23,8 @@
 
 use noise::hash2u
 use std::gpu::{
-    Address, GlobalId, LocalId, Rgba16Float, Rgba32Float, Sampler, Shared, Texels, Texture,
-    barrier, dispatch, generate_mips, label, mip_levels, sampler, writable_texture,
+    Address, GlobalId, LocalId, Rgba16Float, Rgba32Float, Sampler, Shared, Texels, Texture, barrier,
+    dispatch, generate_mips, label, mip_levels, sampler, writable_texture,
 }
 use std::io::print
 use std::math::{PI, TAU}
@@ -149,6 +149,12 @@ pub fn wind_alpha(sea: SeaState) -> f32 {
 /// the eye reads as how rough the sea is, and it's the fit's, not the height's.
 pub fn tail_alpha(sea: SeaState) -> f32 {
     0.076 * pow(G * sea.fetch / (sea.speed * sea.speed), -0.22)
+}
+
+/// How far the sea's crests are carried down its wind (m along x and z) per metre they stand
+/// over the level (`LEAN` times its chop).
+pub fn leaning(sea: SeaState) -> vec2 {
+    sea.wind * (LEAN * sea.chop)
 }
 
 /// The share of the sea's face white with breaking crests and their foam, from its wind (Monahan
@@ -565,10 +571,16 @@ struct Scratch {
 fn run(sea: SeaState, t: f32, dt: f32, tile: mut Tile, f: mut Scratch, s: Sampler) {
     dispatch(evolve.bind(sea, tile.band, t, heights: mut f.a, slopes: mut f.b), over: (SIDE, SIDE))
     if LINES {
-        dispatch(fft_rows.bind(a: f.a, b: f.b, to_a: mut f.to_a, to_b: mut f.to_b), groups: (1, SIDE, 1))
+        dispatch(
+            fft_rows.bind(a: f.a, b: f.b, to_a: mut f.to_a, to_b: mut f.to_b),
+            groups: (1, SIDE, 1),
+        )
         swap(mut f.a, mut f.to_a)
         swap(mut f.b, mut f.to_b)
-        dispatch(fft_columns.bind(a: f.a, b: f.b, to_a: mut f.to_a, to_b: mut f.to_b), groups: (SIDE, 1, 1))
+        dispatch(
+            fft_columns.bind(a: f.a, b: f.b, to_a: mut f.to_a, to_b: mut f.to_b),
+            groups: (SIDE, 1, 1),
+        )
         swap(mut f.a, mut f.to_a)
         swap(mut f.b, mut f.to_b)
     } else {
@@ -597,7 +609,7 @@ fn run(sea: SeaState, t: f32, dt: f32, tile: mut Tile, f: mut Scratch, s: Sample
             dt,
             foam_fade(sea),
             sea.wind * (BLOWN * sea.speed * dt * f32(SIDE) / tile.band.side),
-            sea.wind * (LEAN * sea.chop),
+            leaning(sea),
             tile.breaks,
             tile.spread,
             heights: f.a,
@@ -898,7 +910,7 @@ impl Swell {
             modes,
             chop: sea.chop,
             held: if total > 0.0 { held / total } else { 0.0 },
-            lean: sea.wind * (LEAN * sea.chop),
+            lean: leaning(sea),
         }
     }
 
