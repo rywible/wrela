@@ -1078,9 +1078,11 @@ fn sea_shade(
     // (How high it stands on the waves a boat rides, over the long swell under them, or on the
     // swell's own crest: there the sea breaks white; in the troughs between it lies clean, the
     // foam swept off.)
-    let above = p.y - level_at(waves, xz, max(px_m, 2.0), 0.0)
-    let crest_k = max(smoothstep(-0.2, 1.0, above), smoothstep(1.0, 3.0, p.y)) *
-        smoothstep(-2.5, 0.5, p.y)
+    // (Its height as the pixel's footprint holds it, `wave`, not the traced point's: far off the
+    // trace is found on the swell alone, and a crest test on it speckled pixel to pixel.)
+    let above = wave - level_at(waves, xz, max(px_m * 3.0, 2.0), 0.0)
+    let crest_k = max(smoothstep(-0.5, 0.7, above), smoothstep(0.8, 2.6, wave)) *
+        smoothstep(-2.5, 0.3, wave)
     let (white, bright_, bubbles, veil) = if max(near_foam, max(torn, upwind)) > 0.004 {
         // (The froth's height: bubble domes, two sizes, drawn out a little down the wind, and the
         // lace over them.)
@@ -1126,7 +1128,7 @@ fn sea_shade(
         // thinned and swept on, so the white sits on the swell's crests, not anywhere.)
         // (Where it breaks now it's a crest whatever its height.)
         let on_crest = mix(
-            0.15,
+            0.22,
             mix(1.7, 3.2, smoothstep(4.0, 14.0, t)),
             max(crest_k, smoothstep(0.4, 0.8, foam_k)),
         )
