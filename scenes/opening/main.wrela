@@ -16,12 +16,16 @@
 // fly, A and D steer, and the camera swings round after it.
 
 use heavens::heavens
-use look::SUN
+use look::{SEA, SKIFF, SUN}
 use ink::ink
+use engine::upscale::{Upscale, jitter_of, shown, upscaled}
 use played::{State, cover, painted, sized, targets, weathered}
 use sail::key
 use std::input::events
-use std::gpu::{begin_screen_pass, draw, label, timed}
+use std::gpu::{
+    FragCoord, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, draw, label, texture,
+    timed,
+}
 use std::io::print
 
 /// The time the scene starts at (s): the frames a test or a still draws begin here.
@@ -109,10 +113,19 @@ pub const QUARTER: bool = true
 /// the stacks stay grainy for seconds after the camera starts).
 pub const SPARSE: u32 = 2
 
+/// Whether the rock and the cathedral are met in a quarter of the blocks a drawing, in turn, so a
+/// sixteenth of their pixels (`yonder::Yon::rock_turn`), the stacks still a quarter: far and
+/// still, they're true carried; the stacks, nearer, move against what's behind them.
+pub const ROCK_SPARSE: bool = true
+
 /// Whether the paint is painted in every other column out on the sea, the others filled between
 /// their neighbours along the row, and in full round the skiff (`paint::paint_half`,
 /// `paint::paint_fill`): about half the paint's cost.
 pub const HALF_PAINT: bool = true
+
+/// Whether the rock and the cathedral are realized as meshes (`rock`), which say where the far
+/// pass's march starts: a few steps to the surface, none where no mesh is near.
+pub const MESHED: bool = true
 
 /// How many frames march the clouds' dome whole, a share of its tiles each
 /// (`engine::switches::Switches::DOME_PHASES`; 32, 64 or 128): at 128 a frame's march costs a
@@ -124,12 +137,21 @@ pub const DOME_PHASES: u32 = 128
 /// quarter of the clouds' cost, a little softer.
 pub const HALF_SKY: bool = true
 
+/// How big the drawing is made, of the screen each way (1: the screen's own size): below it, it's
+/// inked at its own size and brought up to the screen (`upscaled_once`), its cost as its pixels'.
+pub const RENDER_SCALE: f32 = 0.75
+
+/// Whether a drawing below the screen's size is brought up over the frames before
+/// (`engine::upscale`: its rays jittered, a history at the screen's size), not each alone
+/// (`upscaled_once`).
+pub const UPSCALE: bool = false
+
 /// Whether each frame's passes print their GPU time (`timing <frame> <pass> <us>`), for a host
 /// that can't be asked for timestamps, as the render box's (`--set TIMINGS=true`).
 pub const TIMINGS: bool = false
 
 /// The passes `TIMINGS` prints.
-const TIMED: [Text; 6] = ["clouds", "ocean", "yonder", "paint", "weather", "ink"]
+const TIMED: [Text; 7] = ["clouds", "ocean", "rock", "yonder", "paint", "weather", "ink"]
 
 /// Whether the hero (Hakuro, content/hakuro: his fields realized and drawn into the painted
 /// scene, `aboard`) stands to the sail: 1, him; 0 a few plain solids in his place, traced, to
@@ -152,7 +174,17 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if TIMINGS {
         timings(mut s)
     }
-    sized(mut s, width, height)
+    // (Below the screen's size the drawing is made at its own, and brought up after.)
+    let low = RENDER_SCALE < 1.0
+    let w = if low { max(u32(f32(width) * RENDER_SCALE + 0.5), 1) } else { width }
+    let h = if low { max(u32(f32(height) * RENDER_SCALE + 0.5), 1) } else { height }
+    sized(mut s, w, h)
+    if UPSCALE && low && s.history_size != (width, height) {
+        s.history_a = texture(width: width, height: height)
+        s.history_b = texture(width: width, height: height)
+        s.history_size = (width, height)
+        s.fresh = true
+    }
     // The player's keys: W sheets in, S lets the sail fly, A and D steer.
     for e in events() {
         key(mut s.rig, e)
@@ -162,20 +194,113 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     borrow hv = s.heavens
     borrow colour = if (OFF & 256) != 0 { s.colour } else { s.aired }
     label("ink")
-    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-    draw(
-        screen,
-        cover,
-        ink.bind(
-            shot: shot,
-            light: hv.light,
-            colour: colour,
-            marks: s.marks,
-            normal: s.normal,
-        ),
-        vertices: 3,
+    let inked = ink.bind(
+        shot: shot,
+        light: hv.light,
+        colour: colour,
+        marks: s.marks,
+        normal: s.normal,
+        settled: if low && UPSCALE { 1 } else { 0 },
     )
+    if !low {
+        let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+        draw(screen, cover, inked, vertices: 3)
+        screen.present()
+        return
+    }
+    let p = begin_pass(mut s.inked, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(p, cover, inked, vertices: 3)
+    p.end()
+    if !UPSCALE {
+        let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+        draw(
+            screen,
+            cover,
+            upscaled_once.bind(
+                drawn: s.inked,
+                smp: hv.linear,
+                from: vec2(f32(w), f32(h)),
+                to: vec2(f32(width), f32(height)),
+            ),
+            vertices: 3,
+        )
+        screen.present()
+        return
+    }
+    // Brought up over the frames before (`engine::upscale`), and the next frame's rays jittered.
+    let u = Upscale {
+        now: s.pinhole,
+        last: s.last_pinhole,
+        jitter: s.jitter,
+        out: vec2(f32(width), f32(height)),
+        fresh: if s.fresh { 1 } else { 0 },
+        mover: SKIFF,
+        body: s.body,
+        last_body: s.last_body,
+        restless: SEA,
+    }
+    if s.flip {
+        let p = begin_pass(mut s.history_b, clear: vec4(0.0))
+        draw(
+            p,
+            cover,
+            upscaled.bind(u, scene: s.inked, far: s.marks, history: s.history_a, smp: hv.linear),
+            vertices: 3,
+        )
+        p.end()
+    } else {
+        let p = begin_pass(mut s.history_a, clear: vec4(0.0))
+        draw(
+            p,
+            cover,
+            upscaled.bind(u, scene: s.inked, far: s.marks, history: s.history_b, smp: hv.linear),
+            vertices: 3,
+        )
+        p.end()
+    }
+    borrow now = if s.flip { s.history_b } else { s.history_a }
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(screen, cover, shown.bind(history: now), vertices: 3)
     screen.present()
+    s.flip = !s.flip
+    s.fresh = false
+    s.last_pinhole = s.pinhole
+    s.last_body = s.body
+    s.upscaled_frames += 1
+    s.jitter = jitter_of(s.upscaled_frames)
+}
+
+/// The inked drawing (`from` px) brought up to the screen (`to` px): Catmull-Rom, its sixteen
+/// taps read as five bilinear ones (the corners dropped: they weigh little), so the
+/// edges stay as sharp as they were drawn.
+@fragment
+pub fn upscaled_once(
+    pixel: FragCoord,
+    drawn: Texture<Rgba16Float>,
+    smp: Sampler,
+    from: vec2,
+    to: vec2,
+) -> vec4 {
+    let p = pixel.position.xy / to * from - vec2(0.5)
+    let c = floor(p)
+    let f = p - c
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f))
+    let w1 = 1.0 + f * f * (-2.5 + 1.5 * f)
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f))
+    let w3 = f * f * (-0.5 + 0.5 * f)
+    let w12 = w1 + w2
+    let o12 = w2 / w12
+    let t0 = (c - vec2(0.5)) / from
+    let t3 = (c + vec2(2.5)) / from
+    let t12 = (c + vec2(0.5) + o12) / from
+    var sum = vec4(0.0)
+    sum += drawn.sample_level(smp, vec2(t12.x, t0.y), 0.0) * w12.x * w0.y
+    sum += drawn.sample_level(smp, vec2(t0.x, t12.y), 0.0) * w0.x * w12.y
+    sum += drawn.sample_level(smp, vec2(t12.x, t12.y), 0.0) * w12.x * w12.y
+    sum += drawn.sample_level(smp, vec2(t3.x, t12.y), 0.0) * w3.x * w12.y
+    sum += drawn.sample_level(smp, vec2(t12.x, t3.y), 0.0) * w12.x * w3.y
+    let total = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y
+    vec4(max(sum.rgb / total, vec3(0.0)), 1.0)
 }
 
 /// The passes' times as they come back, printed, and this frame's asked for.
@@ -195,7 +320,7 @@ fn timings(s: mut State) {
             None => k += 1,
         }
     }
-    for i in 0..6 {
+    for i in 0..TIMED.len() {
         s.asks.push((u32(i), timed(TIMED[i]), s.frames))
     }
     s.frames += 1

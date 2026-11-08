@@ -127,6 +127,9 @@ pub struct Motion: Copy {
     /// Where it's glancing off ahead (rad: round, up), and how fast its head's turning.
     pub look: vec2,
     pub look_v: vec2,
+    /// The puff as the rig has felt it lately (0 none, 1 a gust's full puff on it): one coming
+    /// on is the puff over this.
+    pub gusted: f32,
     /// Whether it's been placed yet (0 until the first step).
     pub placed: f32,
 }
@@ -160,6 +163,7 @@ fn still() -> Motion {
         aft_step: 1.0,
         look: vec2(0.0),
         look_v: vec2(0.0),
+        gusted: 0.0,
         placed: 0.0,
     }
 }
@@ -616,6 +620,7 @@ fn moved(r: mut Rig, time: f32, dt: f32, swell: Swell, off: f32) {
         m.neck = g.neck
         m.fore_foot = g.fore_foot
         m.aft_foot = g.aft_foot
+        m.gusted = smoothstep(1.06, 1.14, r.gust)
         m.placed = 1.0
     }
     var lift = 0.0
@@ -641,11 +646,21 @@ fn moved(r: mut Rig, time: f32, dt: f32, swell: Swell, off: f32) {
     // (Always bellied out on its lee face, away from the traveller: never blown back through.)
     let sheet_side = if r.boom >= 0.0 { 1.0 } else { -1.0 }
     let load = -sheet_side * clamp(abs(s_al) / 0.3, 0.0, 1.0)
-    let fill_to = load * (0.12 + 0.26 * sqrt(q))
+    // A gust coming on (the wind over what the rig's felt this last second or so) snaps the
+    // cloth fuller, past where it'll settle (its spring's quick and loose), bends the mast's head
+    // off and throws the rider out; a lull lets it soften, its leech shivering and its luff
+    // lifting, till the air comes back.
+    // (The puff: the wind's top over its mean, felt as a gust's front strikes, not the slow swell
+    // of the field under it; so it comes on in a few drawings.)
+    let puff = smoothstep(1.06, 1.14, r.gust)
+    let onset = max(puff - m.gusted, 0.0)
+    m.gusted += (puff - m.gusted) * (1.0 - exp(-dt * 2.0))
+    let lull = smoothstep(0.94, 0.84, r.gust)
+    let fill_to = load * (0.12 + 0.26 * sqrt(q)) * (1.0 - 0.35 * lull)
     let luff = 1.0 - smoothstep(0.06, 0.24, abs(s_al))
     let flog_to = (1.0 - smoothstep(0.05, 0.2, abs(s_al))) * (if c_al > -0.2 { 1.0 } else { 0.6 })
     let twist_to = (0.06 * max(r.gust - 0.9, 0.0) * 2.0 + 0.04 * abs(load)) * sqrt(q)
-    let bubble_to = 0.11 * luff * smoothstep(-0.1, 0.4, c_al) * (1.0 - 0.6 * m.flog)
+    let bubble_to = (0.11 * luff * smoothstep(-0.1, 0.4, c_al) + 0.05 * lull) * (1.0 - 0.6 * m.flog)
     // (Stepped in short substeps: the leech's flutter is quick.)
     let n = 4
     let h = dt / f32(n)
@@ -661,12 +676,15 @@ fn moved(r: mut Rig, time: f32, dt: f32, swell: Swell, off: f32) {
         m.bubble = a3
         m.bubble_v = v3
         // (The leech flutters, more the faster the air and the looser the cloth.)
-        let shake = wander(ti * 4.3, 1.0) * (0.004 + 0.02 * m.flog + 0.006 * run) * q * 290.0
+        let shake = wander(ti * 4.3, 1.0) * (0.004 + 0.02 * m.flog + 0.006 * run + 0.01 * lull) * q * 290.0
         let (a4, v4) = spring(m.flutter, m.flutter_v + shake * h, 0.0, 17.0, 0.08, h)
         m.flutter = a4
         m.flutter_v = v4
         // (The old mast whips: knocked by the heave and a slammed boom, rung by the belly's pop.)
-        let kick = vec2(r.jolt * 1.5 * (if r.boom > 0.0 { 1.0 } else { -1.0 }), -lift * 0.03 - m.fill_v * 0.1)
+        let kick = vec2(
+            (r.jolt * 1.5 + onset * 2.0) * (if r.boom > 0.0 { 1.0 } else { -1.0 }),
+            -lift * 0.03 - m.fill_v * 0.1,
+        )
         let wx = m.whip_v.x + (kick.x - 100.0 * m.whip.x - 2.0 * 0.12 * 10.0 * m.whip_v.x) * h
         let wz = m.whip_v.y + (kick.y - 100.0 * m.whip.y - 2.0 * 0.12 * 10.0 * m.whip_v.y) * h
         m.whip_v = vec2(wx, wz)
@@ -685,7 +703,8 @@ fn moved(r: mut Rig, time: f32, dt: f32, swell: Swell, off: f32) {
     // skiff surges and forward as it's brought up; the body lags where the sail's pull wants
     // it, and swings past a little.
     let away = normalize(vec3(g.neck.x - g.fore_hand.x, 0.0, g.neck.z - g.fore_hand.z) + vec3(0.0001))
-    let hang = 0.1 * clamp(r.gust - 1.0, -0.3, 0.6) * r.power + 0.15 * abs(r.heel) * r.power
+    let hang = (0.2 * clamp(r.gust - 1.0, -0.3, 0.6) + 0.4 * onset) * r.power +
+        0.15 * abs(r.heel) * r.power
     let surge = clamp((r.speed - r.rush) * 0.04, -0.12, 0.12)
     // (Its upper body sways against the hull's roll, keeping its head over its feet, and
     // rocks with the chop.)

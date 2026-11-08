@@ -1,0 +1,226 @@
+// Big solids: a field too large to realize in one grid (a mountain, a floating rock and the
+// cathedral on it, a cliff), drawn as meshes cut into tiles, each tile at the level of detail its
+// size on screen asks for.
+//
+// A solid's box is cut into cubes `side` m wide; those its surface can't cross are dropped on the
+// CPU (`Parts::cull`, the realizer's own test), and each one left is an instance of a
+// `realize::Realizer`: so the realizer's machinery is a solid's too. Each tile is realized at its
+// coarsest level first, then at the level its cells' size on screen asks for, a frame's budget at
+// a time, nearest and largest first; a new level fades in over the old (`Realizer::fade_share`);
+// a tile off screen long enough drops back to its coarsest. Every tile's grid is the realizer's
+// (`Grid::around` its cube), two cells wider each way, so neighbours overlap a little and no
+// crack opens between two tiles at different levels.
+//
+// What a scene would otherwise trace at each pixel and that doesn't move (its shadows under a
+// still sun, its occlusion) it can cook once onto each tile's vertices (`Bake`, `Tiles::bake`),
+// each time a tile's mesh is placed, and read back interpolated where the mesh is drawn.
+//
+// A tile not yet realized has no mesh: `Tiles::whole` says when every tile on screen has one, so
+// a scene draws the solid traced until then (or wherever `drawn` is `NO_LEVEL`).
+//
+//     the box   ┌──┬──┬──┬──┐   tiles the surface can't cross: dropped
+//               │  │▓▓│▓▓│  │   ▓ a tile: an instance, its own level
+//               └──┴──┴──┴──┘
+
+use creature::Parts
+use look::{CreatureLook, Detail, Level, Mesh as Surface}
+use realize::{Eye, Fading, Mesh, NO_LEVEL, Placement, Realizer, SkinVertex, Tally}
+use std::collections::Bounded
+use std::derive::Box3
+use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch}
+
+/// What a scene cooks onto a solid's vertices: four numbers at a point `p` of its surface facing
+/// `n` (a shadow, an occlusion), as costly as it likes: cooked once a mesh.
+pub trait Bake: Copy + GpuData {
+    fn at(self, p: vec3, n: vec3) -> vec4
+}
+
+/// Each vertex's baked numbers.
+@compute(64)
+pub fn cook_baked<B: Bake>(
+    bake: B,
+    tally: [Tally],
+    verts: [SkinVertex],
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= tally[0].vertices {
+        return
+    }
+    let v = verts[id.x]
+    out[id] = bake.at(v.pos, normalize(v.normal))
+}
+
+/// A big solid's tiles: the realizer that keeps their meshes, each tile's cube (the realizer's
+/// instance of the same number), and where they're placed (the world: a solid doesn't move).
+pub struct Tiles<F> {
+    pub realizer: Realizer<F>,
+    pub cubes: Vec<Box3>,
+    placed: Vec<Placement>,
+    /// Each tile's baked numbers (`bake`), one a vertex of its drawn mesh, and the level they
+    /// were cooked for (`NO_LEVEL`: none yet, or its mesh changed since).
+    baked: Vec<Option<GpuBuffer<vec4>>>,
+    baked_level: Vec<u32>,
+}
+
+/// `field`'s tiles inside `bounds`, cubes `side` m wide, kept at `levels` (coarse to fine, at
+/// most four), each level taken while its cells look no larger than `max_cell_px` pixels.
+/// `budget_us`: a frame's realization budget (estimated GPU time).
+pub fn tiles<C, F: Parts<C> + Copy>(
+    field: F,
+    bounds: Box3,
+    side: f32,
+    levels: [Level],
+    max_cell_px: f32,
+    budget_us: f32,
+) -> Tiles<F> {
+    var detail = Detail { max_cell_px, budget_us, ..Detail {} }
+    detail.levels = Bounded::new()
+    for l in levels {
+        detail.levels.push(l)
+    }
+    let finest = levels[levels.len() - 1].cell
+    var realizer: Realizer<F> = Realizer::new(
+        CreatureLook {
+            surface: Surface { tolerance: finest, largest: finest, radius: finest },
+            detail,
+            ..CreatureLook {},
+        },
+    )
+    var cubes = Vec::new()
+    let n = vec3u(ceil((bounds.hi - bounds.lo) / side))
+    for z in 0..n.z {
+        for y in 0..n.y {
+            for x in 0..n.x {
+                let lo = bounds.lo + vec3(f32(x), f32(y), f32(z)) * side
+                let cube = Box3 { lo, hi: lo + vec3(side) }
+                // (Grown by the coarsest cell's two, as its grid is: a surface just outside the
+                // cube is still the tile's.)
+                let c = field.cull(grown(cube, 2.0 * levels[0].cell))
+                if c.lo > 0.0 || c.hi < 0.0 {
+                    continue
+                }
+                realizer.add(field, cube)
+                cubes.push(cube)
+            }
+        }
+    }
+    let placed = Vec::filled(cubes.len(), Placement { at: vec3(0.0), heading: 0.0 })
+    let n = cubes.len()
+    Tiles {
+        realizer,
+        cubes,
+        placed,
+        baked: Vec::from_fn(n, |_| None),
+        baked_level: Vec::filled(n, NO_LEVEL),
+    }
+}
+
+fn grown(b: Box3, by: f32) -> Box3 {
+    Box3 { lo: b.lo - vec3(by), hi: b.hi + vec3(by) }
+}
+
+impl<C, F: Parts<C>> Tiles<F> {
+    /// This frame, seen by `eye`: each tile's level, and the realizations the budget allows.
+    pub fn frame(mut self, eye: Eye) {
+        self.realizer.frame(eye, self.placed)
+        self.forget_placed()
+    }
+
+    /// The tiles whose meshes were placed again (a new level, or the same realized again): their
+    /// baked numbers no longer fit.
+    fn forget_placed(mut self) {
+        for (i, _) in self.realizer.placed() {
+            self.baked_level[i] = NO_LEVEL
+        }
+    }
+
+    /// `b` cooked onto the drawn mesh of each tile that hasn't it yet, at most `most` tiles.
+    /// Whether every drawn tile has it.
+    pub fn bake<B: Bake>(mut self, b: B, most: u32) -> bool {
+        var done = 0
+        for i in 0..self.cubes.len() {
+            let level = self.realizer.drawn(i)
+            if level == NO_LEVEL || self.baked_level[i] == level {
+                continue
+            }
+            if done >= most {
+                return false
+            }
+            borrow m = self.realizer.mesh(i)
+            let room = m.room().vertices
+            var out: GpuBuffer<vec4> = buffer(room)
+            dispatch(
+                cook_baked.bind(
+                    bake: b,
+                    tally: m.tally.items(),
+                    verts: m.verts.items(),
+                    out: mut out,
+                ),
+                groups: (room + 63) / 64,
+            )
+            self.baked[i] = Some(take out)
+            self.baked_level[i] = level
+            done += 1
+        }
+        true
+    }
+
+    /// Every tile at `level` now, whatever the budget (a still, a test, a load screen): whether
+    /// each has it.
+    pub fn realize_all(mut self, level: u32) -> bool {
+        let all = self.realizer.realize_all(level)
+        self.forget_placed()
+        all
+    }
+
+    /// How far tile `i`'s new level has faded in (1: it isn't fading). Its new mesh draws where
+    /// a pixel's dither is under it (`lod::dithered`), the old (`fading`) where it isn't.
+    pub fn fade_share(self, i: u32) -> f32 {
+        self.realizer.fade_share(i)
+    }
+
+    /// The meshes fading out, each its tile's level before.
+    pub fn fading(self) -> [Fading] {
+        self.realizer.fading()
+    }
+}
+
+impl<F> Tiles<F> {
+    pub fn len(self) -> u32 {
+        self.cubes.len()
+    }
+
+    /// Whether tile `i` has a mesh to draw.
+    pub fn drawn(self, i: u32) -> bool {
+        self.realizer.drawn(i) != NO_LEVEL
+    }
+
+    /// Tile `i`'s mesh: it must have one (`drawn`).
+    pub fn mesh(self, i: u32) -> borrow Mesh {
+        self.realizer.mesh(i)
+    }
+
+    /// Whether tile `i`'s drawn mesh has its baked numbers (`bake`).
+    pub fn has_baked(self, i: u32) -> bool {
+        self.baked_level[i] != NO_LEVEL && self.baked_level[i] == self.realizer.drawn(i)
+    }
+
+    /// Tile `i`'s baked numbers, one a vertex of its drawn mesh: it must have them (`has_baked`).
+    pub fn baked(self, i: u32) -> borrow GpuBuffer<vec4> {
+        match self.baked[i] {
+            Some(b) => b,
+            None => panic("this tile has nothing baked"),
+        }
+    }
+
+    /// Whether every tile has a mesh: the solid can be drawn from meshes alone.
+    pub fn whole(self) -> bool {
+        for i in 0..self.cubes.len() {
+            if self.realizer.drawn(i) == NO_LEVEL {
+                return false
+            }
+        }
+        true
+    }
+}

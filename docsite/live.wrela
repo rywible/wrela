@@ -950,8 +950,10 @@ pub struct View: Copy + GpuData {
     pub line: vec4,
     pub body: vec4,
     pub rim: vec4,
-    /// The pointer's point on the slice (w: 1 where the pointer is on it).
+    /// The pointer's point on the slice (w: 1 where the pointer is on it), and the field's
+    /// distance there (computed once, not by every pixel).
     pub probe: vec4,
+    pub probe_distance: f32,
     pub tilt: f32,
     pub radius: f32,
     pub floor: f32,
@@ -1099,7 +1101,7 @@ fn slice_top(scene: Scene, look: View, p: vec3, per: f32, d: f32, color: vec3) -
     c = mix(c, rim, saturate(1.6 - abs(d) / per) * 0.9)
     if look.probe.w > 0.0 {
         let q = look.probe.xyz
-        let dq = evaluate(scene, q)
+        let dq = look.probe_distance
         let ring = saturate(1.3 - abs(length(p - q) - abs(dq)) / per)
         let dot = saturate(3.5 - length(p - q) / per)
         c = mix(c, vec3(1.0), max(ring * 0.8, dot))

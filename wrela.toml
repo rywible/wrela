@@ -5,7 +5,7 @@
 [workspace]
 # The toolchain release the workspace runs: a `wrela` of another release runs this one instead,
 # downloading it to ~/.wrela/toolchains (`wrela toolchain` says which runs and why).
-toolchain = "0.24.0"
+toolchain = "0.27.0"
 members = [
     "console",
     "console/server",
@@ -16,6 +16,7 @@ members = [
     "engine",
     "engine/tests/*",
     "scenes/opening",
+    "scenes/opening/tests/*",
     "land",
     "land/tests/*",
     "mmo/combat",
