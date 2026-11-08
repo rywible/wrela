@@ -21,7 +21,7 @@
 
 use std::mem::debug_build
 use noise::{direction, hash2, pick, rand}
-use std::field::{Surface, PartName, Tube, unnamed}
+use std::field::{Bound, Surface, PartName, Tube, UNBOUNDED, unnamed}
 use std::gpu::{
     ClipPosition, FragCoord, GlobalId, Oct32, Rgba8, Sampler, Slots, Texture, Unorm8x4, VertexIndex,
     begin_pass, draw, texture,
@@ -521,6 +521,11 @@ impl<const L: u32> PlantOf<L> {
 
 /// A plant's field: its limbs, and its crown as one soft solid. The lens draws it as clay.
 impl<const L: u32> Surface for PlantOf<L> {
+    /// Unbounded: its crown's soft solid states no reach yet. Its limbs and clumps are culled by their own boxes.
+    fn bound(self) -> Bound {
+        UNBOUNDED
+    }
+
     fn distance(self, p: vec3) -> f32 {
         let (crown, _) = self.crown(p)
         min(self.wood(p), crown)
