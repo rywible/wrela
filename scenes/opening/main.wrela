@@ -18,7 +18,7 @@
 use heavens::heavens
 use look::SUN
 use ink::ink
-use played::{State, cover, painted, sized, targets}
+use played::{State, cover, painted, sized, targets, weathered}
 use sail::key
 use std::input::events
 use std::gpu::{begin_screen_pass, draw}
@@ -31,8 +31,8 @@ pub const START: f32 = 0.0
 pub const KINETIC: f32 = 0.0
 
 /// Which view draws: 0 the opening's, 1 the rock near, 2 the skiff near, 3 the cathedral, 4
-/// the sea from over it, 5 toward the sun, 8 the traveller close, 9 him
-/// from off the starboard quarter (`--set VIEW=1`).
+/// the sea from over it, 5 toward the sun, 8 the traveller close, 9 him from off the starboard
+/// quarter, 10 from off the port bow (`--set VIEW=1`).
 pub const VIEW: u32 = 0
 
 /// How much of the drawing lies over the render: 1, all of it; 0, the physical render alone
@@ -57,9 +57,29 @@ pub const FINE: f32 = 1.0
 /// flat-bottomed and flared, its bow swept up and decked) (`--set PLANING=1`).
 pub const PLANING: f32 = 1.0
 
+/// How high the planing hull's deck stands over the water it floats in (m): its topsides, the
+/// freeboard that makes it read as a boat and not a board. Its hull is that much deeper, so it
+/// draws as much as before (`--set FREEBOARD=0`, the flush board it was).
+pub const FREEBOARD: f32 = 0.28
+
+/// The skiff's sail (1, the junk's, Ryan's pick): 0 the windsurfer's battened triangle, weathered and patched; 1 a junk's
+/// lug sail of tanbark cloth between bamboo battens; 2 a crab-claw of woven matting between two
+/// spars; 3 the triangle again in bold madder with a pennant streaming off its head
+/// (`--set SAIL=1`).
+pub const SAIL: u32 = 1
+
+/// How far the opening's camera stands to the skiff's port side (m): at 3.5 the skiff sails on
+/// the frame's right third under the rock on its left, not stacked on the centre line under it
+/// (`--set OPEN_SIDE=0`, as it was).
+pub const OPEN_SIDE: f32 = 3.5
+
 /// Where the camera stands: 0 the opening's shot, 1 the player's, up behind the skiff
 /// (`Rig::framing`; `--set FRAMING=1`).
 pub const FRAMING: f32 = 0.0
+
+/// The player's camera: 0 low behind the skiff, as it was; 1 higher and off its quarter, so the
+/// deck and the hull's length read (`--set CAMERA=1`).
+pub const CAMERA: f32 = 0.0
 
 /// Whether the hero (Hakuro, content/hakuro: his fields realized and drawn into the painted
 /// scene, `aboard`) stands to the sail: 1, him; 0 the traveller's figure in his place
@@ -67,11 +87,12 @@ pub const FRAMING: f32 = 0.0
 pub const HERO: f32 = 1.0
 
 /// How the hero is drawn: 1 (Ryan's pick, Nov 7) illustrated, a cool rim of the sky round his
-/// form and an ink line at his outline and where his parts cross (`--set INKED=1`).
+/// form and an ink line at his outline and where his parts cross; 0 lit as the skiff is
+/// (`--set INKED=0`).
+pub const INKED: f32 = 1.0
+
 /// 1 for the A/B's B: the hero's rim a narrow bright cool line round his silhouette; 0 as before.
 pub const HERO_POP: f32 = 0.0
-
-pub const INKED: f32 = 1.0
 
 pub fn init() -> State {
     targets(heavens(SUN, 3.0), 640, 360)
@@ -84,12 +105,13 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         key(mut s.rig, e)
     }
     let shot = painted(mut s, time, VIEW, 0.0, framing: FRAMING, fine: FINE)
+    weathered(mut s, shot)
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     borrow hv = s.heavens
     draw(
         screen,
         cover,
-        ink.bind(shot: shot, light: hv.light, colour: s.colour, marks: s.marks, normal: s.normal),
+        ink.bind(shot: shot, light: hv.light, colour: s.aired, marks: s.marks, normal: s.normal),
         vertices: 3,
     )
     screen.present()

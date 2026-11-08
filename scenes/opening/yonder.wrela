@@ -11,9 +11,11 @@
 // falls move each drawing, so they're not added up here, which would smear them: the paint draws
 // them fresh, with `falls`.)
 
-use look::{GILT, GLASS, ISLE, OVERCAST, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
+use look::{GILT, GLASS, ISLE, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
-use paint::{Heaven, aired, hazed_far, lit_solid, sphere}
+use far::far_off
+use stacks::{march_stacks, stacks_albedo, stacks_ao, stacks_normal, stacks_shadow}
+use paint::{Heaven, aired, hazed_far, heaven, lit_solid, sphere}
 use engine::far::foot
 use engine::light::Light
 use engine::sky::{Clouds, cloud_shadow}
@@ -178,7 +180,7 @@ fn isle_shade(
     // (Its shadows likewise: none from a recess too small for a pixel to hold.)
     let lift = max(2.0, t * 0.0012)
     let sun = isle_shadow(p + n * lift, light.sun, lift, hash2(px * 1.37)) *
-        mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, OVERCAST))
+        mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, light.storm))
     let ao = isle_ao(p, n)
     // The rock and the cathedral on it in the same air: all the air their 8 km holds, and a
     // little past it toward the sky's own colour, as a painter pushes back what's far; so the
@@ -270,6 +272,44 @@ fn isle_shade(
     (c, line, weight, n)
 }
 
+/// `c` (a far solid's light through all its air, along `d`) pushed back `k` (0 to 1) of the way on
+/// toward the sky behind it, the sky the eye sees there (the storm's own air on the horizon); and
+/// never brighter than that sky: a stack against the light is its shadow side, and a pale sliver
+/// of it toward the sun reads as a white spark on the horizon.
+fn pushed_back(h: Heaven, view: Texture<Rgba16Float>, dome: Texture<Rgba16Float>, smp: Sampler, c: vec3, d: vec3, k: f32) -> vec3 {
+    let sky = heaven(view, h.light, normalize(vec3(d.x, max(d.y, 0.0), d.z)), dome, smp).rgb
+    min(mix(c, sky, k), sky * 0.9)
+}
+
+/// A stack where the ray met it at `p`, a pixel `px` m across there: its light in its air, and
+/// its normal. Lit as the rock is lit: the one sun through the deck, the deck's light, the air.
+fn stacks_shade(
+    s: Shot,
+    h: Heaven,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    p: vec3,
+    d: vec3,
+    px: f32,
+) -> (vec3, vec3) {
+    let n = stacks_normal(p, max(0.04, px * 0.6), px)
+    let albedo = stacks_albedo(p, n, px)
+    let lift = max(0.1, px)
+    let sun = stacks_shadow(p + n * lift, h.light.sun, px) *
+        mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, h.light.storm))
+    let ao = stacks_ao(p, n, px)
+    // (All the air between, and the farther a little past it toward the deck's own colour, as
+    // the rock is pushed back: so a stack two kilometres off stands paler than one at three
+    // hundred metres, and the eye reads how far each is.)
+    let t = length(p - s.eye)
+    let c = lit_solid(s, h, view, aerial, dome, smp, p, n, d, albedo, 0.85, 0.0, vec3(0.0), sun, ao, 1.0, 0.0)
+    (pushed_back(h, view, dome, smp, c, d, 0.1 + 0.7 * pow(smoothstep(60.0, 2200.0, t), 0.7)), n)
+}
+
 @fragment
 pub fn yonder(
     pixel: FragCoord,
@@ -302,11 +342,34 @@ pub fn yonder(
             id = isle(o + d * ti).y
         }
     }
+    // The sea's own stacks, nearer.
+    let k = 2.0 / (s.resolution.y * s.focal)
+    let ts = march_stacks(o, d, t, k)
     var c = vec3(0.0)
     var cover = 0.0
     var marks = vec4(log2(far), SKY, 1.0, 0.0)
     var n = -d
-    if id != SKY {
+    if ts < t {
+        let (sc, sn) = stacks_shade(s, h, clouds, view, aerial, dome, cloud, smp, o + d * ts, d, ts * k)
+        c = sc
+        cover = 1.0
+        marks = vec4(log2(ts), ROCK, 1.0, 0.5)
+        n = sn
+    } else if id == SKY {
+        // Past them, the archipelago's other islands on the horizon, as silhouettes.
+        let (tf, fnn) = far_off(o, d, far, k)
+        if tf < far {
+            let p = o + d * tf
+            let sun = mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, h.light.storm))
+            let albedo = vec3(0.07, 0.072, 0.08) * (0.85 + 0.3 * noise(vec2(p.x + p.z, p.y) * 0.02))
+            // (Pushed back past their air toward the deck's colour, as the rock is.)
+            let lit = lit_solid(s, h, view, aerial, dome, smp, p, fnn, d, albedo, 0.9, 0.0, vec3(0.0), sun, 1.0, 1.0, 0.0)
+            c = pushed_back(h, view, dome, smp, lit, d, 0.4 * smoothstep(3000.0, 10000.0, tf))
+            cover = 1.0
+            marks = vec4(log2(tf), ROCK, 1.0, 0.3)
+            n = fnn
+        }
+    } else {
         let (ic, il, iw, inn) = isle_shade(
             s,
             h,
@@ -338,10 +401,34 @@ pub fn yonder(
         if was.z > 0.0 {
             let uv = was.xy / yon.resolution
             let before = sharp(past_colour, smp, was.xy, yon.resolution)
-            let k = 1.0 / min(yon.held + 1.0, HOLD)
-            now = mix(before, now, k)
             let q = clamp(floor(was.xy), vec2(0.0), yon.resolution - vec2(1.0))
             let bm = past_marks.load(u32(q.x), u32(q.y))
+            // (A near stack slides past what's behind it: where this drawing and the last met
+            // things at different depths and either was a near stack, little of the last is
+            // kept, else it trails a smear off the stack's side as the skiff turns.)
+            // (But only where this drawing has no stack edge round it: an edge's pixels flip
+            // between stack and sky from drawing to drawing with the jitter, and they're the
+            // ones the mean is for. Where none of the pixels round it meets the same as this one,
+            // the last drawing's is a ghost, and it's dropped.)
+            let near = min(bm.x, marks.x) < 11.5
+            var fresh = 0.0
+            if near && abs(bm.x - marks.x) > 0.25 {
+                // (Two neighbours, one on each diagonal 1.5 pixels off, see a side's edge and a top's
+                // alike; and once one differs it's an edge, and the other isn't marched.)
+                var same = true
+                var j = 0
+                while j < 2 && same {
+                    let side = f32(j) * 2.0 - 1.0
+                    let dj = ray(s, px + vec2(1.0, side) * 1.06)
+                    same = (march_stacks(o, dj, t, k) < t) == (ts < t)
+                    j += 1
+                }
+                // (And an edge's mean held short, a few drawings: the stack slides against the
+                // sky behind it, and a long mean would trail it.)
+                fresh = if same { 1.0 } else { 0.3 }
+            }
+            let k = max(1.0 / min(yon.held + 1.0, HOLD), fresh)
+            now = mix(before, now, k)
             let bn = past_normal.sample_level(smp, uv)
             // (What it is isn't a mean: the last drawing's where this one met nothing of it.)
             let what = if id != SKY { id } else if now.a > 0.5 { bm.y } else { SKY }
@@ -357,9 +444,8 @@ pub fn yonder(
     Targets3 { first: now, second: marks, third }
 }
 
-/// The wind the falls' spray goes with (the sky's, `heavens`: 9 m/s east, 14 south), and how
-/// far it carries a drop for each metre it falls (the spray's slow fall against it).
-const WIND = vec2(0.54, -0.84)
+/// How far the wind (`Shot::wind`, the world's one: `wind`) carries a drop for each metre it
+/// falls (the spray's slow fall against it).
 const CARRY: f32 = 0.55
 
 /// How much of the falls a ray `o` + `d` t meets before `hit`, and their light (premultiplied);
@@ -398,7 +484,7 @@ pub(package) fn falls(
                 let p = o + d * tc
                 let drop = lip.y - p.y
                 // Where the fall's middle is at this depth: off down the wind as it falls.
-                let carried = dot(WIND, side_dir) * CARRY * max(drop - 60.0, 0.0)
+                let carried = dot(normalize(s.wind), side_dir) * CARRY * max(drop - 60.0, 0.0)
                 let side = dot(vec2(p.x - lip.x, p.z - lip.z), side_dir) - carried
                 let fi = f32(i) * 13.7
                 let px_m = tc * 2.0 / (s.resolution.y * s.focal)

@@ -1,10 +1,10 @@
 // What both passes read (`Shot`: the camera, the light, the skiff where the sea has it this
 // frame), the scene's layout and palette, and the noise they paint with.
 
-use sea::{HELD, bob, held}
+use sea::{HELD, SEA as WATER, bob, held}
 use engine::ocean::Swell
 use sail::{Rig, Pose, pose}
-use main::PLANING
+use main::{CAMERA, OPEN_SIDE}
 
 /// Where the rock floats (the world's, m: its plateau's centre), and the sun.
 pub const ISLE = vec3(-1890.0, 1806.0, 7560.0)
@@ -15,9 +15,23 @@ pub const OVERCAST: f32 = 1.0
 /// Under the overcast: how much brighter it's exposed than the storm's first grade (1 as it was);
 /// how wide a break in the deck far off toward the sun (m; 0 none); how far the deck thins
 /// between its banks, the sun's light glowing through (0 to 1).
-pub const LIFT: f32 = 1.45
+pub const LIFT: f32 = 1.8
 pub const BREAK: f32 = 0.0
 pub const THIN: f32 = 0.0
+/// How wide the deck's thinner reach behind the cathedral is (m; 0 none).
+pub const VEIL: f32 = 3800.0
+/// Under the overcast, low on the horizon: the elevation (a direction's y) under which the deck
+/// goes into the storm's own air; how much lighter that air is at the horizon itself; and how
+/// bright the open sky behind the deck's thinner places is, against the open sky's own.
+pub const STORM_LOW: f32 = 0.075
+pub const STORM_HORIZON: f32 = 1.6
+pub const STORM_BEHIND: f32 = 0.2
+
+/// The way the wind blows (x, z, a unit vector): the sea's (`sea::SEA`), which the clouds, the
+/// rain and the scud go with.
+pub fn wind() -> vec2 {
+    WATER.wind
+}
 
 /// The palette, linear: the ink, the paper, the shadow's cool and the light's warmth.
 pub const INK = vec3(0.045, 0.035, 0.07)
@@ -97,6 +111,12 @@ pub struct Shot: Copy + GpuData {
     /// times over a pixel); 0.3 for a live page, the rock and the cathedral alone four times, so
     /// their fine work doesn't crawl as the eye moves; 0 everything once (`paint`).
     pub fine: f32,
+    /// How much of the storm is here, where the eye is (0 clear to 1 the storm's deck: the
+    /// weather of the region it's in, `heavens::Heavens::storm`), eased as it sails between.
+    pub storm: f32,
+    /// The wind's mean where the eye is (m/s, toward where it blows: `wind::mean_wind`, eased
+    /// as the skiff sails between regions); its gusts over it are `wind::air_over`'s.
+    pub wind: vec2,
 }
 
 /// The player's camera (`Rig::framing` 1): how far behind the skiff (m), how high over the sea
@@ -137,14 +157,16 @@ pub fn shot_at(
     let bz = bz0 * cos(pitch) + by1 * sin(pitch)
     let by = by1 * cos(pitch) - bz0 * sin(pitch)
     let bx = bx1
-    let boat = afloat + vec3(y: 0.05 * pl + 0.07 * PLANING)
+    // (Lifted a little on the plane; pressed down into the water as it heels into a turn, its
+    // low chine dug in, as a carving hull loads up.)
+    let boat = afloat + vec3(y: 0.06 * pl - 0.2 * abs(sin(hl)))
     let g = pose(r)
     // The bounce: how sharply the skiff's fall was stopped over the last drawings.
     let dt = 1.0 / HELD
     let (b1, _, _, _) = bob(t - dt, r.shown_at, r.shown_steer, swell)
     let (b2, _, _, _) = bob(t - 2.0 * dt, r.shown_at, r.shown_steer, swell)
     let lift = (boat.y - 2.0 * b1.y + b2.y) / (dt * dt)
-    let behind = turned(vec2(0.5, -21.0), r.shown_look)
+    let behind = turned(vec2(0.5 - OPEN_SIDE, -21.0), r.shown_look)
     let ahead = turned(vec2(-530.5, 5421.0), r.shown_look)
     let low = vec3(r.shown_at.x + behind.x, 1.9 + boat.y * 0.6, r.shown_at.y + behind.y)
     let rock = normalize(vec3(ahead.x, 622.0 - low.y, ahead.y))
@@ -155,17 +177,17 @@ pub fn shot_at(
     // little lower the faster it runs.)
     let run = smoothstep(2.0, 10.0, r.shown_rush)
     let surge = clamp(r.shown_speed - r.shown_rush, -1.0, 3.0)
-    let back = PLAY_BACK - 0.3 * run + max(surge, 0.0) * 0.35 + min(surge, 0.0) * 0.15
-    let beside = vec2(heading.y, -heading.x) * (PLAY_SIDE * r.shown_perch)
+    let back = PLAY_BACK + 0.8 * CAMERA - 0.3 * run + max(surge, 0.0) * 0.35 + min(surge, 0.0) * 0.15
+    let beside = vec2(heading.y, -heading.x) * ((PLAY_SIDE + 2.2 * CAMERA) * r.shown_perch)
     let high = vec3(
         r.shown_at.x - heading.x * back + beside.x,
-        PLAY_UP - 0.35 * run + boat.y * 0.5,
+        PLAY_UP + 1.4 * CAMERA - 0.35 * run + boat.y * 0.5,
         r.shown_at.y - heading.y * back + beside.y,
     )
     let ahead_of = vec3(
-        r.shown_at.x + heading.x * 24.0 + beside.x * 0.4,
+        r.shown_at.x + heading.x * (24.0 - 6.0 * CAMERA) + beside.x * 0.4,
         0.9,
-        r.shown_at.y + heading.y * 24.0 + beside.y * 0.4,
+        r.shown_at.y + heading.y * (24.0 - 6.0 * CAMERA) + beside.y * 0.4,
     )
     let k = smoothstep(0.0, 1.0, clamp(r.framing, 0.0, 1.0))
     // (Running, the camera shakes a little with the hull's chatter over the chop, and with a
@@ -265,6 +287,8 @@ pub fn shot_at(
         look: 0.0,
         lantern: 0.0,
         fine: 1.0,
+        storm: OVERCAST,
+        wind: WATER.wind * WATER.speed,
     }
 }
 

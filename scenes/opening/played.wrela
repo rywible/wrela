@@ -12,6 +12,7 @@ use engine::ocean::{Ocean, Waves}
 use paint::paint
 use yonder::{Yon, yonder}
 use ink::ink
+use weather::weather
 use sail::{Rig, key, let_go, rest, step}
 use std::collections::swap
 use std::input::Event
@@ -32,6 +33,8 @@ pub struct State {
     pub(package) colour: Texture<Rgba16Float>,
     pub(package) marks: Texture<Rgba16Float>,
     pub(package) normal: Texture<Rgba8>,
+    /// The painted scene with the weather laid over it (`weather`): what the ink reads.
+    pub(package) aired: Texture<Rgba16Float>,
     /// The rock and the cathedral as their own pass met them over the drawings (`yonder`): this
     /// drawing's (their light, what the ink reads, the normal), the last's beside it, and where
     /// from and how many drawings they hold.
@@ -75,6 +78,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         colour: texture(width: width, height: height),
         marks: texture(width: width, height: height),
         normal: texture(width: width, height: height),
+        aired: texture(width: width, height: height),
         yon_colour: texture(width: width, height: height),
         yon_marks: texture(width: width, height: height),
         yon_normal: texture(width: width, height: height),
@@ -160,6 +164,7 @@ pub(package) fn sized(s: mut State, width: u32, height: u32) {
         s.colour = texture(width: width, height: height)
         s.marks = texture(width: width, height: height)
         s.normal = texture(width: width, height: height)
+        s.aired = texture(width: width, height: height)
         s.yon_colour = texture(width: width, height: height)
         s.yon_marks = texture(width: width, height: height)
         s.yon_normal = texture(width: width, height: height)
@@ -212,6 +217,7 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
         ..shot_at(START + time, s.width, s.height, KINETIC, view, rig, s.ocean.swell),
     }
     s.heavens.step(shot.eye, shot.forward, START + time)
+    let shot = Shot { storm: s.heavens.storm, wind: s.heavens.wind, ..shot }
     next_yon(mut s, shot)
     // The sea as it is at this drawing.
     s.ocean.step(held(START + time))
@@ -280,6 +286,29 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
     p.end()
 }
 
+/// The weather laid over the painted scene (`weather`), into `aired`, for the ink.
+pub(package) fn weathered(s: mut State, shot: Shot) {
+    borrow hv = s.heavens
+    let p = begin_pass(mut s.aired, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(
+        p,
+        cover,
+        weather.bind(
+            shot: shot,
+            light: hv.light,
+            clouds: hv.clouds,
+            view: hv.tables.view,
+            aerial: hv.tables.aerial,
+            dome: hv.sky.dome,
+            smp: hv.linear,
+            colour: s.colour,
+            marks: s.marks,
+        ),
+        vertices: 3,
+    )
+    p.end()
+}
+
 /// The scene for another program, drawn at `width` by `height`.
 pub fn scene(width: u32, height: u32) -> State {
     targets(heavens(SUN, 3.0), width, height)
@@ -332,12 +361,13 @@ pub fn play(
         s.spare = texture(width: width, height: height)
         s.spare_size = (width, height)
     }
+    weathered(mut s, shot)
     borrow hv = s.heavens
     let p = begin_pass(mut s.spare, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         p,
         cover,
-        ink.bind(shot: shot, light: hv.light, colour: s.colour, marks: s.marks, normal: s.normal),
+        ink.bind(shot: shot, light: hv.light, colour: s.aired, marks: s.marks, normal: s.normal),
         vertices: 3,
     )
     p.end()

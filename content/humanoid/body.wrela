@@ -236,6 +236,11 @@ pub const ACCAD_M2_STOP: Clip = cleanup::cleaned(
     HERO.rig.clone(),
     Cleanup {},
 )
+/// Male 2's walk as it's written in Wrela (content/moves/walk.wrela, fitted from
+/// `ACCAD_M2_WALK` by the moves tool), played on the body.
+@fuel(2 ** 40)
+pub const ACCAD_M2_WALK_CODE: Clip = moves::walk::WALK.clip(HERO.rig.clone(), 120.0)
+
 @fuel(2 ** 40)
 pub const ACCAD_M1_WALK: Clip = cleanup::cleaned(
     ACCAD_M1_WALK_RAW.clone(),
@@ -281,20 +286,37 @@ pub const ROLL_RAW: Clip = humanoid::retarget(
 /// The idle, and ACCAD Male 2's walk and run (Ryan's pick of the walks; his run is a real
 /// 4 m/s run), in place, their footfalls marked, and his start and stop: the body's gaits.
 @fuel(2 ** 40)
-pub const GAITS: Gaits = Gaits::of(
-    playback::with_steps(playback::moved(IDLE.clone(), HERO.rig.clone()), HERO.rig.clone()),
-    playback::with_steps(
-        playback::moved(ACCAD_M2_WALK.clone(), HERO.rig.clone()),
-        HERO.rig.clone(),
-    ),
-    playback::with_steps(
-        playback::moved(ACCAD_M2_RUN.clone(), HERO.rig.clone()),
-        HERO.rig.clone(),
-    ),
-    playback::moved(ACCAD_M2_START.clone(), HERO.rig.clone()),
-    playback::moved(ACCAD_M2_STOP.clone(), HERO.rig.clone()),
-    HERO.rig.clone(),
+pub const GAITS: Gaits = gaits_of(
+    IDLE.clone(),
+    ACCAD_M2_WALK.clone(),
+    ACCAD_M2_RUN.clone(),
+    ACCAD_M2_START.clone(),
+    ACCAD_M2_STOP.clone(),
 )
+
+/// The same gaits from the moves written in Wrela (content/moves): no capture read.
+@fuel(2 ** 40)
+pub const GAITS_CODE: Gaits = gaits_of(
+    moves::idle::IDLE.clip(HERO.rig.clone(), IDLE.fps),
+    moves::walk::WALK.clip(HERO.rig.clone(), ACCAD_M2_WALK.fps),
+    moves::run::RUN.clip(HERO.rig.clone(), ACCAD_M2_RUN.fps),
+    moves::start::START.clip(HERO.rig.clone(), ACCAD_M2_START.fps),
+    moves::stop::STOP.clip(HERO.rig.clone(), ACCAD_M2_STOP.fps),
+)
+
+/// The body's gaits from an idle, a walk and a run (each looped, in place: their footfalls
+/// marked), a start and a stop.
+fn gaits_of(idle: Clip, walk: Clip, run: Clip, start: Clip, stop: Clip) -> Gaits {
+    let rig = HERO.rig.clone()
+    Gaits::of(
+        playback::with_steps(playback::moved(idle, rig.clone()), rig.clone()),
+        playback::with_steps(playback::moved(walk, rig.clone()), rig.clone()),
+        playback::with_steps(playback::moved(run, rig.clone()), rig.clone()),
+        playback::moved(start, rig.clone()),
+        playback::moved(stop, rig.clone()),
+        rig,
+    )
+}
 
 /// A player's attack's frames in the fight, at its 60 a second: windup (the tell), active (when
 /// it hits), recovery (committed and open): mmo/combat/sim.wrela's `ATTACK_WINDUP`,
@@ -313,33 +335,48 @@ pub const PUNCH_KEYED: Move = playback::moved(
 
 /// The punch fitted to the attack's frames: its fist at its fastest when the fight says it hits.
 @fuel(2 ** 40)
-pub const PUNCH: Move = playback::timed(
-    PUNCH_KEYED.clone(),
-    playback::strike_of(PUNCH_KEYED.clone(), HERO.rig.clone(), "rightHand"),
-    ATTACK_WINDUP,
-    ATTACK_ACTIVE,
-    ATTACK_RECOVERY,
-    HZ,
-)
+pub const PUNCH: Move = punched(PUNCH_KEYED.clone())
+
+/// A punch (in place, held to its feet) fitted to the attack's frames.
+fn punched(keyed: Move) -> Move {
+    playback::timed(
+        keyed.clone(),
+        playback::strike_of(keyed, HERO.rig.clone(), "rightHand"),
+        ATTACK_WINDUP,
+        ATTACK_ACTIVE,
+        ATTACK_RECOVERY,
+        HZ,
+    )
+}
 
 /// The roll, at its own pace, its keys eased into each other (`playback::eased`: they whip
 /// from one to the next): Quaternius keyed it in place, so gameplay carries it ahead
 /// (`ROLL_SPEED`, m/s), as the fight's dodge does.
 pub const ROLL_SPEED: f32 = 2.4
 @fuel(2 ** 40)
-pub const ROLL: Move = playback::pushed(
-    playback::eased(
-        playback::moved(
-            cleanup::cleaned(ROLL_RAW.clone(), HERO.rig.clone(), cleanup::KEYED),
-            HERO.rig.clone(),
-        ),
-        2,
-    ),
-    ROLL_SPEED,
+pub const ROLL: Move = rolled(
+    cleanup::cleaned(ROLL_RAW.clone(), HERO.rig.clone(), cleanup::KEYED),
 )
+
+/// A roll (in place, held to its feet) eased and carried ahead.
+fn rolled(clip: Clip) -> Move {
+    playback::pushed(playback::eased(playback::moved(clip, HERO.rig.clone()), 2), ROLL_SPEED)
+}
 
 /// The one-offs a body acts, by index: the punch (`ACT_PUNCH`), the roll (`ACT_ROLL`).
 pub const ACT_PUNCH: u32 = 0
 pub const ACT_ROLL: u32 = 1
 @fuel(2 ** 40)
 pub const ACTS: [Move; 2] = [PUNCH.clone(), ROLL.clone()]
+
+/// The same one-offs from the moves written in Wrela (content/moves): no capture read.
+@fuel(2 ** 40)
+pub const ACTS_CODE: [Move; 2] = [
+    punched(
+        playback::moved(
+            moves::punch::PUNCH.clip(HERO.rig.clone(), PUNCH_KEYED.clip.fps),
+            HERO.rig.clone(),
+        ),
+    ),
+    rolled(moves::roll::ROLL.clip(HERO.rig.clone(), ROLL_RAW.fps)),
+]
