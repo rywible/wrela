@@ -166,9 +166,10 @@ fn next_yon(s: mut State, shot: Shot) {
     // (The sequence runs on past the most a pixel holds: held at its cap, the offset would stop
     // on one place and the crawl come back.)
     s.yon_seq += 1
-    // (Met a quarter at a time, each pixel's offset steps on once in its four drawings: stepped
-    // each drawing, the four would each run through only a part of the sequence.)
-    let i = (if QUARTER { s.yon_seq / REFRESH } else { s.yon_seq }) % 16 + 1
+    // (Met a quarter at a time, or the rock a block in four (`yonder::REFRESH`), each pixel's
+    // offset steps on once in its four drawings: stepped each drawing, the four would each run
+    // through only a part of the sequence.)
+    let i = (if QUARTER || (OFF & 4096) == 0 { s.yon_seq / REFRESH } else { s.yon_seq }) % 16 + 1
     s.yon = Yon {
         held: n,
         jitter: vec2(halton(i, 2), halton(i, 3)) - vec2(0.5),

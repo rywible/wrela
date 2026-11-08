@@ -688,7 +688,9 @@ pub fn yonder_rebuild(
     var third = bn
     if mine {
         let had = floor(yon.held * 0.25)
-        let k = if agree { 1.0 / min(had + 1.0, QUARTER_HOLD) } else { 0.5 }
+        // (Not as far as what was carried: something else stands here now, and what was carried
+        // is dropped, not half kept, which would leave a depth that's neither's.)
+        let k = if agree { 1.0 / min(had + 1.0, QUARTER_HOLD) } else { 1.0 }
         now = mix(before, lc, k)
         let what = if lm.y != SKY { lm.y } else if now.a > 0.5 { bm.y } else { SKY }
         marks = vec4(mix(bm.x, lm.x, k), what, mix(bm.z, lm.z, k), mix(bm.w, lm.w, k))
@@ -706,7 +708,9 @@ pub fn yonder_rebuild(
             }
         }
         now = clamp(before, lo, hi)
-        if now.a < 0.5 && bm.y != SKY {
+        // (What it is goes with what it covers: where the clamp made a carried sky solid, or a
+        // carried solid sky, the marks are the neighbour's met this drawing.)
+        if (now.a > 0.5) != (bm.y != SKY) {
             marks = lm
             third = ln
         }
