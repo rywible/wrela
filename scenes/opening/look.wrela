@@ -123,6 +123,16 @@ pub struct Shot: Copy + GpuData {
 /// (m), and its focal length (screen half-heights; the opening's shot is a long 3.7).
 const PLAY_BACK: f32 = 6.2
 const PLAY_UP: f32 = 2.5
+
+/// How far over the water under it the camera stays at least (m): over the chop the CPU's
+/// waves (`Swell`) leave out, and its spray.
+const CLEAR: f32 = 0.9
+
+/// The larger of `a` and `b`, rounded over `k` where they meet.
+fn soft_max(a: f32, b: f32, k: f32) -> f32 {
+    let h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0)
+    mix(b, a, h) + k * h * (1.0 - h)
+}
 const PLAY_FOCAL: f32 = 1.75
 /// How far the player's camera stands out to windward of the skiff's wake (m): over the
 /// traveller's shoulder, the sail seen across, not edge on.
@@ -236,6 +246,16 @@ pub fn shot_at(
     } else {
         (eye, at, near)
     }
+    // Never under the water: a crest running under the camera lifts it, as a buoy is lifted,
+    // when the skiff's in the trough before it (a crest stands 3 m over the mean in this sea,
+    // the camera a little less over the skiff). Smoothly, so a crest passing under rolls it up
+    // and down; the views from the sea's own height only, the others well over it already.
+    let (eye, at) = if view == 0 || view == 2 || view >= 5 {
+        let floor = swell.height(vec2(eye.x, eye.z), t) + CLEAR
+        let lift = soft_max(eye.y, floor, 0.6) - eye.y
+        // (The player's view keeps looking the way it did; the others keep the skiff framed.)
+        (eye + vec3(y: lift), if view == 0 { at + vec3(y: lift) } else { at })
+    } else { (eye, at) }
     let forward = normalize(at - eye)
     let level = normalize(cross(vec3(y: 1.0), forward))
     // (The player's camera leans a little with the skiff's heel.)
