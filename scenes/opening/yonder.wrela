@@ -11,7 +11,7 @@
 // falls move each drawing, so they're not added up here, which would smear them: the paint draws
 // them fresh, with `falls`.)
 
-use main::{OFF, RELIT}
+use main::{OFF, RELIT, SPARSE}
 use look::{GILT, GLASS, ISLE, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use far::far_off
@@ -609,13 +609,32 @@ fn meet(
     (vec4(c, cover), marks, vec4(n * 0.5 + 0.5, 0.0))
 }
 
-/// Which pixel of each 2x2 a drawing meets afresh when they're met a quarter at a time
-/// (`main::QUARTER`), the `turn`th: each in four drawings, corners first.
-pub fn quarter_of(turn: u32) -> vec2 {
-    if turn == 0 { vec2(0.0, 0.0) } else if turn == 1 { vec2(1.0, 1.0) } else if turn == 2 {
-        vec2(1.0, 0.0)
-    } else { vec2(0.0, 1.0) }
+/// Which pixel of each `SPARSE`-square block a drawing meets afresh when they're met sparsely
+/// (`main::QUARTER`), the `turn`th: each in turn, in an ordered-dither order, so those met one
+/// after another lie far apart in the block.
+pub fn spot(turn: u32) -> vec2 {
+    if SPARSE == 2 {
+        let i = turn % 4
+        return if i == 0 { vec2(0.0, 0.0) } else if i == 1 { vec2(1.0, 1.0) } else if i == 2 {
+            vec2(1.0, 0.0)
+        } else { vec2(0.0, 1.0) }
+    }
+    SPOTS[turn % 16]
 }
+
+/// Where in its turns block `q` (of the sparse pass's pixels) starts: each its own, so the
+/// pixels met lately don't lie on one lattice across the screen, which reads as a grid of dots.
+fn shuffled(q: vec2) -> u32 {
+    if SPARSE == 2 { 0 } else { u32(hash2(q + vec2(0.5)) * 16.0) % 16 }
+}
+
+/// The 4x4 ordered-dither (Bayer) matrix's places, by their number.
+const SPOTS = [
+    vec2(0.0, 0.0), vec2(2.0, 2.0), vec2(2.0, 0.0), vec2(0.0, 2.0),
+    vec2(1.0, 1.0), vec2(3.0, 3.0), vec2(3.0, 1.0), vec2(1.0, 3.0),
+    vec2(1.0, 0.0), vec2(3.0, 2.0), vec2(3.0, 0.0), vec2(1.0, 2.0),
+    vec2(0.0, 1.0), vec2(2.0, 3.0), vec2(2.0, 1.0), vec2(0.0, 3.0),
+]
 
 /// The far things met a quarter at a time (`main::QUARTER`): a pixel of this pass's, half the
 /// drawing's size each way, meets one pixel of its 2x2 in the drawing (`quarter_of` the turn),
@@ -634,7 +653,8 @@ pub fn yonder_low(
     smp: Sampler,
     field: Texture3d<R32Float>,
 ) -> Targets3<vec4, vec4, vec4> {
-    let pf = floor(pixel.position.xy) * 2.0 + quarter_of(yon.turn) + vec2(0.5) + yon.jitter
+    let q = floor(pixel.position.xy)
+    let pf = q * f32(SPARSE) + spot(yon.turn + shuffled(q)) + vec2(0.5) + yon.jitter
     let (now, marks, third) = meet(shot, Heaven { light, clouds }, clouds, view, aerial, dome, cloud, smp, field, pf)
     Targets3 { first: now, second: marks, third }
 }
@@ -663,8 +683,9 @@ pub fn yonder_rebuild(
 ) -> Targets3<vec4, vec4, vec4> {
     let s = shot
     let ip = floor(pixel.position.xy)
-    let q = floor(ip * 0.5)
-    let lsize = ceil(s.resolution * 0.5)
+    let side = f32(SPARSE)
+    let q = floor(ip / side)
+    let lsize = ceil(s.resolution / side)
     let lc = low_colour.load(u32(q.x), u32(q.y))
     let lm = low_marks.load(u32(q.x), u32(q.y))
     let ln = low_normal.load(u32(q.x), u32(q.y))
@@ -682,13 +703,13 @@ pub fn yonder_rebuild(
     let bn = past_normal.sample_level(smp, was.xy / yon.resolution)
     // (The same thing as this drawing met beside it: as far, give or take.)
     let agree = abs(bm.x - lm.x) < 0.25
-    let off = ip - q * 2.0 - quarter_of(yon.turn)
+    let off = ip - q * side - spot(yon.turn + shuffled(q))
     let mine = off.x == 0.0 && off.y == 0.0
     var now = before
     var marks = bm
     var third = bn
     if mine {
-        let had = floor(yon.held * 0.25)
+        let had = floor(yon.held / (side * side))
         // (Not as far as what was carried: something else stands here now, and what was carried
         // is dropped, not half kept, which would leave a depth that's neither's.)
         let k = if agree { 1.0 / min(had + 1.0, QUARTER_HOLD) } else { 1.0 }

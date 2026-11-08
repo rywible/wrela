@@ -3,7 +3,7 @@
 // it the keys while the player sails (`input`), and each frame draws it into its `image` (`play`),
 // which it lays on its own screen.
 
-use main::{KINETIC, LANTERN, LOOK, OFF, QUARTER, START, STYLE}
+use main::{KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, START, STYLE}
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
@@ -96,9 +96,9 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         past_colour: texture(width: width, height: height),
         past_marks: texture(width: width, height: height),
         past_normal: texture(width: width, height: height),
-        low_colour: texture(width: (width + 1) / 2, height: (height + 1) / 2),
-        low_marks: texture(width: (width + 1) / 2, height: (height + 1) / 2),
-        low_normal: texture(width: (width + 1) / 2, height: (height + 1) / 2),
+        low_colour: texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE),
+        low_marks: texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE),
+        low_normal: texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE),
         yon: afresh(shot),
         yon_shot: shot,
         yon_count: 0.0,
@@ -169,11 +169,11 @@ fn next_yon(s: mut State, shot: Shot) {
     // (Met a quarter at a time, or the rock a block in four (`yonder::REFRESH`), each pixel's
     // offset steps on once in its four drawings: stepped each drawing, the four would each run
     // through only a part of the sequence.)
-    let i = (if QUARTER || (OFF & 4096) == 0 { s.yon_seq / REFRESH } else { s.yon_seq }) % 16 + 1
+    let i = (if QUARTER { s.yon_seq / (SPARSE * SPARSE) } else if (OFF & 4096) == 0 { s.yon_seq / REFRESH } else { s.yon_seq }) % 16 + 1
     s.yon = Yon {
         held: n,
         jitter: vec2(halton(i, 2), halton(i, 3)) - vec2(0.5),
-        turn: s.yon_seq % REFRESH,
+        turn: if QUARTER { s.yon_seq % (SPARSE * SPARSE) } else { s.yon_seq % REFRESH },
         ..afresh(s.yon_shot),
     }
     s.yon_count = min(n + 1.0, 64.0)
@@ -193,9 +193,9 @@ pub(package) fn sized(s: mut State, width: u32, height: u32) {
         s.past_colour = texture(width: width, height: height)
         s.past_marks = texture(width: width, height: height)
         s.past_normal = texture(width: width, height: height)
-        s.low_colour = texture(width: (width + 1) / 2, height: (height + 1) / 2)
-        s.low_marks = texture(width: (width + 1) / 2, height: (height + 1) / 2)
-        s.low_normal = texture(width: (width + 1) / 2, height: (height + 1) / 2)
+        s.low_colour = texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE)
+        s.low_marks = texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE)
+        s.low_normal = texture(width: (width + SPARSE - 1) / SPARSE, height: (height + SPARSE - 1) / SPARSE)
         s.yon_count = 0.0
         s.width = width
         s.height = height
@@ -265,10 +265,10 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
     if QUARTER {
         // (A row of the half-size pass either side of the band's own: the rebuild reads the
         // pixels round each.)
-        let lw = (width + 1) / 2
-        let lh = (s.height + 1) / 2
-        let lfrom = if from / 2 > 0 { from / 2 - 1 } else { 0 }
-        let lto = min((to + 1) / 2 + 1, lh)
+        let lw = (width + SPARSE - 1) / SPARSE
+        let lh = (s.height + SPARSE - 1) / SPARSE
+        let lfrom = if from / SPARSE > 0 { from / SPARSE - 1 } else { 0 }
+        let lto = min((to + SPARSE - 1) / SPARSE + 1, lh)
         let f = begin_pass3(mut s.low_colour, mut s.low_marks, mut s.low_normal, keep: true)
         f.scissor(0, lfrom, lw, lto - lfrom)
         draw(

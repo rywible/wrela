@@ -99,6 +99,11 @@ pub const RELIT: u32 = 32
 /// (`yonder::yonder_low`, `yonder::yonder_rebuild`): a quarter of the far pass's cost.
 pub const QUARTER: bool = true
 
+/// The side of the blocks the far things are met sparsely in (`QUARTER`): one pixel of each
+/// block a drawing, at 1 / `SPARSE` the size each way: 2, or 4 (a quarter the cost again, but
+/// the stacks stay grainy for seconds after the camera starts).
+pub const SPARSE: u32 = 2
+
 /// Whether the clouds' dome is marched at half its size each way (`--set HALF_SKY=false` for full): a
 /// quarter of the clouds' cost, a little softer.
 pub const HALF_SKY: bool = true
