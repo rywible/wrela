@@ -10,7 +10,7 @@
 // None in the skiff's first reach, none in the lane it sails out along, none in front of the
 // cathedral rock.
 
-use look::{ISLE, hash2, noise}
+use look::{ISLE, hash2, noise, noise3}
 
 /// A cell's side (m), and how far a cluster reaches from its middle (m): a cluster stays a margin
 /// inside its cell.
@@ -56,7 +56,7 @@ fn cluster(c: vec2) -> vec4 {
 }
 
 /// A stack: a pillar of bedded stone `r` m round and `tall` m high, leaning, its crown tilted and
-/// broken, its footprint lobed, its beds stepped. `q` from its foot. (No detail finer than the
+/// broken into crags, its footprint lobed, its foot notched by the sea. `q` from its foot. (No detail finer than the
 /// far pass's pixels hold steadily: what's finer crawls as the skiff moves.)
 fn stack(q: vec3, r: f32, tall: f32, seed: f32, px: f32) -> f32 {
     let lean = vec2(hash2(vec2(seed, 1.0)) - 0.5, hash2(vec2(seed, 2.0)) - 0.5) * 0.22
@@ -74,14 +74,18 @@ fn stack(q: vec3, r: f32, tall: f32, seed: f32, px: f32) -> f32 {
     // set spacing; and only where a pixel holds them steadily.)
     let hard = smoothstep(0.55, 0.8, noise(vec2(q.y * 0.22, seed * 1.7)))
     let lip = 1.0 + 0.06 * hard * (1.0 - smoothstep(0.3, 1.0, px))
-    // (Narrowing as it rises; the sea's notch cut into its foot, a fallen apron round it.)
-    let notch = 1.0 - 0.14 * exp(-pow((q.y - 2.5) / 2.0, 2.0))
-    let girth = r * lobe * lip * (1.0 - 0.4 * up) * notch
-    let tilt = vec2(hash2(vec2(seed, 3.0)) - 0.5, hash2(vec2(seed, 4.0)) - 0.5) * 0.5
-    // (Its crown broken in steps, a bed or two, round its top.)
-    let broken = floor(noise(dir * 2.2 + vec2(seed * 3.0)) * 3.0) * tall * 0.07
-    let crown = tall - dot(v, tilt) - 0.2 * rv - broken
-    max(rv - girth, max(q.y - crown, -q.y - 12.0)) * 0.75
+    // (Narrowing as it rises; the sea's notch cut deep into its foot.)
+    let notch = 1.0 - 0.26 * exp(-pow((q.y - 2.2) / 2.2, 2.0))
+    let girth = r * lobe * lip * (1.0 - 0.35 * up) * notch
+    // (Its crown tilted and broken into crags, slumped toward one side.)
+    let tilt = vec2(hash2(vec2(seed, 3.0)) - 0.5, hash2(vec2(seed, 4.0)) - 0.5) * 0.6
+    let crags = noise(around * 2.4 + vec2(seed * 3.0)) * tall * 0.16
+    let crown = tall - dot(v, tilt) - 0.15 * rv - crags
+    // (Its faces rough: blocks proud and hollows fallen out, a few metres across, where a pixel
+    // holds them steadily; its mass alone farther off.)
+    let rough = (noise3(q * 0.16 + vec3(seed)) - 0.5) * 2.4 + (noise3(q * 0.4 + vec3(seed * 2.0)) - 0.5) * 0.9
+    let shell = max(rv - girth, max(q.y - crown, -q.y - 12.0))
+    (shell + rough * (1.0 - smoothstep(0.4, 1.6, px)) * smoothstep(8.0, 0.0, abs(shell))) * 0.6
 }
 
 /// A skerry: a low hump of broken rock, `r` m round and `tall` high, awash.
@@ -97,7 +101,21 @@ fn in_cluster(cl: vec4, p: vec3, px: f32) -> f32 {
     let q = p - vec3(cl.x, 0.0, cl.y)
     let tall = cl.z
     let seed = cl.w
-    var d = stack(q, 4.5 + tall * 0.16, tall, seed, px)
+    // (Some slender, some squat and broad as a bastion.)
+    let girth = (4.5 + tall * 0.16) * mix(0.85, 1.7, hash2(vec2(seed, 9.0)))
+    var d = stack(q, girth, tall, seed, px)
+    // (The sea breaking round its foot: a collar of white water heaped against it, ragged.)
+    let rq = length(vec2(q.x, q.z))
+    let heap = 0.6 + 0.9 * noise(vec2(atan2(q.z, q.x) * 3.0 + seed, 0.0))
+    d = min(d, max(abs(rq - girth * 1.12) - girth * 0.14 - 1.0, max(q.y - heap, -q.y - 1.0)) * 0.7)
+    // (The fallen blocks round its foot, awash.)
+    for i in 0..3 {
+        let fi = f32(i)
+        let a = hash2(vec2(seed, fi + 40.0)) * 6.2831853
+        let at = vec3(cos(a), 0.0, sin(a)) * (girth * 1.05 + 2.0 + 3.0 * hash2(vec2(seed, fi + 50.0)))
+        let br = 1.2 + 2.0 * hash2(vec2(seed, fi + 60.0))
+        d = min(d, skerry(q - at, br * 1.3, br, seed + fi * 3.0))
+    }
     for i in 0..4 {
         let fi = f32(i)
         let a = hash2(vec2(seed, fi + 10.0)) * 6.2831853
@@ -150,14 +168,16 @@ pub fn march_stacks(o: vec3, d: vec3, hi: f32, k: f32) -> f32 {
     var t = lo
     var hit = hi
     var i = 0
-    while i < 200 && t < top {
+    while i < 320 && t < top {
         let px = t * k
         let h = stacks(o + d * t, px)
         if h < max(px * 0.4, 0.01) {
             hit = t
             t = top
         } else {
-            t += h
+            // (Never less than a fraction of a pixel a step: a ray grazing the sea past many
+            // rocks would otherwise run out of steps short of one, and see through it.)
+            t += max(h, px * 0.25)
         }
         i += 1
     }
@@ -223,15 +243,24 @@ pub fn stacks_albedo(p: vec3, n: vec3, px: f32) -> vec3 {
         smoothstep(10.0, 25.0, p.y) *
         smoothstep(0.4, -0.1, n.y)
     a = mix(a, vec3(0.42, 0.42, 0.4), guano * 0.35)
+    // Down its faces: gullies the rain has cut, darker, and the pale streaks of salt and the
+    // birds run down under its ledges; a few metres wide, so they hold steady far off.
+    let gully = smoothstep(0.62, 0.78, noise3(vec3(p.x * 0.18, p.y * 0.02, p.z * 0.18)))
+    a *= 1.0 - 0.45 * gully * smoothstep(0.6, 0.1, abs(n.y))
+    let streak = smoothstep(0.66, 0.8, noise3(vec3(p.x * 0.22 + 5.0, p.y * 0.015, p.z * 0.22))) *
+        smoothstep(3.0, 12.0, p.y)
+    a = mix(a, vec3(0.5, 0.5, 0.48), streak * 0.5 * smoothstep(0.6, 0.1, abs(n.y)))
     // The spray's reach, wet; and the surf on its foot.
     a *= mix(0.45, 1.0, smoothstep(0.5, 6.0, p.y))
     // (The sea breaking on it: white a few metres up its foot, torn above, and higher where the
     // swell throws it.)
     let reach = 2.5 + 3.0 * noise(vec2((p.x - p.z) * 0.08, 1.0))
     let torn = mix(0.45, noise(vec2(p.x * 0.4 + p.z * 0.3, p.y * 0.9)), fine)
-    let surf = smoothstep(reach, reach * 0.3, p.y) *
-        smoothstep(0.25, 0.55, torn + 0.3 * smoothstep(reach * 0.5, 0.0, p.y))
-    // (On its sides, not over a skerry's back; and far off only a grey seam, never a spark.)
-    let seen = smoothstep(0.85, 0.45, n.y) * mix(0.9, 0.3, smoothstep(0.4, 2.0, px))
-    mix(a, vec3(0.62, 0.64, 0.66), surf * seen)
+    let surf = max(
+        smoothstep(reach, reach * 0.3, p.y) * smoothstep(0.25, 0.55, torn + 0.3 * smoothstep(reach * 0.5, 0.0, p.y)),
+        smoothstep(1.4, 0.6, p.y),
+    )
+    // (On its sides and round its foot; far off a pale seam, never a spark.)
+    let seen = mix(1.0, smoothstep(0.85, 0.45, n.y), smoothstep(0.8, 2.0, p.y)) * mix(0.95, 0.45, smoothstep(0.6, 3.0, px))
+    mix(a, vec3(0.72, 0.74, 0.76), surf * seen)
 }

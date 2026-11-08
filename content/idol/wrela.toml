@@ -1,0 +1,9 @@
+# The idol: the cathedral god's statue come alive, the first boss (a giant stone man with three
+# heads and three hands). Its seven parts are sampled distance grids (engine::sampled) written as
+# Wrela tables from a generated reference mesh (docs/generated.jsonl), which never ships: nothing
+# here is loaded from a file. It's drawn in carved stone (engine::carving).
+[package]
+name = "idol"
+
+[dependencies]
+engine = { workspace = true }

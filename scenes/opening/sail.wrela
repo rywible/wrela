@@ -11,6 +11,7 @@
 use std::input::{Event, Key, PadAxis, PadButton}
 use sea::{HELD, SEA, bob}
 use wind::air_at
+use stacks::stacks
 use engine::ocean::Swell
 
 /// The skiff under the player's hands.
@@ -351,6 +352,19 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     r.turn += (wheel * TURN_RATE * grip - r.turn) * (1.0 - exp(-dt * 2.6))
     r.steer += r.turn * dt
     r.at += heading * r.speed * dt
+    // (Never into a rock: held off a sea stack's foot, its way lost against it. Steered or
+    // put back where one stands, it ran into the stone and the camera with it.)
+    let foot = vec3(r.at.x, 0.5, r.at.y)
+    let clear = stacks(foot, 0.2) - 4.0
+    if clear < 0.0 {
+        let e = 0.5
+        let g = vec2(
+            stacks(foot + vec3(x: e), 0.2) - stacks(foot - vec3(x: e), 0.2),
+            stacks(foot + vec3(z: e), 0.2) - stacks(foot - vec3(z: e), 0.2),
+        )
+        r.at -= g / max(length(g), 1.0e-4) * clear
+        r.speed *= exp(-dt * 3.0)
+    }
     // The boom: on its own side always. Sheeted, held at the angle the wind wants; let fly, it
     // streams out with the wind as far as its side lets it. With the wind round on the other
     // side (by the lee), it stays where it is, full, rather than swinging right across: a slam
@@ -367,7 +381,7 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     // spring, so a gust or a gybe sets it rocking.
     let pull = r.power * sin(abs(off)) * polar(off) * r.gust
     let lean = side * (0.3 * pull + 0.1 * r.power * r.gust) * (1.0 - 0.3 * r.plane) +
-        r.turn * clamp(r.speed, 0.0, 9.0) * 0.05
+        r.turn * clamp(r.speed, 0.0, 9.0) * 0.12
     r.heel_rate += ((lean - r.heel) * 22.0 - r.heel_rate * 5.0) * dt
     r.heel += r.heel_rate * dt
     // The camera: swung round after the bow, lagging it; falling back as it surges and catching
@@ -478,7 +492,9 @@ fn rigged(off: f32, turn: f32, p: f32, phi: f32, jolt: f32) -> Pose {
     // The mast leans to windward as the traveller hangs on it, the more as the sail's squared
     // off (so the sail's over the boat, not out over the sea); and raked forward to bear away,
     // aft to head up.
-    let up_into = turn * (if off > 0.0 { 1.0 } else { -1.0 })
+    // (Eased to nothing as the wind comes dead ahead or astern: a sign flipped there raked the
+    // mast over in a frame as the wind crossed the stern.)
+    let up_into = turn * clamp(sin(off) / 0.3, -1.0, 1.0)
     let rake = clamp(-up_into / TURN_RATE, -1.0, 1.0) * 0.16 + 0.05
     let tilt = (0.1 + 0.32 * smoothstep(0.6, 1.5, a)) * smoothstep(0.1, 0.6, p)
     let mast = normalize(vec3(wind * sin(tilt), cos(tilt) * cos(rake), sin(rake)))

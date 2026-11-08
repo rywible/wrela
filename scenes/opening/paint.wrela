@@ -5,7 +5,7 @@
 // (`engine::light::hazed`). Beside the colour it writes what the ink reads: how far, what it is,
 // a line field, the line's weight, the normal and the moment's energy.
 
-use main::LOOK
+use main::{FREEBOARD, LOOK}
 use look::{
     STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot, band, cells, hash2, luma, fbm,
     noise, ray,
@@ -239,9 +239,10 @@ fn sea_level(s: Shot, waves: Waves, p: vec3, foot: f32) -> f32 {
     let mid = tiles(lee(rel, s.boat_x, s.boat_z)).y
     let level = level_at(waves, vec2(p.x, p.z), foot, mid)
     let e = length(vec2(dot(rel, s.boat_x) / 0.62, dot(rel, s.boat_z) / 2.2))
-    // (The cap follows the gunwale as the skiff heels and pitches, and lets go over a hull's
-    // width or so, so the water slopes down to it rather than standing in a wall round it.)
-    let gunwale = s.boat.y - (s.boat_y.x * rel.x + s.boat_y.z * rel.z) / max(s.boat_y.y, 0.5)
+    // (The cap follows the skiff as it heels and pitches, a little over its waterline (its
+    // deck is `FREEBOARD` higher), and lets go over a hull's width or so, so the water slopes
+    // down to it rather than standing in a wall round it.)
+    let gunwale = s.boat.y + FREEBOARD * 0.6 - (s.boat_y.x * rel.x + s.boat_y.z * rel.z) / max(s.boat_y.y, 0.5)
     let near = 1.0 - smoothstep(1.0, 2.6, e)
     // (And heaped by the hull as it makes way: its bow wave, its quarters' hollow, the hump
     // astern: `wake::lifted`.)
@@ -1185,7 +1186,7 @@ fn sample(
         t = ts
         id = SEA
     }
-    let bs = sphere(o, d, vec4(s.boat + s.boat_y * 1.5, 3.6), far)
+    let bs = sphere(o, d, vec4(s.boat + s.boat_y * (1.5 + FREEBOARD), 3.6), far)
     // The sea inside the skiff isn't there: the ray goes on to the hull.
     if id == SEA && dry(s, o + d * t) {
         t = far
@@ -1367,7 +1368,7 @@ pub fn paint(
     // doesn't flicker the whole pixel.) The rock and the cathedral are met in their own pass
     // (`yonder`), over many drawings.
     let d = ray(s, px)
-    let to_boat = s.boat + s.boat_y * 1.5 - s.eye
+    let to_boat = s.boat + s.boat_y * (1.5 + FREEBOARD) - s.eye
     let pass = length(to_boat - d * dot(to_boat, d))
     let boat_k = if dot(to_boat, d) > 0.0 { smoothstep(3.8, 2.9, pass) } else { 0.0 }
     // (One call of `sample` in one loop, met once or four times: written twice, the shader

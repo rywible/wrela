@@ -4,7 +4,7 @@
 use sea::{HELD, SEA as WATER, bob, held}
 use engine::ocean::Swell
 use sail::{Rig, Pose, pose}
-use main::PLANING
+use main::CAMERA
 
 /// Where the rock floats (the world's, m: its plateau's centre), and the sun.
 pub const ISLE = vec3(-1890.0, 1806.0, 7560.0)
@@ -157,7 +157,9 @@ pub fn shot_at(
     let bz = bz0 * cos(pitch) + by1 * sin(pitch)
     let by = by1 * cos(pitch) - bz0 * sin(pitch)
     let bx = bx1
-    let boat = afloat + vec3(y: 0.05 * pl + 0.07 * PLANING)
+    // (Lifted a little on the plane; pressed down into the water as it heels into a turn, its
+    // low chine dug in, as a carving hull loads up.)
+    let boat = afloat + vec3(y: 0.06 * pl - 0.2 * abs(sin(hl)))
     let g = pose(r)
     // The bounce: how sharply the skiff's fall was stopped over the last drawings.
     let dt = 1.0 / HELD
@@ -175,17 +177,17 @@ pub fn shot_at(
     // little lower the faster it runs.)
     let run = smoothstep(2.0, 10.0, r.shown_rush)
     let surge = clamp(r.shown_speed - r.shown_rush, -1.0, 3.0)
-    let back = PLAY_BACK - 0.3 * run + max(surge, 0.0) * 0.35 + min(surge, 0.0) * 0.15
-    let beside = vec2(heading.y, -heading.x) * (PLAY_SIDE * r.shown_perch)
+    let back = PLAY_BACK + 0.8 * CAMERA - 0.3 * run + max(surge, 0.0) * 0.35 + min(surge, 0.0) * 0.15
+    let beside = vec2(heading.y, -heading.x) * ((PLAY_SIDE + 2.2 * CAMERA) * r.shown_perch)
     let high = vec3(
         r.shown_at.x - heading.x * back + beside.x,
-        PLAY_UP - 0.35 * run + boat.y * 0.5,
+        PLAY_UP + 1.4 * CAMERA - 0.35 * run + boat.y * 0.5,
         r.shown_at.y - heading.y * back + beside.y,
     )
     let ahead_of = vec3(
-        r.shown_at.x + heading.x * 24.0 + beside.x * 0.4,
+        r.shown_at.x + heading.x * (24.0 - 6.0 * CAMERA) + beside.x * 0.4,
         0.9,
-        r.shown_at.y + heading.y * 24.0 + beside.y * 0.4,
+        r.shown_at.y + heading.y * (24.0 - 6.0 * CAMERA) + beside.y * 0.4,
     )
     let k = smoothstep(0.0, 1.0, clamp(r.framing, 0.0, 1.0))
     // (Running, the camera shakes a little with the hull's chatter over the chop, and with a

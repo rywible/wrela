@@ -1,0 +1,60 @@
+// The idol's stone: what it's made of and its colour, cooked into the meshes realized from its
+// sampled parts (main.wrela; the parts' tables are the *_grid.wrela files, sampled from a
+// generated reference that never ships: docs/generated.jsonl), and a box to paint it in.
+
+use engine::character::Shaded
+use std::field::{Blend, Bound, Surface, value_noise}
+
+/// What a point of it is made of: its colour (linear), how rough and how metallic.
+pub struct Stone: Copy + GpuData + Blend {
+    pub albedo: vec3,
+    pub rough: f32,
+    pub metal: f32,
+}
+
+impl Shaded for Stone {
+    fn albedo(self) -> vec3 {
+        self.albedo
+    }
+
+    fn roughness(self) -> f32 {
+        self.rough
+    }
+
+    fn metallic(self) -> f32 {
+        self.metal
+    }
+}
+
+/// Its granite (sRGB 0.50 grey, cool).
+pub const GRANITE: vec3 = vec3(0.200, 0.205, 0.215)
+
+/// The stone's colour at `p` (m, the idol's rest space): grain at two scales, and faint darker
+/// weathering where rain has run down it (stretched in y).
+pub fn stone_paint(p: vec3) -> Stone {
+    let grain = 0.6 * value_noise(p * 3.1) + 0.4 * value_noise(p * 9.7 + vec3(4.2, 1.3, 7.7))
+    let stain = value_noise(vec3(p.x * 1.3, p.y * 0.35, p.z * 1.3) + vec3(11.0, 3.0, 5.0))
+    let wet = clamp((stain - 0.5) * 3.0, 0.0, 1.0) * 0.18
+    Stone { albedo: GRANITE * (1.0 + 0.18 * grain) * (1.0 - wet), rough: 0.88, metal: 0.0 }
+}
+
+/// A box of half-extents `half`, centred at the origin: what the stone is painted in.
+pub struct Block: Copy + GpuData {
+    pub half: vec3,
+}
+
+impl Surface for Block {
+    fn distance(self, p: vec3) -> f32 {
+        let q = abs(p) - self.half
+        length(max(q, vec3(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0)
+    }
+
+    fn bound(self) -> Bound {
+        Bound { centre: vec3(), radius: length(self.half), slope: 1.0 }
+    }
+
+    /// Exact.
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
