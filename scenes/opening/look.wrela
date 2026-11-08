@@ -4,7 +4,9 @@
 use sea::{HELD, SEA as WATER, bob, held}
 use engine::ocean::Swell
 use sail::{Rig, Pose, pose}
-use main::{CAMERA, OPEN_SIDE}
+use main::{CAMERA, FREEBOARD, OPEN_SIDE}
+use skiff::{Rod, rods}
+use hero::Joints
 
 /// Where the rock floats (the world's, m: its plateau's centre), and the sun.
 pub const ISLE = vec3(-1890.0, 1806.0, 7560.0)
@@ -97,6 +99,12 @@ pub struct Shot: Copy + GpuData {
     pub fore_foot: vec3,
     pub aft_foot: vec3,
     pub gaze: vec3,
+    /// Worked out once a drawing for the skiff (`skiff`), so no pixel works them out again: the
+    /// eye in the skiff's frame (`skiff::local`), the sail's face (across the mast and the boom)
+    /// and its rods (`skiff::rods`).
+    pub eye_aboard: vec3,
+    pub sheet: vec3,
+    pub rods: [Rod; 15],
     /// The sail's cloth: its belly, twist, luff bubble and flogging, its leech's flutter
     /// (`sail::Motion`).
     pub cloth: vec4,
@@ -266,6 +274,18 @@ pub fn shot_at(
     } else { (eye, at) }
     let forward = normalize(at - eye)
     let level = normalize(cross(vec3(y: 1.0), forward))
+    let aboard = eye - boat - by * FREEBOARD
+    let joints = Joints {
+        hips: g.hips,
+        neck: g.neck,
+        fore_hand: g.fore_hand,
+        aft_hand: g.aft_hand,
+        fore_foot: g.fore_foot,
+        aft_foot: g.aft_foot,
+        sit: 0.0,
+        gaze: g.gaze,
+    }
+    let rods = rods(g.mast, g.boom, joints)
     // (The player's camera leans a little with the skiff's heel.)
     let roll = if view == 0 { -r.shown_heel * 0.12 * k } else { 0.0 }
     let flat_up = cross(forward, level)
@@ -305,6 +325,9 @@ pub fn shot_at(
         fore_foot: g.fore_foot,
         aft_foot: g.aft_foot,
         gaze: g.gaze,
+        eye_aboard: vec3(dot(aboard, bx), dot(aboard, by), dot(aboard, bz)),
+        sheet: normalize(cross(g.mast, g.boom)),
+        rods,
         cloth: g.cloth,
         quiver: g.quiver,
         look: 0.0,

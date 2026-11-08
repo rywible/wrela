@@ -20,6 +20,54 @@ fn sd_capsule(p: vec3, a: vec3, b: vec3, r: f32) -> f32 {
     length(pa - ba * h) - r
 }
 
+/// A capsule worked out once a drawing (`rods`): from `a` along `ba`, `inv` 1 / |ba|², of
+/// radius `r`. Its ends are the drawing's own, the same for every pixel, so no pixel works them
+/// out again.
+pub struct Rod: Copy + GpuData {
+    pub a: vec3,
+    pub inv: f32,
+    pub ba: vec3,
+    pub r: f32,
+}
+
+fn rod(a: vec3, b: vec3, r: f32) -> Rod {
+    let ba = b - a
+    Rod { a, inv: 1.0 / max(dot(ba, ba), 1.0e-12), ba, r }
+}
+
+fn sd_rod(p: vec3, k: Rod) -> f32 {
+    let pa = p - k.a
+    let h = clamp(dot(pa, k.ba) * k.inv, 0.0, 1.0)
+    length(pa - k.ba * h) - k.r
+}
+
+/// The rods, once a drawing, from the rig's and the traveller's pose (the skiff's frame): the
+/// mast, the yard and the foot's batten; the traveller's bound (his legs, his body, his arms);
+/// his stand-in (his coat's two, his legs, his arms, his head).
+pub fn rods(mast: vec3, boom: vec3, j: Joints) -> [Rod; 15] {
+    let spine = normalize(j.neck - j.hips)
+    let shoulders = j.neck - spine * 0.1
+    let lift = vec3(0.0, 0.08, 0.0)
+    [
+        rod(FOOT, FOOT + mast * (HEAD + 0.12), 0.03),
+        rod(FOOT + mast * 2.85 - boom * 0.08, FOOT + mast * 4.2 + boom * BOOM, 0.028),
+        rod(FOOT + mast * 0.5, FOOT + mast * 0.8 + boom * BOOM, 0.022),
+        rod(j.fore_foot, j.hips, 0.42),
+        rod(j.aft_foot, j.hips, 0.42),
+        rod(j.hips, j.neck + (j.neck - j.hips) * 0.6, 0.45),
+        rod(j.neck, j.fore_hand, 0.32),
+        rod(j.neck, j.aft_hand, 0.32),
+        rod(j.hips, j.neck - spine * 0.06, 0.2),
+        rod(j.hips - spine * 0.55, j.hips, 0.19),
+        rod(j.fore_foot + lift, j.hips, 0.085),
+        rod(j.aft_foot + lift, j.hips, 0.085),
+        rod(shoulders, j.fore_hand, 0.06),
+        rod(shoulders, j.aft_hand, 0.06),
+        // (His head, a ball: a rod of no length.)
+        rod(j.neck + spine * 0.17, j.neck + spine * 0.17, 0.13),
+    ]
+}
+
 /// The half-length of the hull (m), its beam's half and its depth.
 const LONG: f32 = 2.2
 const BEAM: f32 = 0.62
@@ -43,7 +91,7 @@ fn sheer_at(z: f32) -> f32 {
 
 /// How wide a pixel is (m) at `q` (the skiff's frame).
 fn footprint(s: Shot, q: vec3) -> f32 {
-    length(q - local(s, s.eye)) * 2.0 / (s.focal * s.resolution.y)
+    length(q - s.eye_aboard) * 2.0 / (s.focal * s.resolution.y)
 }
 
 /// The hull's form at `q` (the skiff's frame): its solid's distance and the height over its
@@ -133,7 +181,7 @@ fn cloth(s: Shot, q: vec3) -> (f32, vec2) {
     let u = dot(r, s.boom)
     // (Its face is the mast's and boom's own, the same through a gybe: the belly passes through
     // flat and pops full on the other side, never flips.)
-    let w = dot(r, normalize(cross(s.mast, s.boom)))
+    let w = dot(r, s.sheet)
     let (edge, x, up, panel) = cut(u, v)
     // The cloth as a membrane held at its luff and its clew (`sail::Motion`): its belly, deepest
     // a third of the way up, flat along the boom and toward the head, as a cut sail's is; its
@@ -221,7 +269,7 @@ fn cut(u: f32, v: f32) -> (f32, f32, f32, f32) {
 /// The spars: the mast, and the wishbone's two arms bowed round the sail from the mast to the
 /// clew.
 fn spars(s: Shot, q: vec3) -> f32 {
-    var mast = sd_capsule(q, FOOT, FOOT + s.mast * (HEAD + 0.12), 0.03)
+    var mast = sd_rod(q, s.rods[0])
     // (Rope lashed round the mast at the boom's jaws and at its foot: bulges of turns.)
     let along_m = dot(q - FOOT, s.mast)
     let turns = smoothstep(0.1, 0.0, abs(along_m - LASHED)) + smoothstep(0.08, 0.0, abs(along_m - 0.12))
@@ -234,8 +282,8 @@ fn spars(s: Shot, q: vec3) -> f32 {
     var d = min(mast, arm)
     if SAIL == 1 {
         // The junk's yard, peaked up aft over the sail, and its boom batten along the foot.
-        let yard = sd_capsule(q, FOOT + s.mast * 2.85 - s.boom * 0.08, FOOT + s.mast * 4.2 + s.boom * BOOM, 0.028)
-        let foot_b = sd_capsule(q, FOOT + s.mast * 0.5, FOOT + s.mast * 0.8 + s.boom * BOOM, 0.022)
+        let yard = sd_rod(q, s.rods[1])
+        let foot_b = sd_rod(q, s.rods[2])
         d = min(d, min(yard, foot_b))
     }
     if SAIL == 2 {
@@ -316,45 +364,33 @@ fn rig_parts(s: Shot, q: vec3) -> vec3 {
 /// (`main::HERO`), the eye never meets this figure, only the sea's checks of his shadow and his
 /// mirror do, so a few plain solids stand in for him there.
 fn figure(s: Shot, q: vec3) -> f32 {
-    let (j, _) = rider(s)
     // (The rider only where he can be: capsules round his legs and coat, his body and head,
     // and each arm out to its hand; well outside them, their distance stands for his. Every
     // sea pixel's checks call this, and the whole rider there cost more than the hull. Near
     // them he's drawn whole (or, where the hero is drawn himself, his stand-in), so what reads
     // his distance close by (his shadow, the dark of the water against the hull) reads a figure,
     // not the capsules'.)
-    let legs = min(sd_capsule(q, j.fore_foot, j.hips, 0.42), sd_capsule(q, j.aft_foot, j.hips, 0.42))
-    let body = sd_capsule(q, j.hips, j.neck + (j.neck - j.hips) * 0.6, 0.45)
-    let arms = min(sd_capsule(q, j.neck, j.fore_hand, 0.32), sd_capsule(q, j.neck, j.aft_hand, 0.32))
+    let legs = min(sd_rod(q, s.rods[3]), sd_rod(q, s.rods[4]))
+    let body = sd_rod(q, s.rods[5])
+    let arms = min(sd_rod(q, s.rods[6]), sd_rod(q, s.rods[7]))
     let bound = min(min(legs, body), arms)
     let man = if (OFF & 32) != 0 {
         1.0e3
     } else if bound > 0.3 {
         bound
     } else {
-        stand_in(j, q)
+        stand_in(s, q)
     }
     man
 }
 
 /// The hero as a few solids, for his shadow and his mirror on the sea: his long coat, his legs
 /// under it, his arms out to the boom, his head. (Their sizes his: content/hakuro.)
-fn stand_in(j: Joints, q: vec3) -> f32 {
-    let spine = normalize(j.neck - j.hips)
-    let coat = min(
-        sd_capsule(q, j.hips, j.neck - spine * 0.06, 0.2),
-        sd_capsule(q, j.hips - spine * 0.55, j.hips, 0.19),
-    )
-    let legs = min(
-        sd_capsule(q, j.fore_foot + vec3(0.0, 0.08, 0.0), j.hips, 0.085),
-        sd_capsule(q, j.aft_foot + vec3(0.0, 0.08, 0.0), j.hips, 0.085),
-    )
-    let shoulders = j.neck - spine * 0.1
-    let arms = min(
-        sd_capsule(q, shoulders, j.fore_hand, 0.06),
-        sd_capsule(q, shoulders, j.aft_hand, 0.06),
-    )
-    let head = length(q - j.neck - spine * 0.17) - 0.13
+fn stand_in(s: Shot, q: vec3) -> f32 {
+    let coat = min(sd_rod(q, s.rods[8]), sd_rod(q, s.rods[9]))
+    let legs = min(sd_rod(q, s.rods[10]), sd_rod(q, s.rods[11]))
+    let arms = min(sd_rod(q, s.rods[12]), sd_rod(q, s.rods[13]))
+    let head = sd_rod(q, s.rods[14])
     min(min(coat, legs), min(arms, head))
 }
 

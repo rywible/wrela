@@ -19,7 +19,7 @@ use engine::look::Level
 use engine::realize::{Eye, solid}
 use engine::solids::{Tiles, tiles}
 use std::derive::{Box3, Interval}
-use std::field::{Field, Surface}
+use std::field::{Bound, Field, Surface, UNBOUNDED}
 use std::gpu::{Cull, DepthTexture, GpuBuffer, Rg32Float, Texture, begin_pass_with_depth, draw}
 
 /// The stacks as a surface, proud of the stone by `PROUD`.
@@ -28,6 +28,12 @@ pub struct Stone: Copy + GpuData {
 }
 
 impl Surface for Stone {
+    /// Unbounded: the scene culls it by its tiles (`engine::solids`) and `stacks_near`, not by a
+    /// sphere.
+    fn bound(self) -> Bound {
+        UNBOUNDED
+    }
+
     fn distance(self, p: vec3) -> f32 {
         stacks(p, DETAIL) - PROUD
     }
