@@ -463,8 +463,8 @@ fn off_legs_now(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
         for k in 0..5 {
             let a = if k == 0 { hip } else if k == 1 { knee } else if k == 2 { heel } else if k == 3 { elbow } else { wrist }
             let b = if k == 0 { knee } else if k == 1 { ankle } else if k == 2 { toe } else if k == 3 { wrist } else { knuckle }
-            let ra = if k == 0 { 0.135 } else if k == 1 { 0.125 } else if k == 2 { 0.085 } else if k == 3 { 0.055 } else { 0.042 }
-            let rb = if k == 0 { 0.125 } else if k == 1 { 0.22 } else if k == 2 { 0.075 } else if k == 3 { 0.042 } else { 0.045 }
+            let ra = if k == 0 { 0.135 } else if k == 1 { 0.13 } else if k == 2 { 0.085 } else if k == 3 { 0.055 } else { 0.042 }
+            let rb = if k == 0 { 0.125 } else if k == 1 { 0.2 } else if k == 2 { 0.075 } else if k == 3 { 0.042 } else { 0.045 }
             // (How far in the capsule the cloth hangs at rest: legs only, the arms are clear.)
             var inside = 0.0
             if k < 3 {
@@ -545,16 +545,17 @@ const TAILS_TOP_REST: f32 = 0.93
 pub fn tails_weights(p: vec3) -> (u32, u32) {
     // How far down the tails (from their top under the jacket's hem to about the knee).
     let t = clamp((0.98 - p.y) / 0.36, 0.0, 1.0)
-    let share = 0.75 * t * t * (3.0 - 2.0 * t)
-    // Over which leg: his left (+x) or right, both across the middle of his back.
-    // (Sharply: the back vent parts them, each side with its own leg.)
-    let lean = clamp(p.x / 0.035, -1.0, 1.0)
+    // (Only a little: the cloth (`Drape`) hangs from his hips and his legs push it; carried
+    // further by the thighs, its shape swung the hem out flat with a leg stepped back.)
+    let share = 0.2 * t * t * (3.0 - 2.0 * t)
+    // Over which leg: his left (+x) or right, eased across the middle of his back.
+    let lean = clamp(p.x / 0.15, -1.0, 1.0)
     var left = share * (0.5 + 0.5 * lean)
     var right = share - left
     // (Their hem, below the knee, partly carried by the nearer shin, so a heel kicked up behind
     // him lifts it rather than coming out through it.)
     let u = clamp((0.74 - p.y) / 0.24, 0.0, 1.0)
-    let low = 0.6 * u * u * (3.0 - 2.0 * u)
+    let low = 0.0 * u
     var shin = 0.0
     if p.x >= 0.0 {
         shin = left * low
