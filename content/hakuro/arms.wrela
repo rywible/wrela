@@ -304,14 +304,46 @@ pub fn cloth_relax(palettes: [mat4], views: u32, stride: u32, pos: [vec4], out: 
     out[id] = vec4(q, 0.0)
 }
 
-/// Each node's drape: how far the cloth is from where his hips alone would carry it.
+/// Each node's drape: how far the cloth is from where his hips alone would carry it (`out`), and
+/// which way its outside faces now (`facing`): the cloth's thickness is laid along it, so when
+/// it swings over, its face and lining turn over with it and never pass through each other.
 @compute(64)
-pub fn cloth_drape(palettes: [mat4], views: u32, stride: u32, pos: [vec4], out: mut Slots<vec4>, id: GlobalId) {
+pub fn cloth_drape(
+    palettes: [mat4],
+    views: u32,
+    stride: u32,
+    pos: [vec4],
+    out: mut Slots<vec4>,
+    facing: mut Slots<vec4>,
+    id: GlobalId,
+) {
     if id.x >= views * DRAPE_NODES {
         return
     }
-    let (_, c, r, first) = node_of(id.x, stride)
-    out[id] = vec4(pos[id.x].xyz - tails_skinned(drape_node(c, r), palettes, first), 0.0)
+    let (view, c, r, first) = node_of(id.x, stride)
+    let base = view * DRAPE_NODES
+    let at = |cc: u32, rr: u32| pos[base + rr * DRAPE_COLS + cc].xyz
+    let c0 = if c > 0 { c - 1 } else { c }
+    let c1 = min(c + 1, DRAPE_COLS - 1)
+    let r0 = if r > 0 { r - 1 } else { r }
+    let r1 = min(r + 1, DRAPE_ROWS - 1)
+    let rest = drape_node(c, r)
+    let here = tails_skinned(rest, palettes, first)
+    // Its outside at rest, carried by his hips: out from the tails' axis.
+    let flat = vec3(rest.x - TAILS_AXIS.x, 0.0, rest.z - TAILS_AXIS.z)
+    let o = normalize(flat)
+    let ow = normalize(tails_skinned(rest + o * 0.01, palettes, first) - here)
+    // Its outside now: across the cloth, turned the way its outside was at rest.
+    let round = at(c1, r) - at(c0, r)
+    let down = at(c, r1) - at(c, r0)
+    let rround = tails_skinned(drape_node(c1, r), palettes, first) - tails_skinned(drape_node(c0, r), palettes, first)
+    let rdown = tails_skinned(drape_node(c, r1), palettes, first) - tails_skinned(drape_node(c, r0), palettes, first)
+    let rn = cross(rround, rdown)
+    let sign = if dot(rn, ow) >= 0.0 { 1.0 } else { -1.0 }
+    let n = cross(round, down) * sign
+    let nl = length(n)
+    facing[id] = vec4(if nl > 1.0e-8 { n / nl } else { ow }, 0.0)
+    out[id] = vec4(at(c, r) - here, 0.0)
 }
 
 /// The tails' cloth for `views` views: each node of the drape's grid where it is (two, this
@@ -323,6 +355,7 @@ pub struct Drape {
     prev_a: GpuBuffer<vec4>,
     prev_b: GpuBuffer<vec4>,
     out: GpuBuffer<vec4>,
+    facing: GpuBuffer<vec4>,
     flip: u32,
     fresh: bool,
 }
@@ -336,6 +369,7 @@ pub fn drape_room(views: u32) -> Drape {
         prev_a: buffer(n),
         prev_b: buffer(n),
         out: buffer(n),
+        facing: buffer(n),
         flip: 0,
         fresh: true,
     }
@@ -354,6 +388,7 @@ fn cloth_frame(
     next: mut GpuBuffer<vec4>,
     next_prev: mut GpuBuffer<vec4>,
     out: mut GpuBuffer<vec4>,
+    facing: mut GpuBuffer<vec4>,
 ) {
     let groups = (views * DRAPE_NODES + 63) / 64
     dispatch(
@@ -374,7 +409,10 @@ fn cloth_frame(
         dispatch(cloth_relax.bind(palettes: palettes.items(), views: views, stride: stride, pos: next.items(), out: mut pos), groups: groups)
         dispatch(cloth_relax.bind(palettes: palettes.items(), views: views, stride: stride, pos: pos.items(), out: mut next), groups: groups)
     }
-    dispatch(cloth_drape.bind(palettes: palettes.items(), views: views, stride: stride, pos: next.items(), out: mut out), groups: groups)
+    dispatch(
+        cloth_drape.bind(palettes: palettes.items(), views: views, stride: stride, pos: next.items(), out: mut out, facing: mut facing),
+        groups: groups,
+    )
 }
 
 impl Drape {
@@ -385,9 +423,9 @@ impl Drape {
         self.fresh = false
         let step = clamp(dt, 0.0, 1.0 / 20.0)
         if self.flip == 0 {
-            cloth_frame(palettes, views, stride, step, fresh, mut self.pos_a, self.prev_a, mut self.pos_b, mut self.prev_b, mut self.out)
+            cloth_frame(palettes, views, stride, step, fresh, mut self.pos_a, self.prev_a, mut self.pos_b, mut self.prev_b, mut self.out, mut self.facing)
         } else {
-            cloth_frame(palettes, views, stride, step, fresh, mut self.pos_b, self.prev_b, mut self.pos_a, mut self.prev_a, mut self.out)
+            cloth_frame(palettes, views, stride, step, fresh, mut self.pos_b, self.prev_b, mut self.pos_a, mut self.prev_a, mut self.out, mut self.facing)
         }
         self.flip = 1 - self.flip
     }
@@ -395,6 +433,11 @@ impl Drape {
     /// How far the cloth hangs from where his hips carry it this frame, for `draped`.
     pub fn grid(self) -> GpuSpan<vec4> {
         self.out.items()
+    }
+
+    /// Which way the cloth's outside faces this frame, for `draped`.
+    pub fn facing(self) -> GpuSpan<vec4> {
+        self.facing.items()
     }
 }
 
@@ -466,19 +509,28 @@ fn off_legs_now(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
     q
 }
 
-/// A point of the tails (`hung`: posed and trailing, at rest `rest`) moved as the drape's nodes
-/// round it are (view `view`'s, in `grid`: `Drape::grid`).
-pub fn draped(hung: vec3, rest: vec3, grid: [vec4], view: u32) -> vec3 {
+/// A point of the tails (`hung`: where his hips carry it, turned by `turn`; at rest `rest`)
+/// hanging as the cloth does this frame (view `view`'s, in `grid` and `facing`: `Drape`): its
+/// middle moved as the nodes round it are, and its face or lining laid out from that middle the
+/// way the cloth faces there now.
+pub fn draped(hung: vec3, rest: vec3, turn: mat3, grid: [vec4], facing: [vec4], view: u32) -> vec3 {
     let at = drape_cell(rest)
     let c0 = min(u32(floor(at.x)), DRAPE_COLS - 2)
     let r0 = min(u32(floor(at.y)), DRAPE_ROWS - 2)
     let fx = clamp(at.x - f32(c0), 0.0, 1.0)
     let fy = clamp(at.y - f32(r0), 0.0, 1.0)
     let base = view * DRAPE_NODES
-    let g = |c: u32, r: u32| grid[base + r * DRAPE_COLS + c].xyz
-    let top = mix(g(c0, r0), g(c0 + 1, r0), fx)
-    let bottom = mix(g(c0, r0 + 1), g(c0 + 1, r0 + 1), fx)
-    hung + mix(top, bottom, fy)
+    let lerp = |b: [vec4], cc: u32, rr: u32| b[base + rr * DRAPE_COLS + cc].xyz
+    let g = |b: [vec4]| mix(mix(lerp(b, c0, r0), lerp(b, c0 + 1, r0), fx), mix(lerp(b, c0, r0 + 1), lerp(b, c0 + 1, r0 + 1), fx), fy)
+    // How far out of the cloth's middle it is at rest, and which way (out from the axis).
+    let th = tails(rest).1
+    let flat = vec3(rest.x - TAILS_AXIS.x, 0.0, rest.z - TAILS_AXIS.z)
+    let o = if length(flat) > 1.0e-4 { normalize(flat) } else { vec3(0.0, 0.0, -1.0) }
+    let middle = hung - turn * (o * th)
+    let n = g(facing)
+    let nl = length(n)
+    let out = if nl > 1.0e-4 { n / nl } else { turn * o }
+    middle + g(grid) + out * th
 }
 
 /// The tails' top at rest (`shapes::TAILS_TOP`): the drape's first row.

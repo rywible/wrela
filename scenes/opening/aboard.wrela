@@ -402,9 +402,9 @@ pub fn hero_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: S
 /// His coat's tails' vertex: as `hero_vertex`, hanging as the tails' cloth does this frame
 /// (`hakuro::arms::draped`).
 @vertex
-pub fn coat_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], grid: [vec4], shot: Shot) -> HeroVertex {
+pub fn coat_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], grid: [vec4], facing: [vec4], shot: Shot) -> HeroVertex {
     var h = hero_at(v, verts, palette, shot)
-    h.world = draped(h.world, h.rest, grid, 0)
+    h.world = draped(h.world, h.rest, mat3(h.tx, h.ty, h.tz), grid, facing, 0)
     h.clip = ClipPosition { position: clip_of(shot, h.world) }
     h
 }
@@ -815,6 +815,7 @@ impl Aboard {
                 verts: self.coat.verts.items(),
                 palette: self.palette.items(),
                 grid: self.drape.grid(),
+                facing: self.drape.facing(),
                 shot: shot,
             ),
             hero_pixel.bind(

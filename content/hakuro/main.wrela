@@ -403,6 +403,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                 verts: s.meshes[2].verts.items(),
                 palettes: s.palettes.items(),
                 grid: s.drape.grid(),
+                facing: s.drape.facing(),
                 first: k * MAX_BONES,
                 view: v,
             ),
@@ -469,9 +470,9 @@ pub struct Fielded: Copy {
 /// His coat's tails' vertex: as `fielded`, hanging as the tails' cloth does this frame
 /// (`arms::draped`, the cloth moved on each frame by `arms::Drape::work`).
 @vertex
-pub fn coat_fielded(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], grid: [vec4], first: u32, view: View) -> Fielded {
+pub fn coat_fielded(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], grid: [vec4], facing: [vec4], first: u32, view: View) -> Fielded {
     var f = fielded_at(v, verts, palettes, first, view)
-    f.world = draped(f.world, f.rest, grid, first / MAX_BONES)
+    f.world = draped(f.world, f.rest, mat3(f.tx, f.ty, f.tz), grid, facing, first / MAX_BONES)
     f.clip = ClipPosition { position: view.view_proj * vec4(f.world, 1.0) }
     f
 }
