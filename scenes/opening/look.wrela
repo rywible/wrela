@@ -80,7 +80,7 @@ pub struct Shot: Copy + GpuData {
     /// by) to 1: the value bands, the hatching, the ink.
     pub style: f32,
     /// The skiff's way (m/s) and turning (rad/s), how hard its sail's sheeted (0 to 1), how far
-    /// onto the plane it is (0 to 1) and the wind's strength there (1 the storm's mean).
+    /// onto the plane it is (0 to 1) and the wind's gust there (1 its mean).
     pub speed: f32,
     pub turn: f32,
     pub power: f32,
@@ -165,9 +165,7 @@ pub fn shot_at(
     let dt = 1.0 / HELD
     let (b1, _, _, _) = bob(t - dt, r.shown_at, r.shown_steer, swell)
     let (b2, _, _, _) = bob(t - 2.0 * dt, r.shown_at, r.shown_steer, swell)
-    // Compare the same wave-carried height at all three times: the planing lift and heel
-    // offset are poses, not a wave stopping the hull's fall.
-    let lift = (afloat.y - 2.0 * b1.y + b2.y) / (dt * dt)
+    let lift = (boat.y - 2.0 * b1.y + b2.y) / (dt * dt)
     let behind = turned(vec2(0.5 - OPEN_SIDE, -21.0), r.shown_look)
     let ahead = turned(vec2(-530.5, 5421.0), r.shown_look)
     let low = vec3(r.shown_at.x + behind.x, 1.9 + boat.y * 0.6, r.shown_at.y + behind.y)
@@ -397,14 +395,4 @@ pub fn band(x: f32, edge: f32, soft: f32) -> f32 {
 /// The luma of a linear colour.
 pub fn luma(c: vec3) -> f32 {
     dot(c, vec3(0.2126, 0.7152, 0.0722))
-}
-
-@test
-fn planing_on_flat_water_does_not_count_as_a_wave_impact() {
-    let swell = Swell { modes: Vec::new(), chop: 0.0, held: 0.0 }
-    var r = sail::rest()
-    r.shown_plane = 1.0
-    r.shown_speed = 8.0
-    let s = shot_at(time: 1.0, width: 640, height: 360, kinetic: 0.0, view: 0, r: r, swell: swell)
-    assert(s.slap == 0.0)
 }

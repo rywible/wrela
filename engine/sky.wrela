@@ -111,7 +111,7 @@ pub struct Gap: Copy + GpuData {
 }
 
 fn gap_clear(gap: Gap, xz: vec2) -> f32 {
-    // A zero-width gap is disabled (the opening's default). On its segment the unguarded
+    // A zero-width gap is disabled. On its segment the unguarded
     // smoothstep has identical edges and divides zero by zero while cooking the weather map.
     if gap.radius <= 0.0 { return 1.0 }
     let ab = gap.b - gap.a
@@ -488,8 +488,8 @@ fn cloud_profile(height: f32) -> f32 {
 /// a world's fair-weather region.
 fn cloud_cell_possible(w: vec4, h: f32, regions: [Region], count: u32, xz: vec2) -> bool {
     if w.r > 0.001 && h < w.g * (TOP - BASE) * 1.08 { return true }
-    // A regional transition blends the original top with fair cumulus's. In the opening's
-    // covered storm these guards avoid evaluating regional noise in the coarse pass at all.
+    // A regional transition blends the original top with fair cumulus's. Under a full
+    // overcast these guards avoid evaluating regional noise in the coarse pass at all.
     if count == 0 || h >= max(w.g, FAIR_TOP) * (TOP - BASE) * 1.08 { return false }
     let actual = regional_weather(w, regional(regions, count, xz))
     actual.r > 0.001 && h < actual.g * (TOP - BASE) * 1.08

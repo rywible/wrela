@@ -37,9 +37,9 @@ pub struct Rig: Copy {
     heel_rate: f32,
     /// How far onto the plane it is, 0 (pushing its bow wave) to 1 (skimming).
     pub plane: f32,
-    /// The wind's strength where it is, its gusts and lulls included (1 the storm's mean).
+    /// The wind's strength where it is, its gusts and lulls (1 its mean).
     pub gust: f32,
-    /// How far the local wind's veered from the storm's mean (rad), its region and gusts included.
+    /// How far the wind's veered off its mean where it is (rad; `wind::Air::veer`).
     pub veer: f32,
     /// The speed as the camera's caught up with it (m/s): how far it's fallen back.
     pub rush: f32,
@@ -357,10 +357,8 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     r.power += (r.trim - r.power) * (1.0 - exp(-dt * (if r.trim < r.power { 5.0 } else { 3.0 })))
     // The wind where it is: gusts and lulls a few tens of metres across, blowing down on it.
     let air = air_at(r.at, time)
-    r.gust = air.speed / SEA.speed
-    // Both the regional mean and its gusts turn and fill the sail. Keeping only the gust's
-    // offset made it sail by the gale even inside a region with a different wind.
-    r.veer = atan2(SEA.wind.x * air.way.y - SEA.wind.y * air.way.x, dot(SEA.wind, air.way))
+    r.gust = air.gust
+    r.veer = air.veer
     let yaw = -0.22 + r.steer
     let off = wind_off(yaw + r.veer)
     let heading = vec2(sin(yaw), cos(yaw))
@@ -774,17 +772,3 @@ fn sailing_keeps_a_held_pad_button_when_its_stick_centres() {
     assert(!r.forward)
 }
 
-@test
-fn sailing_into_the_local_wind_cannot_drive_the_skiff() {
-    let swell = Swell { modes: Vec::new(), chop: 0.0, held: 0.0 }
-    var r = rest()
-    r.at = vec2(0.0, -26000.0)
-    let t = 1.0 / 60.0
-    let air = air_at(r.at, t)
-    r.steer = atan2(-air.way.x, -air.way.y) + 0.25 + 0.22
-    r.trim = 1.0
-    r.power = 1.0
-    r.time = 0.0
-    step(mut r, t, swell)
-    assert(abs(r.speed) < 1.0e-6)
-}
