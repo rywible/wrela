@@ -6,7 +6,7 @@ use look::{Shot, fbm, hash2, noise}
 use main::HERO
 use sail::{BOOM, BOW_OUT, FOOT, LASHED}
 use main::{FREEBOARD, OFF, PLANING, SAIL}
-use hero::{Joints, hero, hero_material}
+use hero::Joints
 
 fn sd_box(p: vec3, b: vec3) -> f32 {
     let q = abs(p) - b
@@ -313,7 +313,7 @@ fn rig_parts(s: Shot, q: vec3) -> vec3 {
 /// (`main::HERO`), the eye never meets this figure, only the sea's checks of his shadow and his
 /// mirror do, so a few plain solids stand in for him there.
 fn figure(s: Shot, q: vec3) -> f32 {
-    let (j, blow) = rider(s)
+    let (j, _) = rider(s)
     // (The rider only where he can be: capsules round his legs and coat, his body and head,
     // and each arm out to its hand; well outside them, their distance stands for his. Every
     // sea pixel's checks call this, and the whole rider there cost more than the hull. Near
@@ -328,10 +328,8 @@ fn figure(s: Shot, q: vec3) -> f32 {
         1.0e3
     } else if bound > 0.3 {
         bound
-    } else if HERO > 0.5 {
-        stand_in(j, q)
     } else {
-        hero(j, q, blow, s.held)
+        stand_in(j, q)
     }
     man
 }
@@ -532,11 +530,9 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
         }
         return (c, mix(0.6, 0.9, rope), 1.0 - 0.9 * rope * (1.0 - strand))
     }
-    // The hero.
+    // His stand-in (seen only with `main::HERO` off): his coat's black.
     if k.w < 0.006 {
-        let (j, blow) = rider(s)
-        let (c, r) = hero_material(j, q, blow, s.held)
-        return (c, r, 1.0)
+        return (vec3(0.03, 0.03, 0.035), 0.7, 1.0)
     }
     (a, rough, seam)
 }

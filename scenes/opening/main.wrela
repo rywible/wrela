@@ -132,8 +132,8 @@ pub const TIMINGS: bool = false
 const TIMED: [Text; 6] = ["clouds", "ocean", "yonder", "paint", "weather", "ink"]
 
 /// Whether the hero (Hakuro, content/hakuro: his fields realized and drawn into the painted
-/// scene, `aboard`) stands to the sail: 1, him; 0 the traveller's figure in his place
-/// (`--set HERO=0`).
+/// scene, `aboard`) stands to the sail: 1, him; 0 a few plain solids in his place, traced, to
+/// see what drawing him costs (`--set HERO=0`).
 pub const HERO: f32 = 1.0
 
 /// How the hero is drawn: 1 (Ryan's pick, Nov 7) illustrated, a cool rim of the sky round his
