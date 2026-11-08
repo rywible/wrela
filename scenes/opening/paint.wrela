@@ -21,7 +21,7 @@ use engine::light::{Light, Lit, gloss, hazed, matte, sun_disc, world}
 use engine::air::aerial_uvw
 use engine::light::sky as clear_sky
 use engine::sky::{Clouds, cloud_shadow, sky_uv, stormy_air}
-use std::gpu::{discard, FragCoord, Rgba16Float, Rgba8, Sampler, Targets3, Texture, Texture3d}
+use std::gpu::{FragCoord, Rgba16Float, Rgba8, Sampler, Targets3, Texture, Texture3d}
 use std::math::PI
 
 /// What the sky's light reads beside its textures: the light, and where the clouds are.
@@ -1371,8 +1371,9 @@ fn round_of(s: Shot, x: u32, y: u32, size: vec2) -> Round {
 /// The drawing's pixels from the half's (`paint_half`): those it painted as they are; each other
 /// one between the pair of its painted neighbours, left and right or above and below, that
 /// differ least (out on the sea there are only left and right), so an edge is followed along,
-/// not blurred across; and what the ink reads, of the first of that pair. Across an edge
-/// `paint_patch` paints over these in full.
+/// not blurred across; and what the ink reads, of the first of that pair. (A pass painting the
+/// pixels on edges in full over these cost half of what the half saved, though they were only
+/// one in thirty: a wave of the GPU's threads with one such pixel in it pays for all of it.)
 @fragment
 pub fn paint_fill(
     pixel: FragCoord,
@@ -1414,44 +1415,4 @@ pub fn paint_fill(
     }
     // (The ink's reading is no mean: a line or a depth halfway between two isn't either's.)
     Targets3 { first: c, second: half_marks.load(at.x, at.y), third: half_normal.load(at.x, at.y) }
-}
-
-/// The paint, in full, of each pixel `paint_fill` filled on an edge: where its painted neighbours
-/// either way met two different things (the skiff against the sea, the mast or a stack against
-/// the sky), so a silhouette isn't smeared across; or that had no pair to fill between. Elsewhere,
-/// even on the skiff, the fill stands. (Painting the whole skiff in full cost more than half of
-/// what the half saved.)
-@fragment
-pub fn paint_patch(
-    pixel: FragCoord,
-    size: vec2,
-    half_marks: Texture<Rgba16Float>,
-    shot: Shot,
-    light: Light,
-    clouds: Clouds,
-    view: Texture<Rgba16Float>,
-    aerial: Texture3d<Rgba16Float>,
-    dome: Texture<Rgba16Float>,
-    cloud: Texture<Rgba16Float>,
-    smp: Sampler,
-    waves: Waves,
-    yon_colour: Texture<Rgba16Float>,
-    yon_marks: Texture<Rgba16Float>,
-    yon_normal: Texture<Rgba8>,
-) -> Targets3<vec4, vec4, vec4> {
-    let ip = floor(pixel.position.xy)
-    let n = round_of(shot, u32(ip.x), u32(ip.y), size)
-    if n.fresh {
-        discard()
-    }
-    let across = n.left && n.right
-    let down = n.above && n.below
-    let edge = (across && abs(half_marks.load(n.l.x, n.l.y).y - half_marks.load(n.r.x, n.r.y).y) > 0.5) ||
-        (down && abs(half_marks.load(n.u.x, n.u.y).y - half_marks.load(n.d.x, n.d.y).y) > 0.5) ||
-        (!across && !down)
-    if !edge {
-        discard()
-    }
-    let (first, second, third) = paint_at(shot, light, clouds, view, aerial, dome, cloud, smp, waves, yon_colour, yon_marks, yon_normal, pixel.position.xy)
-    Targets3 { first, second, third }
 }
