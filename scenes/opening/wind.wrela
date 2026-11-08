@@ -16,6 +16,7 @@
 use sea::SEA
 use look::noise
 use engine::noise::fbm2
+use main::CLEAR
 
 /// The wind at a place: the way it blows (x, z: a unit vector), its speed (m/s) and its gust (its
 /// speed over the mean: 1 the mean, more in a gust, less in a lull).
@@ -78,6 +79,16 @@ pub fn climates() -> Vec<Climate> {
         clear: 1.0,
         wind: vec2(-4.9, 5.0),
     })
+    if CLEAR > 0.0 {
+        r.push(
+            Climate {
+                at: vec2(-900.0, 3800.0),
+                reach: 30000.0,
+                clear: CLEAR,
+                wind: vec2(-4.9, 5.0),
+            },
+        )
+    }
     r
 }
 
