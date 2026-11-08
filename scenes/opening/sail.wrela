@@ -518,16 +518,23 @@ fn rigged(off: f32, turn: f32, p: f32, phi: f32, jolt: f32) -> Pose {
     // the sail's sheeted, the further.
     let mid = (fore_hand + aft_hand) * 0.5
     let away = normalize(vec3(-belly.x, 0.0, -belly.z) + vec3(0.0, 0.0, -0.35))
-    let reach = 0.42 + 0.2 * p
+    let reach = 0.3 + 0.1 * p
     // (Ducked under the boom as it slams across in a gybe.)
     var neck = mid + away * reach + vec3(0.0, 0.08 - 0.22 * p - 0.4 * jolt, 0.0)
-    neck.x = clamp(neck.x, -0.95, 0.95)
+    neck.x = clamp(neck.x, -1.1, 1.1)
     neck.z = clamp(neck.z, -1.3, 0.55)
-    var hips = neck + vec3(0.0, -0.56, 0.0) - away * (0.2 * p)
+    var hips = neck + vec3(0.0, -0.56, 0.0) - away * (0.08 + 0.08 * p)
     hips.y = min(hips.y, FOOT.y + 0.82 - 0.12 * p)
+    // (And the whole of him tipped out over his feet, from the ankles, across the boat over
+    // the windward rail: shoulders furthest, hips between, knees a little bent. Eased through
+    // the centreline, so it never flips in a frame.)
+    let tip = 0.3 + 0.2 * p
+    let out = vec3(clamp(away.x * 3.0, -1.0, 1.0), 0.0, 0.0)
+    neck += out * tip
+    hips += out * (tip * 0.8) + vec3(0.0, -0.05, 0.0)
     let ahead = normalize(vec3(-away.z, 0.0, away.x))
     let fwd = if ahead.z > 0.0 { ahead } else { -ahead }
-    let stance = vec3(clamp(hips.x - away.x * 0.3, -0.4, 0.4), FOOT.y, hips.z)
+    let stance = vec3(clamp(hips.x - out.x * 0.42, -0.4, 0.4), FOOT.y, hips.z)
     let fore_foot = stance + fwd * 0.3
     let aft_foot = stance - fwd * 0.28
     // (Looking ahead over the bow, a little across past the luff and into a turn.)

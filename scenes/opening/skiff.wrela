@@ -140,7 +140,8 @@ fn cloth(s: Shot, q: vec3) -> (f32, vec2) {
     // back; its leech's flutter; and flogging, folds running from luff to leech.
     let c = s.cloth
     let lee = c.x / (abs(c.x) + 0.03)
-    let deep = if SAIL == 3 { 1.35 } else { 1.0 }
+    // (A junk's panels belly deep between their battens, each its own cloth.)
+    let deep = if SAIL == 3 { 1.35 } else if SAIL == 1 { 1.6 } else { 1.0 }
     let belly = c.x * deep * panel * (0.55 + 1.6 * up * (1.0 - up)) * 4.0 * x * (1.0 - x) * (1.0 + 0.8 * x)
     // (A junk's battens hold it as a fan: it barely twists.)
     let twist = c.y * lee * x * x * up * (if SAIL == 1 { 0.4 } else { 1.6 })
@@ -189,7 +190,7 @@ fn cut(u: f32, v: f32) -> (f32, f32, f32, f32) {
         let reach = BOOM * (1.0 + 0.1 * sin(3.1415927 * sv)) + 0.1 * rib * inner
         let edge = max(max(v0 - v, v - v1) * 0.55, max(-u - lead, u - reach))
         let x = clamp((u + lead) / (reach + lead), 0.0, 1.0)
-        let panel = 0.35 + 0.65 * pow(max(sin(3.1415927 * fract(sv * 6.0)), 0.0), 0.6)
+        let panel = 0.2 + 0.8 * pow(max(sin(3.1415927 * fract(sv * 6.0)), 0.0), 0.6)
         return (edge, x, sv, panel)
     }
     if SAIL == 2 {
@@ -305,7 +306,17 @@ fn parts(s: Shot, q: vec3) -> vec4 {
         let ring = vec2(length(vec2(c.x, c.z)) - 0.13, c.y)
         rig = min(rig, length(ring * vec2(1.0, 1.5)) / 1.5 - 0.028)
     }
-    vec4(wood, sail, rig, hero(j, q, blow, s.held))
+    // (The rider only where he can be: capsules round his legs and coat, his body and head,
+    // and each arm out to its hand; well outside them, their distance stands for his. Every
+    // sea pixel's checks call this, and the whole rider there cost more than the hull. Near
+    // them he's drawn whole, so what reads his distance close by (his shadow, the dark of the
+    // water against the hull) reads his own, not the capsules'.)
+    let legs = min(sd_capsule(q, j.fore_foot, j.hips, 0.42), sd_capsule(q, j.aft_foot, j.hips, 0.42))
+    let body = sd_capsule(q, j.hips, j.neck + (j.neck - j.hips) * 0.6, 0.45)
+    let arms = min(sd_capsule(q, j.neck, j.fore_hand, 0.32), sd_capsule(q, j.neck, j.aft_hand, 0.32))
+    let bound = min(min(legs, body), arms)
+    let man = if bound > 0.3 { bound } else { hero(j, q, blow, s.held) }
+    vec4(wood, sail, rig, man)
 }
 
 /// The skiff at `p` (the world's): its distance.
@@ -392,7 +403,8 @@ pub fn skiff_material(s: Shot, p: vec3, n: vec3) -> (vec3, f32, f32) {
         let (_, uv) = cloth(s, q)
         let stain = noise(uv * vec2(3.0, 2.0)) * 0.6 + noise(uv * vec2(11.0, 7.0)) * 0.4
         if SAIL != 0 {
-            return (sail_kind(uv, stain), 0.8, sin(uv.y * 5.2 - uv.x * 0.6) + 1.2)
+            // (Matte: weathered canvas holds no sheen; a sheen read as varnished wood.)
+            return (sail_kind(uv, stain), 0.97, sin(uv.y * 5.2 - uv.x * 0.6) + 1.2)
         }
         // (Tanned canvas, as a working sail's is: oiled and weathered, darker toward the foot
         // where the spray reaches it.)
@@ -542,6 +554,14 @@ fn sail_kind(uv: vec2, stain: f32) -> vec3 {
         c = mix(c, vec3(0.5, 0.26, 0.15) * (0.9 + 0.2 * stain), pa * 0.85)
         c *= 1.0 - 0.15 * pa_edge
         c *= 0.8 + 0.2 * smoothstep(0.0, 0.35, up)
+        // (Sewn from narrow cloths running up it, their seams a darker line; the cloth pulled
+        // dark into a crease along each batten; bleached in broad streaks by years of sun.)
+        let cloths = 1.0 - smoothstep(0.004, 0.012, abs(fract(uv.x / 0.42) - 0.5) * 0.42 - 0.2)
+        c *= 1.0 - 0.18 * cloths
+        let along_rib = abs(fract(up * 6.0 + 0.5) - 0.5) / 6.0 * (2.4 + 0.95 * clamp(uv.x / BOOM, -0.2, 1.15))
+        c *= 0.42 + 0.58 * smoothstep(0.015, 0.2, along_rib)
+        let bleach = smoothstep(0.42, 0.7, noise(uv * vec2(0.6, 1.4) + vec2(4.0, 1.0))) * smoothstep(0.1, 0.7, up)
+        c = mix(c, c * 1.5 + vec3(0.07, 0.05, 0.03), bleach)
         // (Bamboo battens, pale and knotted, across it.)
         let v0 = 0.5 + 0.3 * clamp(uv.x / BOOM, -0.2, 1.15)
         let v1 = 2.9 + 1.25 * clamp(uv.x / BOOM, -0.2, 1.15)
