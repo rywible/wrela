@@ -336,7 +336,7 @@ pub(package) fn painted(
 fn stood(s: mut State, shot: Shot) {
     if HERO > 0.5 {
         let (width, height) = (s.width, s.height)
-        s.aboard.draw(shot, s.heavens, mut s.colour, mut s.marks, mut s.normal, width, height)
+        s.aboard.draw(shot, s.heavens, mut s.colour, mut s.marks, mut s.normal, width, height, s.overhead)
     }
 }
 

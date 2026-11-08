@@ -21,7 +21,7 @@ use engine::sky::{Clouds, cloud_shadow, sky_uv}
 use heavens::Heavens
 use look::{OVERCAST, SKIFF, Shot}
 use main::{FREEBOARD, HERO_POP, INKED}
-use paint::{Heaven, lit_solid, storm_sky}
+use paint::{Heaven, Overhead, lit_solid, overhead, storm_sky}
 use played::cover
 use sail::{BOOM, BOW_OUT, LASHED, trimming}
 use sail::FOOT as RIG_FOOT
@@ -593,6 +593,7 @@ pub fn hero_pixel<F: Parts<Cloth>>(
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     skies: [vec4],
+    once: [vec4],
     painted: Texture<Rgba16Float>,
     pixel: FragCoord,
 ) -> Targets3<vec4, vec4, vec4> {
@@ -624,7 +625,7 @@ pub fn hero_pixel<F: Parts<Cloth>>(
         hidden += max(step - e, 0.0) / step * (if i == 1 { 1.0 } else { 0.6 })
     }
     let ao = clamp(1.0 - hidden * 0.6, 0.0, 1.0)
-    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, skies, v.world, n, d, t, c, ao)
+    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, skies, overhead(once), v.world, n, d, t, c, ao)
 }
 
 /// His sampled arms' pixel: as `hero_pixel`, but with no fields behind them, their own normal
@@ -641,6 +642,7 @@ pub fn arm_pixel(
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     skies: [vec4],
+    once: [vec4],
     painted: Texture<Rgba16Float>,
     jacket: u32,
     pixel: FragCoord,
@@ -658,7 +660,7 @@ pub fn arm_pixel(
     }
     // (1 for his jacket, whose paint carries on down over his trousers: `jacket_paint`.)
     let c = if jacket == 1 { jacket_paint(v.rest) } else { body_paint(v.rest) }
-    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, skies, v.world, n, d, t, c, 0.9)
+    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, skies, overhead(once), v.world, n, d, t, c, 0.9)
 }
 
 /// His light, illustrated: the world's own sky and sun, but the sky's light taken from fixed
@@ -743,6 +745,7 @@ fn lit_hero(
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     skies: [vec4],
+    over: Overhead,
     p: vec3,
     n: vec3,
     d: vec3,
@@ -750,7 +753,7 @@ fn lit_hero(
     c: Cloth,
     ao: f32,
 ) -> Targets3<vec4, vec4, vec4> {
-    let h = Heaven { light, clouds }
+    let h = Heaven { light, clouds, over }
     let cast = vessel_shadow(s, p + n * 0.01, light.sun)
     let sun = cast * cloud_shadow(clouds, cloud, smp, p)
     var col = if INKED > 0.5 {
@@ -946,6 +949,8 @@ impl Aboard {
         normal: mut Texture<Rgba8>,
         width: u32,
         height: u32,
+        // (The sky's colours the same for every pixel of the drawing: `paint::overhead_once`.)
+        once: GpuBuffer<vec4>,
     ) {
         if width != self.width || height != self.height {
             let (w, h) = (width * FINER, height * FINER)
@@ -1011,6 +1016,7 @@ impl Aboard {
                 cloud: hv.sky.shadow,
                 smp: hv.linear,
                 skies: self.skies.items(),
+                once: once.items(),
                 painted: marks,
             ),
             indices: self.body.quads.items(),
@@ -1035,6 +1041,7 @@ impl Aboard {
                 cloud: hv.sky.shadow,
                 smp: hv.linear,
                 skies: self.skies.items(),
+                once: once.items(),
                 painted: marks,
             ),
             indices: self.head.quads.items(),
@@ -1061,6 +1068,7 @@ impl Aboard {
                 cloud: hv.sky.shadow,
                 smp: hv.linear,
                 skies: self.skies.items(),
+                once: once.items(),
                 painted: marks,
             ),
             indices: self.coat.quads.items(),
@@ -1085,6 +1093,7 @@ impl Aboard {
                     cloud: hv.sky.shadow,
                     smp: hv.linear,
                 skies: self.skies.items(),
+                once: once.items(),
                     painted: marks,
                     jacket: if a == 3 { 1 } else { 0 },
                 ),
