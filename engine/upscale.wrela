@@ -1,0 +1,204 @@
+// Temporal upscaling for a scene met by rays from a pinhole (a traced scene: its rays, not a
+// rasterizer's matrix, say where a pixel looks): drawn smaller than the screen and jittered within
+// its pixel each frame (Halton 2, 3), it's brought up to the screen's size by a history kept at
+// that size. Each output pixel gathers this frame's samples round it, each weighed by how near it
+// fell (Blackman-Harris, after Karis, High-Quality Temporal Supersampling, SIGGRAPH 2014), finds
+// where its point was last frame by its distance and the last camera, clips the history it reads
+// there to this frame's neighbourhood of colours (in YCoCg, by their mean and spread: Salvi, An
+// Excursion in Temporal Supersampling, GDC 2016), and blends.
+//
+// Nothing here knows what moves: the history is carried as if the world stood still, and the
+// clip takes back what a moving thing left behind. What it draws is the scene's own, inked: the
+// lines are drawn before it, so it anti-aliases them as it does an edge.
+//
+// A frame:
+//
+//     let j = jitter_of(frame)                      // the drawing's rays through `px + j`
+//     ... draw the scene at the smaller size ...
+//     draw(pass into `history[now]`, cover, upscaled.bind(u, scene, far, history[last], smp))
+//     draw(screen, cover, shown.bind(history[now]))
+
+use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
+use view::halton
+
+/// A camera as a traced scene's rays leave it: through pixel `px` of a drawing `size` px, the
+/// ray along `forward * focal + right * u - up * v`, (u, v) = (2 px - size) / size.y.
+pub struct Pinhole: Copy + GpuData {
+    pub eye: vec3,
+    pub focal: f32,
+    pub forward: vec3,
+    pub right: vec3,
+    pub up: vec3,
+    pub size: vec2,
+}
+
+/// What `upscaled` reads beside its textures: this frame's camera (unjittered) and the last's,
+/// this frame's jitter (the drawing's pixels: its rays went through `px + jitter`), the screen's
+/// size, and whether there's a history yet (`fresh` 1: there isn't, or it's no longer true).
+pub struct Upscale: Copy + GpuData {
+    pub now: Pinhole,
+    pub last: Pinhole,
+    pub jitter: vec2,
+    pub out: vec2,
+    pub fresh: u32,
+}
+
+/// Frame `frame`'s jitter within a pixel (each way, -0.5 to 0.5): Halton 2, 3, eight frames
+/// round.
+pub fn jitter_of(frame: u32) -> vec2 {
+    let k = frame % 8 + 1
+    vec2(halton(k, 2), halton(k, 3)) - vec2(0.5)
+}
+
+/// The direction of `c`'s ray through `px` (its drawing's pixels).
+pub fn ray_of(c: Pinhole, px: vec2) -> vec3 {
+    let uv = (px * 2.0 - c.size) / c.size.y
+    normalize(c.forward * c.focal + c.right * uv.x - c.up * uv.y)
+}
+
+/// Where on `c`'s drawing (its pixels) the point `p` lands, and whether it's in front of it;
+/// `far`: `p` is a direction, a point too far for the eye's own movement to shift.
+pub fn landing(c: Pinhole, p: vec3, far: bool) -> vec3 {
+    let v = if far { p } else { p - c.eye }
+    let z = dot(v, c.forward)
+    if z <= 1.0e-4 {
+        return vec3(0.0, 0.0, 0.0)
+    }
+    let u = c.focal * dot(v, c.right) / z
+    let w = -c.focal * dot(v, c.up) / z
+    vec3((u * c.size.y + c.size.x) * 0.5, (w * c.size.y + c.size.y) * 0.5, 1.0)
+}
+
+/// Past how far (m) a point is taken as a direction (`landing`): the sky, the horizon.
+pub const FAR_ENOUGH: f32 = 30000.0
+
+/// Of each frame, at least this share is its own where the history is true; more where a sample
+/// fell right on the pixel.
+const LEAST: f32 = 0.06
+const MOST: f32 = 0.2
+
+/// Of each frame, the share where the scene settled the pixel itself: enough to keep it as sharp
+/// as one drawing, the history only steadying it.
+const SETTLED: f32 = 0.5
+
+fn ycocg(c: vec3) -> vec3 {
+    vec3(
+        0.25 * c.r + 0.5 * c.g + 0.25 * c.b,
+        0.5 * c.r - 0.5 * c.b,
+        -0.25 * c.r + 0.5 * c.g - 0.25 * c.b,
+    )
+}
+
+fn rgb(y: vec3) -> vec3 {
+    vec3(y.x + y.y - y.z, y.x + y.z, y.x - y.y - y.z)
+}
+
+/// `h` at `p` (its pixels, `size` of them), Catmull-Rom from five bilinear taps.
+fn history_at(h: Texture<Rgba16Float>, smp: Sampler, p: vec2, size: vec2) -> vec3 {
+    let q = p - vec2(0.5)
+    let c = floor(q)
+    let f = q - c
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f))
+    let w1 = 1.0 + f * f * (-2.5 + 1.5 * f)
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f))
+    let w3 = f * f * (-0.5 + 0.5 * f)
+    let w12 = w1 + w2
+    let t0 = (c - vec2(0.5)) / size
+    let t3 = (c + vec2(2.5)) / size
+    let t12 = (c + vec2(0.5) + w2 / w12) / size
+    let a = h.sample_level(smp, vec2(t12.x, t0.y), 0.0).rgb * (w12.x * w0.y)
+    let b = h.sample_level(smp, vec2(t0.x, t12.y), 0.0).rgb * (w0.x * w12.y)
+    let m = h.sample_level(smp, t12, 0.0).rgb * (w12.x * w12.y)
+    let d = h.sample_level(smp, vec2(t3.x, t12.y), 0.0).rgb * (w3.x * w12.y)
+    let e = h.sample_level(smp, vec2(t12.x, t3.y), 0.0).rgb * (w12.x * w3.y)
+    let total = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y
+    max((a + b + m + d + e) / total, vec3(0.0))
+}
+
+/// The output pixel's colour, this frame's samples (`scene`, the drawing's size; its alpha how
+/// far the jitter moved each, 1 for all of it, 0 for a pixel the scene settled at its middle
+/// by its own history) over the
+/// history (`history`, the screen's), carried by the distance each sample met (`far`: log₂ of
+/// the distance along its ray, m, in its first channel). Drawn into this frame's history, which
+/// `shown` puts on the screen.
+@fragment
+pub fn upscaled(
+    pixel: FragCoord,
+    u: Upscale,
+    scene: Texture<Rgba16Float>,
+    far: Texture<Rgba16Float>,
+    history: Texture<Rgba16Float>,
+    smp: Sampler,
+) -> vec4 {
+    let size = u.now.size
+    let k = size / u.out
+    // The pixel's middle on the drawing (its pixels), and the drawing's pixel it lies in.
+    let q = pixel.position.xy * k
+    let base = floor(q)
+    var sum = vec3(0.0)
+    var weight = 0.0
+    var most = 0.0
+    var mean = vec3(0.0)
+    var square = vec3(0.0)
+    var nearest = 1.0e9
+    for j in 0..3 {
+        for i in 0..3 {
+            let at = clamp(base + vec2(f32(i) - 1.0, f32(j) - 1.0), vec2(0.0), size - vec2(1.0))
+            let x = u32(at.x)
+            let y = u32(at.y)
+            let sample = scene.load(x, y)
+            let c = sample.rgb
+            // (Where its ray went: the pixel's middle, moved by the jitter as far as its alpha says: 0
+            // where the scene settled it at the middle itself.)
+            // (Weighed by how far it fell in the screen's pixels: a narrower kernel than the
+            // drawing's own, so what the jitter gathers over the frames stays as sharp.)
+            let d = (at + vec2(0.5) + u.jitter * sample.a - q) / k
+            let w = exp(-2.29 * dot(d, d))
+            sum += c * w
+            weight += w
+            most = max(most, w)
+            let yc = ycocg(c)
+            mean += yc
+            square += yc * yc
+            nearest = min(nearest, far.load(x, y).x)
+        }
+    }
+    // (Where the scene settled the pixel itself (its alpha 0), the jitter gathers nothing new
+    // there: it's read as one drawing is, Catmull-Rom, and more of it taken each frame.)
+    let settled = 1.0 - scene.load(u32(base.x), u32(base.y)).a
+    let now = mix(sum / max(weight, 1.0e-4), history_at(scene, smp, q, size), settled)
+    mean /= 9.0
+    let spread = sqrt(max(square / 9.0 - mean * mean, vec3(0.0)))
+    // Where the pixel's point was: its ray (unjittered), as far as the nearest sample round it met.
+    let dist = exp2(nearest)
+    let dir = ray_of(u.now, q)
+    let is_far = dist >= FAR_ENOUGH
+    let p = if is_far { dir } else { u.now.eye + dir * dist }
+    let was = landing(u.last, p, is_far)
+    let was_px = was.xy / k
+    if u.fresh == 1 ||
+        was.z < 0.5 ||
+        was_px.x < 0.0 ||
+        was_px.y < 0.0 ||
+        was_px.x >= u.out.x ||
+        was_px.y >= u.out.y {
+        return vec4(now, 1.0)
+    }
+    // The history, clipped toward the neighbourhood's mean into its box.
+    let h = ycocg(history_at(history, smp, was_px, u.out))
+    let lo = mean - spread * 1.25
+    let hi = mean + spread * 1.25
+    let centre = (lo + hi) * 0.5
+    let half = max((hi - lo) * 0.5, vec3(1.0e-4))
+    let off = h - centre
+    let reach = max(max(abs(off.x) / half.x, abs(off.y) / half.y), abs(off.z) / half.z)
+    let clipped = if reach > 1.0 { centre + off / reach } else { h }
+    let share = mix(mix(LEAST, MOST, most), SETTLED, settled)
+    vec4(max(mix(rgb(clipped), now, share), vec3(0.0)), 1.0)
+}
+
+/// The history put on the screen as it is.
+@fragment
+pub fn shown(pixel: FragCoord, history: Texture<Rgba16Float>) -> vec4 {
+    history.load(u32(pixel.position.x), u32(pixel.position.y))
+}

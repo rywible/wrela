@@ -8,6 +8,7 @@ use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
+use engine::upscale::Pinhole
 use paint::{paint, paint_fill, paint_half}
 use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder, yonder_low, yonder_rebuild}
 use ink::ink
@@ -71,6 +72,20 @@ pub struct State {
     /// The inked drawing, at the drawing's size, where it's drawn below the screen's
     /// (`main::RENDER_SCALE`): brought up to the screen by `main::upscaled`.
     pub(package) inked: Texture<Rgba16Float>,
+    /// The upscaler's histories at the screen's size (`engine::upscale`), written in turn
+    /// (`flip`: `history_b` this frame), the size they're at, and whether they hold nothing
+    /// true yet; this frame's jitter (the drawing's pixels) and camera unjittered, and the last.
+    pub(package) history_a: Texture<Rgba16Float>,
+    pub(package) history_b: Texture<Rgba16Float>,
+    pub(package) history_size: (u32, u32),
+    pub(package) flip: bool,
+    pub(package) fresh: bool,
+    pub(package) jitter: vec2,
+    pub(package) pinhole: Pinhole,
+    pub(package) last_pinhole: Pinhole,
+    /// This drawing's shot unjittered: the far pass's, which settles its own pixels.
+    pub(package) plain: Shot,
+    pub(package) upscaled_frames: u32,
     /// What a tile not yet cooked reads for its shade (`rock::reach`).
     pub(package) unbaked: GpuBuffer<vec4>,
     /// The passes' times asked for and not yet answered (which, the ask, its frame), and the
@@ -137,6 +152,16 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         reach: texture(width: width, height: height),
         reach_depth: depth_texture(width, height),
         inked: texture(width: width, height: height),
+        history_a: texture(width: 1, height: 1),
+        history_b: texture(width: 1, height: 1),
+        history_size: (1, 1),
+        flip: false,
+        fresh: true,
+        jitter: vec2(0.0),
+        pinhole: pinhole_of(shot),
+        last_pinhole: pinhole_of(shot),
+        upscaled_frames: 0,
+        plain: shot,
         unbaked: buffer(1),
         asks: Vec::new(),
         frames: 0,
@@ -150,6 +175,24 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         width,
         height,
     }
+}
+
+/// `shot`'s camera, as the upscaler reads it.
+pub(package) fn pinhole_of(shot: Shot) -> Pinhole {
+    Pinhole {
+        eye: shot.eye,
+        focal: shot.focal,
+        forward: shot.forward,
+        right: shot.right,
+        up: shot.up,
+        size: shot.resolution,
+    }
+}
+
+/// `shot` with each pixel's ray through `px + j` (its pixels), not `px`.
+fn jittered(shot: Shot, j: vec2) -> Shot {
+    let k = 2.0 / (shot.resolution.y * shot.focal)
+    Shot { forward: shot.forward + (shot.right * j.x - shot.up * j.y) * k, ..shot }
 }
 
 /// One triangle that covers the screen.
@@ -249,6 +292,7 @@ pub(package) fn sized(s: mut State, width: u32, height: u32) {
         s.reach = texture(width: width, height: height)
         s.reach_depth = depth_texture(width, height)
         s.inked = texture(width: width, height: height)
+        s.fresh = true
         s.yon_count = 0.0
         s.width = width
         s.height = height
@@ -287,6 +331,10 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     }
     s.heavens.step(shot.eye, shot.forward, START + time)
     let shot = Shot { storm: s.heavens.storm, wind: s.heavens.wind, ..shot }
+    // (Its rays through each pixel moved by the upscaler's jitter, `s.jitter`; the camera as it
+    // is, for the upscaler.)
+    s.pinhole = pinhole_of(shot)
+    s.plain = shot
     next_yon(mut s, shot)
     // The sea as it is at this drawing.
     s.ocean.step(held(START + time))
@@ -295,7 +343,7 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     let ready = step_rock(mut s.rock, shot, s.heavens.light.sun)
     let meshed = reach(s.rock, shot, ready, s.unbaked, mut s.reach, mut s.reach_depth)
     s.yon.meshed = if meshed { 1 } else { 0 }
-    shot
+    jittered(shot, s.jitter)
 }
 
 /// Paints rows `from` to `to` of `shot` (the first pass), keeping the rest as they are.
@@ -343,7 +391,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
             f,
             cover,
             yonder_low.bind(
-                shot: shot,
+                shot: s.plain,
                 yon: s.yon,
                 light: hv.light,
                 clouds: hv.clouds,
@@ -364,7 +412,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
             r,
             cover,
             yonder_rebuild.bind(
-                shot: shot,
+                shot: s.plain,
                 yon: s.yon,
                 smp: hv.linear,
                 low_colour: s.low_colour,
@@ -384,7 +432,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
             f,
             cover,
             yonder.bind(
-                shot: shot,
+                shot: s.plain,
                 yon: s.yon,
                 light: hv.light,
                 clouds: hv.clouds,
@@ -561,6 +609,7 @@ pub fn play(
             colour: colour,
             marks: s.marks,
             normal: s.normal,
+            settled: 0,
         ),
         vertices: 3,
     )

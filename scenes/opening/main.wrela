@@ -18,11 +18,13 @@
 use heavens::heavens
 use look::SUN
 use ink::ink
+use engine::upscale::{Upscale, jitter_of, shown, upscaled}
 use played::{State, cover, painted, sized, targets, weathered}
 use sail::key
 use std::input::events
 use std::gpu::{
-    FragCoord, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, draw, label, timed,
+    FragCoord, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, draw, label, texture,
+    timed,
 }
 use std::io::print
 
@@ -135,8 +137,13 @@ pub const DOME_PHASES: u32 = 128
 pub const HALF_SKY: bool = true
 
 /// How big the drawing is made, of the screen each way (1: the screen's own size): below it, it's
-/// inked at its own size and brought up to the screen (`upscaled`), its cost as its pixels'.
+/// inked at its own size and brought up to the screen (`upscaled_once`), its cost as its pixels'.
 pub const RENDER_SCALE: f32 = 0.75
+
+/// Whether a drawing below the screen's size is brought up over the frames before
+/// (`engine::upscale`: its rays jittered, a history at the screen's size), not each alone
+/// (`upscaled_once`).
+pub const UPSCALE: bool = false
 
 /// Whether each frame's passes print their GPU time (`timing <frame> <pass> <us>`), for a host
 /// that can't be asked for timestamps, as the render box's (`--set TIMINGS=true`).
@@ -158,6 +165,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let w = if low { max(u32(f32(width) * RENDER_SCALE + 0.5), 1) } else { width }
     let h = if low { max(u32(f32(height) * RENDER_SCALE + 0.5), 1) } else { height }
     sized(mut s, w, h)
+    if UPSCALE && low && s.history_size != (width, height) {
+        s.history_a = texture(width: width, height: height)
+        s.history_b = texture(width: width, height: height)
+        s.history_size = (width, height)
+        s.fresh = true
+    }
     // The player's keys: W sheets in, S lets the sail fly, A and D steer.
     for e in events() {
         key(mut s.rig, e)
@@ -173,6 +186,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         colour: colour,
         marks: s.marks,
         normal: s.normal,
+        settled: if low && UPSCALE { 1 } else { 0 },
     )
     if !low {
         let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
@@ -183,26 +197,65 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let p = begin_pass(mut s.inked, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(p, cover, inked, vertices: 3)
     p.end()
+    if !UPSCALE {
+        let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+        draw(
+            screen,
+            cover,
+            upscaled_once.bind(
+                drawn: s.inked,
+                smp: hv.linear,
+                from: vec2(f32(w), f32(h)),
+                to: vec2(f32(width), f32(height)),
+            ),
+            vertices: 3,
+        )
+        screen.present()
+        return
+    }
+    // Brought up over the frames before (`engine::upscale`), and the next frame's rays jittered.
+    let u = Upscale {
+        now: s.pinhole,
+        last: s.last_pinhole,
+        jitter: s.jitter,
+        out: vec2(f32(width), f32(height)),
+        fresh: if s.fresh { 1 } else { 0 },
+    }
+    if s.flip {
+        let p = begin_pass(mut s.history_b, clear: vec4(0.0))
+        draw(
+            p,
+            cover,
+            upscaled.bind(u, scene: s.inked, far: s.marks, history: s.history_a, smp: hv.linear),
+            vertices: 3,
+        )
+        p.end()
+    } else {
+        let p = begin_pass(mut s.history_a, clear: vec4(0.0))
+        draw(
+            p,
+            cover,
+            upscaled.bind(u, scene: s.inked, far: s.marks, history: s.history_b, smp: hv.linear),
+            vertices: 3,
+        )
+        p.end()
+    }
+    borrow now = if s.flip { s.history_b } else { s.history_a }
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-    draw(
-        screen,
-        cover,
-        upscaled.bind(
-            drawn: s.inked,
-            smp: hv.linear,
-            from: vec2(f32(w), f32(h)),
-            to: vec2(f32(width), f32(height)),
-        ),
-        vertices: 3,
-    )
+    draw(screen, cover, shown.bind(history: now), vertices: 3)
     screen.present()
+    s.flip = !s.flip
+    s.fresh = false
+    s.last_pinhole = s.pinhole
+    s.upscaled_frames += 1
+    s.jitter = jitter_of(s.upscaled_frames)
 }
 
 /// The inked drawing (`from` px) brought up to the screen (`to` px): Catmull-Rom, its sixteen
 /// taps read as five bilinear ones (the corners dropped: they weigh little), so the
 /// edges stay as sharp as they were drawn.
 @fragment
-pub fn upscaled(
+pub fn upscaled_once(
     pixel: FragCoord,
     drawn: Texture<Rgba16Float>,
     smp: Sampler,
