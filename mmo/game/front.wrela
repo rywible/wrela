@@ -155,6 +155,7 @@ pub struct Front {
     base: f32,
     quickest: f32,
     window_began: f32,
+    window_frames: u32,
     resized_at: f32,
     /// The size the scene is drawn at, the size last asked for, and since when (`SETTLE`).
     drawn_at: (u32, u32),
@@ -213,6 +214,7 @@ pub fn init(fonts: take Fonts) -> Front {
         base: 1.0 / 60.0,
         quickest: 1.0,
         window_began: 0.0,
+        window_frames: 0,
         resized_at: 0.0,
         drawn_at: (0, 0),
         asked: (0, 0),
@@ -310,6 +312,12 @@ fn phone(w: f32, h: f32) -> bool {
     min(w, h) < PHONE_SIDE
 }
 
+/// Whether a window of `frames` frames, its quickest `quickest` seconds, mostly kept that pace:
+/// at least 85% of a second's worth of its frames.
+fn kept_pace(frames: u32, quickest: f32) -> bool {
+    f32(frames) * quickest >= 0.85
+}
+
 /// Calibrates to the first window, including a 30 Hz screen, then keeps the quickest cadence
 /// observed: a heavier scene must not redefine its own slow frames as the screen's pace.
 /// Frame times alone cannot distinguish a screen from rendering already slow at startup.
@@ -324,6 +332,15 @@ fn frame_limits(title: bool, base: f32) -> (f32, f32) {
     if title {
         (max(TITLE_SLOW, base * 1.25), max(TITLE_QUICK, base * 1.06))
     } else { (base * 1.25, base * 1.06) }
+}
+
+@test
+fn one_quick_frame_among_steady_sixty_is_not_the_screens_pace() {
+    // A 60 Hz screen's window: 60 frames, one of them 12 ms (a late frame's follower).
+    assert(!kept_pace(60, quickest: 0.012), "one quick frame doesn't make a 83 Hz screen")
+    assert(kept_pace(60, quickest: 1.0 / 60.0), "a steady 60 is a 60 Hz screen")
+    assert(kept_pace(118, quickest: 1.0 / 120.0), "a steady 120 is a 120 Hz screen")
+    assert(kept_pace(30, quickest: 1.0 / 30.0), "a steady 30 is a 30 Hz screen")
 }
 
 @test
@@ -480,9 +497,15 @@ pub fn frame<A: Account>(
         // Infer the screen's pace from its fastest window; later rendering load must not
         // make a known faster display appear slower.
         f.quickest = min(f.quickest, dt)
+        f.window_frames += 1
         if f.time - f.window_began >= 1.0 {
-            f.base = frame_base(f.base, f.quickest, first: f.window_began == 0.0)
+            // (Only a pace the window mostly kept: one quick frame among slow ones, a
+            // timestamp's jitter, isn't the screen's.)
+            if kept_pace(f.window_frames, f.quickest) {
+                f.base = frame_base(f.base, f.quickest, first: f.window_began == 0.0)
+            }
             f.quickest = 1.0
+            f.window_frames = 0
             f.window_began = f.time
         }
     }

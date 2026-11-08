@@ -11,7 +11,9 @@ pub const HELD: f32 = 120.0
 
 /// `time` held to the last drawing.
 pub fn held(time: f32) -> f32 {
-    floor(time * HELD) / HELD
+    // (Half a drawing on: a frame's time that falls on a drawing's start, give or take its
+    // rounding, isn't put in the one before.)
+    floor(time * HELD + 0.5) / HELD
 }
 
 /// The opening's sea: a gale of 19 m/s (Beaufort 8: moderately high waves, their crests

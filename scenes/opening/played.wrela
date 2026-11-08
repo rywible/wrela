@@ -581,7 +581,9 @@ pub fn play(
     }
     let drawing = held(START + time)
     if s.band == 0 {
-        if drawing == s.drawn {
+        // (In one band, a drawing every frame: a frame that falls in the last's drawing still
+        // draws, so a screen's pace never skips one.)
+        if drawing == s.drawn && bands > 1 {
             return false
         }
         s.drawn = drawing
