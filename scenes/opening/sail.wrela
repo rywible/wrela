@@ -669,7 +669,7 @@ fn moved(r: mut Rig, time: f32, dt: f32, swell: Swell, off: f32) {
         m.flutter_v = v4
         // (The old mast whips: knocked by the heave and a slammed boom, rung by the belly's pop.)
         let kick = vec2(
-            (r.jolt * 1.5 + onset * 8.0) * (if r.boom > 0.0 { 1.0 } else { -1.0 }),
+            (r.jolt * 1.5 + onset * 2.0) * (if r.boom > 0.0 { 1.0 } else { -1.0 }),
             -lift * 0.03 - m.fill_v * 0.1,
         )
         let wx = m.whip_v.x + (kick.x - 100.0 * m.whip.x - 2.0 * 0.12 * 10.0 * m.whip_v.x) * h
@@ -690,7 +690,7 @@ fn moved(r: mut Rig, time: f32, dt: f32, swell: Swell, off: f32) {
     // skiff surges and forward as it's brought up; the body lags where the sail's pull wants
     // it, and swings past a little.
     let away = normalize(vec3(g.neck.x - g.fore_hand.x, 0.0, g.neck.z - g.fore_hand.z) + vec3(0.0001))
-    let hang = (0.2 * clamp(r.gust - 1.0, -0.3, 0.6) + 0.6 * onset) * r.power +
+    let hang = (0.2 * clamp(r.gust - 1.0, -0.3, 0.6) + 0.4 * onset) * r.power +
         0.15 * abs(r.heel) * r.power
     let surge = clamp((r.speed - r.rush) * 0.04, -0.12, 0.12)
     // (Its upper body sways against the hull's roll, keeping its head over its feet, and
