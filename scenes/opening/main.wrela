@@ -136,7 +136,7 @@ pub const HALF_SKY: bool = true
 
 /// How big the drawing is made, of the screen each way (1: the screen's own size): below it, it's
 /// inked at its own size and brought up to the screen (`upscaled`), its cost as its pixels'.
-pub const RENDER_SCALE: f32 = 1.0
+pub const RENDER_SCALE: f32 = 0.75
 
 /// Whether each frame's passes print their GPU time (`timing <frame> <pass> <us>`), for a host
 /// that can't be asked for timestamps, as the render box's (`--set TIMINGS=true`).
