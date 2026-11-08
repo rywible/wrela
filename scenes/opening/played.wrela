@@ -18,8 +18,8 @@ use std::collections::swap
 use std::io::Pending
 use std::input::Event
 use std::gpu::{
-    ClipPosition, DepthTexture, R32Float, Rgba16Float, Rgba8, Texture, Texture3d, VertexIndex,
-    begin_pass, begin_pass3, depth_texture, dispatch, draw, label, texture, texture3d,
+    ClipPosition, DepthTexture, R32Float, Rg32Float, Rgba16Float, Rgba8, Texture, Texture3d,
+    VertexIndex, begin_pass, begin_pass3, depth_texture, dispatch, draw, label, texture, texture3d,
 }
 
 /// How finely a live page meets the scene (`Shot::fine`): the rock and the cathedral four times
@@ -65,7 +65,7 @@ pub struct State {
     /// The rock and the cathedral as meshes (`rock`), and how far each pixel is to them, drawn
     /// each drawing, with its depth.
     pub(package) rock: Rock,
-    pub(package) reach: Texture<R32Float>,
+    pub(package) reach: Texture<Rg32Float>,
     pub(package) reach_depth: DepthTexture,
     /// The passes' times asked for and not yet answered (which, the ask, its frame), and the
     /// frames drawn (`main::TIMINGS`).
@@ -281,8 +281,8 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     s.ocean.step(held(START + time))
     // The rock's meshes, and how far each pixel is to them.
     label("rock")
-    step_rock(mut s.rock, shot)
-    let meshed = reach(s.rock, shot, mut s.reach, mut s.reach_depth)
+    let ready = step_rock(mut s.rock, shot, s.heavens.light.sun)
+    let meshed = reach(s.rock, shot, ready, mut s.reach, mut s.reach_depth)
     s.yon.meshed = if meshed { 1 } else { 0 }
     shot
 }

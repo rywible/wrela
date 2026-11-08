@@ -11,6 +11,10 @@
 // (`Grid::around` its cube), two cells wider each way, so neighbours overlap a little and no
 // crack opens between two tiles at different levels.
 //
+// What a scene would otherwise trace at each pixel and that doesn't move (its shadows under a
+// still sun, its occlusion) it can cook once onto each tile's vertices (`Bake`, `Tiles::bake`),
+// each time a tile's mesh is placed, and read back interpolated where the mesh is drawn.
+//
 // A tile not yet realized has no mesh: `Tiles::whole` says when every tile on screen has one, so
 // a scene draws the solid traced until then (or wherever `drawn` is `NO_LEVEL`).
 //
@@ -20,9 +24,32 @@
 
 use creature::Parts
 use look::{CreatureLook, Detail, Level, Mesh as Surface}
-use realize::{Eye, Fading, Mesh, NO_LEVEL, Placement, Realizer}
+use realize::{Eye, Fading, Mesh, NO_LEVEL, Placement, Realizer, SkinVertex, Tally}
 use std::collections::Bounded
 use std::derive::Box3
+use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch}
+
+/// What a scene cooks onto a solid's vertices: four numbers at a point `p` of its surface facing
+/// `n` (a shadow, an occlusion), as costly as it likes: cooked once a mesh.
+pub trait Bake: Copy + GpuData {
+    fn at(self, p: vec3, n: vec3) -> vec4
+}
+
+/// Each vertex's baked numbers.
+@compute(64)
+pub fn cook_baked<B: Bake>(
+    bake: B,
+    tally: [Tally],
+    verts: [SkinVertex],
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= tally[0].vertices {
+        return
+    }
+    let v = verts[id.x]
+    out[id] = bake.at(v.pos, normalize(v.normal))
+}
 
 /// A big solid's tiles: the realizer that keeps their meshes, each tile's cube (the realizer's
 /// instance of the same number), and where they're placed (the world: a solid doesn't move).
@@ -30,6 +57,10 @@ pub struct Tiles<F> {
     pub realizer: Realizer<F>,
     pub cubes: Vec<Box3>,
     placed: Vec<Placement>,
+    /// Each tile's baked numbers (`bake`), one a vertex of its drawn mesh, and the level they
+    /// were cooked for (`NO_LEVEL`: none yet, or its mesh changed since).
+    baked: Vec<Option<GpuBuffer<vec4>>>,
+    baked_level: Vec<u32>,
 }
 
 /// `field`'s tiles inside `bounds`, cubes `side` m wide, kept at `levels` (coarse to fine, at
@@ -75,7 +106,14 @@ pub fn tiles<C, F: Parts<C> + Copy>(
         }
     }
     let placed = Vec::filled(cubes.len(), Placement { at: vec3(0.0), heading: 0.0 })
-    Tiles { realizer, cubes, placed }
+    let n = cubes.len()
+    Tiles {
+        realizer,
+        cubes,
+        placed,
+        baked: Vec::from_fn(n, |_| None),
+        baked_level: Vec::filled(n, NO_LEVEL),
+    }
 }
 
 fn grown(b: Box3, by: f32) -> Box3 {
@@ -86,12 +124,54 @@ impl<C, F: Parts<C>> Tiles<F> {
     /// This frame, seen by `eye`: each tile's level, and the realizations the budget allows.
     pub fn frame(mut self, eye: Eye) {
         self.realizer.frame(eye, self.placed)
+        self.forget_placed()
+    }
+
+    /// The tiles whose meshes were placed again (a new level, or the same realized again): their
+    /// baked numbers no longer fit.
+    fn forget_placed(mut self) {
+        for (i, _) in self.realizer.placed() {
+            self.baked_level[i] = NO_LEVEL
+        }
+    }
+
+    /// `b` cooked onto the drawn mesh of each tile that hasn't it yet, at most `most` tiles.
+    /// Whether every drawn tile has it.
+    pub fn bake<B: Bake>(mut self, b: B, most: u32) -> bool {
+        var done = 0
+        for i in 0..self.cubes.len() {
+            let level = self.realizer.drawn(i)
+            if level == NO_LEVEL || self.baked_level[i] == level {
+                continue
+            }
+            if done >= most {
+                return false
+            }
+            borrow m = self.realizer.mesh(i)
+            let room = m.room().vertices
+            var out: GpuBuffer<vec4> = buffer(room)
+            dispatch(
+                cook_baked.bind(
+                    bake: b,
+                    tally: m.tally.items(),
+                    verts: m.verts.items(),
+                    out: mut out,
+                ),
+                groups: (room + 63) / 64,
+            )
+            self.baked[i] = Some(take out)
+            self.baked_level[i] = level
+            done += 1
+        }
+        true
     }
 
     /// Every tile at `level` now, whatever the budget (a still, a test, a load screen): whether
     /// each has it.
     pub fn realize_all(mut self, level: u32) -> bool {
-        self.realizer.realize_all(level)
+        let all = self.realizer.realize_all(level)
+        self.forget_placed()
+        all
     }
 
     /// How far tile `i`'s new level has faded in (1: it isn't fading). Its new mesh draws where
@@ -119,6 +199,19 @@ impl<F> Tiles<F> {
     /// Tile `i`'s mesh: it must have one (`drawn`).
     pub fn mesh(self, i: u32) -> borrow Mesh {
         self.realizer.mesh(i)
+    }
+
+    /// Whether tile `i`'s drawn mesh has its baked numbers (`bake`).
+    pub fn has_baked(self, i: u32) -> bool {
+        self.baked_level[i] != NO_LEVEL && self.baked_level[i] == self.realizer.drawn(i)
+    }
+
+    /// Tile `i`'s baked numbers, one a vertex of its drawn mesh: it must have them (`has_baked`).
+    pub fn baked(self, i: u32) -> borrow GpuBuffer<vec4> {
+        match self.baked[i] {
+            Some(b) => b,
+            None => panic("this tile has nothing baked"),
+        }
     }
 
     /// Whether every tile has a mesh: the solid can be drawn from meshes alone.
