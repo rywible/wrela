@@ -214,7 +214,7 @@ fn tails_skinned(rest: vec3, palettes: [mat4], first: u32) -> vec3 {
 /// carry it at rest (its A-line and pleats), the rest left to its weight, its swing and his legs.
 const SHAPE: f32 = 0.15
 /// How much of its swing it keeps from frame to frame (air and its own stiffness take the rest).
-const KEEP: f32 = 0.85
+const KEEP: f32 = 0.75
 /// How many times a frame each node is pulled back to its neighbours' distances.
 const RELAXES: u32 = 16
 
@@ -291,7 +291,7 @@ pub fn cloth_relax(palettes: [mat4], views: u32, stride: u32, pos: [vec4], out: 
             let want = length(drape_node(u32(cc), u32(rr)) - rest)
             let d = o - p
             let l = length(d)
-            let w = if k < 4 { 1.0 } else { 0.5 }
+            let w = if k < 4 { 1.0 } else { 0.25 }
             if l > 1.0e-6 {
                 pull += d * ((l - want) / l) * 0.5 * w
             }
