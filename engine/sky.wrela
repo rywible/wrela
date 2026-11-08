@@ -1073,6 +1073,11 @@ pub struct Sky {
 /// The clouds' textures, uncooked, for a program of switches `Q` (`Switches::HALVED`: the march
 /// half the dome's size).
 pub fn new_sky<Q: Switches>() -> Sky {
+    // (A share no bigger than `marched` holds, and whole tiles in every share.)
+    assert(
+        Q::DOME_PHASES >= PHASES && (TILES_W * (SKY_H / TILE)) % Q::DOME_PHASES == 0,
+        "DOME_PHASES must be at least PHASES and divide the dome's tiles (32, 64, 128)",
+    )
     Sky {
         shape: texture3d::<Rgba16Float>(SHAPE_SIDE, SHAPE_SIDE, SHAPE_SIDE),
         detail: texture3d::<Rgba16Float>(DETAIL_SIDE, DETAIL_SIDE, DETAIL_SIDE),
