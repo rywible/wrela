@@ -882,15 +882,12 @@ fn sea_shade(
     ) *
         2.2
     let gather = mix(gather_raw, 1.0, smoothstep(0.6, 3.0, length(dv)))
-    let points = sparkle(
-        rest,
-        flat,
-        du,
-        flat * (px_at / slant),
-        s.held,
-        needed * pointed * gather,
-    ) *
-        gather
+    // (Under the storm's deck the points are dropped (`glint`): not worked out at all.)
+    let points = if h.light.storm < 0.6 {
+        sparkle(rest, flat, du, flat * (px_at / slant), s.held, needed * pointed * gather) * gather
+    } else {
+        0.0
+    }
     // What the points don't carry lies smooth, held under white (so the water between them stays
     // water, a warm gold, and what they'd carry they burn the brighter for), a little less held
     // far off. Its colour the sun's, as the reflected sky warms it: the path a brighter gold
