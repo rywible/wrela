@@ -4446,6 +4446,9 @@ fn draw_image(s: mut Docs, k: u32, rd: Read, shows: ImageKey, rough: bool, from:
         rim: hex(s.p.field),
         mode: shows.mode,
         probe: shows.probe,
+        probe_distance: if shows.probe.w > 0.0 { live::evaluate(rd.scene, shows.probe.xyz) } else {
+            0.0
+        },
     }
     let band = vec4(0.0, f32(from), f32(size.x), f32(to - from))
     let corners = quad.bind(screen: vec2(f32(size.x), f32(size.y)), rect: band)
