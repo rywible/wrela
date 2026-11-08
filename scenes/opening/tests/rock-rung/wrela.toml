@@ -1,0 +1,9 @@
+# The opening's rock and cathedral (its traced field, `isle::isle`) realized as a rigid mesh by
+# the engine's realizer at a few cells: how many vertices and quads, how long, and how far its
+# surface strays from the field. The first rung of drawing far traced things as meshes.
+[package]
+name = "rock_rung"
+
+[dependencies]
+engine = { workspace = true }
+opening = { path = "../.." }

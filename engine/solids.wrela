@@ -1,0 +1,133 @@
+// Big solids: a field too large to realize in one grid (a mountain, a floating rock and the
+// cathedral on it, a cliff), drawn as meshes cut into tiles, each tile at the level of detail its
+// size on screen asks for.
+//
+// A solid's box is cut into cubes `side` m wide; those its surface can't cross are dropped on the
+// CPU (`Parts::cull`, the realizer's own test), and each one left is an instance of a
+// `realize::Realizer`: so the realizer's machinery is a solid's too. Each tile is realized at its
+// coarsest level first, then at the level its cells' size on screen asks for, a frame's budget at
+// a time, nearest and largest first; a new level fades in over the old (`Realizer::fade_share`);
+// a tile off screen long enough drops back to its coarsest. Every tile's grid is the realizer's
+// (`Grid::around` its cube), two cells wider each way, so neighbours overlap a little and no
+// crack opens between two tiles at different levels.
+//
+// A tile not yet realized has no mesh: `Tiles::whole` says when every tile on screen has one, so
+// a scene draws the solid traced until then (or wherever `drawn` is `NO_LEVEL`).
+//
+//     the box   ┌──┬──┬──┬──┐   tiles the surface can't cross: dropped
+//               │  │▓▓│▓▓│  │   ▓ a tile: an instance, its own level
+//               └──┴──┴──┴──┘
+
+use creature::Parts
+use look::{CreatureLook, Detail, Level, Mesh as Surface}
+use realize::{Eye, Fading, Mesh, NO_LEVEL, Placement, Realizer}
+use std::collections::Bounded
+use std::derive::Box3
+
+/// A big solid's tiles: the realizer that keeps their meshes, each tile's cube (the realizer's
+/// instance of the same number), and where they're placed (the world: a solid doesn't move).
+pub struct Tiles<F> {
+    pub realizer: Realizer<F>,
+    pub cubes: Vec<Box3>,
+    placed: Vec<Placement>,
+}
+
+/// `field`'s tiles inside `bounds`, cubes `side` m wide, kept at `levels` (coarse to fine, at
+/// most four), each level taken while its cells look no larger than `max_cell_px` pixels.
+/// `budget_us`: a frame's realization budget (estimated GPU time).
+pub fn tiles<C, F: Parts<C> + Copy>(
+    field: F,
+    bounds: Box3,
+    side: f32,
+    levels: [Level],
+    max_cell_px: f32,
+    budget_us: f32,
+) -> Tiles<F> {
+    var detail = Detail { max_cell_px, budget_us, ..Detail {} }
+    detail.levels = Bounded::new()
+    for l in levels {
+        detail.levels.push(l)
+    }
+    let finest = levels[levels.len() - 1].cell
+    var realizer: Realizer<F> = Realizer::new(
+        CreatureLook {
+            surface: Surface { tolerance: finest, largest: finest, radius: finest },
+            detail,
+            ..CreatureLook {},
+        },
+    )
+    var cubes = Vec::new()
+    let n = vec3u(ceil((bounds.hi - bounds.lo) / side))
+    for z in 0..n.z {
+        for y in 0..n.y {
+            for x in 0..n.x {
+                let lo = bounds.lo + vec3(f32(x), f32(y), f32(z)) * side
+                let cube = Box3 { lo, hi: lo + vec3(side) }
+                // (Grown by the coarsest cell's two, as its grid is: a surface just outside the
+                // cube is still the tile's.)
+                let c = field.cull(grown(cube, 2.0 * levels[0].cell))
+                if c.lo > 0.0 || c.hi < 0.0 {
+                    continue
+                }
+                realizer.add(field, cube)
+                cubes.push(cube)
+            }
+        }
+    }
+    let placed = Vec::filled(cubes.len(), Placement { at: vec3(0.0), heading: 0.0 })
+    Tiles { realizer, cubes, placed }
+}
+
+fn grown(b: Box3, by: f32) -> Box3 {
+    Box3 { lo: b.lo - vec3(by), hi: b.hi + vec3(by) }
+}
+
+impl<C, F: Parts<C>> Tiles<F> {
+    /// This frame, seen by `eye`: each tile's level, and the realizations the budget allows.
+    pub fn frame(mut self, eye: Eye) {
+        self.realizer.frame(eye, self.placed)
+    }
+
+    /// Every tile at `level` now, whatever the budget (a still, a test, a load screen): whether
+    /// each has it.
+    pub fn realize_all(mut self, level: u32) -> bool {
+        self.realizer.realize_all(level)
+    }
+
+    /// How far tile `i`'s new level has faded in (1: it isn't fading). Its new mesh draws where
+    /// a pixel's dither is under it (`lod::dithered`), the old (`fading`) where it isn't.
+    pub fn fade_share(self, i: u32) -> f32 {
+        self.realizer.fade_share(i)
+    }
+
+    /// The meshes fading out, each its tile's level before.
+    pub fn fading(self) -> [Fading] {
+        self.realizer.fading()
+    }
+}
+
+impl<F> Tiles<F> {
+    pub fn len(self) -> u32 {
+        self.cubes.len()
+    }
+
+    /// Whether tile `i` has a mesh to draw.
+    pub fn drawn(self, i: u32) -> bool {
+        self.realizer.drawn(i) != NO_LEVEL
+    }
+
+    /// Tile `i`'s mesh: it must have one (`drawn`).
+    pub fn mesh(self, i: u32) -> borrow Mesh {
+        self.realizer.mesh(i)
+    }
+
+    /// Whether every tile has a mesh: the solid can be drawn from meshes alone.
+    pub fn whole(self) -> bool {
+        for i in 0..self.cubes.len() {
+            if self.realizer.drawn(i) == NO_LEVEL {
+                return false
+            }
+        }
+        true
+    }
+}
