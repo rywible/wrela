@@ -2,7 +2,7 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use arms::{arm, drape_room, draped, follow_legs, hand, jacket, sampled_body, trailed, work_drape}
+use arms::{Drape, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body, trailed}
 use hakuro::{Cloth, body_paint, coat, hands, head, hero, jacket_paint, skeleton}
 use engine::character::{ByChannels, colours}
 use engine::character::skin_matrix
@@ -261,7 +261,8 @@ pub struct State {
     meshes: [Mesh; 10],
     colours: [GpuBuffer<Unorm8x4>; 4],
     palettes: GpuBuffer<mat4>,
-    drape: GpuBuffer<vec4>,
+    drape: Drape,
+    last: f32,
     tallies: Vec<Pending<Tally>>,
     shadow: DepthTexture,
     smp: ComparisonSampler,
@@ -308,6 +309,7 @@ pub fn init() -> State {
         colours: [c0, c1, c2, c3],
         palettes,
         drape: drape_room(5),
+        last: 0.0,
         tallies,
         shadow: unlit_shadow(),
         smp: comparison_sampler(),
@@ -330,7 +332,8 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             write(mut s.palettes, v * MAX_BONES + LAGGED, b)
         }
     }
-    work_drape(s.palettes, 5, MAX_BONES, LAGGED, mut s.drape)
+    s.drape.work(s.palettes, 5, MAX_BONES, LAGGED, time - s.last)
+    s.last = time
     for i in 0..s.tallies.len() {
         if let Some(Ok(v)) = s.tallies[i].poll() {
             let t = v[0]
@@ -399,7 +402,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             coat_fielded.bind(
                 verts: s.meshes[2].verts.items(),
                 palettes: s.palettes.items(),
-                grid: s.drape.items(),
+                grid: s.drape.grid(),
                 first: k * MAX_BONES,
                 view: v,
             ),
@@ -464,7 +467,7 @@ pub struct Fielded: Copy {
 }
 
 /// His coat's tails' vertex: as `fielded`, trailing its weight (`arms::trailed`) and draped over his
-/// legs (`arms::draped`, its grid worked out each frame by `arms::work_drape`).
+/// legs (`arms::draped`, its grid worked out each frame by `arms::Drape::work`).
 @vertex
 pub fn coat_fielded(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], grid: [vec4], first: u32, view: View) -> Fielded {
     var f = fielded_at(v, verts, palettes, first, view)

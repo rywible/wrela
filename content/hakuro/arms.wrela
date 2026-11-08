@@ -20,7 +20,7 @@ use skinning::{WeightTables, Weights, weights_at}
 use engine::realize::{BLOCK, Mesh, SkinVertex, Tally}
 use engine::realize::corner_offset
 use engine::sampled::{BLOCK_WORDS, Lattice, STORED, Samples, realize_sampled}
-use std::gpu::{GlobalId, GpuBuffer, Slots, Unorm8x4, buffer, dispatch}
+use std::gpu::{GlobalId, GpuBuffer, GpuSpan, Slots, Unorm8x4, buffer, dispatch}
 
 /// The skeleton's bone numbers (`hakuro::skeleton` adds them in this order: the trunk, then
 /// each pair left and right).
@@ -228,21 +228,95 @@ pub fn drape(palettes: [mat4], views: u32, stride: u32, lagged: u32, out: mut Sl
     out[id] = vec4(off_legs(hung, rest, palettes, first) - hung, 0.0)
 }
 
-/// The drape for `views` views, worked out into `out` (`DRAPE_NODES` a view).
-pub fn work_drape(palettes: GpuBuffer<mat4>, views: u32, stride: u32, lagged: u32, out: mut GpuBuffer<vec4>) {
-    dispatch(
-        drape.bind(palettes: palettes.items(), views: views, stride: stride, lagged: lagged, out: mut out),
-        groups: (views * DRAPE_NODES + 63) / 64,
-    )
+/// The drape smoothed over its neighbours (a binomial 5 by 5): where a node's push changed
+/// sharply from its neighbours' (a leg's edge, a capsule giving way to the next) the hem crumpled
+/// and snapped back a frame later.
+@compute(64)
+pub fn smooth_drape(views: u32, ease: f32, grid: [vec4], before: [vec4], out: mut Slots<vec4>, id: GlobalId) {
+    let all = views * DRAPE_NODES
+    if id.x >= all {
+        return
+    }
+    let base = (id.x / DRAPE_NODES) * DRAPE_NODES
+    let n = id.x % DRAPE_NODES
+    let c = i32(n % DRAPE_COLS)
+    let r = i32(n / DRAPE_COLS)
+    let kw = [1.0, 4.0, 6.0, 4.0, 1.0]
+    var sum = vec4(0.0)
+    var w = 0.0
+    for j in 0..5 {
+        for i in 0..5 {
+            let cc = c + i32(i) - 2
+            let rr = r + i32(j) - 2
+            if cc >= 0 && cc < i32(DRAPE_COLS) && rr >= 0 && rr < i32(DRAPE_ROWS) {
+                let k = kw[i] * kw[j]
+                sum += grid[base + u32(rr) * DRAPE_COLS + u32(cc)] * k
+                w += k
+            }
+        }
+    }
+    // (Eased from where it was a frame ago: the cloth's own weight, so a hem caught by a knee
+    // for a frame doesn't snap there and back.)
+    out[id] = mix(before[id.x], sum / w, ease)
+}
+
+/// A drape's room: each node's raw drape, and smoothed and eased (two, a frame's and the last's:
+/// `grid` is what `draped` reads).
+pub struct Drape {
+    raw: GpuBuffer<vec4>,
+    smooth_a: GpuBuffer<vec4>,
+    smooth_b: GpuBuffer<vec4>,
+    flip: u32,
+    fresh: bool,
 }
 
 /// Room for the drape of `views` views.
-pub fn drape_room(views: u32) -> GpuBuffer<vec4> {
-    buffer(views * DRAPE_NODES)
+pub fn drape_room(views: u32) -> Drape {
+    Drape {
+        raw: buffer(views * DRAPE_NODES),
+        smooth_a: buffer(views * DRAPE_NODES),
+        smooth_b: buffer(views * DRAPE_NODES),
+        flip: 0,
+        fresh: true,
+    }
+}
+
+/// How quickly the drape catches up with his legs (s): about two frames at 30 a second.
+const DRAPE_EASE: f32 = 0.05
+
+impl Drape {
+    /// The drape for `views` views (each view's palette `stride` bones on from the last, its
+    /// palette a moment ago `lagged` after it), worked out `dt` seconds after the last.
+    pub fn work(mut self, palettes: GpuBuffer<mat4>, views: u32, stride: u32, lagged: u32, dt: f32) {
+        dispatch(
+            drape.bind(palettes: palettes.items(), views: views, stride: stride, lagged: lagged, out: mut self.raw),
+            groups: (views * DRAPE_NODES + 63) / 64,
+        )
+        let ease = if self.fresh { 1.0 } else { 1.0 - exp(-max(dt, 0.0) / DRAPE_EASE) }
+        self.fresh = false
+        self.flip = 1 - self.flip
+        let groups = (views * DRAPE_NODES + 63) / 64
+        if self.flip == 1 {
+            dispatch(
+                smooth_drape.bind(views: views, ease: ease, grid: self.raw.items(), before: self.smooth_a.items(), out: mut self.smooth_b),
+                groups: groups,
+            )
+        } else {
+            dispatch(
+                smooth_drape.bind(views: views, ease: ease, grid: self.raw.items(), before: self.smooth_b.items(), out: mut self.smooth_a),
+                groups: groups,
+            )
+        }
+    }
+
+    /// The drape as it is this frame, for `draped`.
+    pub fn grid(self) -> GpuSpan<vec4> {
+        if self.flip == 1 { self.smooth_b.items() } else { self.smooth_a.items() }
+    }
 }
 
 /// A point of the tails (`hung`: posed and trailing, at rest `rest`) moved as the drape's nodes
-/// round it are (view `view`'s, in `grid`).
+/// round it are (view `view`'s, in `grid`: `Drape::grid`).
 pub fn draped(hung: vec3, rest: vec3, grid: [vec4], view: u32) -> vec3 {
     let at = drape_cell(rest)
     let c0 = min(u32(floor(at.x)), DRAPE_COLS - 2)
@@ -391,7 +465,7 @@ pub fn off_legs(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
                 let a = if k == 0 { hip[side] } else if k == 1 { knee[side] } else { heel[side] }
                 let b = if k == 0 { knee[side] } else if k == 1 { ankle[side] } else { toe[side] }
                 let ra = if k == 0 { 0.135 } else if k == 1 { 0.125 } else { 0.11 }
-                let rb = if k == 0 { 0.125 } else if k == 1 { 0.13 } else { 0.10 }
+                let rb = if k == 0 { 0.125 } else if k == 1 { 0.22 } else { 0.10 }
                 let e = b - a
                 let qm = q - dir * th
                 let h = clamp(dot(qm - a, e) / dot(e, e), 0.0, 1.0)
