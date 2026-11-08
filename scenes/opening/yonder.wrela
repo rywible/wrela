@@ -760,6 +760,7 @@ const SPOTS = [
 /// drawing's size each way, meets one pixel of its 2x2 in the drawing (`quarter_of` the turn),
 /// a little off its centre. `yonder_rebuild` lays them over what the drawings before met.
 @fragment
+@standin(yonder_low_flat)
 pub fn yonder_low(
     pixel: FragCoord,
     shot: Shot,
@@ -796,6 +797,93 @@ pub fn yonder_low(
         pf,
     )
     Targets3 { first: now, second: marks, third }
+}
+
+/// What `yonder_low` draws while the browser builds it (seconds, on a first load): the rock, a
+/// flat shape in the open sky's haze, where its mesh is (`rock::reach`) or, before it has one,
+/// where the cooked field (`cook_isle`) says it is, a little fat; the sky elsewhere.
+@fragment
+pub fn yonder_low_flat(
+    pixel: FragCoord,
+    shot: Shot,
+    yon: Yon,
+    light: Light,
+    _clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    _aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    _cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    field: Texture3d<R32Float>,
+    reach: Texture<Rg32Float>,
+) -> Targets3<vec4, vec4, vec4> {
+    let pf = floor(pixel.position.xy) * f32(SPARSE) + vec2(0.5)
+    let d = ray(shot, pf)
+    let q = clamp(pf, vec2(0.0), shot.resolution - vec2(1.0))
+    let t = if yon.meshed == 1 {
+        reach.load(u32(q.x), u32(q.y)).x
+    } else { rough_isle(field, shot.eye, d) }
+    if t >= 9.0e4 {
+        return Targets3 {
+            first: vec4(0.0),
+            second: vec4(log2(1.0e5), SKY, 1.0, 0.0),
+            third: vec4(-d * 0.5 + 0.5, 0.0),
+        }
+    }
+    let up = normalize(vec3(d.x, max(d.y, 0.02), d.z))
+    let open = clear_sky(view, smp, light, up)
+    let haze = mix(open, heaven(view, light, up, dome, smp).rgb, light.storm)
+    let c = haze * mix(0.35, 0.7, smoothstep(3000.0, 10000.0, t))
+    Targets3 {
+        first: vec4(c, 1.0),
+        second: vec4(log2(t), ROCK, 1.0, 0.3),
+        third: vec4(-d * 0.5 + 0.5, 0.0),
+    }
+}
+
+/// How far along `d` from `o` the isle's cooked field (`cook_isle`) says its surface is (m), 1e5
+/// where it doesn't: the field at the cells' middles, given back what the cook took off, and
+/// read between them. A cell not cooked yet (0) reads as air.
+fn rough_isle(field: Texture3d<R32Float>, o: vec3, d: vec3) -> f32 {
+    let b = bounds()
+    let is = sphere(o, d, b, 1.0e5)
+    let cell = 2.0 * b.w / f32(FIELD_SIDE)
+    var t = is.x
+    for _i in 0..96 {
+        if t >= is.y {
+            return 1.0e5
+        }
+        let f = cooked_at(field, o + d * t) + STEEP * 0.8660254 * cell + JUMPS
+        if f < 0.0 {
+            return t
+        }
+        t += max(f * 0.5, cell * 0.25)
+    }
+    1.0e5
+}
+
+/// The cooked field at `p`, read between the cells' middles.
+fn cooked_at(field: Texture3d<R32Float>, p: vec3) -> f32 {
+    let b = bounds()
+    let n = f32(FIELD_SIDE)
+    let g = clamp(
+        (p - (b.xyz - vec3(b.w))) / (2.0 * b.w) * n - vec3(0.5),
+        vec3(0.0),
+        vec3(n - 1.001),
+    )
+    let i = floor(g)
+    let f = g - i
+    let x0 = u32(i.x)
+    let y0 = u32(i.y)
+    let z0 = u32(i.z)
+    let x1 = min(x0 + 1, FIELD_SIDE - 1)
+    let y1 = min(y0 + 1, FIELD_SIDE - 1)
+    let z1 = min(z0 + 1, FIELD_SIDE - 1)
+    let a = mix(field.load(x0, y0, z0), field.load(x1, y0, z0), f.x)
+    let bb = mix(field.load(x0, y1, z0), field.load(x1, y1, z0), f.x)
+    let c = mix(field.load(x0, y0, z1), field.load(x1, y0, z1), f.x)
+    let e = mix(field.load(x0, y1, z1), field.load(x1, y1, z1), f.x)
+    mix(mix(a, bb, f.y), mix(c, e, f.y), f.z)
 }
 
 /// Of the most drawings a pixel holds met a quarter at a time: a new one weighs at least one
