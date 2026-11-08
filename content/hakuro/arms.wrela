@@ -270,6 +270,7 @@ pub fn cloth_step(
     fresh: u32,
     pos: [vec4],
     prev: [vec4],
+    root: [vec4],
     out_pos: mut Slots<vec4>,
     out_prev: mut Slots<vec4>,
     id: GlobalId,
@@ -287,10 +288,29 @@ pub fn cloth_step(
     }
     let p = pos[id.x].xyz
     let swing = (p - prev[id.x].xyz) * KEEP
-    var q = p + swing + vec3(0.0, -9.8, 0.0) * dt * dt
+    // (Its swing damped as it moves against him, not as he's carried: the way his hips moved
+    // since the last step is kept whole. Damped with the rest, the coat of a man carried along
+    // at a skiff's ten metres a second streamed out behind him as if in a gale.)
+    let view = id.x / DRAPE_NODES
+    let carried = hips_of(palettes, first) - root[view].xyz
+    var q = p + swing + carried * (1.0 - KEEP) + vec3(0.0, -9.8, 0.0) * dt * dt
     q = mix(q, target, mix(SHAPE, 1.0, pinned(rest)))
     out_pos[id] = vec4(q, 0.0)
     out_prev[id] = vec4(p, 0.0)
+}
+
+/// Where his hips are as `palettes` (from `first`) pose him.
+fn hips_of(palettes: [mat4], first: u32) -> vec3 {
+    (palettes[first] * vec4(0.0, 0.949, -0.043, 1.0)).xyz
+}
+
+/// Each view's hips as this frame poses them, for the next step's `cloth_step`.
+@compute(64)
+pub fn cloth_root(palettes: [mat4], views: u32, stride: u32, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x >= views {
+        return
+    }
+    out[id] = vec4(hips_of(palettes, id.x * stride), 0.0)
 }
 
 /// The cloth relaxed once: each node pulled toward its neighbours' distances at rest (beside it
@@ -382,6 +402,8 @@ pub struct Drape {
     prev_b: GpuBuffer<vec4>,
     out: GpuBuffer<vec4>,
     facing: GpuBuffer<vec4>,
+    // (Each view's hips at the last step.)
+    root: GpuBuffer<vec4>,
     flip: u32,
     fresh: bool,
 }
@@ -396,6 +418,7 @@ pub fn drape_room(views: u32) -> Drape {
         prev_b: buffer(n),
         out: buffer(n),
         facing: buffer(n),
+        root: buffer(views),
         flip: 0,
         fresh: true,
     }
@@ -415,6 +438,7 @@ fn cloth_frame(
     next_prev: mut GpuBuffer<vec4>,
     out: mut GpuBuffer<vec4>,
     facing: mut GpuBuffer<vec4>,
+    root: mut GpuBuffer<vec4>,
 ) {
     let groups = (views * DRAPE_NODES + 63) / 64
     dispatch(
@@ -426,6 +450,7 @@ fn cloth_frame(
             fresh: fresh,
             pos: pos.items(),
             prev: prev.items(),
+            root: root.items(),
             out_pos: mut next,
             out_prev: mut next_prev,
         ),
@@ -439,6 +464,7 @@ fn cloth_frame(
         cloth_drape.bind(palettes: palettes.items(), views: views, stride: stride, pos: next.items(), out: mut out, facing: mut facing),
         groups: groups,
     )
+    dispatch(cloth_root.bind(palettes: palettes.items(), views: views, stride: stride, out: mut root), groups: (views + 63) / 64)
 }
 
 impl Drape {
@@ -449,9 +475,9 @@ impl Drape {
         self.fresh = false
         let step = clamp(dt, 0.0, 1.0 / 20.0)
         if self.flip == 0 {
-            cloth_frame(palettes, views, stride, step, fresh, mut self.pos_a, self.prev_a, mut self.pos_b, mut self.prev_b, mut self.out, mut self.facing)
+            cloth_frame(palettes, views, stride, step, fresh, mut self.pos_a, self.prev_a, mut self.pos_b, mut self.prev_b, mut self.out, mut self.facing, mut self.root)
         } else {
-            cloth_frame(palettes, views, stride, step, fresh, mut self.pos_b, self.prev_b, mut self.pos_a, mut self.prev_a, mut self.out, mut self.facing)
+            cloth_frame(palettes, views, stride, step, fresh, mut self.pos_b, self.prev_b, mut self.pos_a, mut self.prev_a, mut self.out, mut self.facing, mut self.root)
         }
         self.flip = 1 - self.flip
     }

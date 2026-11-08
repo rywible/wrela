@@ -227,7 +227,10 @@ pub(package) fn painted(
     framing: f32,
     fine: f32,
 ) -> Shot {
-    step(mut s.rig, START + time, s.ocean.swell)
+    // (The rig stepped to the drawing's own time, as all else in it is: stepped to the frame's,
+    // a drawing held over two frames carried two frames' motion into the next, every fifth frame
+    // at 30 a second, a jolt the coat's cloth threw out wide for a frame.)
+    step(mut s.rig, held(START + time), s.ocean.swell)
     let shot = prepared(mut s, time, view, orbit, framing, fine)
     paint_rows(mut s, shot, from: 0, to: s.height)
     stood(mut s, shot)
@@ -482,7 +485,10 @@ pub fn play(
     framing: f32,
     bands: u32,
 ) -> bool {
-    step(mut s.rig, START + time, s.ocean.swell)
+    // (The rig stepped to the drawing's own time, as all else in it is: stepped to the frame's,
+    // a drawing held over two frames carried two frames' motion into the next, every fifth frame
+    // at 30 a second, a jolt the coat's cloth threw out wide for a frame.)
+    step(mut s.rig, held(START + time), s.ocean.swell)
     if width != s.width || height != s.height {
         sized(mut s, width, height)
         s.band = 0

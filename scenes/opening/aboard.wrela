@@ -244,7 +244,7 @@ pub fn bones(s: Shot) -> [mat4; 64] {
     // straight arm's reach from it (back by 45 cm at most), his hips a third as far.
     let chest = s.hips + (s.neck - s.hips) * 0.8
     let toward = vec3(mid.x - chest.x, 0.0, mid.z - chest.z)
-    let over = clamp(length(mid - chest) - 0.97 * length(HAND - UPPER), -0.45, 1.0)
+    let over = clamp(length(mid - chest) - 1.02 * length(HAND - UPPER), -0.55, 1.0)
     let lean = toward / max(length(toward), 1.0e-4) * over
     // Sunk a little into his knees, braced against the sea.
     var hips = s.hips + lean * 0.35 - vec3(0.0, 0.04, 0.0)
