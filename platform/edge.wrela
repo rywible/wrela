@@ -54,6 +54,16 @@ impl<G: Game> Engine<G> {
             None => None,
         }
         match request {
+            Request::RoomToken => {
+                // Room tokens resume a peer, so they must come from the host's cryptographic
+                // randomness, including for guests. No account, signing key or store is needed.
+                self.random(
+                    wire::ROOM_TOKEN_BYTES,
+                    Step::RoomTokenRandom,
+                    blank_job(conn, request.clone()),
+                )
+                return
+            },
             Request::Begin { ceremony, agreed, .. } => {
                 if ceremony == REGISTER || ceremony == SIGN_IN {
                     self.edge_begin(conn, ceremony, agreed, own.is_some())
@@ -601,6 +611,13 @@ impl<G: Game> Engine<G> {
     pub(package) fn edge_answer(mut self, job: take Job, answer: Vec<u8>) {
         let j = take job
         match j.step {
+            Step::RoomTokenRandom => {
+                if answer.len() != wire::ROOM_TOKEN_BYTES || account::u64_at(answer, 0) == 0 {
+                    self.refuse(j.conn, "We couldn't open a room connection. Try again.")
+                    return
+                }
+                self.reply(j.conn, Reply::RoomToken { token: answer.clone() })
+            },
             Step::ChallengeRandom => self.challenge_random(take j, answer),
             Step::ChallengeTag => self.challenge_tag(take j, answer),
             Step::EdgeVerify => {

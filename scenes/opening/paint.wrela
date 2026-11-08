@@ -43,10 +43,13 @@ fn storm_sky(
     disc: bool,
 ) -> vec4 {
     let c = dome.sample_level(smp, sky_uv(d))
-    let open = mix(sea_day_sky(view, light, d, smp), clear_sky(view, smp, light, d), light.storm) +
-        (if disc {
-            (sun_disc(light, d) + sun_glow(light, d)) * (1.0 - light.storm)
-        } else { vec3(0.0) })
+    // Under the full deck the sea-day colour has zero weight. Avoid its two additional sky
+    // reads in every reflection sample (and every direction of the horizon's mean).
+    let open = (if light.storm >= 1.0 { clear_sky(view, smp, light, d) } else {
+        mix(sea_day_sky(view, light, d, smp), clear_sky(view, smp, light, d), light.storm)
+    }) + (if disc {
+        (sun_disc(light, d) + sun_glow(light, d)) * (1.0 - light.storm)
+    } else { vec3(0.0) })
     let behind = mix(open, vec3(luma(open)) * vec3(0.8, 0.85, 0.9) * STORM_BEHIND, light.storm)
     vec4(behind * (1.0 - c.a) + c.rgb, c.a)
 }

@@ -189,19 +189,37 @@ fn in_cell(c: vec2, p: vec3, px: f32, out: f32) -> f32 {
 pub fn march_stacks(o: vec3, d: vec3, hi: f32, k: f32) -> f32 {
     // (Only where the ray is low enough to meet one, out to where they stop.)
     var lo = 0.0
-    var top = min(hi, OUT * 1.2 / max(length(vec2(d.x, d.z)), 1.0e-3))
+    var top = hi
+    // The clusters occupy a world-space circle, not one round the eye. Once the skiff sailed
+    // past it, a fixed distance from the eye hid the stacks when it looked back toward them.
+    let o2 = vec2(o.x, o.z)
+    let d2 = vec2(d.x, d.z)
+    let a = dot(d2, d2)
+    let reach = OUT * 1.2
+    if a > 1.0e-12 {
+        let b = dot(o2, d2)
+        let c = dot(o2, o2) - reach * reach
+        let disc = b * b - a * c
+        if disc < 0.0 { return hi }
+        let root = sqrt(max(disc, 0.0))
+        lo = max(lo, (-b - root) / a)
+        top = min(top, (-b + root) / a)
+    } else if dot(o2, o2) > reach * reach {
+        // A vertical ray never enters the circle.
+        return hi
+    }
     if d.y > 0.0 {
         top = min(top, max(TALLEST + 4.0 - o.y, 0.0) / d.y)
-    } else {
+    } else if d.y < 0.0 {
         if o.y > TALLEST + 4.0 {
-            lo = (o.y - TALLEST - 4.0) / -d.y
+            lo = max(lo, (o.y - TALLEST - 4.0) / -d.y)
         }
         // (Nor under the sea past where the rocks' feet end, `FLOOR` down: a ray that looks
         // down at the water went on under it, out past every cell to where they stop, and met
         // nothing there the sea doesn't hide.)
-        if d.y < 0.0 {
-            top = min(top, max(o.y + FLOOR, 0.0) / -d.y)
-        }
+        top = min(top, max(o.y + FLOOR, 0.0) / -d.y)
+    } else if o.y > TALLEST + 4.0 || o.y < -FLOOR {
+        return hi
     }
     var t = lo
     var hit = hi
@@ -225,6 +243,33 @@ pub fn march_stacks(o: vec3, d: vec3, hi: f32, k: f32) -> f32 {
         }
     }
     hit
+}
+
+@test
+fn a_stack_remains_visible_from_beyond_the_archipelago() {
+    let p = vec3(70.0, 15.0, 230.0)
+    assert(stacks(p, 0.01) < 0.0, "the placed stack occupies this point")
+    let clear = normalize(vec2(ISLE.x, ISLE.z))
+    let d = normalize(vec3(-clear.x, 12.5 / 4300.0, -clear.y))
+    let near = march_stacks(p - d * 100.0, d, hi: 10000.0, k: 0.0001)
+    let far = march_stacks(p - d * 4300.0, d, hi: 10000.0, k: 0.0001)
+    assert(near < 100.0, "the default stack is met nearby")
+    assert(far < 10000.0, "the same stack is still met from a distant low camera")
+    assert(far > OUT * 1.2, "the first visible stack lies past the former eye-relative cap")
+    let at = p - d * 4300.0 + d * far
+    assert(stacks(at, far * 0.0001) < 0.5, "the distant hit belongs to actual stack geometry")
+}
+
+@test
+fn stack_world_bounds_handle_outward_missing_and_vertical_rays() {
+    let far = 10000.0
+    assert(march_stacks(vec3(4000.0, 15.0, 0.0), vec3(1.0, 0.0, 0.0), hi: far, k: 0.001) == far)
+    assert(march_stacks(vec3(4000.0, 15.0, 0.0), vec3(0.0, 0.0, 1.0), hi: far, k: 0.001) == far)
+    assert(march_stacks(vec3(4000.0, 80.0, 0.0), vec3(0.0, -1.0, 0.0), hi: far, k: 0.001) == far)
+    assert(march_stacks(vec3(4000.0, 80.0, 0.0), normalize(vec3(-1.0e-8, -1.0, 0.0)), hi: far, k: 0.001) == far)
+    assert(march_stacks(vec3(70.0, 80.0, 230.0), vec3(0.0, 0.0, 1.0), hi: far, k: 0.001) == far)
+    assert(march_stacks(vec3(70.0, 80.0, 230.0), vec3(0.0, -1.0, 0.0), hi: far, k: 0.001) < far)
+    assert(march_stacks(vec3(70.0, 80.0, 230.0), normalize(vec3(1.0e-8, -1.0, 0.0)), hi: far, k: 0.001) < far)
 }
 
 /// The rocks' normal at `p`, read `e` m apart.

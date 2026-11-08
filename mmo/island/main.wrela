@@ -57,6 +57,9 @@ pub const NO_SUCH_CARD: u32 = 4
 pub const MAX_REACH: i32 = 1000000
 /// The most events held while the save is read; a connection past it is closed, to come back.
 pub const MAX_HELD: u32 = 1024
+/// The most message bytes held during the save read: an event-count limit alone can retain
+/// tens of MiB of untrusted payloads before any are checked by the room.
+pub const MAX_HELD_BYTES: u32 = 1048576
 /// Failed reads of the save in a row before the held peers are let go.
 pub const MAX_TRIES: u32 = 3
 /// A card whose pass its account didn't sign (or that expired): the body stays a wanderer.
@@ -116,9 +119,10 @@ pub struct Body: Clone + Pack {
     pub seen: u64 = 0,
 }
 
-/// The card of a body that hasn't said who it is.
+/// The card of a body that hasn't said who it is: an invalid name, so no real character's
+/// choice of name and look can be mistaken for a guest.
 pub const NOBODY: Card = Card {
-    title: 0,
+    title: 4294967295,
     front: 0,
     back: 0,
     epithet: 0,
@@ -139,6 +143,8 @@ pub struct Mark: Clone + Pack {
 pub struct Island: Clone + Pack {
     pub bodies: Vec<Body>,
     pub marks: Vec<Mark>,
+    /// An unreadable store save must survive this build, including its journal's restarts.
+    pub protected: bool = false,
 }
 
 /// The pass a card is worn with, as a peer sends it (when it expires and its tag: pass.wrela's
@@ -215,36 +221,48 @@ impl Island {
     }
 
     /// The bodies to show, by index: those that acted within `AWAY_MS` of the latest act (a
-    /// player on the island says it's there at least every `HERE_MS`), and of those wearing one
-    /// card, only the one that acted last (the same account in a reloaded tab).
+    /// player on the island says it's there at least every `HERE_MS`), and of those with the same
+    /// character's name, only the one that acted last (the same account in a reloaded tab).
     pub fn present(self) -> Vec<u32> {
         var latest: u64 = 0
         for b in self.bodies {
             latest = max(latest, b.seen)
         }
         var shown: Vec<u32> = Vec::new()
+        var named: Vec<u32> = Vec::new()
         for i in 0..self.bodies.len() {
             borrow b = self.bodies[i]
-            if b.seen + AWAY_MS < latest {
+            if latest - b.seen > AWAY_MS {
                 continue
             }
-            var newer = false
             if b.worn {
-                for k in 0..self.bodies.len() {
-                    borrow o = self.bodies[k]
-                    if k != i &&
-                        o.worn &&
-                        o.card == b.card &&
-                        (o.seen > b.seen || (o.seen == b.seen && k > i)) {
-                        newer = true
-                        break
-                    }
-                }
-            }
-            if !newer {
+                named.push(i)
+            } else {
                 shown.push(u32(i))
             }
         }
+        if named.is_empty() { return shown }
+        // Group each name's bodies, newest first, instead of scanning the entire island for
+        // every signed player. Sorting indices keeps the temporary state small.
+        named.sort_by(|a: u32, b: u32| {
+            borrow left = self.bodies[a]
+            borrow right = self.bodies[b]
+            let an = left.card.name()
+            let bn = right.card.name()
+            if an != bn { name_before(an, bn) } else {
+                left.seen > right.seen || (left.seen == right.seen && a > b)
+            }
+        })
+        var previous: Option<Name> = None
+        for i in named {
+            let name = self.bodies[i].card.name()
+            if previous != Some(name) {
+                shown.push(i)
+                previous = Some(name)
+            }
+        }
+        // Drawing order is still the bodies' original order, including unnamed guests.
+        shown.sort_by(|a: u32, b: u32| a < b)
         shown
     }
 
@@ -256,6 +274,14 @@ impl Island {
         }
         None
     }
+}
+
+fn name_before(a: Name, b: Name) -> bool {
+    a.title < b.title ||
+        (a.title == b.title &&
+            (a.front < b.front ||
+                (a.front == b.front &&
+                    (a.back < b.back || (a.back == b.back && a.epithet < b.epithet)))))
 }
 
 impl Reduce<Act> for Island {
@@ -355,7 +381,17 @@ pub fn load(bytes: Option<Vec<u8>>) -> Option<Island> {
         rest.push(b[i])
     }
     match unpack::<Save>(take rest) {
-        Ok(s) => Some(Island { bodies: Vec::new(), marks: s.marks.clone() }),
+        Ok(s) => {
+            // A well-formed encoding can still violate this build's state bounds. Treat it as
+            // unreadable too, so neither an oversized snapshot nor a corrupt position goes live.
+            if s.marks.len() > MAX_MARKS { return None }
+            for m in s.marks {
+                if m.x < -MAX_REACH || m.x > MAX_REACH || m.z < -MAX_REACH || m.z > MAX_REACH {
+                    return None
+                }
+            }
+            Some(Island { bodies: Vec::new(), marks: s.marks.clone() })
+        },
         Err(_) => None,
     }
 }
@@ -382,6 +418,13 @@ enum Held: Clone {
     Message { conn: u32, bytes: Vec<u8> },
 }
 
+fn held_size(h: Held) -> u32 {
+    match h {
+        Held::Message { bytes, .. } => bytes.len(),
+        _ => 0,
+    }
+}
+
 /// Not started: no journal read back, no save asked for.
 const FRESH: u32 = 0
 /// The save is asked for; events wait.
@@ -395,11 +438,10 @@ pub struct Server {
     /// The save's read, while `LOADING` (one at most).
     asked: Vec<Pending<u8>>,
     held: Vec<Held>,
+    held_bytes: u32,
     room: Room<Island, Act>,
     /// How many marks the store's save holds.
     saved: u32,
-    /// Whether the store's save is one this build can't read: then it's never written over.
-    unreadable: bool,
     /// Failed reads of the save in a row.
     tries: u32,
     /// Whether the keys were read (`keys`, those long enough: none, and no pass checks).
@@ -415,9 +457,9 @@ impl Server {
             phase: FRESH,
             asked: Vec::new(),
             held: Vec::new(),
+            held_bytes: 0,
             room: Room::new(Island::empty()),
             saved: 0,
-            unreadable: false,
             tries: 0,
             keyed: false,
             keys: Vec::new(),
@@ -457,20 +499,44 @@ impl Server {
             self.asked.push(store::get(key_of(room().as_str())))
         }
         if self.phase == LOADING {
-            if self.held.len() >= MAX_HELD {
-                // Too much waits: this connection goes, and its peer comes back (what it
-                // proposed is proposed again, once). Its close is held like any other.
-                match h {
-                    Held::Closed { .. } => self.held.push(take h),
-                    Held::Opened { conn, .. } => close(conn),
-                    Held::Message { conn, .. } => if conn < POISONED { close(conn) },
-                }
-                return
+            if let Some(conn) = self.hold(take h) {
+                close(conn)
             }
-            self.held.push(take h)
         } else {
             self.feed(take h, at)
         }
+    }
+
+    /// Queues an event until the save answers, or names the connection to close. The peer can
+    /// retry its unacknowledged proposals after reconnecting; a full queue drops no accepted work.
+    fn hold(mut self, h: take Held) -> Option<u32> {
+        let bytes = held_size(h)
+        if self.held.len() >= MAX_HELD || bytes > MAX_HELD_BYTES - self.held_bytes {
+            match h {
+                Held::Closed { conn } => self.close_held(conn),
+                Held::Opened { conn, .. } => return Some(conn),
+                Held::Message { conn, .. } => if conn < POISONED { return Some(conn) },
+            }
+            return None
+        }
+        self.held_bytes += bytes
+        self.held.push(take h)
+        None
+    }
+
+    fn close_held(mut self, conn: u32) {
+        self.held.retain(|h: Held| match h {
+            Held::Opened { conn: other, .. } => other != conn,
+            Held::Closed { conn: other } => other != conn,
+            Held::Message { conn: other, .. } => other != conn,
+        })
+        self.held_bytes = 0
+        for h in self.held { self.held_bytes += held_size(h) }
+    }
+
+    fn take_held(mut self) -> Vec<Held> {
+        self.held_bytes = 0
+        replace(mut self.held, Vec::new())
     }
 
     fn feed(mut self, h: take Held, at: u64) {
@@ -481,6 +547,9 @@ impl Server {
                 if conn >= POISONED {
                     carry_out(self.room.poisoned(conn - POISONED, take bytes))
                 } else {
+                    // Journal replay calls `serve(0)`, even for an old room. Only a live
+                    // message has the room's actual age to calibrate the Unix epoch against.
+                    self.read_keys(at)
                     let seen = checked_message(take bytes, self.keys, self.epoch + at)
                     carry_out(self.room.receive(conn, take seen, at))
                 }
@@ -505,7 +574,7 @@ impl Server {
             }
             self.tries = 0
             self.phase = FRESH
-            let held = replace(mut self.held, Vec::new())
+            let held = self.take_held()
             for h in held {
                 match h {
                     Held::Opened { conn, .. } => close(conn),
@@ -515,10 +584,20 @@ impl Server {
             return
         }
         self.tries = 0
+        let start = self.begin(load(store::value(bytes)))
+        compact(pack(start))
+        let held = self.take_held()
+        for h in held {
+            self.feed(h.clone(), at)
+        }
+    }
+
+    /// Starts a build's journal from its stored save, without overwriting an unreadable save.
+    fn begin(mut self, loaded: take Option<Island>) -> Record<Island, Act> {
         var island = Island::empty()
-        match load(store::value(bytes)) {
+        match take loaded {
             Some(i) => island = take i,
-            None => self.unreadable = true,
+            None => island.protected = true,
         }
         self.saved = island.marks.len()
         // Entry 1 is the save: a peer with less of the log is sent the state.
@@ -530,20 +609,26 @@ impl Server {
         }
         var fresh = Room::new(Island::empty())
         fresh.restore(start.clone())
-        compact(pack(start))
         self.room = take fresh
         self.phase = LIVE
-        let held = replace(mut self.held, Vec::new())
-        for h in held {
-            self.feed(h.clone(), at)
-        }
+        start
+    }
+
+    fn restore(mut self, record: Record<Island, Act>) {
+        self.phase = LIVE
+        self.room.restore(record)
+        self.saved = self.room.state().marks.len()
+    }
+
+    fn may_write(self) -> bool {
+        !self.room.state().protected
     }
 
     /// The save put again once the marks changed: an outcome, so it's written with the call's
     /// records.
     fn checkpoint(mut self) {
         let n = self.room.state().marks.len()
-        if n != self.saved && !self.unreadable {
+        if n != self.saved && self.may_write() {
             store::put(key_of(room().as_str()), save_bytes(self.room.state()))
             self.saved = n
         }
@@ -556,7 +641,6 @@ pub fn serve_init() -> Server {
 
 pub fn serve(s: mut Server, time: f32) {
     let at = u64(time * 1000.0)
-    s.read_keys(at)
     s.loaded(at)
     for e in events() {
         match e {
@@ -565,12 +649,10 @@ pub fn serve(s: mut Server, time: f32) {
                 if conn == JOURNAL {
                     // The room started again on this build: its journal is the island.
                     // Its marks were saved as they were placed.
-                    s.phase = LIVE
                     match unpack::<Record<Island, Act>>(take bytes) {
-                        Ok(r) => s.room.restore(r),
+                        Ok(r) => s.restore(r),
                         Err(_) => panic("a journal record this program can't read"),
                     }
-                    s.saved = s.room.state().marks.len()
                 } else {
                     s.arrive(Held::Message { conn, bytes }, at)
                 }
@@ -612,6 +694,33 @@ fn no_save_starts_empty_and_an_unreadable_one_is_kept_apart() {
     assert(none.marks.len() == 0)
     assert(load(Some(Vec::from([9, 1, 2]))).is_none(), "another version isn't read")
     assert(load(Some(Vec::from([SAVE_VERSION, 255, 255, 255]))).is_none(), "nor a malformed one")
+}
+
+@test
+fn an_island_save_must_keep_its_state_within_the_islands_limits() {
+    var too_many = Island::empty()
+    for i in 0..MAX_MARKS + 1 {
+        too_many.marks.push(Mark { by: i, x: 0, z: 0 })
+    }
+    assert(load(Some(save_bytes(too_many))).is_none(), "an oversized save is unreadable")
+    for outside in [-MAX_REACH - 1, MAX_REACH + 1] {
+        for x in [false, true] {
+            var far = Island::empty()
+            far.marks.push(Mark {
+                by: 1,
+                x: if x { outside } else { 0 },
+                z: if x { 0 } else { outside },
+            })
+            var server = Server::new()
+            let _ = server.begin(load(Some(save_bytes(far))))
+            assert(!server.may_write(), "an out-of-bounds save must not be silently overwritten")
+        }
+    }
+    var edge = Island::empty()
+    for i in 0..MAX_MARKS {
+        edge.marks.push(Mark { by: i, x: -MAX_REACH, z: MAX_REACH })
+    }
+    assert(load(Some(save_bytes(edge))).is_some(), "a valid full save still loads")
 }
 
 @test
@@ -720,6 +829,28 @@ fn the_server_believes_only_a_pass_the_account_signed() {
 }
 
 @test
+fn the_first_name_with_the_default_look_is_a_character() {
+    let Some(key) = pass::key_of([u8(7); 32]) else { panic("a key") }
+    let name = Name { title: 0, front: 0, back: 0, epithet: 0 }
+    let look = Look { build: 0, skin: 0, hair: 0, cloth: 0 }
+    let now: u64 = 1_800_000_000_000
+    let (card, seal) = worn(pass::sign(key, name, look, now + 1000))
+    assert(card.valid() && card != NOBODY, "every choice may be the first one")
+    let seen = seal_seen(checked_message(wear_bytes(card, seal), [key], now))
+    assert(seen == sealed(true), "the room believes its account's pass")
+    var island = Island::empty()
+    let wear = Entry {
+        seq: 2,
+        id: ProposalId { peer: 3, session: 1, counter: 2 },
+        at: 0,
+        value: Act::Wear { card, seal: seen },
+    }
+    assert(island.check(wear.clone()) == Verdict::Accept)
+    island.apply(wear)
+    assert(island.bodies[0].worn && island.bodies[0].card == card)
+}
+
+@test
 fn a_full_island_fits_one_message() {
     var island = Island::empty()
     let card = Card::of(
@@ -791,4 +922,142 @@ fn a_body_long_quiet_or_worn_again_elsewhere_is_not_shown() {
     island.bodies.push(Body { peer: 4, x: 0, z: 0, worn: true, card, seen: 190000 })
     let shown = island.present()
     assert(shown.len() == 2 && shown[0] == 0 && shown[1] == 3, f"{shown.len()} shown")
+}
+
+@test
+fn a_changed_look_does_not_leave_another_body_for_the_same_account() {
+    let card = Card::of(
+        Name { title: 1, front: 2, back: 3, epithet: 4 },
+        Look { build: 1, skin: 2, hair: 3, cloth: 4 },
+    )
+    var changed = card
+    changed.cloth = 5
+    var island = Island::empty()
+    island.bodies.push(Body { peer: 1, x: 0, z: 0, worn: true, card, seen: 1000 })
+    island.bodies.push(Body { peer: 2, x: 0, z: 0, worn: true, card: changed, seen: 2000 })
+    let shown = island.present()
+    assert(shown.len() == 1 && shown[0] == 1, "the account's newest body alone is shown")
+}
+
+@test
+fn present_keeps_original_order_and_the_newest_body_among_many_names() {
+    var island = Island::empty()
+    for i in 0..128 {
+        let card = Card::of(
+            Name { title: i % 48, front: i / 48, back: i % 47, epithet: i % 127 },
+            Look { build: 1, skin: 1, hair: 1, cloth: 1 },
+        )
+        island.bodies.push(Body { peer: i * 3 + 1, x: 0, z: 0, seen: 200000 })
+        island.bodies.push(Body {
+            peer: i * 3 + 2,
+            x: 0,
+            z: 0,
+            seen: 200001,
+            worn: true,
+            card,
+        })
+        var changed = card
+        changed.cloth = 2
+        island.bodies.push(Body {
+            peer: i * 3 + 3,
+            x: 0,
+            z: 0,
+            seen: if i % 2 == 0 { 200001 } else { 200000 },
+            worn: true,
+            card: changed,
+        })
+    }
+    island.bodies.push(Body { peer: 900, x: 0, z: 0, seen: 1 })
+    let shown = island.present()
+    assert(shown.len() == 256)
+    for i in 0..128 {
+        assert(shown[i * 2] == i * 3, "guests keep their place")
+        assert(shown[i * 2 + 1] == i * 3 + (if i % 2 == 0 { 2 } else {
+            1
+        }), "time wins, then the later body breaks a tie")
+    }
+}
+
+@test
+fn present_does_not_expire_recent_bodies_when_the_room_clock_is_near_its_limit() {
+    let latest: u64 = 18446744073709551610
+    var island = Island::empty()
+    island.bodies.push(Body { peer: 1, x: 0, z: 0, seen: latest })
+    island.bodies.push(Body { peer: 2, x: 0, z: 0, seen: latest - AWAY_MS })
+    island.bodies.push(Body { peer: 3, x: 0, z: 0, seen: latest - AWAY_MS - 1 })
+    let shown = island.present()
+    assert(shown == Vec::from([u32(0), 1]), "only elapsed time determines whether a body left")
+}
+
+@test
+fn an_unreadable_save_stays_protected_after_a_journal_restart() {
+    var first = Server::new()
+    let start = first.begin(None)
+    assert(!first.may_write())
+    let Ok(back) = unpack::<Record<Island, Act>>(pack(start)) else { panic("its own journal") }
+    var restarted = Server::new()
+    restarted.restore(back)
+    assert(!restarted.may_write(), "a restart must not let a mark overwrite the unreadable save")
+}
+
+@test
+fn closing_connections_cannot_grow_a_full_loading_queue() {
+    var server = Server::new()
+    server.phase = LOADING
+    server.held.push(Held::Opened { conn: 1, tag: 0 })
+    server.held.push(Held::Message { conn: 1, bytes: Vec::from([1, 2, 3]) })
+    for conn in 2..MAX_HELD {
+        server.held.push(Held::Opened { conn, tag: 0 })
+    }
+    assert(server.held.len() == MAX_HELD)
+    server.close_held(MAX_HELD + 1)
+    assert(server.held.len() == MAX_HELD, "a refused connection's close needs no queue entry")
+    server.close_held(1)
+    assert(server.held.len() == MAX_HELD - 2, "the closed connection's unprocessed events go")
+    match server.held[0] {
+        Held::Opened { conn: 2, .. } => {},
+        _ => panic("the other connections keep their order"),
+    }
+}
+
+@test
+fn pending_save_payloads_are_bounded_and_release_their_budget() {
+    var server = Server::new()
+    // The pinned room host takes at most 64 KiB minus its 64-byte protocol allowance.
+    let message: u32 = 65472
+    let count = MAX_HELD_BYTES / message
+    for conn in 1..count + 1 {
+        assert(server.hold(Held::Message { conn, bytes: Vec::filled(message, u8(1)) }).is_none())
+    }
+    assert(
+        server
+            .hold(
+                Held::Message {
+                    conn: 89,
+                    bytes: Vec::filled(MAX_HELD_BYTES - count * message, u8(1)),
+                },
+            )
+            .is_none(),
+        "a final partial payload may use the exact budget",
+    )
+    assert(server.held_bytes == MAX_HELD_BYTES)
+    assert(
+        server.hold(Held::Message { conn: 90, bytes: Vec::from([u8(1)]) }) == Some(90),
+        "payload bytes, not just event count, bound the queue",
+    )
+    assert(server.held.len() == count + 1 && server.held_bytes == MAX_HELD_BYTES)
+    server.close_held(1)
+    assert(server.held_bytes == MAX_HELD_BYTES - message, "closing releases only its bytes")
+    assert(
+        server.hold(Held::Message {
+            conn: 91,
+            bytes: Vec::filled(message, u8(2)),
+        }).is_none(),
+        "another peer can use the released budget",
+    )
+    let held = server.take_held()
+    assert(
+        held.len() == count + 1 && server.held.is_empty() && server.held_bytes == 0,
+        "draining for success or failure releases the complete budget",
+    )
 }
