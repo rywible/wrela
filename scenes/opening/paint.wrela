@@ -199,22 +199,29 @@ fn trace_sea(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32) -> f32 {
 }
 
 /// The sea's height under `p` (read as a pixel `foot` m across holds it), the waves a boat rides
-/// broken by the hull (`tiles`). Close along the hull it lies no higher than a hand under the
-/// gunwale: the skiff rides the swell (`sea::bob`), and the shorter waves it only rocks on would
+/// broken by the hull (`tiles`). Close along the hull it lies no higher than halfway up its
+/// side: the skiff rides the swell (`sea::bob`), and the shorter waves it only rocks on would
 /// otherwise rise through its planks and drown its side.
 fn sea_level(s: Shot, waves: Waves, p: vec3, foot: f32) -> f32 {
     let rel = p - s.boat
     let mid = tiles(lee(rel, s.boat_x, s.boat_z)).y
     let level = level_at(waves, vec2(p.x, p.z), foot, mid)
     let e = length(vec2(dot(rel, s.boat_x) / 0.62, dot(rel, s.boat_z) / 2.2))
-    // (The cap follows the skiff as it heels and pitches, a little over its waterline (its
-    // deck is `FREEBOARD` higher), and lets go over a hull's width or so, so the water slopes
-    // down to it rather than standing in a wall round it.)
-    let gunwale = s.boat.y + FREEBOARD * 0.6 - (s.boat_y.x * rel.x + s.boat_y.z * rel.z) / max(s.boat_y.y, 0.5)
+    // (The cap follows the skiff as it heels and pitches, halfway up its side (its deck is
+    // `FREEBOARD` over its waterline), and lets go over a hull's width or so, so the water slopes
+    // down to it rather than standing in a wall round it. Capped at the waterline, every crest
+    // that reached the hull was cut flat to one straight line along it, and it read as laid on
+    // the sea; now the waves climb its planks and fall back. A soft cap, so a crest under it
+    // rounds over rather than ending in a crease.)
+    let gunwale = s.boat.y + FREEBOARD - (s.boat_y.x * rel.x + s.boat_y.z * rel.z) / max(s.boat_y.y, 0.5)
     let near = 1.0 - smoothstep(1.0, 2.6, e)
-    // (And heaped by the hull as it makes way: its bow wave, its quarters' hollow, the hump
-    // astern: `wake::lifted`.)
-    mix(level, min(level, gunwale - 0.14), near * near * (3.0 - 2.0 * near)) + lifted(s, p)
+    // (Heaped by the hull as it makes way: its bow wave, its quarters' hollow, the hump astern:
+    // `wake::lifted`; the cap over that too, so the bow wave never stands over the deck.)
+    let heaped = level + lifted(s, p)
+    let cap = gunwale - 0.14
+    let hk = clamp(0.5 + 0.5 * (cap - heaped) / 0.08, 0.0, 1.0)
+    let capped = mix(cap, heaped, hk) - 0.08 * hk * (1.0 - hk)
+    mix(heaped, capped, near * near * (3.0 - 2.0 * near))
 }
 
 fn march_skiff(s: Shot, o: vec3, d: vec3, lo: f32, hi: f32) -> f32 {
@@ -669,7 +676,9 @@ fn sea_shade(
     let v = -d
     let nv = max(dot(n, v), 0.0)
     // What reaches it of the sun: the clouds' shadow and the skiff's.
-    let near = skiff(s, p)
+    // (Far from the skiff, its distance isn't needed to know it's far: skip the march. This one
+    // distance serves the shadow here and the reflection below.)
+    let near = if length(p - s.boat - s.boat_y * 2.0) > 9.0 { 9.0 } else { skiff(s, p) }
     let boat_shadow = if near < 4.0 { skiff_shadow(s, p + vec3(0.0, 0.02, 0.0), l) } else { 1.0 }
     let sun = cloud_shadow(h.clouds, cloud, smp, p) * boat_shadow
     // The reflected sky and clouds, Fresnel's share of it (water's F0, 0.02), and the sun's glint.
@@ -726,7 +735,7 @@ fn sea_shade(
     // The skiff's own reflection beside it: the hull's own colours in the shade it hangs in,
     // its edge soft (how near the mirrored ray came to it) and broken by the ripples, and gone a
     // few metres down it.
-    let near_hull = skiff(s, p)
+    let near_hull = near
     if near_hull < 4.5 {
         let mr = mirror_skiff(s, p + vec3(0.0, 0.02, 0.0), r, 0.02, 7.0)
         // (Only its nearest metres: on a sea this rough the tall sail's mirror breaks up long before
@@ -742,8 +751,13 @@ fn sea_shade(
                 PI *
                 0.35 +
                 h.light.sun_colour * 0.12
-            mirrored = mix(mirrored, albedo * shade, 0.6 * cover)
+            // (What the water mirrors there is the hull's lower side, turned from the sky and
+            // wet: darker than its lit topsides, or the mirror reads as a bright gap under it.)
+            mirrored = mix(mirrored, albedo * shade * 0.45, 0.6 * cover)
         }
+        // (Against the hull, the water mirrors the hull and not the sky: a dark seam where it
+        // stands on the sea, so it sits in it rather than over it.)
+        mirrored *= mix(0.45, 1.0, smoothstep(0.02, 0.4, near_hull))
     }
     let spread = storm_sky(
         view,
@@ -1011,7 +1025,7 @@ fn sample(
         t = ts
         id = SEA
     }
-    let bs = sphere(o, d, vec4(s.boat + s.boat_y * (1.5 + FREEBOARD), 3.6), far)
+    let bs = sphere(o, d, vec4(s.boat + s.boat_y * (1.5 + FREEBOARD), 4.0), far)
     // The sea inside the skiff isn't there: the ray goes on to the hull.
     if id == SEA && dry(s, o + d * t) {
         t = far
@@ -1115,8 +1129,11 @@ fn sample(
         c += albedo * bounce + rim * sun
         // The waterline: the hull dark where the sea has wet it.
         let at_hull = sea_level(s, waves, p, 0.02)
-        let wet = smoothstep(0.14, 0.0, p.y - at_hull)
-        c *= 1.0 - 0.5 * wet
+        let wet = smoothstep(0.2, 0.02, p.y - at_hull)
+        c *= 1.0 - 0.65 * wet
+        // (And the planks nearest the sea in the dark the sea throws up, not the sky's light:
+        // the hull's lower side falls off toward the water, so it sits down in the sea.)
+        c *= mix(0.5, 1.0, smoothstep(0.0, 0.45, p.y - at_hull))
         line = seam
         weight = 0.8
         energy = s.slap * 0.35

@@ -508,18 +508,19 @@ pub fn yonder(
             let near = min(bm.x, marks.x) < 11.5
             var fresh = 0.0
             if near && abs(bm.x - marks.x) > 0.25 && (OFF & 2048) == 0 {
-                var same = 0.0
-                for j in 0..4 {
-                    let a = f32(j) * 1.5707963
-                    let dj = ray(s, px + vec2(cos(a), sin(a)) * 1.5)
-                    let hit = march_stacks(o, dj, t, k) < t
-                    if hit == (ts < t) {
-                        same += 1.0
-                    }
+                // (Two neighbours, one on each diagonal 1.5 pixels off, see a side's edge and a top's
+                // alike; and once one differs it's an edge, and the other isn't marched.)
+                var same = true
+                var j = 0
+                while j < 2 && same {
+                    let side = f32(j) * 2.0 - 1.0
+                    let dj = ray(s, px + vec2(1.0, side) * 1.06)
+                    same = (march_stacks(o, dj, t, k) < t) == (ts < t)
+                    j += 1
                 }
                 // (And an edge's mean held short, a few drawings: the stack slides against the
                 // sky behind it, and a long mean would trail it.)
-                fresh = if same > 3.5 { 1.0 } else { 0.3 }
+                fresh = if same { 1.0 } else { 0.3 }
             }
             let k = if rest && ts >= t { 0.0 } else { max(1.0 / min(yon.held + 1.0, HOLD), fresh) }
             now = mix(before, now, k)

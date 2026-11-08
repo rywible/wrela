@@ -43,7 +43,7 @@ pub fn lifted(s: Shot, p: vec3) -> f32 {
     let from = bow - along
     // (The pile-up at the stem, the water shoved ahead of it.)
     let stem = vec2(across / 0.35, (along - bow - 0.05) / 0.3)
-    let pile = 0.08 * way * (1.0 - 0.4 * run) * exp(-dot(stem, stem))
+    let pile = 0.12 * way * (1.0 - 0.4 * run) * exp(-dot(stem, stem))
     // (The wave off each bow: a steep ridge hard by the hull, lowering and broadening aft.)
     let f = max(from, 0.0)
     let out = across - crest_out(s, f)

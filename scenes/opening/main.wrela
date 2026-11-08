@@ -68,6 +68,11 @@ pub const FREEBOARD: f32 = 0.28
 /// (`--set SAIL=1`).
 pub const SAIL: u32 = 1
 
+/// How far the opening's camera stands to the skiff's port side (m): at 3.5 the skiff sails on
+/// the frame's right third under the rock on its left, not stacked on the centre line under it
+/// (`--set OPEN_SIDE=0`, as it was).
+pub const OPEN_SIDE: f32 = 3.5
+
 /// Where the camera stands: 0 the opening's shot, 1 the player's, up behind the skiff
 /// (`Rig::framing`; `--set FRAMING=1`).
 pub const FRAMING: f32 = 0.0
