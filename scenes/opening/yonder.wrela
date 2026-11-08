@@ -11,7 +11,7 @@
 // falls move each drawing, so they're not added up here, which would smear them: the paint draws
 // them fresh, with `falls`.)
 
-use main::{OFF, RELIT, SPARSE}
+use main::{OFF, RELIT, ROCK_SPARSE, SPARSE}
 use look::{GILT, GLASS, ISLE, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
 use isle::{FALLS, SCALE, bounds, isle, isle_ao, isle_material, isle_normal, isle_shadow}
 use far::far_off
@@ -42,7 +42,19 @@ pub struct Yon: Copy + GpuData {
     pub turn: u32,
     /// Whether the rock's meshes say where its march starts (`rock::reach`): 1, or 0.
     pub meshed: u32,
+    /// Which of each 2x2 of blocks (`ROCK_BLOCK` of the half-size pass's pixels) meets the rock
+    /// and the cathedral this drawing, when they're met more sparsely than the stacks
+    /// (`main::ROCK_SPARSE`).
+    pub rock_turn: u32,
 }
+
+/// The side of the blocks the rock is met in by turns (`Yon::rock_turn`), in the half-size
+/// pass's pixels: wide enough that a wave of the GPU's threads falls in one.
+pub const ROCK_BLOCK: u32 = 16
+
+/// What the half-size pass says of a pixel whose turn to meet the rock this isn't, where no
+/// stack stands nearer (`Yon::rock_turn`): keep what was carried.
+pub const KEEP: f32 = -2.0
 
 /// The rock and the cathedral met afresh in one block of each 2x2 a drawing, in turn: the
 /// others keep what the drawings before met there, carried to where the camera has gone. They
@@ -596,6 +608,7 @@ fn meet(
     field: Texture3d<R32Float>,
     reach: Texture<Rg32Float>,
     meshed: u32,
+    skip_rock: bool,
     pf: vec2,
 ) -> (vec4, vec4, vec4) {
     let o = s.eye
@@ -605,7 +618,7 @@ fn meet(
     var id = SKY
     let is = sphere(o, d, bounds(), far)
     let from = if meshed == 1 { march_from(reach, pf, s.resolution, is.x, is.y) } else { is.x }
-    if from < is.y && (OFF & 1) == 0 {
+    if from < is.y && (OFF & 1) == 0 && !skip_rock {
         let ti = march_isle(field, o, d, from, is.y)
         if ti < is.y {
             t = ti
@@ -618,6 +631,11 @@ fn meet(
     var cover = 0.0
     var marks = vec4(log2(far), SKY, 1.0, 0.0)
     var n = -d
+    // (Only where the rock could be: past its bounds, the far islands are met as ever.)
+    if skip_rock && ts >= t && is.x < is.y {
+        // (As far as the rock: where the rebuild carries what was met from.)
+        return (vec4(0.0), vec4(log2(length(ISLE - o)), KEEP, 0.0, 0.0), vec4(0.0))
+    }
     if ts < t && (OFF & 1024) != 0 {
         c = vec3(0.05)
         cover = 1.0
@@ -758,6 +776,10 @@ pub fn yonder_low(
 ) -> Targets3<vec4, vec4, vec4> {
     let q = floor(pixel.position.xy)
     let pf = q * f32(SPARSE) + spot(yon.turn + shuffled(q)) + vec2(0.5) + yon.jitter
+    // (Not this block's turn to meet the rock: only the stacks are met, and where none is, what
+    // was carried is kept.)
+    let block = (u32(q.x) / ROCK_BLOCK % 2) + 2 * (u32(q.y) / ROCK_BLOCK % 2)
+    let skip = ROCK_SPARSE && yon.held > 0.0 && block != yon.rock_turn
     let (now, marks, third) = meet(
         shot,
         Heaven { light, clouds },
@@ -770,6 +792,7 @@ pub fn yonder_low(
         field,
         reach,
         yon.meshed,
+        skip,
         pf,
     )
     Targets3 { first: now, second: marks, third }
@@ -818,9 +841,11 @@ pub fn yonder_rebuild(
     let bm = past_marks.load(u32(bq.x), u32(bq.y))
     let bn = past_normal.sample_level(smp, was.xy / yon.resolution)
     // (The same thing as this drawing met beside it: as far, give or take.)
-    let agree = abs(bm.x - lm.x) < 0.25
+    // (Kept: this drawing didn't meet the rock here (`KEEP`), so what was carried stands.)
+    let kept = lm.y == KEEP
+    let agree = kept || abs(bm.x - lm.x) < 0.25
     let off = ip - q * side - spot(yon.turn + shuffled(q))
-    let mine = off.x == 0.0 && off.y == 0.0
+    let mine = off.x == 0.0 && off.y == 0.0 && !kept
     var now = before
     var marks = bm
     var third = bn
@@ -840,9 +865,12 @@ pub fn yonder_rebuild(
         for j in 0..3 {
             for i in 0..3 {
                 let at = clamp(q + vec2(f32(i) - 1.0, f32(j) - 1.0), vec2(0.0), lsize - vec2(1.0))
-                let v = low_colour.load(u32(at.x), u32(at.y))
-                lo = min(lo, v)
-                hi = max(hi, v)
+                // (A neighbour kept says nothing of what's there.)
+                if low_marks.load(u32(at.x), u32(at.y)).y != KEEP {
+                    let v = low_colour.load(u32(at.x), u32(at.y))
+                    lo = min(lo, v)
+                    hi = max(hi, v)
+                }
             }
         }
         now = clamp(before, lo, hi)

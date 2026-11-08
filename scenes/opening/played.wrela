@@ -18,8 +18,9 @@ use std::collections::swap
 use std::io::Pending
 use std::input::Event
 use std::gpu::{
-    ClipPosition, DepthTexture, GpuBuffer, buffer, R32Float, Rg32Float, Rgba16Float, Rgba8, Texture, Texture3d,
-    VertexIndex, begin_pass, begin_pass3, depth_texture, dispatch, draw, label, texture, texture3d,
+    ClipPosition, DepthTexture, GpuBuffer, buffer, R32Float, Rg32Float, Rgba16Float, Rgba8, Texture,
+    Texture3d, VertexIndex, begin_pass, begin_pass3, depth_texture, dispatch, draw, label, texture,
+    texture3d,
 }
 
 /// How finely a live page meets the scene (`Shot::fine`): the rock and the cathedral four times
@@ -168,6 +169,7 @@ fn afresh(shot: Shot) -> Yon {
         jitter: vec2(0.0),
         turn: 0,
         meshed: 0,
+        rock_turn: 0,
     }
 }
 
@@ -205,6 +207,7 @@ fn next_yon(s: mut State, shot: Shot) {
         held: n,
         jitter: vec2(halton(i, 2), halton(i, 3)) - vec2(0.5),
         turn: if QUARTER { s.yon_seq % (SPARSE * SPARSE) } else { s.yon_seq % REFRESH },
+        rock_turn: (s.yon_seq / (SPARSE * SPARSE)) % 4,
         ..afresh(s.yon_shot),
     }
     s.yon_count = min(n + 1.0, 64.0)

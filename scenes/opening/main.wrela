@@ -108,6 +108,11 @@ pub const QUARTER: bool = true
 /// the stacks stay grainy for seconds after the camera starts).
 pub const SPARSE: u32 = 2
 
+/// Whether the rock and the cathedral are met in a quarter of the blocks a drawing, in turn, so a
+/// sixteenth of their pixels (`yonder::Yon::rock_turn`), the stacks still a quarter: far and
+/// still, they're true carried; the stacks, nearer, move against what's behind them.
+pub const ROCK_SPARSE: bool = true
+
 /// Whether the paint is painted in every other column out on the sea, the others filled between
 /// their neighbours along the row, and in full round the skiff (`paint::paint_half`,
 /// `paint::paint_fill`): about half the paint's cost.
