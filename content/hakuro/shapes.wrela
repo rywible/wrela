@@ -400,8 +400,8 @@ pub const TAILS_TO: f32 = 318.0
 /// The tails' girth, from `TAILS_FROM` to `TAILS_TO` every 12° (m from the axis): the long
 /// jacket's outside just above its hem (measured by jacket_long.py), so they carry on its line.
 pub const TAILS_GIRTH: [f32; 24] = [
-    0.210, 0.218, 0.222, 0.222, 0.228, 0.232, 0.228, 0.214, 0.190, 0.168, 0.152, 0.146, 0.146,
-    0.152, 0.168, 0.190, 0.214, 0.228, 0.232, 0.228, 0.222, 0.222, 0.218, 0.210,
+    0.184, 0.202, 0.216, 0.222, 0.228, 0.232, 0.228, 0.214, 0.190, 0.168, 0.152, 0.146, 0.146,
+    0.152, 0.168, 0.190, 0.214, 0.228, 0.232, 0.228, 0.222, 0.216, 0.202, 0.184,
 ]
 
 fn girth(deg: f32) -> f32 {
