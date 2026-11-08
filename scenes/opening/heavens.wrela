@@ -12,10 +12,14 @@ use std::math::PI
 use look::{BREAK, LIFT, OVERCAST, SUN, THIN, VEIL}
 use wind::{cleared_at, climates, gale, mean_wind}
 
-/// The engine's approved switches: the sky's march at full size.
+/// The engine's approved switches: the sky's march at full size, or at half each way where
+/// `main::HALF_SKY` asks.
 pub struct Approved {}
 
-impl Switches for Approved {}
+impl Switches for Approved {
+    const HALVED: bool = main::HALF_SKY
+    const DOME_PHASES: u32 = main::DOME_PHASES
+}
 
 /// The heavens: the air and its light, its tables, the clouds, and how far their cook has come.
 pub struct Heavens {
@@ -64,7 +68,7 @@ fn weather() -> Weather {
 pub fn regions() -> Vec<Region> {
     var r = Vec::new()
     for c in climates() {
-        r.push(Region { at: c.at, reach: c.reach, clear: c.clear })
+        r.push(Region { at: c.at, reach: c.reach, clear: c.clear, fair: FAIR * c.clear })
     }
     r
 }
@@ -79,14 +83,22 @@ const GLOOM: f32 = 1.0
 /// The share of the sun's light that comes through the overcast's deck.
 const UNDER_DECK: f32 = 0.1
 
+/// Where the storm's clouds are pulled back, fair weather's own cumulus: their cover.
+const FAIR: f32 = 0.32
+
+/// How the world under an open sky is exposed (`Light::exposure`).
+const CLEAR_EXPOSURE: f32 = 0.48
+
 /// The light under `storm` of the storm (0 open, 1 the deck): exposed for the dimmer world under
 /// it, the sun's light only as far as it comes through it.
 fn lit(open: Light, storm: f32) -> Light {
     Light {
-        exposure: (0.66 + 0.75 * storm) * mix(1.0, LIFT, storm),
+        // (Under an open sky, a sea day's: a little lower than the storm's first grade, so a
+        // sunlit stack keeps its stone and the sky its blue.)
+        exposure: mix(CLEAR_EXPOSURE, (0.66 + 0.75 * storm) * mix(1.0, LIFT, storm), storm),
         sun_colour: open.sun_colour * mix(1.0, mix(UNDER_DECK, 0.3, THIN), storm),
         storm,
-        ..open
+        ..open,
     }
 }
 
