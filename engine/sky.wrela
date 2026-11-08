@@ -1102,6 +1102,32 @@ impl Sky {
         forward: vec3,
         view: f32,
     ) -> Clouds {
+        // (Until the dome is whole, as many shares a frame as make it whole in `PHASES` frames,
+        // however many `Q::DOME_PHASES` it's marched over after: the scene waits on it.)
+        let shares = if self.frames < Q::DOME_PHASES { max(Q::DOME_PHASES / PHASES, 1) } else { 1 }
+        var c = self.march_share::<Q>(air, light, tables, eye, drift, rep, s, still, forward, view)
+        var k = 1
+        while k < shares {
+            c = self.march_share::<Q>(air, light, tables, eye, drift, rep, s, still, forward, view)
+            k += 1
+        }
+        c
+    }
+
+    /// One share of the dome's tiles marched (`march`).
+    fn march_share<Q: Switches>(
+        mut self,
+        air: Air,
+        light: Light,
+        tables: Tables,
+        eye: vec3,
+        drift: vec2,
+        rep: Sampler,
+        s: Sampler,
+        still: bool,
+        forward: vec3,
+        view: f32,
+    ) -> Clouds {
         let c = self.clouds::<Q>(light, eye, drift, still, forward, view)
         label("clouds")
         let scale = c.scale
