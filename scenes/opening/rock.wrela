@@ -96,7 +96,7 @@ pub fn rock() -> Rock {
 }
 
 /// The near and far planes of `reach`'s depth (m).
-const NEAR: f32 = 20.0
+pub const NEAR: f32 = 20.0
 const FAR: f32 = 100000.0
 
 /// `s`'s camera as a view-projection: the pixel a point lands on is the one whose `ray` meets it.

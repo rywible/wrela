@@ -122,6 +122,10 @@ pub const HALF_PAINT: bool = true
 /// pass's march starts: a few steps to the surface, none where no mesh is near.
 pub const MESHED: bool = true
 
+/// Whether the sea stacks are realized as meshes too (`stacked`), drawn with the rock's: a pixel
+/// no stack's mesh is near doesn't march them (`--set STACKED=false`, the march from the eye).
+pub const STACKED: bool = true
+
 /// How many frames march the clouds' dome whole, a share of its tiles each
 /// (`engine::switches::Switches::DOME_PHASES`; 32, 64 or 128): at 128 a frame's march costs a
 /// quarter of 32's, and at 120 frames a second the dome is still marched whole about once a
