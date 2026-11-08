@@ -164,6 +164,10 @@ const FAIR_SUN: f32 = 1.5
 /// can't hold them: they alias into specks and streaks).
 const FAIR_DETAIL: f32 = 0.5
 
+/// How many of the sun's light's samples fair weather's heaps take (`light_interval`'s first:
+/// they reach about 1.6 km).
+const FAIR_LIGHT_SAMPLES: u32 = 7
+
 /// How much denser fair weather's heaps are than the field's own cloud.
 const FAIR_DENSITY: f32 = 6.0
 
@@ -531,8 +535,10 @@ fn field_in(
     }
     // Dense a little way in: a cloud's edge is sharp. (An overcast's deck thickens slowly into
     // its base, wisps and scud first: no hard floor for the march's steps to terrace.)
-    // (A fair heap's edge sharper still: its outline crisp, not airbrushed.)
-    min(s * mix(mix(1.1, 3.0, w.a), 6.0, flat), 1.0)
+    // (A fair heap's edge sharper still: its outline crisp, not airbrushed; and its faintest
+    // wisps gone, so no specks of one float loose in the open sky round it.)
+    s = above(s, from: 0.06 * flat)
+    max(min(s * mix(mix(1.1, 3.0, w.a), 6.0, flat), 1.0), 0.0)
 }
 
 /// The planet's radius under the world's y = 0 (m).
@@ -637,7 +643,9 @@ fn march(
     // of metres between neighbouring dome texels.
     // (Under a storm's deck, twice as many: its long grazing base otherwise terraces into a
     // fine woven grain, the march's steps showing.)
-    let fine = view_samples(ct * (1.0 + c.gloom))
+    // (Under a fair sky, the storm's deck is far off, its base not grazed: the plain count.)
+    let eye_clear = if region_count > 0 { cleared(regions, region_count, c.eye.xz) } else { 0.0 }
+    let fine = view_samples(ct * (1.0 + c.gloom * (1.0 - eye_clear)))
     let dt = ct / f32(fine)
     for i in 0..cells {
         if through < 0.01 {
@@ -688,6 +696,13 @@ fn march(
                 // visible skin and its lighting at once.
                 var od = 0.0
                 for k in 0..LIGHT_SAMPLES {
+                    // (Fair weather's heaps are low: past a kilometre and a half toward the sun there's no
+                    // more of them to shade it, under a sun that's well up. Only deep in a fair sky:
+                    // at its edge the storm's towers still need their whole reach, or they'd brighten
+                    // in a ring.)
+                    if fk > 0.99 && k >= FAIR_LIGHT_SAMPLES {
+                        break
+                    }
                     let (lo, step) = light_interval(k)
                     let ql = q + c.sun * (lo + 0.5 * step)
                     // (Fair weather's clouds shade themselves: their own cover toward the sun, at its own
@@ -744,19 +759,7 @@ fn march(
                 }
                 // (Fair weather's heaps darker toward their flat bases, in their own shade.)
                 if fair > 0.0 {
-                    dim *= mix(1.0, mix(0.7, 1.0, smoothstep(0.0, 0.45, hf)), kr)
-                    // (And hollowed by their own bulk: the sky's light comes down from above, so
-                    // what's under a billow of the heap, its core and the folds between its
-                    // turrets, sees less of it; the turrets' crowns see it all. A heap, not a
-                    // cut-out.)
-                    var od_up = 0.0
-                    for k in 0..3 {
-                        let rise = 60.0 * pow(3.0, f32(k))
-                        let qu = q + vec3(0.0, rise, 0.0)
-                        od_up += field_in(w, qu * scale, h + rise, shape, detail, rep, detailed: k == 0, flat: fk) *
-                            thick * rise
-                    }
-                    dim *= mix(1.0, 0.7 + 0.3 * exp(-od_up * EXTINCTION * RELIEF), fk)
+                    dim *= mix(1.0, mix(0.85, 1.0, smoothstep(0.0, 0.45, hf)), kr)
                 }
                 // (Fair weather's heaps whiter in the sun: a cumulus's sunlit crown is the
                 // brightest thing in a fair sky, past the blue round it.)
@@ -778,7 +781,6 @@ fn march(
     let d = depth_sum / max(weight, 1.0e-6)
     // (Seen from a region's fair weather, through its clear air: a storm far off goes blue
     // with its distance as anything far does.)
-    let eye_clear = if region_count > 0 { cleared(regions, region_count, c.eye.xz) } else { 0.0 }
     // (And through a fair day's air, clearer than the map's: its heaps kilometres off keep their
     // sunlit sides and their shade, not one even glow of the air in front of them.)
     let km = d * 0.001 * mix(1.0, FAIR_AIR, eye_clear)
