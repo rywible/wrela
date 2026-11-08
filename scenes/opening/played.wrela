@@ -3,13 +3,13 @@
 // it the keys while the player sails (`input`), and each frame draws it into its `image` (`play`),
 // which it lays on its own screen.
 
-use main::{KINETIC, LANTERN, LOOK, OFF, START, STYLE}
+use main::{KINETIC, LANTERN, LOOK, OFF, QUARTER, START, STYLE}
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
 use paint::paint
-use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder}
+use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder, yonder_low, yonder_rebuild}
 use ink::ink
 use weather::weather
 use sail::{Rig, key, let_go, rest, step}
@@ -45,6 +45,10 @@ pub struct State {
     pub(package) past_colour: Texture<Rgba16Float>,
     pub(package) past_marks: Texture<Rgba16Float>,
     pub(package) past_normal: Texture<Rgba8>,
+    /// A quarter of them met afresh this drawing, at half the size each way (`main::QUARTER`).
+    pub(package) low_colour: Texture<Rgba16Float>,
+    pub(package) low_marks: Texture<Rgba16Float>,
+    pub(package) low_normal: Texture<Rgba8>,
     pub(package) yon: Yon,
     pub(package) yon_shot: Shot,
     pub(package) yon_count: f32,
@@ -92,6 +96,9 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         past_colour: texture(width: width, height: height),
         past_marks: texture(width: width, height: height),
         past_normal: texture(width: width, height: height),
+        low_colour: texture(width: (width + 1) / 2, height: (height + 1) / 2),
+        low_marks: texture(width: (width + 1) / 2, height: (height + 1) / 2),
+        low_normal: texture(width: (width + 1) / 2, height: (height + 1) / 2),
         yon: afresh(shot),
         yon_shot: shot,
         yon_count: 0.0,
@@ -159,7 +166,9 @@ fn next_yon(s: mut State, shot: Shot) {
     // (The sequence runs on past the most a pixel holds: held at its cap, the offset would stop
     // on one place and the crawl come back.)
     s.yon_seq += 1
-    let i = s.yon_seq % 16 + 1
+    // (Met a quarter at a time, each pixel's offset steps on once in its four drawings: stepped
+    // each drawing, the four would each run through only a part of the sequence.)
+    let i = (if QUARTER { s.yon_seq / REFRESH } else { s.yon_seq }) % 16 + 1
     s.yon = Yon {
         held: n,
         jitter: vec2(halton(i, 2), halton(i, 3)) - vec2(0.5),
@@ -183,6 +192,9 @@ pub(package) fn sized(s: mut State, width: u32, height: u32) {
         s.past_colour = texture(width: width, height: height)
         s.past_marks = texture(width: width, height: height)
         s.past_normal = texture(width: width, height: height)
+        s.low_colour = texture(width: (width + 1) / 2, height: (height + 1) / 2)
+        s.low_marks = texture(width: (width + 1) / 2, height: (height + 1) / 2)
+        s.low_normal = texture(width: (width + 1) / 2, height: (height + 1) / 2)
         s.yon_count = 0.0
         s.width = width
         s.height = height
@@ -249,29 +261,77 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         s.isle_cooked += 1
     }
     label("yonder")
-    let f = begin_pass3(mut s.yon_colour, mut s.yon_marks, mut s.yon_normal, keep: true)
-    f.scissor(0, from, width, to - from)
-    draw(
-        f,
-        cover,
-        yonder.bind(
-            shot: shot,
-            yon: s.yon,
-            light: hv.light,
-            clouds: hv.clouds,
-            view: hv.tables.view,
-            aerial: hv.tables.aerial,
-            dome: hv.sky.dome,
-            cloud: hv.sky.shadow,
-            smp: hv.linear,
-            past_colour: s.past_colour,
-            past_marks: s.past_marks,
-            past_normal: s.past_normal,
-            field: s.isle_field,
-        ),
-        vertices: 3,
-    )
-    f.end()
+    if QUARTER {
+        // (A row of the half-size pass either side of the band's own: the rebuild reads the
+        // pixels round each.)
+        let lw = (width + 1) / 2
+        let lh = (s.height + 1) / 2
+        let lfrom = if from / 2 > 0 { from / 2 - 1 } else { 0 }
+        let lto = min((to + 1) / 2 + 1, lh)
+        let f = begin_pass3(mut s.low_colour, mut s.low_marks, mut s.low_normal, keep: true)
+        f.scissor(0, lfrom, lw, lto - lfrom)
+        draw(
+            f,
+            cover,
+            yonder_low.bind(
+                shot: shot,
+                yon: s.yon,
+                light: hv.light,
+                clouds: hv.clouds,
+                view: hv.tables.view,
+                aerial: hv.tables.aerial,
+                dome: hv.sky.dome,
+                cloud: hv.sky.shadow,
+                smp: hv.linear,
+                field: s.isle_field,
+            ),
+            vertices: 3,
+        )
+        f.end()
+        let r = begin_pass3(mut s.yon_colour, mut s.yon_marks, mut s.yon_normal, keep: true)
+        r.scissor(0, from, width, to - from)
+        draw(
+            r,
+            cover,
+            yonder_rebuild.bind(
+                shot: shot,
+                yon: s.yon,
+                smp: hv.linear,
+                low_colour: s.low_colour,
+                low_marks: s.low_marks,
+                low_normal: s.low_normal,
+                past_colour: s.past_colour,
+                past_marks: s.past_marks,
+                past_normal: s.past_normal,
+            ),
+            vertices: 3,
+        )
+        r.end()
+    } else {
+        let f = begin_pass3(mut s.yon_colour, mut s.yon_marks, mut s.yon_normal, keep: true)
+        f.scissor(0, from, width, to - from)
+        draw(
+            f,
+            cover,
+            yonder.bind(
+                shot: shot,
+                yon: s.yon,
+                light: hv.light,
+                clouds: hv.clouds,
+                view: hv.tables.view,
+                aerial: hv.tables.aerial,
+                dome: hv.sky.dome,
+                cloud: hv.sky.shadow,
+                smp: hv.linear,
+                past_colour: s.past_colour,
+                past_marks: s.past_marks,
+                past_normal: s.past_normal,
+                field: s.isle_field,
+            ),
+            vertices: 3,
+        )
+        f.end()
+    }
     label("paint")
     let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, keep: true)
     p.scissor(0, from, width, to - from)

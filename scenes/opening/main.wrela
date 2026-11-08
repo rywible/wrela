@@ -89,6 +89,11 @@ pub const OFF: u32 = 0
 /// (`yonder::REFRESH`): wide enough that each group of pixels a GPU runs together falls in one.
 pub const RELIT: u32 = 32
 
+/// Whether the rock, the cathedral, the stacks and the far islands are met a quarter of their
+/// pixels a drawing, at half the size each way, and rebuilt at the full size over the drawings
+/// (`yonder::yonder_low`, `yonder::yonder_rebuild`): a quarter of the far pass's cost.
+pub const QUARTER: bool = true
+
 /// Whether the clouds' dome is marched at half its size each way (`--set HALF_SKY=false` for full): a
 /// quarter of the clouds' cost, a little softer.
 pub const HALF_SKY: bool = true
