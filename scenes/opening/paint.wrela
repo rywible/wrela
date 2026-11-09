@@ -1998,19 +1998,24 @@ pub fn paint_fill(
     let nm = half_normal.load(at.x, at.y)
     let (x, y) = (u32(ip.x), u32(ip.y))
     let f = yon_colour.load(x, y)
-    if f.a <= 0.004 {
+    // (How much of the far layer here is the vista's (`far_merge`): none where it's the far
+    // pass's own, the stacks, and everything before the vista's laid in.)
+    let fnn = yon_normal.load(x, y)
+    if f.a <= 0.004 || fnn.w <= 0.004 {
         return Targets3 { first: c, second: m, third: nm }
     }
-    // Where the far layer (`yonder`, the vista) lies over this pixel, it's laid in as the paint
-    // lays it, this pixel's own, and only what's behind it and in front of it is taken from the
-    // neighbours: a spire's edge filled from the pixels either side of it moved a pixel at a
-    // time as the camera moved, and crawled.
+    // Where the vista lies over this pixel, it's laid in as the paint lays it, this pixel's own,
+    // and only what's behind it and in front of it is taken from the neighbours: a spire's edge
+    // filled from the pixels either side of it moved a pixel at a time as the camera moved, and
+    // crawled. (Not the far pass's own: its edges are only as fine as its own few looks, a
+    // stack's stair-stepped and the first drawings' a pattern of the pixels met so far, and the
+    // fill between neighbours softens them, as it always has.)
     let (laid, ok) = laid_far(f, x, y, size, n, half_colour, half_marks, yon_colour, yon_marks)
     if !ok {
         return Targets3 { first: c, second: m, third: nm }
     }
+    let laid = mix(c.rgb, laid, fnn.w)
     // (Its share met through the jittered ray (`sample`): all but the far pass's own.)
-    let fnn = yon_normal.load(x, y)
     let jittered = 1.0 - f.a * (1.0 - fnn.w)
     if f.a > 0.5 {
         return Targets3 {
@@ -2042,6 +2047,7 @@ fn laid_far(
     var behind = vec3(0.0)
     var behind_w = 0.0
     var front = vec3(0.0)
+    var front_shows = 0.0
     var front_n = 0.0
     for k in 0..4 {
         let has = if k == 0 { n.left } else if k == 1 { n.right } else if k == 2 { n.above } else {
@@ -2066,15 +2072,19 @@ fn laid_far(
             }
             let a = if over { fk.a } else { 0.0 }
             let rest = ck - (if over { fk.rgb } else { vec3(0.0) })
-            // (What's behind, unmixed: `rest / (1 - a)`, weighed by `1 - a`, how much of it shows;
-            // only where it shows well: what the paint laid in front (a fall, spray) is left in
-            // `rest` too, and the unmixing would blow it up where little shows. Elsewhere, what's
-            // in front.)
-            if a < 0.75 {
+            // (What's behind, unmixed: `rest / (1 - a)`, weighed by `1 - a`, how much of it shows,
+            // from all but the neighbours it hardly shows in: an edge pixel's neighbours are mostly
+            // part covered, and taking fewer of them left it to one or two, so it crawled. What
+            // the paint laid in front (a fall, spray) is left in `rest` too, and where little shows
+            // the unmixing blows it up: hence the fallback below where the neighbours show less of
+            // what's behind than this pixel needs. In the rest, what's in front: `rest` less what
+            // still shows of what's behind, `b * (1 - a)`, taken off once `b` is known below.)
+            if a < 0.95 {
                 behind += rest
                 behind_w += 1.0 - a
             } else {
                 front += rest
+                front_shows += 1.0 - a
                 front_n += 1.0
             }
         }
@@ -2083,6 +2093,6 @@ fn laid_far(
         return (vec3(0.0), false)
     }
     let b = if behind_w > 0.0 { behind / behind_w } else { vec3(0.0) }
-    let fr = if front_n > 0.0 { front / front_n } else { vec3(0.0) }
+    let fr = if front_n > 0.0 { (front - b * front_shows) / front_n } else { vec3(0.0) }
     (max(f.rgb + b * (1.0 - f.a) + fr * f.a, vec3(0.0)), true)
 }
