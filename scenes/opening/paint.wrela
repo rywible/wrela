@@ -1780,7 +1780,8 @@ pub fn paint(
 /// other column: the sea's glints and foam lie along the rows, drawn out by the low eye, and the
 /// fill between left and right keeps them whole (a checkerboard broke them into dots). Round the
 /// skiff, a checkerboard: its mast, rigging and rider stand across the rows, and a column left
-/// out would lose a rope a pixel wide. `paint_fill` fills the others.
+/// out would lose a rope a pixel wide; and so over the rock and the cathedral, for their spires.
+/// `paint_fill` fills the others.
 @fragment
 pub fn paint_half(
     pixel: FragCoord,
@@ -1829,7 +1830,14 @@ fn shift(s: Shot, slot: u32, y: u32) -> u32 {
     let along = dot(to_boat, d)
     let near = length(to_boat) < NEAR_SKIFF ||
         (along > 0.0 && length(to_boat - d * along) < NEAR_SKIFF)
-    if near { y % 2 } else { 0 }
+    // (And over the rock and the cathedral: a spire a pixel wide crossing the columns as the
+    // camera turns would be met in one and filled between two in the next, and shimmer; in a
+    // checkerboard the fill has the rows above and below it. Only where the ray meets the
+    // rock's sphere above the sea: the sphere reaches below it, and the sea's glints there would
+    // break into dots.)
+    let isle = sphere(s.eye, d, bounds(), 1.0e5)
+    let over = isle.x < isle.y && s.eye.y + d.y * max(isle.x, 0.0) > 0.0
+    if near || over { y % 2 } else { 0 }
 }
 
 /// How near the skiff a block's middle ray passes (m, from its middle) to be painted as a

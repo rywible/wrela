@@ -3,7 +3,9 @@
 // it the keys while the player sails (`input`), and each frame draws it into its `image` (`play`),
 // which it lays on its own screen.
 
-use main::{HALF_PAINT, HERO, KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, START, STYLE}
+use main::{
+    HALF_PAINT, HERO, KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, START, STYLE, VISTA, VISTA_SIZE,
+}
 use aboard::{Aboard, aboard}
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
@@ -11,9 +13,14 @@ use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
 use engine::upscale::{Body, NO_BODY, Pinhole}
 use paint::{OVERHEAD, overhead_once, paint, paint_fill, paint_half}
-use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder, yonder_low, yonder_rebuild}
+use yonder::{
+    FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, far_merge, vista_carry, vista_keep,
+    vista_look, vista_shot, yonder, yonder_low, yonder_rebuild,
+}
+use isle::bounds
+use engine::far::{SWEEP, Vista, aimed, jumped, strayed, texels_needed, vista_fits, vista_side}
 use ink::ink
-use rock::{Rock, reach, rock, step_rock}
+use rock::{Rock, reach, reach_rows, rock, step_rock}
 use weather::weather
 use sail::{Rig, key, let_go, rest, step}
 use std::collections::swap
@@ -70,6 +77,32 @@ pub struct State {
     pub(package) rock: Rock,
     pub(package) reach: Texture<Rg32Float>,
     pub(package) reach_depth: DepthTexture,
+    /// The rock and the cathedral in a picture of their own, pinned to the world (`main::VISTA`):
+    /// its view, whether it's been aimed yet, what it holds (`vista_*`) and the band of it
+    /// looked at this drawing (`vista_new_*`, copied back), the next band's first row, and the
+    /// meshes' reach from its eye (`rock::reach`).
+    pub(package) vista: Vista,
+    pub(package) vista_aimed: bool,
+    pub(package) vista_colour: Texture<Rgba16Float>,
+    pub(package) vista_marks: Texture<Rgba16Float>,
+    pub(package) vista_normal: Texture<Rgba16Float>,
+    pub(package) vista_new_colour: Texture<Rgba16Float>,
+    pub(package) vista_new_marks: Texture<Rgba16Float>,
+    pub(package) vista_new_normal: Texture<Rgba16Float>,
+    pub(package) vista_row: u32,
+    /// How many times the vista has been looked at whole since it was first aimed.
+    pub(package) vista_sweeps: u32,
+    /// Whether the vista serves this camera (`engine::far::vista_fits`): where it doesn't, the
+    /// far pass draws the rock as ever, and the vista waits, not looked at.
+    pub(package) vista_fits: bool,
+    pub(package) vista_reach: Texture<Rg32Float>,
+    pub(package) vista_depth: DepthTexture,
+    pub(package) vista_meshed: u32,
+    /// The far layer the paint reads: the stacks as `yonder` met them with the vista laid in
+    /// (`yonder::far_merge`).
+    pub(package) far_colour: Texture<Rgba16Float>,
+    pub(package) far_marks: Texture<Rgba16Float>,
+    pub(package) far_normal: Texture<Rgba8>,
     /// The inked drawing, at the drawing's size, where it's drawn below the screen's
     /// (`main::RENDER_SCALE`): brought up to the screen by `main::upscaled`.
     pub(package) inked: Texture<Rgba16Float>,
@@ -159,6 +192,23 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         rock: rock(),
         reach: texture(width: width, height: height),
         reach_depth: depth_texture(width, height),
+        vista: aimed(shot.eye, bounds(), size: f32(VISTA_SIZE), margin: 0.04),
+        vista_aimed: false,
+        vista_colour: texture(width: VISTA_SIZE, height: VISTA_SIZE),
+        vista_marks: texture(width: VISTA_SIZE, height: VISTA_SIZE),
+        vista_normal: texture(width: VISTA_SIZE, height: VISTA_SIZE),
+        vista_new_colour: texture(width: VISTA_SIZE, height: VISTA_SIZE),
+        vista_new_marks: texture(width: VISTA_SIZE, height: VISTA_SIZE),
+        vista_new_normal: texture(width: VISTA_SIZE, height: VISTA_SIZE),
+        vista_row: 0,
+        vista_sweeps: 0,
+        vista_fits: false,
+        vista_reach: texture(width: VISTA_SIZE, height: VISTA_SIZE),
+        vista_depth: depth_texture(VISTA_SIZE, VISTA_SIZE),
+        vista_meshed: 0,
+        far_colour: texture(width: width, height: height),
+        far_marks: texture(width: width, height: height),
+        far_normal: texture(width: width, height: height),
         inked: texture(width: width, height: height),
         history_a: texture(width: 1, height: 1),
         history_b: texture(width: 1, height: 1),
@@ -229,6 +279,7 @@ fn afresh(shot: Shot) -> Yon {
         turn: 0,
         meshed: 0,
         rock_turn: 0,
+        vista: 0,
     }
 }
 
@@ -303,6 +354,9 @@ pub(package) fn sized(s: mut State, width: u32, height: u32) {
         s.half_normal = texture(width: (width + 1) / 2, height: height)
         s.reach = texture(width: width, height: height)
         s.reach_depth = depth_texture(width, height)
+        s.far_colour = texture(width: width, height: height)
+        s.far_marks = texture(width: width, height: height)
+        s.far_normal = texture(width: width, height: height)
         s.inked = texture(width: width, height: height)
         s.fresh = true
         s.yon_count = 0.0
@@ -336,7 +390,16 @@ pub(package) fn painted(
 fn stood(s: mut State, shot: Shot) {
     if HERO > 0.5 {
         let (width, height) = (s.width, s.height)
-        s.aboard.draw(shot, s.heavens, mut s.colour, mut s.marks, mut s.normal, width, height, s.overhead)
+        s.aboard.draw(
+            shot,
+            s.heavens,
+            mut s.colour,
+            mut s.marks,
+            mut s.normal,
+            width,
+            height,
+            s.overhead,
+        )
     }
 }
 
@@ -368,7 +431,148 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     let ready = step_rock(mut s.rock, shot, s.heavens.light.sun)
     let meshed = reach(s.rock, shot, ready, s.unbaked, mut s.reach, mut s.reach_depth)
     s.yon.meshed = if meshed { 1 } else { 0 }
+    if VISTA {
+        aim_vista(mut s, shot)
+        if s.vista_aimed {
+            // (The meshes from the vista's eye: where its looks start marching, and their cooked
+            // shade. Only in the band looked at this drawing, the only rows read.)
+            let (vfrom, vto) = vista_band(s)
+            let vm = reach_rows(
+                s.rock,
+                vista_shot(s.vista, shot),
+                ready,
+                s.unbaked,
+                mut s.vista_reach,
+                mut s.vista_depth,
+                from: vfrom,
+                to: vto,
+            )
+            s.vista_meshed = if vm { 1 } else { 0 }
+        }
+        // (Laid in once it has looked at them whole a few times: till then, on a first load, the
+        // far pass meets them as it did, and they don't come in a band at a time.)
+        s.yon.vista = if s.vista_aimed && s.vista_sweeps >= VISTA_READY { 1 } else { 0 }
+    }
     jittered(shot, s.jitter)
+}
+
+/// How many times the vista is looked at whole at four times the pace before it settles into its
+/// own (`engine::far::SWEEP`).
+const VISTA_EARLY: u32 = 4
+
+/// How many times the vista is looked at whole before it's laid in (`yonder::Yon::vista`): its
+/// fast ones, a quarter of a second at 120 a second. Laid in with fewer looks a texel, it pops
+/// in, and its spires settle in bands rolling down the rock.
+const VISTA_READY: u32 = VISTA_EARLY
+
+/// How much of the sphere round the rock its vista leaves round it.
+const VISTA_MARGIN: f32 = 0.04
+
+/// The vista aimed at the rock from where the eye is: the first drawing, once the eye has gone
+/// `engine::far::REAIM` m from where it was aimed, or once the screen asks for a vista much finer
+/// or coarser than it is (`engine::far::vista_side`: a zoom, a bigger window). What it held is
+/// carried over, read through its depth (`yonder::vista_carry`), so it doesn't start again empty;
+/// but after a jump (`engine::far::jumped`), or once it served no camera for a while
+/// (`engine::far::vista_fits`), it starts again, and the far pass draws the rock till it's ready.
+fn aim_vista(s: mut State, shot: Shot) {
+    let b = bounds()
+    let needed = texels_needed(
+        shot.eye,
+        b,
+        VISTA_MARGIN,
+        rows: shot.resolution.y,
+        focal: shot.focal,
+    )
+    s.vista_fits = vista_fits(shot.eye, b, needed, slack: if s.vista_fits { 1.1 } else { 1.0 })
+    if !s.vista_fits {
+        s.vista_aimed = false
+        return
+    }
+    let side = vista_side(needed)
+    let was = s.vista
+    // (A quarter finer or coarser than the screen asks: a vista much finer than the screen is
+    // read between texels the pixel's footprint misses, and shimmers as they cross it.)
+    let resized = side * 4 > u32(was.size) * 5 || side * 5 < u32(was.size) * 4
+    if s.vista_aimed && !strayed(was, shot.eye) && !resized {
+        return
+    }
+    // (Its size kept where it's near enough: a vista carried to a new size is read between the
+    // old texels.)
+    let size = if resized || !s.vista_aimed { side } else { u32(was.size) }
+    let now = aimed(shot.eye, b, size: f32(size), margin: VISTA_MARGIN)
+    if !s.vista_aimed || jumped(was, shot.eye) {
+        vista_targets(mut s, size)
+        s.vista_sweeps = 0
+    } else {
+        if size != u32(was.size) {
+            s.vista_new_colour = texture(width: size, height: size)
+            s.vista_new_marks = texture(width: size, height: size)
+            s.vista_new_normal = texture(width: size, height: size)
+        }
+        borrow hv = s.heavens
+        let c = begin_pass3(
+            mut s.vista_new_colour,
+            mut s.vista_new_marks,
+            mut s.vista_new_normal,
+            keep: true,
+        )
+        draw(
+            c,
+            cover,
+            vista_carry.bind(
+                now: now,
+                was: was,
+                smp: hv.linear,
+                colour: s.vista_colour,
+                marks: s.vista_marks,
+                normal: s.vista_normal,
+            ),
+            vertices: 3,
+        )
+        c.end()
+        if size != u32(was.size) {
+            s.vista_colour = texture(width: size, height: size)
+            s.vista_marks = texture(width: size, height: size)
+            s.vista_normal = texture(width: size, height: size)
+            s.vista_reach = texture(width: size, height: size)
+            s.vista_depth = depth_texture(size, size)
+        }
+        let k = begin_pass3(mut s.vista_colour, mut s.vista_marks, mut s.vista_normal, keep: true)
+        draw(
+            k,
+            cover,
+            vista_keep.bind(
+                colour: s.vista_new_colour,
+                marks: s.vista_new_marks,
+                normal: s.vista_new_normal,
+            ),
+            vertices: 3,
+        )
+        k.end()
+    }
+    s.vista_row = 0
+    s.vista = now
+    s.vista_aimed = true
+}
+
+/// The rows of the vista looked at this drawing: `engine::far::SWEEP` drawings to it whole, its
+/// first few (`VISTA_EARLY`) four times as fast.
+fn vista_band(s: State) -> (u32, u32) {
+    let side = u32(s.vista.size)
+    let rows = if s.vista_sweeps < VISTA_EARLY { side * 4 / SWEEP } else { side / SWEEP }
+    (s.vista_row, min(s.vista_row + rows, side))
+}
+
+/// The vista's pictures made afresh, `size` texels a side, empty (no looks yet).
+fn vista_targets(s: mut State, size: u32) {
+    s.vista_colour = texture(width: size, height: size)
+    s.vista_marks = texture(width: size, height: size)
+    s.vista_normal = texture(width: size, height: size)
+    s.vista_new_colour = texture(width: size, height: size)
+    s.vista_new_marks = texture(width: size, height: size)
+    s.vista_new_normal = texture(width: size, height: size)
+    s.vista_reach = texture(width: size, height: size)
+    s.vista_depth = depth_texture(size, size)
 }
 
 /// Paints rows `from` to `to` of `shot` (the first pass), keeping the rest as they are.
@@ -414,6 +618,66 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         over: OVERHEAD,
     )
     label("yonder")
+    // (The vista laid in over what the far pass met (`yonder::far_merge`), once it's ready.)
+    let merged = VISTA && s.yon.vista == 1
+    if VISTA && from == 0 && s.vista_aimed {
+        // A band of the vista's rows looked at once more (`yonder::vista_look`), and copied back:
+        // once a drawing, with its first band of the paint's.
+        let vshot = vista_shot(s.vista, s.plain)
+        let vfrom = s.vista_row
+        // (Its first few looks at four times the pace: an empty or one-look picture is all
+        // jumps; after them each look moves a texel less.)
+        let side = u32(s.vista.size)
+        let (_, vto) = vista_band(s)
+        let v = begin_pass3(
+            mut s.vista_new_colour,
+            mut s.vista_new_marks,
+            mut s.vista_new_normal,
+            keep: true,
+        )
+        v.scissor(0, vfrom, side, vto - vfrom)
+        draw(
+            v,
+            cover,
+            vista_look.bind(
+                shot: vshot,
+                light: hv.light,
+                clouds: hv.clouds,
+                view: hv.tables.view,
+                aerial: hv.tables.aerial,
+                dome: hv.sky.dome,
+                cloud: hv.sky.shadow,
+                smp: hv.linear,
+                field: s.isle_field,
+                reach: s.vista_reach,
+                meshed: s.vista_meshed,
+                held_colour: s.vista_colour,
+                held_marks: s.vista_marks,
+                held_normal: s.vista_normal,
+                seq: s.vista_sweeps,
+                once: s.overhead.items(),
+            ),
+            vertices: 3,
+        )
+        v.end()
+        let k = begin_pass3(mut s.vista_colour, mut s.vista_marks, mut s.vista_normal, keep: true)
+        k.scissor(0, vfrom, side, vto - vfrom)
+        draw(
+            k,
+            cover,
+            vista_keep.bind(
+                colour: s.vista_new_colour,
+                marks: s.vista_new_marks,
+                normal: s.vista_new_normal,
+            ),
+            vertices: 3,
+        )
+        k.end()
+        s.vista_row = if vto >= side { 0 } else { vto }
+        if vto >= side {
+            s.vista_sweeps += 1
+        }
+    }
     if QUARTER {
         // (A row of the half-size pass either side of the band's own: the rebuild reads the
         // pixels round each.)
@@ -489,6 +753,33 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         )
         f.end()
     }
+    if merged {
+        // The far layer the paint reads: the stacks as met, the vista laid in.
+        let m = begin_pass3(mut s.far_colour, mut s.far_marks, mut s.far_normal, keep: true)
+        m.scissor(0, paint_from, width, paint_to - paint_from)
+        draw(
+            m,
+            cover,
+            far_merge.bind(
+                shot: s.plain,
+                vista: s.vista,
+                smp: hv.linear,
+                yon_colour: s.yon_colour,
+                yon_marks: s.yon_marks,
+                yon_normal: s.yon_normal,
+                vista_colour: s.vista_colour,
+                vista_marks: s.vista_marks,
+                vista_normal: s.vista_normal,
+            ),
+            vertices: 3,
+        )
+        m.end()
+        // (The paint reads `yon_*`: the far layer in their place while it paints, swapped back
+        // after, as the next drawing carries what the far pass met.)
+        swap(mut s.far_colour, mut s.yon_colour)
+        swap(mut s.far_marks, mut s.yon_marks)
+        swap(mut s.far_normal, mut s.yon_normal)
+    }
     label("paint")
     if HALF_PAINT {
         // (A row of the half either side of the band's own: the fill reads the rows round each.)
@@ -530,6 +821,11 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
             vertices: 3,
         )
         p.end()
+        if merged {
+            swap(mut s.far_colour, mut s.yon_colour)
+            swap(mut s.far_marks, mut s.yon_marks)
+            swap(mut s.far_normal, mut s.yon_normal)
+        }
         return
     }
     let p = begin_pass3(mut s.colour, mut s.marks, mut s.normal, keep: true)
@@ -555,6 +851,11 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         vertices: 3,
     )
     p.end()
+    if merged {
+        swap(mut s.far_colour, mut s.yon_colour)
+        swap(mut s.far_marks, mut s.yon_marks)
+        swap(mut s.far_normal, mut s.yon_normal)
+    }
 }
 
 /// The weather laid over the painted scene (`weather`), into `aired`, for the ink.

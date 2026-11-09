@@ -123,6 +123,17 @@ pub const ROCK_SPARSE: bool = true
 /// `paint::paint_fill`): about half the paint's cost.
 pub const HALF_PAINT: bool = true
 
+/// Whether the rock and the cathedral are drawn into a picture of their own pinned to the world,
+/// not the screen (`engine::far::Vista`, `yonder::vista_look`), a band of its rows a drawing, each
+/// texel the mean of its looks, and read each drawing through its rays (`yonder::far_merge`).
+/// Off, they're met in the screen's pixels a few at a time with the stacks (`QUARTER`,
+/// `ROCK_SPARSE`), and a spire or a window finer than a pixel flickers as it's met on and off.
+pub const VISTA: bool = true
+
+/// The vista's texels a side till it's first aimed: then as many as the screen asks
+/// (`engine::far::vista_side`), every texel looked at once in `engine::far::SWEEP` drawings.
+pub const VISTA_SIZE: u32 = 512
+
 /// Whether the rock and the cathedral are realized as meshes (`rock`), which say where the far
 /// pass's march starts: a few steps to the surface, none where no mesh is near.
 pub const MESHED: bool = true
