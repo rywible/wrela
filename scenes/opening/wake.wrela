@@ -55,7 +55,17 @@ pub fn lifted(s: Shot, p: vec3) -> f32 {
     let behind = -along - 2.1
     let hump = (0.05 * way + 0.03 * run) * (exp(-pow(behind - 1.1 - 0.5 * run, 2.0) / 0.5) - 0.6 * exp(-behind * behind / 0.12)) *
         exp(-across * across / (0.18 + 0.04 * max(behind, 0.0)))
-    pile + ridge + quarter + hump * step(0.0, behind + 0.3)
+    // (Hard along its side, the water the hull parts: climbing its forward planks where the
+    // bow shoves it aside, drawn down into a hollow amidships, and swelling again at its
+    // quarters where it closes in. Without it the sea met the hull in one straight level line,
+    // and it read as laid on the water.)
+    let u = clamp(along / 2.2, -1.0, 1.0)
+    let beam = 0.6 * sqrt(max(1.0 - u * u, 0.0))
+    let hug = exp(-max(across - beam, 0.0) / 0.22) * step(along, 2.2) * step(-2.2, along)
+    let climb = 0.15 * smoothstep(0.25, 0.8, u) * (1.0 - smoothstep(0.92, 1.0, u)) -
+        0.05 * exp(-pow((u + 0.1) / 0.3, 2.0)) +
+        0.05 * exp(-pow((u + 0.8) / 0.15, 2.0))
+    pile + ridge + quarter + hump * step(0.0, behind + 0.3) + climb * hug * way
 }
 
 /// Foam's lace at `w` (m, where the water rests): clots of froth and the bubbles round them,
@@ -239,7 +249,11 @@ pub fn marks(s: Shot, p: vec3, xz: vec2, rest: vec2) -> (f32, f32, f32, f32) {
         )
     // (A thin wash amidships, whitest toward the bow: a full-length skirt of froth read as a
     // cloud the hull sat in.)
-    (wake, lip * (0.6 + 0.4 * max(way, s.slap)) * (0.45 + 0.55 * fore), wl, aer)
+    // (And whitest where the water's broken: at the bow and where it closes in at the
+    // quarters; amidships it runs dark and smooth along the planks.)
+    let u = clamp(along / 2.2, -1.0, 1.0)
+    let broken = mix(0.2, 1.0, smoothstep(0.1, 0.6, u)) + 0.5 * exp(-pow((u + 0.85) / 0.15, 2.0))
+    (wake, lip * (0.6 + 0.4 * max(way, s.slap)) * (0.45 + 0.55 * fore) * mix(1.0, broken, way), wl, aer)
 }
 
 /// The bow's spray, in front of what the ray met at `hit`: as the skiff runs, a sheet of water
