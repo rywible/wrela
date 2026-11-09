@@ -27,8 +27,8 @@ use std::math::TAU
 const G: f32 = 9.81
 
 /// How fast a wave on it dies away when nothing drives it (per second): a ring the body rocks out
-/// lasts two or three seconds.
-const SETTLE: f32 = 0.7
+/// lasts several seconds, so a wake trails well out behind a moving body.
+const SETTLE: f32 = 0.3
 
 /// The longest a frame's step runs (s): a longer gap (a slow machine's, a hitch's) runs the water
 /// slow for it rather than jumping; past a second it starts afresh.
@@ -37,6 +37,13 @@ const LONGEST: f32 = 0.1
 /// How much of its side, at each edge, soaks up what reaches it, and how fast (per second).
 const SPONGE: f32 = 0.14
 const SOAK: f32 = 8.0
+
+/// The churned water a body leaves (`Sheet::churn`): how much each metre of water it shoves aside
+/// churns, by how fast it's shoved (so a hull under way leaves a trail and one at rest none); how
+/// long it lasts (s); and how fast it spreads (m²/s), so a wake's trail widens behind it.
+const CHURNS: f32 = 12.0
+const CHURN_LASTS: f32 = 6.0
+const CHURN_SPREADS: f32 = 0.3
 
 /// The sheet itself, on the CPU.
 pub struct Sheet {
@@ -47,6 +54,9 @@ pub struct Sheet {
     pub corner: vec2i,
     /// Each cell's rise (m), a row along x after another.
     pub rise: Vec<f32>,
+    /// Each cell's churn: the broken, aerated water a body has left there (0 none, about 1 a
+    /// hull's wake under way). It stays where it's left, fading and spreading.
+    pub churn: Vec<f32>,
     /// Its waves: the rise's and its rate's (each a complex number per wave, `fft`'s order), and
     /// each wave's angular frequency (rad/s) and wavenumbers along x and z (rad per cell).
     height: Vec<vec2>,
@@ -68,13 +78,14 @@ pub struct Sheet {
 pub struct Stir {
     pub sheet: Sheet,
     cells: GpuBuffer<f32>,
+    churn: GpuBuffer<f32>,
     pub shape: Texture<Rgba16Float>,
 }
 
 impl Stir {
     /// A sheet `n` cells a side (a power of two), each `cell` m.
     pub fn new(n: u32, cell: f32) -> Stir {
-        Stir { sheet: Sheet::new(n, cell), cells: buffer(n * n), shape: writable_texture(width: n, height: n) }
+        Stir { sheet: Sheet::new(n, cell), cells: buffer(n * n), churn: buffer(n * n), shape: writable_texture(width: n, height: n) }
     }
 
     /// Where a shader finds it (`Sheet::at`).
@@ -88,8 +99,9 @@ impl Stir {
         self.sheet.step(time, press)
         let n = self.sheet.n
         write(mut self.cells, 0, self.sheet.rise)
+        write(mut self.churn, 0, self.sheet.churn)
         label("stir")
-        dispatch(shaped.bind(cells: self.cells, n: n, cell: self.sheet.cell, out: mut self.shape), over: (n, n))
+        dispatch(shaped.bind(cells: self.cells, churn: self.churn, n: n, cell: self.sheet.cell, out: mut self.shape), over: (n, n))
     }
 }
 
@@ -123,6 +135,7 @@ impl Sheet {
             corner: vec2i(0),
             turns,
             rise: Vec::filled(count, 0.0),
+            churn: Vec::filled(count, 0.0),
             height: Vec::filled(count, vec2(0.0)),
             rate: Vec::filled(count, vec2(0.0)),
             omega,
@@ -188,35 +201,54 @@ impl Sheet {
             self.height[a] = times(self.height[a], turn)
             self.rate[a] = times(self.rate[a], turn)
         }
+        // (Its cells, the churn and the press on them moved as well: churn coming in over the
+        // edge is none.)
         var rise: Vec<f32> = Vec::filled(self.n * self.n, 0.0)
+        var churn: Vec<f32> = Vec::filled(self.n * self.n, 0.0)
+        var press: Vec<f32> = Vec::filled(self.n * self.n, 0.0)
         for j in 0..n {
             for i in 0..n {
                 let a = u32(j * n + i)
                 let b = u32(((j + by.y) % n + n) % n * n + ((i + by.x) % n + n) % n)
                 rise[a] = self.rise[b]
+                press[a] = self.press[b]
+                let si = i + by.x
+                let sj = j + by.y
+                if si >= 0 && si < n && sj >= 0 && sj < n {
+                    churn[a] = self.churn[b]
+                }
             }
         }
         self.rise = take rise
+        self.churn = take churn
+        self.press = take press
     }
 
     /// Stepped on to `time`, `press` (each cell's: how far down the body holds the water) on it.
     pub fn step(mut self, time: f32, press: [f32]) {
         let n = self.n
         let count = n * n
+        let dt = time - self.time
+        self.time = time
+        let fresh = !self.begun || dt < 0.0 || dt > 1.0
         var pressed: Vec<vec2> = Vec::with_capacity(count)
+        var shoved: Vec<f32> = Vec::filled(count, 0.0)
         for a in 0..count {
+            if !fresh && dt > 0.0 {
+                let d = max(press[a] - self.press[a], 0.0)
+                shoved[a] = CHURNS * d * d / dt
+            }
             self.press[a] = press[a]
             pressed.push(vec2(press[a], 0.0))
         }
         fft(mut pressed, n, self.turns, inverse: false)
-        let dt = time - self.time
-        self.time = time
-        if !self.begun || dt < 0.0 || dt > 1.0 {
+        if fresh {
             // (Begun, or jumped: the water settled into the body's dent, nothing moving.)
             for a in 0..count {
                 self.height[a] = -pressed[a]
                 self.rate[a] = vec2(0.0)
                 self.rise[a] = -self.press[a]
+                self.churn[a] = 0.0
             }
             self.begun = true
             return
@@ -251,6 +283,28 @@ impl Sheet {
         }
         fft(mut cells, n, self.turns, inverse: false)
         self.height = take cells
+        self.churned(shoved, h)
+    }
+
+    /// The churn stepped on by `h` (s): what's `shoved` (`step`) added, the rest spreading to
+    /// its neighbours and fading.
+    fn churned(mut self, shoved: [f32], h: f32) {
+        let n = self.n
+        let spread = min(CHURN_SPREADS * h / (self.cell * self.cell), 0.24)
+        let fade = exp(-h / CHURN_LASTS)
+        var next: Vec<f32> = Vec::filled(n * n, 0.0)
+        for j in 0..n {
+            for i in 0..n {
+                let a = j * n + i
+                let c = self.churn[a]
+                let l = if i > 0 { self.churn[a - 1] } else { c }
+                let r = if i + 1 < n { self.churn[a + 1] } else { c }
+                let d = if j > 0 { self.churn[a - n] } else { c }
+                let u = if j + 1 < n { self.churn[a + n] } else { c }
+                next[a] = min((c + spread * (l + r + d + u - 4.0 * c)) * fade + shoved[a], 2.0)
+            }
+        }
+        self.churn = take next
     }
 }
 
@@ -334,7 +388,7 @@ fn fft_line(a: mut Vec<vec2>, n: u32, turns: [vec2], inverse: bool) {
 
 /// Each cell's (rise, its slope along x, along z, 0), from the cells round it.
 @compute(8, 8)
-fn shaped(cells: [f32], n: u32, cell: f32, out: mut Texels<Rgba16Float>, id: GlobalId) {
+fn shaped(cells: [f32], churn: [f32], n: u32, cell: f32, out: mut Texels<Rgba16Float>, id: GlobalId) {
     if id.x >= n || id.y >= n {
         return
     }
@@ -343,11 +397,11 @@ fn shaped(cells: [f32], n: u32, cell: f32, out: mut Texels<Rgba16Float>, id: Glo
     let r = cells[if id.x + 1 < n { a + 1 } else { a }]
     let d = cells[if id.y > 0 { a - n } else { a }]
     let u = cells[if id.y + 1 < n { a + n } else { a }]
-    out.store(id, vec4(cells[a], (r - l) / (2.0 * cell), (u - d) / (2.0 * cell), 0.0))
+    out.store(id, vec4(cells[a], (r - l) / (2.0 * cell), (u - d) / (2.0 * cell), churn[a]))
 }
 
 /// The stirred water at `xz` (x, z, m) as `shape` holds it (`at`, `Stir::at`): its rise (m), its
-/// slopes along x and z; nothing outside it, and fading to nothing
+/// slopes along x and z, and its churn (`Sheet::churn`); nothing outside it, and fading to nothing
 /// over its edge, so its edge never shows as a step in the water.
 pub fn stirred(shape: Texture<Rgba16Float>, smp: Sampler, at: vec4, xz: vec2) -> vec4 {
     let uv = (xz - at.xy) / at.z
@@ -417,4 +471,46 @@ fn a_body_driven_parts_the_water() {
         if along > 2.6 && along < 4.5 { ahead = max(ahead, abs(h)) }
     }
     assert(crest > 0.05 && trough < -0.05 && ahead < 0.02)
+}
+
+/// A body dragged through leaves churned water in a trail behind it, none ahead; one at rest
+/// churns nothing.
+@test
+fn a_driven_body_leaves_a_churned_trail() {
+    var s = Sheet::new(64, 0.25)
+    var press: Vec<f32> = Vec::filled(64 * 64, 0.0)
+    let v = 3.0
+    for f in 0..180 {
+        let t = f32(f) / 60.0
+        let x = v * t
+        s.follow(vec2(x - 3.0, 0.0))
+        for j in 0..64 {
+            for i in 0..64 {
+                let m = s.middle(i: i, j: j)
+                let q = vec2((m.x - x) / 2.2, m.y / 0.6)
+                press[j * 64 + i] = 0.14 * smoothstep(0.0, 0.3, 1.0 - dot(q, q))
+            }
+        }
+        s.step(t, press)
+    }
+    let x = v * 179.0 / 60.0
+    let k = u32(floor((0.0 - s.middle(i: 0, j: 0).y) / s.cell))
+    var behind = 0.0
+    var ahead = 0.0
+    for i in 0..64 {
+        let along = s.middle(i: i, j: 0).x - x
+        let c = s.churn[k * 64 + i]
+        if along < -4.0 && along > -6.0 { behind = max(behind, c) }
+        if along > 3.5 { ahead = max(ahead, c) }
+    }
+    assert(behind > 0.2 && ahead < 0.01, f"behind {behind} ahead {ahead}")
+    // (Then held still: what's left fades, and nothing new is churned.)
+    var still = 0.0
+    for f in 180..1080 {
+        s.step(f32(f) / 60.0, press)
+    }
+    for a in 0..64 * 64 {
+        still = max(still, s.churn[a])
+    }
+    assert(still < 0.05, f"still {still}")
 }

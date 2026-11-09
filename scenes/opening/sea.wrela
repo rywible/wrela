@@ -125,6 +125,13 @@ pub fn tiles(calm: f32) -> vec4 {
 /// and its axes (across, up, along): it rides the swell (`swell`, the ocean's long waves as the
 /// CPU sums them), pitched and rolled by its slope, slowly turning.
 pub fn bob(t: f32, at: vec2, steer: f32, swell: Swell) -> (vec3, vec3, vec3, vec3) {
+    let b = bearing(t, at, steer, swell)
+    held_at(t, at, steer, b)
+}
+
+/// How the sea under the skiff would hold it at `t` (`bob`), were it weightless: its height, and
+/// how far it'd pitch (bow up, rise per metre along) and roll (starboard up, per metre across).
+pub fn bearing(t: f32, at: vec2, steer: f32, swell: Swell) -> vec3 {
     let c = at
     let yaw = -0.22 + 0.05 * sin(t * 0.23) + steer
     let along0 = vec2(sin(yaw), cos(yaw))
@@ -141,10 +148,19 @@ pub fn bob(t: f32, at: vec2, steer: f32, swell: Swell) -> (vec3, vec3, vec3, vec
     // sat on the sea, not in it, and read as floating.)
     let y = (bow + stern + port + star + mid * 2.0) / 6.0 - 0.11
     // Pitched and rolled as those points lie, but not all the way: the hull's weight steadies it.
-    let along_ = normalize(vec3(along0.x, (bow - stern) / 3.0 * 0.8, along0.y))
-    let across_ = normalize(vec3(across0.x, (star - port) / 1.0 * 0.6, across0.y))
+    vec3(y, (bow - stern) / 3.0 * 0.8, (star - port) / 1.0 * 0.6)
+}
+
+/// The skiff at `at`, steered `steer`, at time `t`, held at height, pitch and roll `b` (as
+/// `bearing` gives them), and its axes (across, up, along).
+pub fn held_at(t: f32, at: vec2, steer: f32, b: vec3) -> (vec3, vec3, vec3, vec3) {
+    let yaw = -0.22 + 0.05 * sin(t * 0.23) + steer
+    let along0 = vec2(sin(yaw), cos(yaw))
+    let across0 = vec2(cos(yaw), -sin(yaw))
+    let along_ = normalize(vec3(along0.x, b.y, along0.y))
+    let across_ = normalize(vec3(across0.x, b.z, across0.y))
     let up = normalize(cross(along_, across_))
     let across = normalize(cross(up, along_))
     let along = cross(across, up)
-    (vec3(c.x, y, c.y), across, up, along)
+    (vec3(at.x, b.x, at.y), across, up, along)
 }

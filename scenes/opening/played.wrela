@@ -29,9 +29,11 @@ use std::gpu::{
 }
 
 /// The water the skiff stirs (`engine::stir`): its side in cells (a power of two), and a cell's
-/// (m): 12 m round it, a cell under a fifth of a metre.
-const STIR_CELLS: u32 = 64
-const STIR_CELL: f32 = 0.1875
+/// (m): 32 m across, a cell a quarter of a metre, centred `STIR_AFT` behind the skiff so its wake
+/// trails out long behind it.
+const STIR_CELLS: u32 = 128
+const STIR_CELL: f32 = 0.25
+const STIR_AFT: f32 = 6.0
 
 /// How finely a live page meets the scene (`Shot::fine`): the rock and the cathedral four times
 /// over a pixel, the rest once.
@@ -396,7 +398,7 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     s.ocean.step(held(START + time))
     let now = held(START + time)
     let shot = if STIRRED > 0.5 {
-        s.stir.sheet.follow(vec2(afloat.boat.x, afloat.boat.z))
+        s.stir.sheet.follow(vec2(afloat.boat.x, afloat.boat.z) - normalize(vec2(afloat.boat_z.x, afloat.boat_z.z)) * STIR_AFT)
         let u = under(afloat, s.drawn_swell, now)
         let press = pressed(afloat, s.stir.sheet, u)
         s.stir.step(now, press)

@@ -14,7 +14,7 @@ use sea::{SEA as SEA_STATE, lee, strokes, tiles}
 use wind::{air_over}
 use engine::ocean::{Waves, foam_at, level_at, surface_at, whitecaps}
 use engine::stir::stirred as stir_on
-use wake::{STIRRED, WASH_AT, wash_place}
+use wake::{STIRRED, WASH_AT, lace_at, wash_place}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use yonder::falls
 use skiff::{dry, hull_off, skiff, skiff_material, skiff_normal, vessel}
@@ -1391,7 +1391,12 @@ fn sea_shade(
         smoothstep(0.03, 0.1, whitecaps(SEA_STATE)) *
         0.6
     // The skiff's wake, and the lip of broken water along its waterline (`wake`).
-    let (wake, foam, wl, aer) = marks(s, p, xz, rest)
+    let (wake, foam0, wl, aer0) = marks(s, p, xz, rest)
+    // (And the water its hull has churned, `engine::stir`'s: aerated, glowing pale through the
+    // water in a broad trail behind it, with broken froth where it's churned hardest.)
+    let churn = st.w
+    let aer = max(aer0, smoothstep(0.04, 0.6, churn))
+    let foam = max(foam0, smoothstep(0.3, 1.0, churn) * lace_at(rest * 0.8) * 0.9)
     // (Foam's a froth of bubbles: lit by the sun on it, and through it from behind when the eye
     // looks toward the sun, as a cloud's edge is; warm, not the sky's lilac.)
     // (And whiter than the light on it, as a froth's many bubbles scatter every colour alike: it
