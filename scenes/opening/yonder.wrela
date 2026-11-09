@@ -920,9 +920,9 @@ const OVER_SKY: f32 = 0.6
 /// The most drawings a pixel holds where what's met there jumps (`yonder_rebuild`).
 const EDGE_HOLD: f32 = 12.0
 
-/// How far (the drawing's pixels) what's carried has come since the last drawing before it's
-/// taken as the camera turning (`yonder_rebuild`).
-const MOVING_PX: f32 = 0.5
+/// How far (the drawing's pixels) an edge held `EDGE_HOLD` long may move over its hold: a meet
+/// in four drawings, so a pixel moving 0.02 px a drawing holds the most, faster ones less.
+const EDGE_REACH: f32 = 0.25
 
 /// The far things at the drawing's full size from a quarter met afresh (`yonder_low`): the pixel
 /// met this drawing adds it to what the drawings before met there, carried to where the camera
@@ -993,14 +993,16 @@ pub fn yonder_rebuild(
         // met over what was carried as sky is taken at least half: any less, the rock's edge
         // coming in over the sky as the camera turns stays see-through, marked solid, till it's
         // met again.)
-        // (Only as the camera turns: held still, the rock's own thin openings and spires are
-        // met on and off as the offset steps, and their share of the pixel is the blend's.)
-        let moving = length(was.xy - (ip + vec2(0.5))) > MOVING_PX
-        let over_sky = !agree && bm.y == SKY && lm.y != SKY && moving
         // (Longer where what's met there jumps from drawing to drawing, a spire's edge or a window's
         // opening: its share of the pixel is the mean of many; on a face, as long as the face's
-        // own detail stays still.)
-        let held_k = 1.0 / min(had + 1.0, if agree { QUARTER_HOLD } else { EDGE_HOLD })
+        // own detail stays still. But only as long as what it holds moves less than `EDGE_REACH`
+        // over it, the camera still: turning, an edge held long trails.)
+        let motion = length(was.xy - (ip + vec2(0.5)))
+        let edge_hold = clamp(EDGE_REACH / max(motion, 1.0e-4), QUARTER_HOLD, EDGE_HOLD)
+        let held_k = 1.0 / min(had + 1.0, if agree { QUARTER_HOLD } else { edge_hold })
+        // (And the take over sky only as the camera moves: held still, the rock's own thin
+        // openings and spires are met on and off as the offset steps, their share the blend's.)
+        let over_sky = !agree && bm.y == SKY && lm.y != SKY && edge_hold < EDGE_HOLD
         let k = if over_sky { max(held_k, OVER_SKY) } else { held_k }
         now = mix(before, lc, k)
         if agree {
