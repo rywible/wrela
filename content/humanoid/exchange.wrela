@@ -434,8 +434,8 @@ pub const X_REAR_TO: f32 = 0.62
 
 /// When the take lifts his lead foot to step it back, from and to (s after the contact, played):
 /// till then it's kept where it stood (it crept under him through the hit-stop).
-pub const X_LEAD_FROM: f32 = 0.05
-pub const X_LEAD_TO: f32 = 0.26
+pub const X_LEAD_FROM: f32 = 0.14
+pub const X_LEAD_TO: f32 = 0.34
 
 /// `p` with his lead (left) foot kept `lead` (0 to 1) and his rear (right) foot `rear` of the way
 /// back where `i0` has them; the rear one lifted a little as it's let go, a step, not a skate.
@@ -507,7 +507,7 @@ pub fn foe_waiting(p: f32) -> Pose {
 /// hit-stop (1: turned 0.3 radians from the fist's side, tipped 0.14 back along the blow), and
 /// how far the reaction's neck is eased toward his guard's (0 the take's own).
 pub const X_KNOCK: f32 = 1.7
-pub const X_NECK: f32 = 0.6
+pub const X_NECK: f32 = 0.42
 
 /// `p` with his head driven off a fist landing on his left cheek, the blow going `away` (in his
 /// own frame): turned about up, his struck cheek going with the blow, and tipped back along it,
@@ -537,24 +537,27 @@ fn knocked(p: Pose, away: vec3, k: f32) -> Pose {
 /// as the hit-stop breaks.
 pub const X_FIST: f32 = 0.35
 
-/// How far the blow throws his arms (m): apart, down at once and further as they fall
-/// (`X_FLING_DROP`), and back the way he's going; how long the
-/// throw takes to reach them (s: his hands trail his trunk by a few drawings), and how much less
-/// his rear arm is thrown than his lead.
+/// How the blow takes his arms: left behind where his guard held them for `X_ARMS_LAG` (s)
+/// as his trunk's knocked from under them (toward the one who hit him, never held out at
+/// him), then opening late: apart by `X_OPEN` (m), drawn in toward his chest by `X_ARMS_IN`
+/// (m), and falling loose by `X_ARMS_DROP` (m); his rear arm less (`X_ARMS_REAR` of it).
 pub const X_OPEN: f32 = 0.3
-pub const X_FLING_DOWN: f32 = 0.12
-pub const X_FLING_DROP: f32 = 0.3
-pub const X_FLING_BACK: f32 = 0.45
-pub const X_FLING_LATE: f32 = 0.16
-pub const X_FLING_REAR: f32 = 0.65
+pub const X_ARMS_LAG: f32 = 0.2
+pub const X_ARMS_IN: f32 = 0.12
+pub const X_ARMS_DROP: f32 = 0.42
+pub const X_ARMS_REAR: f32 = 0.7
 
-/// `p` (`v` s after the contact) with his arms thrown by the blow, going `away`: his guard as
-/// `i0` (the contact drawing) held it is left behind for a drawing or two as his trunk's
-/// knocked from under it, then carried with his chest and flung apart, back past it and down,
-/// then dropped as he gathers himself. They don't rise to the fist, nor fold, nor stay
-/// reaching at the one who hit him.
+/// How far his trunk's arched back by the blow past what the take does (radians, shared up
+/// his spine): his chest thrown open after his head, a curve from his planted foot to his chin.
+pub const X_ARCH: f32 = 0.3
+
+/// `p` (`v` s after the contact) taken by the blow, going `away`: his trunk arched back after
+/// his head, and his arms: his guard as `i0` (the contact drawing) held it left behind as his
+/// trunk goes, then opened late and fallen loose, then gathered as he gathers himself. They
+/// don't rise to the fist, nor fold, nor stay reaching at the one who hit him, nor fly back
+/// past his chest.
 fn opened(p: Pose, i0: Pose, away: vec3, v: f32) -> Pose {
-    let k = 1.0 - smoothstep(0.34, 0.8, v)
+    let k = 1.0 - smoothstep(0.36, 0.85, v)
     if k <= 1.0e-3 || v <= 0.0 || X_OPEN <= 0.0 {
         return p
     }
@@ -563,25 +566,34 @@ fn opened(p: Pose, i0: Pose, away: vec3, v: f32) -> Pose {
     var c = c0.clone()
     var w = stride::worlds(rig, c0, 0)
     let w0 = stride::worlds(rig, one_pose(i0), 0)
+    // (About `over`, a positive turn leans the top of a bone the way he's going.)
+    let over = normalize(cross(vec3(0.0, 1.0, 0.0), away))
+    let arch = X_ARCH * smoothstep(0.04, 0.2, v) * (1.0 - smoothstep(0.3, 0.7, v))
+    for (name, part) in [("spine", 0.4), ("chest", 0.35), ("upperChest", 0.25)] {
+        let b = rig.find(name)
+        if b != humanoid::NONE {
+            stride::turn_below(rig, mut w, b, Quat::axis_angle(over, arch * part))
+        }
+    }
     let chest = rig.find("upperChest")
     let mid = (w0[rig.find("leftUpperArm")].t + w0[rig.find("rightUpperArm")].t) * 0.5
     for side in 0..2 {
         let h = rig.find(if side == 0 { "leftHand" } else { "rightHand" })
         let lead = (side == 0) == LEAD_LEFT
-        let much = if lead { 1.0 } else { X_FLING_REAR }
+        let much = if lead { 1.0 } else { X_ARMS_REAR }
         // (His rear arm a drawing later than his lead: thrown together they're a puppet's.)
         let late = if lead { 0.0 } else { 0.033 }
         var out = w0[h].t - mid
         out.y = 0.0
         out = out - away * dot(out, away)
         let apart = if length(out) > 1.0e-4 { normalize(out) } else { vec3(0.0) }
-        let thrown = smoothstep(0.02 + late, 0.02 + late + X_FLING_LATE, v) * much
-        let flung = w[chest].t +
+        // (Opening late: after his head's gone, as his chest follows it.)
+        let open = smoothstep(0.08 + late, 0.3 + late, v) * much
+        let loose = w[chest].t +
             (w0[h].t - w0[chest].t) +
-            (apart * X_OPEN + away * X_FLING_BACK) * thrown -
-            // (Loose, falling as he goes: held out level behind him they were a diver's.)
-            vec3(0.0, X_FLING_DOWN * thrown + X_FLING_DROP * much * smoothstep(0.1, 0.45, v), 0.0)
-        let at = mix(w0[h].t, flung, smoothstep(late, late + 0.12, v))
+            (apart * X_OPEN + away * X_ARMS_IN) * open -
+            vec3(0.0, X_ARMS_DROP * smoothstep(0.1 + late, 0.4 + late, v) * much, 0.0)
+        let at = mix(w0[h].t, loose, smoothstep(late, late + X_ARMS_LAG, v))
         // (His wrist keeps its own bend: his hand left facing as it did while his forearm swung
         // out from under it, his wrist was wrung and his skin stood off it in a spike.)
         let fore = rig.find(if side == 0 { "leftLowerArm" } else { "rightLowerArm" })
@@ -622,6 +634,34 @@ pub fn reaction_home() -> f32 {
 }
 
 /// The camera at clock `time`: its kick along the blow (m), and how far it's pushed in (m).
+/// The hit staged close: how much nearer the camera stands for it (of its distance; 1 not at
+/// all) and the height it frames then (m); it goes in over `X_STAGE_IN` (s) as the cross winds
+/// up, is still through the contact, stays `X_STAGE_STAY` (s) past the hit-stop for his head
+/// going, and draws back out over `X_STAGE_OUT` (s) as he's knocked away.
+pub const X_STAGE: f32 = 0.58
+pub const X_STAGE_FOCUS: f32 = 1.3
+pub const X_STAGE_IN: f32 = 0.3
+pub const X_STAGE_STAY: f32 = 0.1
+pub const X_STAGE_OUT: f32 = 0.5
+/// How far the close camera goes with him as he's knocked away (m along the blow).
+pub const X_STAGE_WITH: f32 = 0.4
+
+/// How far the hit is staged close at clock `time` (0 to 1).
+pub fn staged(time: f32, tune: Tune) -> f32 {
+    let t = time - hit_at()
+    if t < 0.0 {
+        return smoothstep(-X_STAGE_IN, -0.03, t)
+    }
+    let from = tune.hold + X_STAGE_STAY
+    1.0 - smoothstep(from, from + X_STAGE_OUT, t)
+}
+
+/// How far along the blow the staged camera has gone with the one struck at clock `time` (m).
+pub fn staged_with(time: f32, tune: Tune) -> f32 {
+    let t = time - hit_at()
+    X_STAGE_WITH * smoothstep(tune.hold, tune.hold + 0.2, t) * staged(time, tune)
+}
+
 pub fn camera(time: f32, tune: Tune) -> (f32, f32) {
     let h = hit_at()
     // (On twos it steps with the bodies' drawings, held through the hit-stop: one cadence for
@@ -822,7 +862,7 @@ pub fn move_track(from: u32, to: u32) -> String {
         ) *
             57.3
         out.push_str(
-            f"{k}: fist {dot(wr - land, BLOW) * 100.0:.1} y {wr.y * 100.0:.0} elbow {elbow:.0} sh {dot(ws[rig.find("rightUpperArm")].t - land, BLOW) * 100.0:.1} base {dot(stride::worlds(rig, one_pose(striker(ps)), 0)[rig.find("rightHand")].t - land, BLOW) * 100.0:.1} ps {ps - h:.3} sfeet {dot(ws[rig.find("leftFoot")].t, BLOW) * 100.0:.1} {dot(ws[rig.find("rightFoot")].t, BLOW) * 100.0:.1} | head {dot(hd - land, BLOW) * 100.0:.1} tip {tip:.0} chest {chest:.0} hips {dot(world(wf[0].t) - land, BLOW) * 100.0:.1} feet {dot(world(wf[rig.find("leftFoot")].t) - land, BLOW) * 100.0:.1} {dot(world(wf[rig.find("rightFoot")].t) - land, BLOW) * 100.0:.1} fy {wf[rig.find("leftFoot")].t.y * 100.0:.0} {wf[rig.find("rightFoot")].t.y * 100.0:.0} hands {wf[rig.find("leftHand")].t.y * 100.0:.0} {wf[rig.find("rightHand")].t.y * 100.0:.0}\n".as_str(),
+            f"{k}: fist {dot(wr - land, BLOW) * 100.0:.1} y {wr.y * 100.0:.0} elbow {elbow:.0} sh {dot(ws[rig.find("rightUpperArm")].t - land, BLOW) * 100.0:.1} base {dot(stride::worlds(rig, one_pose(striker(ps)), 0)[rig.find("rightHand")].t - land, BLOW) * 100.0:.1} ps {ps - h:.3} sfeet {dot(ws[rig.find("leftFoot")].t, BLOW) * 100.0:.1} {dot(ws[rig.find("rightFoot")].t, BLOW) * 100.0:.1} | head {dot(hd - land, BLOW) * 100.0:.1} tip {tip:.0} chest {chest:.0} hips {dot(world(wf[0].t) - land, BLOW) * 100.0:.1} hy {wf[0].t.y * 100.0:.0} yaw {facing(wf[rig.find("upperChest")].q) * 57.3:.0} hipyaw {facing(wf[0].q) * 57.3:.0} feet {dot(world(wf[rig.find("leftFoot")].t) - land, BLOW) * 100.0:.1} {dot(world(wf[rig.find("rightFoot")].t) - land, BLOW) * 100.0:.1} fy {wf[rig.find("leftFoot")].t.y * 100.0:.0} {wf[rig.find("rightFoot")].t.y * 100.0:.0} hands {wf[rig.find("leftHand")].t.y * 100.0:.0} {wf[rig.find("rightHand")].t.y * 100.0:.0}\n".as_str(),
         )
     }
     out

@@ -299,6 +299,21 @@ pub fn camera(l: Lab, g: f32) -> (f32, f32) {
     exchange::camera(clock(g, l.now.at), l.now.tune)
 }
 
+/// How far the hit's staged close now (0 to 1; never the giant's: he's framed whole).
+pub fn staged(l: Lab, g: f32) -> f32 {
+    if l.now.at <= NEVER || l.now.tune.giant {
+        return 0.0
+    }
+    exchange::staged(clock(g, l.now.at), l.now.tune)
+}
+
+pub fn staged_with(l: Lab, g: f32) -> f32 {
+    if l.now.at <= NEVER || l.now.tune.giant {
+        return 0.0
+    }
+    exchange::staged_with(clock(g, l.now.at), l.now.tune)
+}
+
 /// The exchange's clock now, as the last press left it (below 0: no press yet).
 pub fn exchange_clock(l: Lab) -> f32 {
     if l.now.at <= NEVER { -1.0 } else { clock(l.clock, l.now.at) }

@@ -762,13 +762,21 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let (far, focus) = if SHOW != 29 { (FAR, FOCUS) } else if shown.giant {
         (12.0 * s.lab.zoom, 3.6)
     } else { (3.4 * s.lab.zoom, 1.05) }
+    // (The hit staged close: the camera in on the contact as the cross winds up, out again
+    // as he's knocked away.)
+    let stage = if SHOW == 28 { exchange::staged(time, exchange::TUNED) } else if SHOW == 29 {
+        lab::staged(s.lab, s.lab.clock)
+    } else { 0.0 }
+    let with = if SHOW == 28 { exchange::staged_with(time, exchange::TUNED) } else if SHOW == 29 {
+        lab::staged_with(s.lab, s.lab.clock)
+    } else { 0.0 }
     var shot = shot_at(
         time,
-        focus,
-        vec3(hips.x, 0.0, hips.z),
+        mix(focus, exchange::X_STAGE_FOCUS, stage),
+        vec3(hips.x + exchange::BLOW.x * with, 0.0, hips.z + exchange::BLOW.z * with),
         width,
         height,
-        far - push,
+        far * mix(1.0, exchange::X_STAGE, stage) - push,
         side,
         kinetic,
         left,
