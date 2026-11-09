@@ -5,14 +5,15 @@
 // (`engine::light::hazed`). Beside the colour it writes what the ink reads: how far, what it is,
 // a line field, the line's weight, the normal and the moment's energy.
 
-use main::{FREEBOARD, HERO, LOOK, LOW_CLOUD, OFF}
+use main::{FOOTPRINT, FREEBOARD, HERO, LOOK, LOW_CLOUD, OFF}
 use look::{
     STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot,
     band, cells, hash2, luma, fbm, noise, ray,
 }
-use sea::{SEA as SEA_STATE, lee, strokes, tiles}
+use sea::{HELD, SEA as SEA_STATE, lee, strokes, tiles}
 use wind::{air_over}
-use engine::ocean::{Waves, foam_at, level_at, surface_at, whitecaps}
+use engine::ocean::{STEADY, Waves, foam_at, level_at, surface_at, whitecaps}
+use engine::upscale::{quickness, restless_share}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use yonder::falls
 use skiff::{dry, skiff, skiff_material, skiff_normal, vessel}
@@ -894,7 +895,14 @@ fn sea_shade(
     // finer than a pixel is averaged, not stairs or crawl; and the slopes it lost roughening the
     // glint instead (`engine::ocean::surface_at`). By the hull its shorter waves are broken, so
     // the skiff sits in the water it's drawn on.
-    let px_m = t * 2.0 / (s.resolution.y * s.focal)
+    // (Brought up over the frames (`main::FOOTPRINT`), a screen pixel's footprint where the
+    // history can gather what's finer than the drawing's, the drawing's own where the waves turn
+    // too fast for one (`engine::upscale::restless_share`).)
+    let across = 2.0 / (s.resolution.y * s.focal)
+    let quick = if FOOTPRINT < 1.0 {
+        quickness(restless_share(t, d, across, waves.sea.finest, STEADY, 1.0 / HELD))
+    } else { 1.0 }
+    let px_m = t * across * mix(FOOTPRINT, 1.0, quick)
     let calm = lee(p - s.boat, s.boat_x, s.boat_z)
     let flat = normalize(vec2(d.x, d.z))
     // (A pixel's step on the water: to the right on the screen, along the eye's level right; down
@@ -1773,6 +1781,131 @@ pub fn paint(
         pixel.position.xy,
     )
     Targets3 { first, second, third }
+}
+
+/// How far out (m) the sea's ripples are drawn at the screen's size (`sea_detail`): past it a
+/// screen pixel holds as few of them as the drawing's does.
+const DETAIL_REACH: f32 = 150.0
+
+/// How bright the sea mirrors its sky to the eye with normal `n`, along `d` (luma), its facets
+/// spread by the slopes the footprint lost (`lost`, as `surface_at` gives them): `sea_shade`'s
+/// mirror, the sky alone, to weigh one footprint against another (`sea_detail`).
+fn mirror_of(
+    view: Texture<Rgba16Float>,
+    light: Light,
+    d: vec3,
+    n: vec3,
+    lost: vec2,
+    unseen: f32,
+    dome: Texture<Rgba16Float>,
+    smp: Sampler,
+    over: Overhead,
+) -> f32 {
+    var r = d - 2.0 * dot(d, n) * n
+    r.y = abs(r.y)
+    let nv = max(dot(n, -d), 0.0)
+    let slope = sqrt(max(lost.y - unseen * 0.75, 0.0)) * 0.55
+    let rise = asin(clamp(r.y, 0.0, 1.0))
+    let across = normalize(vec2(r.x, r.z) + vec2(1.0e-6, 0.0))
+    var mirrored = 0.0
+    var seen = 0.0
+    for k in 0..4 {
+        let tilt = slope * QUARTILES[k]
+        let w = max(nv + tilt * sqrt(max(1.0 - nv * nv, 0.0)), 0.0) + 1.0e-4
+        let e = max(rise + 2.0 * atan(tilt), 0.002)
+        let az = slope * QUARTILES[(k + 2) % 4] * 1.2
+        let ak = vec2(
+            across.x * cos(az) - across.y * sin(az),
+            across.x * sin(az) + across.y * cos(az),
+        )
+        let rk = vec3(ak.x * cos(e), sin(e), ak.y * cos(e))
+        let facing = sqrt(max((1.0 + dot(-d, rk)) * 0.5, 0.0))
+        let f = 0.02 + 0.98 * pow(1.0 - facing, 5.0)
+        mirrored += luma(mirrored_sky(view, light, rk, dome, smp, over)) * w * f
+        seen += w
+    }
+    mirrored / max(seen, 1.0e-6) + luma(over.up) * 0.05
+}
+
+/// Of each screen pixel (the drawing brought up by `scale`, the drawing's pixels a screen pixel
+/// spans), how much brighter the sea there mirrors its sky with the ripples a screen pixel holds
+/// than with those the drawing's pixel held (`sea_shade` through its footprint): the detail the
+/// drawing was too coarse for, as a factor on it, drawn fresh each frame at the screen's size
+/// (the ripples turn too fast for a history to gather them). 1 off the sea, and far off.
+@fragment
+pub fn sea_detail(
+    pixel: FragCoord,
+    shot: Shot,
+    light: Light,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    smp: Sampler,
+    waves: Waves,
+    marks: Texture<Rgba16Float>,
+    scale: f32,
+    once: [vec4],
+) -> vec4 {
+    let s = shot
+    let q = pixel.position.xy * scale
+    // (The sea's distance here, between the four drawing pixels round it: only where all four
+    // are the sea, so no edge's distance is blended.)
+    let b = max(floor(q - vec2(0.5)), vec2(0.0))
+    let f = clamp(q - vec2(0.5) - b, vec2(0.0), vec2(1.0))
+    let hi = s.resolution - vec2(1.0)
+    let x0 = u32(min(b.x, hi.x))
+    let y0 = u32(min(b.y, hi.y))
+    let x1 = u32(min(b.x + 1.0, hi.x))
+    let y1 = u32(min(b.y + 1.0, hi.y))
+    let m00 = marks.load(x0, y0)
+    let m10 = marks.load(x1, y0)
+    let m01 = marks.load(x0, y1)
+    let m11 = marks.load(x1, y1)
+    if m00.y != SEA || m10.y != SEA || m01.y != SEA || m11.y != SEA {
+        return vec4(1.0)
+    }
+    let lt = mix(mix(m00.x, m10.x, f.x), mix(m01.x, m11.x, f.x), f.y)
+    let t = exp2(lt)
+    if t > DETAIL_REACH {
+        return vec4(1.0)
+    }
+    let over = overhead(once)
+    let d = ray(s, q)
+    let p = s.eye + d * t
+    let xz = vec2(p.x, p.z)
+    // (The footprints as `sea_shade` lays them: the drawing's, as its paint read it, and the
+    // screen's.)
+    let across = 2.0 / (s.resolution.y * s.focal)
+    let quick = if FOOTPRINT < 1.0 {
+        quickness(restless_share(t, d, across, waves.sea.finest, STEADY, 1.0 / HELD))
+    } else { 1.0 }
+    let flat = normalize(vec2(d.x, d.z))
+    let least_slant = mix(0.3, 0.01, smoothstep(15.0, 80.0, t))
+    let along = normalize(vec2(s.right.x, s.right.z))
+    let painted = t * across * mix(FOOTPRINT, 1.0, quick) * dot(d, s.forward)
+    let fine = t * across * scale * dot(d, s.forward)
+    let w = tiles(lee(p - s.boat, s.boat_x, s.boat_z))
+    let (_, n_painted, _, _, lost_painted, _) = surface_at(
+        waves,
+        xz,
+        along * painted,
+        flat * (painted / max(-d.y, least_slant)),
+        w,
+    )
+    let (_, n_fine, foam, _, lost_fine, _) = surface_at(
+        waves,
+        xz,
+        along * fine,
+        flat * (fine / max(-d.y, least_slant)),
+        w,
+    )
+    let unseen = waves.sea.unseen
+    let a = mirror_of(view, light, d, n_painted, lost_painted, unseen, dome, smp, over)
+    let c = mirror_of(view, light, d, n_fine, lost_fine, unseen, dome, smp, over)
+    // (Fading in from the reach, so no line shows where it stops.)
+    // (Not on the foam: it's no mirror. And held near 1: the drawing's own mirror is most of it.)
+    let k = clamp(c / max(a, 1.0e-4), 0.7, 1.5)
+    let off = max(smoothstep(DETAIL_REACH * 0.6, DETAIL_REACH, t), smoothstep(0.1, 0.4, foam))
+    vec4(mix(k, 1.0, off))
 }
 
 /// The paint for half the drawing's pixels (`main::HALF_PAINT`): this pass is half the drawing's

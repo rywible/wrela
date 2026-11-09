@@ -16,9 +16,10 @@
 //     let j = jitter_of(frame)                      // the drawing's rays through `px + j`
 //     ... draw the scene at the smaller size ...
 //     draw(pass into `history[now]`, cover, upscaled.bind(u, scene, far, history[last], smp))
-//     draw(screen, cover, shown.bind(history[now]))
+//     draw(screen, cover, shown.bind(history[now], detail))
 
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture}
+use std::math::PI
 use view::halton
 
 /// A camera as a traced scene's rays leave it: through pixel `px` of a drawing `size` px, the
@@ -46,9 +47,19 @@ pub struct Upscale: Copy + GpuData {
     pub mover: f32,
     pub body: Body,
     pub last_body: Body,
-    /// The kind of a surface whose pattern moves of itself (a sea's waves), carried as if still
-    /// but taken mostly afresh (`RESTLESS`). -1: none.
+    /// The kind of a surface whose pattern moves of itself: waves on deep water (a sea's). Its
+    /// points are carried as if still, and each pixel trusts its history as long as the fastest
+    /// wave it can see holds still: a wave of wavenumber k turns at ω = √(g k) (deep water's
+    /// dispersion), so the shortest waves a pixel's footprint holds set how fast it changes. -1:
+    /// none.
     pub restless: f32,
+    /// The restless surface's shortest wave (its wavenumber, rad/m), and how many footprints wide
+    /// the shortest wave it draws must be (a surface that reads its finest waves through a wider
+    /// footprint than a pixel's, so they hold still, draws none shorter).
+    pub finest: f32,
+    pub wider: f32,
+    /// The time between this drawing and the last (s).
+    pub dt: f32,
 }
 
 /// A rigid body's frame: where its origin is and its axes.
@@ -73,11 +84,44 @@ pub fn carried(now: Body, last: Body, p: vec3) -> vec3 {
     last.at + last.x * dot(v, now.x) + last.y * dot(v, now.y) + last.z * dot(v, now.z)
 }
 
-/// Frame `frame`'s jitter within a pixel (each way, -0.5 to 0.5): Halton 2, 3, eight frames
-/// round.
-pub fn jitter_of(frame: u32) -> vec2 {
-    let k = frame % 8 + 1
+/// Frame `frame`'s jitter within a pixel (each way, -0.5 to 0.5): Halton 2, 3, `cycle` frames
+/// round (`cycle_of`).
+pub fn jitter_of(frame: u32, cycle: u32) -> vec2 {
+    let k = frame % max(cycle, 1) + 1
     vec2(halton(k, 2), halton(k, 3)) - vec2(0.5)
+}
+
+/// How many frames the jitter takes to go round for a drawing `scale` of the screen's size each
+/// way: eight for each screen pixel a drawing pixel covers, so each screen pixel is visited about
+/// eight times a cycle (after AMD's FidelityFX Super Resolution 2: 8 at full size, 32 at half).
+/// Kept no longer: a thin thing the history holds is only renewed once a cycle.
+pub fn cycle_of(scale: f32) -> u32 {
+    u32(ceil(8.0 / max(scale * scale, 0.01)))
+}
+
+/// Of a pixel `dist` m along `dir` on a restless surface (`Upscale::restless`), the least share of
+/// each frame that's its own: as much as the fastest wave it can see turns in a frame, twice over
+/// (a history `1 / share` frames long then spans half a radian of that wave's turn, or less).
+/// `across`: a drawing pixel's width a metre off (m); `finest`, `wider` and `dt` as `Upscale`'s.
+pub fn restless_share(
+    dist: f32,
+    dir: vec3,
+    across: f32,
+    finest: f32,
+    wider: f32,
+    dt: f32,
+) -> f32 {
+    // (The footprint: a drawing pixel's width at that distance, stretched as the ray grazes the
+    // level surface. The shortest wave it shows: `wider` footprints long, or the finest there is.)
+    let foot = dist * across / max(abs(dir.y), 0.02)
+    let k = min(finest, PI / max(foot * wider, 1.0e-4))
+    let turn = sqrt(9.81 * k) * dt
+    clamp(2.0 * turn, LEAST, 1.0)
+}
+
+/// How far `share` (`restless_share`) is from the least a history keeps to all of a frame: 0 to 1.
+pub fn quickness(share: f32) -> f32 {
+    clamp((share - LEAST) / (1.0 - LEAST), 0.0, 1.0)
 }
 
 /// The direction of `c`'s ray through `px` (its drawing's pixels).
@@ -107,12 +151,13 @@ pub const FAR_ENOUGH: f32 = 30000.0
 const LEAST: f32 = 0.06
 const MOST: f32 = 0.2
 
-/// Of each frame, the share where the scene settled the pixel itself: enough to keep it as sharp
-/// as one drawing, the history only steadying it.
-const SETTLED: f32 = 0.5
+/// Of each frame, the share where the scene settled the pixel itself (its own pass gathered it
+/// over its drawings already): all of it, read as one drawing is. (A history only blurs it: each
+/// frame's reading of it, between the screen's pixels, softens it a little more.)
+const SETTLED: f32 = 1.0
 
-/// Of each frame, the share on a restless surface (`Upscale::restless`), and how tight its box.
-const RESTLESS: f32 = 0.6
+/// Of each frame, the share far off (`FAR_ENOUGH`: the sky): most of it.
+const FAR: f32 = 0.5
 
 fn ycocg(c: vec3) -> vec3 {
     vec3(
@@ -175,6 +220,7 @@ pub fn upscaled(
     var square = vec3(0.0)
     var nearest = 1.0e9
     var kind = -1.0
+    var settled = 0.0
     for j in 0..3 {
         for i in 0..3 {
             let at = clamp(base + vec2(f32(i) - 1.0, f32(j) - 1.0), vec2(0.0), size - vec2(1.0))
@@ -182,6 +228,7 @@ pub fn upscaled(
             let y = u32(at.y)
             let sample = scene.load(x, y)
             let c = sample.rgb
+            settled = max(settled, 1.0 - sample.a)
             // (Where its ray went: the pixel's middle, moved by the jitter as far as its alpha says: 0
             // where the scene settled it at the middle itself.)
             // (Weighed by how far it fell in the screen's pixels: a narrower kernel than the
@@ -201,19 +248,29 @@ pub fn upscaled(
             }
         }
     }
-    // (Where the scene settled the pixel itself (its alpha 0), the jitter gathers nothing new
-    // there: it's read as one drawing is, Catmull-Rom, and more of it taken each frame.)
-    let settled = 1.0 - scene.load(u32(base.x), u32(base.y)).a
+    // (`settled`: the most any sample round it was settled by the scene. Next to what the scene
+    // settled, its edge's history is clipped to a box that spans both sides, and the settled side's
+    // colour lingers beyond it; so it's read as the settled side is.)
     let restless = kind == u.restless
-    // (A restless surface's samples are as fresh as the history is stale: read as one drawing is.)
-    let read_once = if restless { 1.0 } else { settled }
-    let now = mix(sum / max(weight, 1.0e-4), history_at(scene, smp, q, size), read_once)
     mean /= 9.0
     let spread = sqrt(max(square / 9.0 - mean * mean, vec3(0.0)))
     // Where the pixel's point was: its ray (unjittered), as far as the nearest sample round it met.
     let dist = exp2(nearest)
     let dir = ray_of(u.now, q)
     let is_far = dist >= FAR_ENOUGH
+    // (On a restless surface, how much of each frame must be its own, from how fast the waves it
+    // shows turn: 0 to 1 over its range, for how fresh it's read and how tight its box.)
+    let pace = if restless && !is_far {
+        restless_share(dist, dir, 2.0 / (size.y * u.now.focal), u.finest, u.wider, u.dt)
+    } else { 0.0 }
+    let quick = quickness(pace)
+    // (Where the scene settled the pixel itself (its alpha 0), the jitter gathers nothing new
+    // there: it's read as one drawing is, Catmull-Rom, and all of it taken each frame; and as
+    // much more of it as the waves turn too fast for a history to gather.)
+    // (Far off (the sky, its clouds), nothing finer than the scene's own sky textures is there for
+    // the jitter to gather: read as one drawing is, the history only steadying it.)
+    let read_once = max(max(settled, quick), if is_far { 1.0 } else { 0.0 })
+    let now = mix(sum / max(weight, 1.0e-4), history_at(scene, smp, q, size), read_once)
     let here = if is_far { dir } else { u.now.eye + dir * dist }
     let moved = !is_far && kind == u.mover
     let p = if moved { carried(u.body, u.last_body, here) } else { here }
@@ -227,9 +284,10 @@ pub fn upscaled(
         was_px.y >= u.out.y {
         return vec4(now, 1.0)
     }
-    // The history, clipped toward the neighbourhood's mean into its box.
+    // The history, clipped toward the neighbourhood's mean into its box (tighter as the waves
+    // turn faster).
     let h = ycocg(history_at(history, smp, was_px, u.out))
-    let wide = if restless { 0.75 } else { 1.25 }
+    let wide = mix(1.25, 0.75, quick)
     let lo = mean - spread * wide
     let hi = mean + spread * wide
     let centre = (lo + hi) * 0.5
@@ -237,15 +295,16 @@ pub fn upscaled(
     let off = h - centre
     let reach = max(max(abs(off.x) / half.x, abs(off.y) / half.y), abs(off.z) / half.z)
     let clipped = if reach > 1.0 { centre + off / reach } else { h }
-    var share = mix(mix(LEAST, MOST, most), SETTLED, settled)
-    if restless {
-        share = max(share, RESTLESS)
-    }
+    let share = max(mix(mix(LEAST, MOST, most), SETTLED, settled), max(pace, if is_far { FAR } else { 0.0 }))
     vec4(max(mix(rgb(clipped), now, share), vec3(0.0)), 1.0)
 }
 
-/// The history put on the screen as it is.
+/// The history put on the screen, times the scene's own detail at the screen's size (`detail`'s
+/// first channel, 1 where it has none): what changes too fast for a history to gather, drawn
+/// afresh each frame as a factor on what the history holds, so the history keeps none of it.
 @fragment
-pub fn shown(pixel: FragCoord, history: Texture<Rgba16Float>) -> vec4 {
-    history.load(u32(pixel.position.x), u32(pixel.position.y))
+pub fn shown(pixel: FragCoord, history: Texture<Rgba16Float>, detail: Texture<Rgba16Float>) -> vec4 {
+    let x = u32(pixel.position.x)
+    let y = u32(pixel.position.y)
+    vec4(history.load(x, y).rgb * detail.load(x, y).r, 1.0)
 }

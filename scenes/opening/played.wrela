@@ -10,7 +10,7 @@ use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
 use engine::upscale::{Body, NO_BODY, Pinhole}
-use paint::{OVERHEAD, overhead_once, paint, paint_fill, paint_half}
+use paint::{OVERHEAD, overhead_once, paint, paint_fill, paint_half, sea_detail}
 use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder, yonder_low, yonder_rebuild}
 use ink::ink
 use rock::{Rock, reach, rock, step_rock}
@@ -78,6 +78,8 @@ pub struct State {
     /// true yet; this frame's jitter (the drawing's pixels) and camera unjittered, and the last.
     pub(package) history_a: Texture<Rgba16Float>,
     pub(package) history_b: Texture<Rgba16Float>,
+    /// The sea's ripples at the screen's size, as a factor on the history (`paint::sea_detail`).
+    pub(package) detail: Texture<Rgba16Float>,
     pub(package) history_size: (u32, u32),
     pub(package) flip: bool,
     pub(package) fresh: bool,
@@ -87,6 +89,8 @@ pub struct State {
     /// This drawing's shot unjittered: the far pass's, which settles its own pixels.
     pub(package) plain: Shot,
     pub(package) upscaled_frames: u32,
+    /// The time (s) of the last drawing brought up (`main::frame`), -1 before the first.
+    pub(package) last_time: f32,
     /// The skiff's frame this drawing and the last, for the upscaler.
     pub(package) body: Body,
     pub(package) last_body: Body,
@@ -162,6 +166,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         inked: texture(width: width, height: height),
         history_a: texture(width: 1, height: 1),
         history_b: texture(width: 1, height: 1),
+        detail: texture(width: 1, height: 1),
         history_size: (1, 1),
         flip: false,
         fresh: true,
@@ -169,6 +174,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         pinhole: pinhole_of(shot),
         last_pinhole: pinhole_of(shot),
         upscaled_frames: 0,
+        last_time: -1.0,
         body: NO_BODY,
         last_body: NO_BODY,
         plain: shot,
@@ -371,21 +377,52 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     jittered(shot, s.jitter)
 }
 
+/// The sea's ripples at the screen's size into `s.detail` (`paint::sea_detail`), the drawing
+/// `scale` of the screen's size.
+pub(package) fn detailed(s: mut State, scale: f32) {
+    borrow hv = s.heavens
+    let waves = waves_of(s.ocean)
+    label("sea detail")
+    let dp = begin_pass(mut s.detail, clear: vec4(1.0))
+    draw(
+        dp,
+        cover,
+        sea_detail.bind(
+            shot: s.plain,
+            light: hv.light,
+            view: hv.tables.view,
+            dome: hv.sky.dome,
+            smp: hv.linear,
+            waves: waves,
+            marks: s.marks,
+            scale: scale,
+            once: s.overhead.items(),
+        ),
+        vertices: 3,
+    )
+    dp.end()
+}
+
+/// The ocean as the shaders read it.
+pub(package) fn waves_of(o: Ocean) -> Waves {
+    Waves {
+        sea: o.view(),
+        big_shape: o.big.shape,
+        big_tilt: o.big.tilt,
+        mid_shape: o.mid.shape,
+        mid_tilt: o.mid.tilt,
+        fine_shape: o.fine.shape,
+        fine_tilt: o.fine.tilt,
+        ripple_shape: o.ripple.shape,
+        ripple_tilt: o.ripple.tilt,
+        s: o.s,
+    }
+}
+
 /// Paints rows `from` to `to` of `shot` (the first pass), keeping the rest as they are.
 fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
     borrow hv = s.heavens
-    let waves = Waves {
-        sea: s.ocean.view(),
-        big_shape: s.ocean.big.shape,
-        big_tilt: s.ocean.big.tilt,
-        mid_shape: s.ocean.mid.shape,
-        mid_tilt: s.ocean.mid.tilt,
-        fine_shape: s.ocean.fine.shape,
-        fine_tilt: s.ocean.fine.tilt,
-        ripple_shape: s.ocean.ripple.shape,
-        ripple_tilt: s.ocean.ripple.tilt,
-        s: s.ocean.s,
-    }
+    let waves = waves_of(s.ocean)
     let width = s.width
     // The half paint reads one row beyond the band for its vertical reconstruction. Its
     // far-layer inputs must be current there too, not left over from another drawing.
