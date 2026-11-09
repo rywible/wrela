@@ -3,7 +3,10 @@
 // it the keys while the player sails (`input`), and each frame draws it into its `image` (`play`),
 // which it lays on its own screen.
 
-use main::{HALF_PAINT, HERO, KINETIC, LANTERN, LOOK, MIRROR_PHASES, MIRROR_TABLE, OFF, QUARTER, SPARSE, START, STYLE}
+use main::{
+    HALF_PAINT, HERO, KINETIC, LANTERN, LOOK, MIRROR_PHASES, MIRROR_TABLE, OFF, QUARTER, SPARSE,
+    START, STYLE,
+}
 use aboard::{Aboard, aboard}
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
@@ -445,7 +448,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 rows: rows,
                 out: mut s.mirror,
             ),
-            groups: ((MIRROR_W + 7) / 8, (MIRROR_H + 7) / 8, 1),
+            groups: ((MIRROR_W + 7) / 8, (row0 + rows + 7) / 8, 1),
         )
     }
     label("yonder")

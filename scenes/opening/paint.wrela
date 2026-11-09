@@ -309,7 +309,6 @@ fn mirrored_sky(
 pub const MIRROR_W: u32 = SKY_W / 4
 pub const MIRROR_H: u32 = SKY_H / 4
 
-
 /// The mirror table's texels (`MIRROR_W` by `MIRROR_H`) in rows `row0` to `row0 + rows`:
 /// `mirrored_sky` along each one's direction (`sky_dir`), under the drawing's `light` and its
 /// sky's colours (`once`).
