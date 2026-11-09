@@ -16,6 +16,7 @@ use engine::look::CreatureLook
 use engine::look::Mesh as Tolerance
 use engine::realize::{Mesh, SkinVertex, realize_once}
 use look::{BODY, COOL, Shot, WARM, band}
+use paint::cast_shadow
 use std::gpu::{
     ClipPosition, Cull, Flat, GpuBuffer, RenderPass, Targets3, VertexIndex, buffer, draw, write,
 }
@@ -78,10 +79,11 @@ pub fn hakuro_palette(rig_m: [mat4; 64]) -> [mat4; 64] {
 /// old finger bones and each finger joint (his right's are the odd ones).
 const ELBOW_RIGHT = vec3(-0.463, 1.455, -0.073)
 
-/// His palette with his punching arm smeared: his right forearm and fist drawn out from the
-/// elbow along the way the fist is going, by `by` (0 none; 1 twice as long along it): the one
-/// drawing between the cocked fist and the contact, as an animator stretches it.
-pub fn smeared(m: [mat4; 64], going: vec3, by: f32) -> [mat4; 64] {
+/// His palette with his punching arm smeared: his right forearm and fist (at `fist`) drawn out
+/// from the elbow along the way the fist is going, by `by` (0 none; 1 twice as long along it),
+/// and his fist drawn half as big again at that: the one drawing between the cocked fist and the
+/// contact, as an animator stretches it.
+pub fn smeared(m: [mat4; 64], fist: vec3, going: vec3, by: f32) -> [mat4; 64] {
     if by <= 0.0 || length(going) < 1.0e-5 {
         return m
     }
@@ -93,13 +95,43 @@ pub fn smeared(m: [mat4; 64], going: vec3, by: f32) -> [mat4; 64] {
     let c2 = vec3(0.0, 0.0, 1.0) + d * (by * d.z)
     let shift = e - (c0 * e.x + c1 * e.y + c2 * e.z)
     let stretch = mat4(vec4(c0, 0.0), vec4(c1, 0.0), vec4(c2, 0.0), vec4(shift, 1.0))
+    // (His fist grown about where the stretch carries it.)
+    let big = 1.0 + 0.5 * by
+    let f = (stretch * vec4(fist, 1.0)).xyz
+    let grow = mat4(
+        vec4(big, 0.0, 0.0, 0.0),
+        vec4(0.0, big, 0.0, 0.0),
+        vec4(0.0, 0.0, big, 0.0),
+        vec4(f * (1.0 - big), 1.0),
+    ) *
+        stretch
     var out = m
-    for b in [11, 13, 15, 17] {
-        out[b] = stretch * m[b]
+    out[11] = stretch * m[11]
+    for b in [13, 15, 17] {
+        out[b] = grow * m[b]
     }
     for j in 0..15 {
-        out[27 + 2 * j] = stretch * m[27 + 2 * j]
+        out[27 + 2 * j] = grow * m[27 + 2 * j]
     }
+    out
+}
+
+/// His palette with his head squashed by `by` (0 to 1 of its depth) along `along` about
+/// `about` (its middle), and swelled across to keep its bulk: the contact drawing's, a face
+/// with a fist in it.
+pub fn squashed(m: [mat4; 64], about: vec3, along: vec3, by: f32) -> [mat4; 64] {
+    if by <= 0.0 {
+        return m
+    }
+    let d = normalize(along)
+    let a = 1.0 - by
+    let p = 1.0 / sqrt(a)
+    let c0 = vec3(p, 0.0, 0.0) + d * ((a - p) * d.x)
+    let c1 = vec3(0.0, p, 0.0) + d * ((a - p) * d.y)
+    let c2 = vec3(0.0, 0.0, p) + d * ((a - p) * d.z)
+    let shift = about - (c0 * about.x + c1 * about.y + c2 * about.z)
+    var out = m
+    out[5] = mat4(vec4(c0, 0.0), vec4(c1, 0.0), vec4(c2, 0.0), vec4(shift, 1.0)) * m[5]
     out
 }
 
@@ -120,6 +152,31 @@ impl Fighters {
         let hb = hero()
         let hh = head()
         let hc = coat()
+        // Their shadows first: each mesh laid flat on the ground along the sun.
+        for who in 0..FIGHTERS {
+            let first = who * MAX_BONES
+            shadow_of(p, self.body, self.palettes, first, shot)
+            shadow_of(p, self.head, self.palettes, first, shot)
+            for k in 0..6 {
+                shadow_of(p, self.arms[k], self.palettes, first, shot)
+            }
+            draw(
+                p,
+                coat_shadow_vertex.bind(
+                    verts: self.coat.verts.items(),
+                    palettes: self.palettes.items(),
+                    grid: self.drape.grid(),
+                    facing: self.drape.facing(),
+                    first: first,
+                    shot: shot,
+                ),
+                shadow_pixel.bind(shot: shot),
+                indices: self.coat.quads.items(),
+                indirect: self.coat.draw.items(),
+                cull: Cull::None,
+                depth: engine::view::NEAREST,
+            )
+        }
         for who in 0..FIGHTERS {
             draw(
                 p,
@@ -159,7 +216,7 @@ impl Fighters {
                     first: who * MAX_BONES,
                     shot: shot,
                 ),
-                fighter_pixel.bind(field: hc.field(), shot: shot, who: who, own: 0),
+                fighter_pixel.bind(field: hc.field(), shot: shot, who: who, own: 2),
                 indices: self.coat.quads.items(),
                 indirect: self.coat.draw.items(),
                 cull: Cull::Back,
@@ -227,6 +284,70 @@ pub fn coat_vertex(
     f
 }
 
+/// Mesh `m`'s shadow drawn, posed by the palette at `first`.
+fn shadow_of<P: RenderPass>(p: P, m: Mesh, palettes: GpuBuffer<mat4>, first: u32, shot: Shot) {
+    draw(
+        p,
+        shadow_vertex.bind(
+            verts: m.verts.items(),
+            palettes: palettes.items(),
+            first: first,
+            shot: shot,
+        ),
+        shadow_pixel.bind(shot: shot),
+        indices: m.quads.items(),
+        indirect: m.draw.items(),
+        cull: Cull::None,
+        depth: engine::view::NEAREST,
+    )
+}
+
+/// A point of a shadow: where it lies on the ground, and how high on him it's cast from.
+pub struct ShadowVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub from: f32,
+}
+
+/// `world` laid on the ground along the sun (a hair above it, so it's drawn over the page).
+fn cast(world: vec3, shot: Shot) -> ShadowVertex {
+    let l = shot.sun
+    let h = max(world.y, 0.0)
+    let on = world - l * (h / max(l.y, 0.2))
+    let p = vec3(on.x, 0.006, on.z)
+    ShadowVertex { clip: ClipPosition { position: shot.cam.clip(p) }, world: p, from: h }
+}
+
+@vertex
+pub fn shadow_vertex(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    palettes: [mat4],
+    first: u32,
+    shot: Shot,
+) -> ShadowVertex {
+    cast(fighter_at(v, verts, palettes, first, shot).world, shot)
+}
+
+@vertex
+pub fn coat_shadow_vertex(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    palettes: [mat4],
+    grid: [vec4],
+    facing: [vec4],
+    first: u32,
+    shot: Shot,
+) -> ShadowVertex {
+    let f = fighter_at(v, verts, palettes, first, shot)
+    cast(draped(f.world, f.rest, mat3(f.tx, f.ty, f.tz), grid, facing, first / MAX_BONES), shot)
+}
+
+@fragment
+pub fn shadow_pixel(v: ShadowVertex, shot: Shot) -> Targets3<vec4, vec4, vec4> {
+    cast_shadow(v.world, shot, v.from)
+}
+
 fn fighter_at(
     v: VertexIndex,
     verts: [SkinVertex],
@@ -280,6 +401,9 @@ pub fn sampled_pixel(
     let c = if jacket == 1 { jacket_paint(v.rest) } else { body_paint(v.rest) }
     painted(shot, v.world, normalize(v.normal), c, who, 0)
 }
+
+/// What his black cloth's lit planes are raised by (linear).
+pub const SLATE = vec3(0.026, 0.030, 0.044)
 
 /// The one struck's cloth (the double): the vermilion of a seal on an ink painting where
 /// Hakuro's is black, a mid value that reads against the page and against him; his mask, his
@@ -341,11 +465,19 @@ fn painted(
     let edge = band(1.0 - max(dot(n, v), 0.0), edge: 0.74, soft: 0.05)
     let back = saturate(-dot(v, l) + 0.35)
     let dark = 1.0 - band(value, edge: 0.12, soft: 0.06)
-    col += WARM * edge * (0.07 + 0.2 * back) * lit_side * dark
-    col += COOL * edge * 0.05 * (1.0 - lit_side) * dark
+    // (Not his coat's tails: a flat sheet of cloth seen along itself is all edge, and swung out
+    // by a blow his black tails washed grey.)
+    let rim = if own == 2 { 0.0 } else { 1.0 }
+    col += WARM * edge * (0.07 + 0.2 * back) * lit_side * dark * rim
+    col += COOL * edge * 0.05 * (1.0 - lit_side) * dark * rim
     col += albedo * WARM * edge * (0.25 + 0.5 * back) * lit_side * (1.0 - dark)
+    // His black's lit planes, a dark slate (as black cloth is painted on a cel: black in the
+    // shade, a step up in the light), so an arm across his trunk is a shape, not a hole.
+    col += SLATE * dark * (0.4 * lit_side + 0.6 * full) * mix(0.35, 1.0, rim)
     let t = length(world - shot.cam.eye)
-    let id = if who > 0 { BODY + 20.0 } else { BODY }
+    // (His head's a part of its own, one on: the ink draws his head's seams, his mask's edge,
+    // where it leaves the rest of him bare.)
+    let id = (if who > 0 { BODY + 20.0 } else { BODY }) + (if own == 1 { 1.0 } else { 0.0 })
     let line = if value > 0.14 { 1.0 } else { -1.0 }
     // A strike's force: the striker's energy along his striking limb, most toward its end (the
     // ink frays his lines there).

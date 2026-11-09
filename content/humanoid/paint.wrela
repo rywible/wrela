@@ -91,12 +91,22 @@ pub fn paint_ground(g: GroundVertex, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     let one = shadow_of(p.xz - shot.feet.xz, shot.sun)
     var shade = one.0
     var along = one.1
-    if shot.pair_a.w > 0.5 {
+    if shot.pair_a.w > 1.5 {
+        // (The fighters cast their own, in their own shapes: `cast_shadow`.)
+        shade = 0.0
+        along = 0.0
+    } else if shot.pair_a.w > 0.5 {
         let (sa, la) = shadow_of(p.xz - shot.pair_a.xz, shot.sun)
         let (sb, lb) = shadow_of(p.xz - shot.pair_b.xz, shot.sun)
         shade = max(sa, sb)
         along = if sa > sb { la } else { lb }
     }
+    page(p, shot, shade, along)
+}
+
+/// The ground at `p`, `shade` deep in shadow (`along` m down a cast one from its feet).
+fn page(p: vec3, shot: Shot, shade: f32, along: f32) -> Targets3<vec4, vec4, vec4> {
+    let t = length(p - shot.cam.eye)
     // The page: paper with a little tooth, falling off into the wash far away.
     let tooth = noise(p.xz * 3.0) * 0.04
     let lit = PAPER * (0.86 + tooth) * mix(vec3(1.0), WARM, vec3(0.12))
@@ -113,6 +123,13 @@ pub fn paint_ground(g: GroundVertex, shot: Shot) -> Targets3<vec4, vec4, vec4> {
         0.25 * (1.0 - band(along, edge: 0.6, soft: 0.3)),
         vec3(0.0, 1.0, 0.0),
     )
+}
+
+/// The ground at `p` in a body's cast shadow (a fighter's mesh laid on it along the sun: his own
+/// shape, flat, one value, as a cel's shadow is), lighter the higher on him it's cast from
+/// (`from`, m).
+pub fn cast_shadow(p: vec3, shot: Shot, from: f32) -> Targets3<vec4, vec4, vec4> {
+    page(p, shot, 0.8 - 0.25 * saturate(from / 1.8), 0.0)
 }
 
 /// The body's clothes, sRGB, blocked in value so its parts read in motion: a mid terracotta shirt,

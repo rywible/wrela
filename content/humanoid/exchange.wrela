@@ -19,7 +19,7 @@ use kimodo::{
 /// The hit-stop: how long both bodies hold at contact (s).
 pub const X_HOLD: f32 = 0.15
 /// The impact frame: how long the palette drains at contact (s).
-pub const X_FLASH: f32 = 0.1
+pub const X_FLASH: f32 = 0.06
 /// The camera's kick along the blow (m) and its push in (m), and how fast each eases off (s).
 pub const X_KICK: f32 = 0.07
 pub const X_PUSH: f32 = 0.3
@@ -125,9 +125,9 @@ pub const X_SHOCK_GIVE: f32 = 0.04
 
 /// How far on past the place it struck the fist may go after the hit-stop (m), and for how long
 /// after the hit-stop the striker's arm is still minded (s; by then it's on its way home).
-pub const X_THROUGH: f32 = 0.03
+pub const X_THROUGH: f32 = 0.05
 /// How much further it may follow on as his head leaves it (m).
-pub const X_FOLLOW_ON: f32 = 0.05
+pub const X_FOLLOW_ON: f32 = 0.12
 pub const X_STOPPED: f32 = 0.7
 
 /// How far the fist is drawn back off the face after the hit-stop, ahead of the take's own
@@ -145,15 +145,31 @@ pub const X_LET_GO: f32 = 0.14
 /// How far his trunk leans on into the blow through the hit-stop at `X_GRIND` (radians).
 pub const X_DRIVE: f32 = 0.14
 
-/// The clock the bodies play on: held through the hit-stop.
+/// The clock the bodies play on: held through the hit-stop, but for the creep (`crept`).
 pub fn played_at(time: f32, t: Tune) -> f32 {
     let h = hit_at()
-    let p = if time < h { time } else if time < h + t.hold { h } else { time - t.hold }
+    let p = if time < h { time } else if time < h + t.hold { h + crept(time - h, t) } else {
+        time - t.hold + crept(t.hold, t)
+    }
     if t.twos {
         // (On twos, a drawing lands on the contact.)
         return h + floor((p - h) * 12.0 + 1.0e-4) / 12.0
     }
     p
+}
+
+/// How long the contact drawing is held dead still (s), and how far the bodies' clock creeps on
+/// through the rest of the hit-stop (s): the fist drives his head back slowly before the stop
+/// breaks, so the hold is pressure, not a paused picture.
+pub const X_DEAD: f32 = 0.04
+pub const X_CREEP: f32 = 0.025
+
+/// How far the bodies' clock has crept `u` s into the hit-stop.
+fn crept(u: f32, t: Tune) -> f32 {
+    if t.hold <= X_DEAD {
+        return 0.0
+    }
+    X_CREEP * clamp((u - X_DEAD) / (t.hold - X_DEAD), 0.0, 1.0)
 }
 
 /// The striker at played time `p`: the cross, then the bounce on past the round's end.
@@ -337,17 +353,18 @@ pub fn foe(p: f32) -> Pose {
     // (Away from the striker, in his own place's frame.)
     let away = vec3(dot(FOE[0].xyz, BLOW), 0.0, dot(FOE[2].xyz, BLOW))
     if p < h {
-        // He stands off out of reach, and comes in as the cross is thrown: it meets him coming.
-        var q = foe_idle(p)
-        q.hips = q.hips + inv.q.rotate(away * (X_APART * (1.0 - smoothstep(h - X_CLOSE, h, p))))
-        return q
+        // He stands off out of reach, his weight back, and rocks in over his planted feet as the
+        // cross is thrown: it meets him coming.
+        return stood_off(foe_idle(p), away, smoothstep(h - X_CLOSE, h, p))
     }
-    // (The contact drawing: his guard, his head already driven off the fist.)
-    let i0 = knocked(foe_idle(h), away, X_KNOCK)
+    // (The contact drawing: his guard, come in onto his lead foot, his head already driven off
+    // the fist.)
+    let i0 = knocked(stood_off(foe_idle(h), away, 1.0), away, X_KNOCK)
     let r0 = REACT.pose(REACT_HIT / 30.0)
     let turn = yaw_q(REACT_TURN)
     let from = base.t + base.q.rotate(r0.hips)
-    let to = base.t + base.q.rotate(i0.hips)
+    // (The take stood over where his feet are planted, behind where his hips came in to.)
+    let to = base.t + base.q.rotate(i0.hips) + away * X_PLANT
     let (neck, head) = (HERO.rig.find("neck"), HERO.rig.find("head"))
     let placed = |q: Pose| -> Pose {
         var c = q
@@ -373,44 +390,102 @@ pub fn foe(p: f32) -> Pose {
         1.0 - pow(1.0 - clamp(v / X_TAKE, 0.0, 1.0), 2.0),
         n,
     )
+    // (His rear foot kept where it stood until the take steps it back: his guard is bladed and
+    // the take square, and blended alone his planted foot slid a foot's length under him.)
+    let r = rear_kept(r, i0, 1.0 - smoothstep(X_REAR_FROM, X_REAR_TO, v))
     // (His guard knocked open by the blow, then gathered again: the take raises his hands to
     // his face as he goes, and they met the fist that had just landed there.)
-    let r = opened(r, away, smoothstep(0.0, 0.07, v) * (1.0 - smoothstep(0.22, 0.6, v)))
+    let r = opened(r, i0, away, smoothstep(0.0, 0.08, v) * (1.0 - smoothstep(0.26, 0.62, v)))
     if v < home {
         return r
     }
     // (His bounce picked up where the reaction left him: shifted by how far it carried him.)
     let rh = base.t + base.q.rotate(placed(REACT.pose(REACT_HOME / 30.0)).hips)
-    var off = rh - to
+    var off = rh - (to - away * X_PLANT)
     off.y = 0.0
     // (Then he gathers himself back to where he stands off, out of reach.)
     let back = smoothstep(home, home + STEP_IN, v)
-    off = off * (1.0 - back) + away * (X_APART * back)
-    var b = foe_idle(p)
-    b.hips = b.hips + inv.q.rotate(off)
+    let b = rocked(
+        foe_idle(p),
+        off * (1.0 - back) + away * (X_PLANT * back),
+        off * (1.0 - back) + away * (X_APART * back),
+    )
     humanoid::blend(r, b, smoothstep(0.0, X_BACK, v - home), n)
+}
+
+/// When the take steps his rear foot back, from and to (s after the contact, played).
+pub const X_REAR_FROM: f32 = 0.5
+pub const X_REAR_TO: f32 = 0.62
+
+/// `p` with his rear (right) foot kept `k` (0 to 1) of the way back where `i0` has it.
+fn rear_kept(p: Pose, i0: Pose, k: f32) -> Pose {
+    if k <= 1.0e-3 {
+        return p
+    }
+    borrow rig = HERO.rig
+    let c0 = one_pose(p)
+    var c = c0.clone()
+    var w = stride::worlds(rig, c0, 0)
+    let w0 = stride::worlds(rig, one_pose(i0), 0)
+    let (lf, rf) = (rig.find("leftFoot"), rig.find("rightFoot"))
+    legs_to(
+        rig,
+        mut w,
+        [w[lf].t, mix(w[rf].t, w0[rf].t, k)],
+        [w[lf].q, w[rf].q.nlerp(w0[rf].q, k)],
+    )
+    stride::store(rig, w, mut c, 0)
+    c.pose(0.0)
+}
+
+/// `q` with his feet planted `feet` from where it has them and his hips `hips` from where it
+/// has them (both along the ground, in his own place's frame): his weight rocked over feet that
+/// stay put.
+fn rocked(q: Pose, feet: vec3, hips: vec3) -> Pose {
+    borrow rig = HERO.rig
+    let inv = rig.base.inverse()
+    var stood = q
+    stood.hips = q.hips + inv.q.rotate(feet)
+    if length(hips - feet) < 1.0e-4 {
+        return stood
+    }
+    let wb = stride::worlds(rig, one_pose(stood), 0)
+    let (lf, rf) = (rig.find("leftFoot"), rig.find("rightFoot"))
+    var leant = q
+    leant.hips = q.hips + inv.q.rotate(hips)
+    let c0 = one_pose(leant)
+    var c = c0.clone()
+    var w = stride::worlds(rig, c0, 0)
+    legs_to(rig, mut w, [wb[lf].t, wb[rf].t], [wb[lf].q, wb[rf].q])
+    stride::store(rig, w, mut c, 0)
+    c.pose(0.0)
+}
+
+/// `q` stood off: his feet planted `X_PLANT` back from his mark and his weight rocked back over
+/// them, his hips `X_APART` back; come `lean` (0 to 1) of the way in, his hips over his mark.
+fn stood_off(q: Pose, away: vec3, lean: f32) -> Pose {
+    rocked(q, away * X_PLANT, away * (X_APART * (1.0 - lean)))
 }
 
 /// How far out of the blow's reach he stands off (m), and how long before the contact he starts
 /// coming in (s): two bodies a glove apart read as a tangle, and a fist with nowhere to travel
-/// reads as a shove.
+/// reads as a shove. His feet stay planted `X_PLANT` back the whole time (he rocks in from his
+/// rear foot onto his lead: stepped in by sliding his hips alone, his feet skated).
 pub const X_APART: f32 = 0.3
+pub const X_PLANT: f32 = 0.15
 pub const X_CLOSE: f32 = 0.3
 
 /// The one struck standing off, waiting (the lab's, before a press).
 pub fn foe_waiting(p: f32) -> Pose {
-    let inv = HERO.rig.base.inverse()
     let away = vec3(dot(FOE[0].xyz, BLOW), 0.0, dot(FOE[2].xyz, BLOW))
-    var q = foe_idle(p)
-    q.hips = q.hips + inv.q.rotate(away * X_APART)
-    q
+    stood_off(foe_idle(p), away, 0.0)
 }
 
 /// How far his head is driven off the fist on the contact drawing itself, held through the
 /// hit-stop (1: turned 0.3 radians from the fist's side, tipped 0.14 back along the blow), and
 /// how far the reaction's neck is eased toward his guard's (0 the take's own).
 pub const X_KNOCK: f32 = 1.0
-pub const X_NECK: f32 = 0.4
+pub const X_NECK: f32 = 0.6
 
 /// `p` with his head driven off a fist landing on his left cheek, the blow going `away` (in his
 /// own frame): turned about up, his struck cheek going with the blow, and tipped back along it,
@@ -436,12 +511,16 @@ fn knocked(p: Pose, away: vec3, k: f32) -> Pose {
     c.pose(0.0)
 }
 
-/// How far the blow knocks his guard open (m his hands drop; they go a little with the blow
-/// and apart as well).
+/// How far the blow knocks his guard open (m his hands are thrown apart; they drop half as
+/// far), and how much of the way his hands are left behind where his guard held them as his
+/// body's knocked back from under them (0 to 1).
 pub const X_OPEN: f32 = 0.24
+pub const X_LAG: f32 = 0.7
 
-/// `p` with his hands knocked down and apart by `k` (0 to 1) of `X_OPEN`, the blow going `away`.
-fn opened(p: Pose, away: vec3, k: f32) -> Pose {
+/// `p` with his guard broken open by `k` (0 to 1), the blow going `away`: his hands left behind
+/// where `i0` (the contact drawing) held them as his head and trunk go, thrown apart and
+/// dropped a little, his arms dragged out after him; they don't rise to the fist, nor fold.
+fn opened(p: Pose, i0: Pose, away: vec3, k: f32) -> Pose {
     if k <= 1.0e-3 || X_OPEN <= 0.0 {
         return p
     }
@@ -449,15 +528,16 @@ fn opened(p: Pose, away: vec3, k: f32) -> Pose {
     let c0 = one_pose(p)
     var c = c0.clone()
     var w = stride::worlds(rig, c0, 0)
-    let mid = (w[rig.find("leftUpperArm")].t + w[rig.find("rightUpperArm")].t) * 0.5
+    let w0 = stride::worlds(rig, one_pose(i0), 0)
+    let mid = (w0[rig.find("leftUpperArm")].t + w0[rig.find("rightUpperArm")].t) * 0.5
     for side in 0..2 {
-        let hand = w[rig.find(if side == 0 { "leftHand" } else { "rightHand" })].t
-        var out = hand - mid
+        let h = rig.find(if side == 0 { "leftHand" } else { "rightHand" })
+        var out = w0[h].t - mid
         out.y = 0.0
         out = out - away * dot(out, away)
         let apart = if length(out) > 1.0e-4 { normalize(out) } else { vec3(0.0) }
-        let to = hand + (vec3(0.0, -1.0, 0.0) + away * 0.4 + apart * 0.35) * (X_OPEN * k)
-        arm_to(rig, mut w, u32(side), to)
+        let left = w0[h].t + (apart + vec3(0.0, -0.5, 0.0)) * X_OPEN
+        arm_to(rig, mut w, u32(side), mix(w[h].t, left, X_LAG * k))
     }
     stride::store(rig, w, mut c, 0)
     c.pose(0.0)
@@ -521,16 +601,15 @@ pub fn flash(time: f32, tune: Tune) -> f32 {
     if t < tune.flash {
         return 1.0
     }
-    // (After the impact frame the page is still kinetic: its lines frayed and its palette part
-    // drained through the rest of the hit-stop, then let go quickly as the bodies move.)
-    let held = max(tune.hold, tune.flash)
-    X_AFTER * exp(-max(t - held, 0.0) / X_AFTER_LIFE)
+    // (After the impact frame the page is still kinetic, its lines frayed and its palette
+    // drained, and lets go from there as his head is driven back: one release, on the motion.)
+    X_AFTER * exp(-(t - tune.flash) / X_AFTER_LIFE)
 }
 
 /// How kinetic the page stays after the impact frame (0 to 1, below the impact frame's own), and
 /// how fast it lets go once the hit-stop breaks (s).
 pub const X_AFTER: f32 = 0.85
-pub const X_AFTER_LIFE: f32 = 0.13
+pub const X_AFTER_LIFE: f32 = 0.17
 
 /// The strike's force at clock `time` (`engine::anime::Force`'s `by`, 0 to 1): it builds as the
 /// fist travels in, is whole at the contact and through the hit-stop, and dies after it.
@@ -544,9 +623,22 @@ pub fn force(time: f32, tune: Tune) -> f32 {
 
 pub const X_FORCE_LIFE: f32 = 0.12
 
+/// How far the struck one's head is squashed along the blow at clock `time` (0 to 1 of
+/// `X_SQUASH`): whole on the contact drawing and while the fist drives it, let go as it leaves.
+pub fn squash(time: f32, tune: Tune) -> f32 {
+    let t = time - hit_at()
+    if t < 0.0 || tune.giant {
+        return 0.0
+    }
+    X_SQUASH * (1.0 - smoothstep(tune.hold, tune.hold + 0.1, t))
+}
+
+/// How far his head is squashed along the blow on the contact drawing (of its depth).
+pub const X_SQUASH: f32 = 0.15
+
 /// How far the striker's forearm and fist are drawn out along their way on the drawings where
 /// the fist is going in fastest (0 none; 1 twice as long).
-pub const X_SMEAR: f32 = 0.8
+pub const X_SMEAR: f32 = 0.35
 
 /// The way the blow travels, along the ground: the way the cross reaches (at its full reach).
 @fuel(2 ** 40)
@@ -638,6 +730,53 @@ pub fn fist_track() -> String {
     out
 }
 
+/// (Measuring: a line a frame at 30 a second round the contact: the striker's fist along the
+/// blow from where it lands (cm) and his elbow (degrees), his feet along the blow (cm); the
+/// struck one's head along the blow (cm) and how far it's tipped from upright (degrees), his
+/// feet along the blow (cm), his hands' heights (cm).)
+pub fn move_track(from: u32, to: u32) -> String {
+    borrow rig = HERO.rig
+    var out = String::new()
+    let h = hit_at()
+    let t = TUNED
+    let at = place(t)
+    let f = at[2].xyz
+    let yaw = yaw_q(atan2(f.x, f.z))
+    let o = at[3].xyz
+    let land = KNUCKLES - BLOW * 0.09
+    for k in from..to + 1 {
+        let c = f32(k) / 30.0
+        let ps = played_striker(c, t)
+        let pf = played_at(c, t)
+        let sp = striker_on(c, t)
+        let ws = stride::worlds(rig, one_pose(sp), 0)
+        let wr = ws[rig.find("rightHand")].t
+        let el = ws[rig.find("rightLowerArm")].t
+        let elbow = acos(
+            clamp(
+                dot(normalize(ws[rig.find("rightUpperArm")].t - el), normalize(wr - el)),
+                -1.0,
+                1.0,
+            ),
+        ) *
+            57.3
+        let fp = clear_of(struck(pf, t), at, sp)
+        let wf = stride::worlds(rig, one_pose(fp), 0)
+        let world = |x: vec3| -> vec3 { o + yaw.rotate(x) }
+        let hd = world(wf[rig.find("head")].t)
+        let tip = acos(clamp(wf[rig.find("head")].q.rotate(vec3(0.0, 1.0, 0.0)).y, -1.0, 1.0)) *
+            57.3
+        let chest = acos(
+            clamp(wf[rig.find("upperChest")].q.rotate(vec3(0.0, 1.0, 0.0)).y, -1.0, 1.0),
+        ) *
+            57.3
+        out.push_str(
+            f"{k}: fist {dot(wr - land, BLOW) * 100.0:.1} y {wr.y * 100.0:.0} elbow {elbow:.0} sfeet {dot(ws[rig.find("leftFoot")].t, BLOW) * 100.0:.1} {dot(ws[rig.find("rightFoot")].t, BLOW) * 100.0:.1} | head {dot(hd - land, BLOW) * 100.0:.1} tip {tip:.0} chest {chest:.0} hips {dot(world(wf[0].t) - land, BLOW) * 100.0:.1} feet {dot(world(wf[rig.find("leftFoot")].t) - land, BLOW) * 100.0:.1} {dot(world(wf[rig.find("rightFoot")].t) - land, BLOW) * 100.0:.1} fy {wf[rig.find("leftFoot")].t.y * 100.0:.0} {wf[rig.find("rightFoot")].t.y * 100.0:.0} hands {wf[rig.find("leftHand")].t.y * 100.0:.0} {wf[rig.find("rightHand")].t.y * 100.0:.0}\n".as_str(),
+        )
+    }
+    out
+}
+
 /// The striker's clock at clock `time`: through the hit-stop his body grinds on, slowed to
 /// `t.grind` of its speed, and after it he's that much further on than the one he struck.
 pub fn played_striker(time: f32, t: Tune) -> f32 {
@@ -723,6 +862,35 @@ fn struck_point(c: vec3, pf: f32, t: Tune) -> vec3 {
 pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
     eyes_on(striker_connecting(ps, pf, wall, t))
 }
+
+/// The striker at the exchange's clock `c` (the contact at `hit_at()`), as he's drawn: after the
+/// hit-stop his fist comes home over a few drawings, not one (the take snaps it a forearm's
+/// length in a frame: the mean of where it is now and where it was one and two drawings back).
+pub fn striker_on(c: f32, t: Tune) -> Pose {
+    let h = hit_at()
+    let at = |c: f32| -> Pose { striker_hit(played_striker(c, t), played_at(c, t), c - h, t) }
+    let now = at(c)
+    let after = c - h - t.hold
+    let k = smoothstep(0.0, 0.03, after) * (1.0 - smoothstep(0.4, 0.55, after))
+    if t.twos || k <= 0.0 {
+        return now
+    }
+    borrow rig = HERO.rig
+    let hand = rig.find("rightHand")
+    let c0 = one_pose(now)
+    var out = c0.clone()
+    var w = stride::worlds(rig, c0, 0)
+    var mean = w[hand].t
+    for back in 1..3 {
+        mean += stride::worlds(rig, one_pose(at(c - f32(back) * X_HOME_STEP)), 0)[hand].t
+    }
+    arm_to(rig, mut w, 1, mix(w[hand].t, mean / 3.0, k))
+    stride::store(rig, w, mut out, 0)
+    out.pose(0.0)
+}
+
+/// How far apart the drawings his homing fist is meaned over are (s).
+pub const X_HOME_STEP: f32 = 0.033
 
 /// How far to either side of his target the striker's head may turn (radians; a soft limit).
 /// The take's head goes round with its shoulders through the cross and its follow-through; a

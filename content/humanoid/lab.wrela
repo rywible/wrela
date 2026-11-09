@@ -257,12 +257,7 @@ fn striker_by(g: f32, p: Press) -> Pose {
         return FIGHT_IDLE_M.pose(g % FIGHT_IDLE_M.length())
     }
     let c = clock(g, p.at)
-    exchange::striker_hit(
-        exchange::played_striker(c, p.tune),
-        played_at(c, p.tune),
-        c - hit_at(),
-        p.tune,
-    )
+    exchange::striker_on(c, p.tune)
 }
 
 /// The one struck at `g` as press `p` left him.
@@ -302,6 +297,11 @@ pub fn camera(l: Lab, g: f32) -> (f32, f32) {
         return (0.0, 0.0)
     }
     exchange::camera(clock(g, l.now.at), l.now.tune)
+}
+
+/// The exchange's clock now, as the last press left it (below 0: no press yet).
+pub fn exchange_clock(l: Lab) -> f32 {
+    if l.now.at <= NEVER { -1.0 } else { clock(l.clock, l.now.at) }
 }
 
 pub fn flash(l: Lab, g: f32) -> f32 {

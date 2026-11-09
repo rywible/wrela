@@ -622,7 +622,7 @@ fn guarded(c: Clip, k: fn(f32) -> f32) -> Clip {
 
 /// The rear fist cocked back `A_CHAMBER` (m) through the wind-up and held there through the
 /// tell, so the strike has a loaded pose to fire from.
-pub const A_CHAMBER: f32 = 0.0
+pub const A_CHAMBER: f32 = 0.1
 
 fn chambered(c: Clip) -> Clip {
     borrow rig = HERO.rig
@@ -653,7 +653,7 @@ fn chambered(c: Clip) -> Clip {
 }
 
 /// How far the wind-up sits the weight back (m).
-pub const A_BACK: f32 = 0.0
+pub const A_BACK: f32 = 0.04
 
 /// Both legs reached so the ankles are at `feet` again, each foot turned as `foot_q`.
 pub fn legs_to(
