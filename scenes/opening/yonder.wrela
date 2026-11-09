@@ -999,7 +999,10 @@ pub fn yonder_rebuild(
         // over it, the camera still: turning, an edge held long trails.)
         let motion = length(was.xy - (ip + vec2(0.5)))
         let edge_hold = clamp(EDGE_REACH / max(motion, 1.0e-4), QUARTER_HOLD, EDGE_HOLD)
-        let held_k = 1.0 / min(had + 1.0, if agree { QUARTER_HOLD } else { edge_hold })
+        // (A pixel part covered is an edge too, whichever it met this time: held alike both ways,
+        // or its share would lean to the one met as agreeing.)
+        let edgy = !agree || (before.a > 0.02 && before.a < 0.98)
+        let held_k = 1.0 / min(had + 1.0, if edgy { edge_hold } else { QUARTER_HOLD })
         // (And the take over sky only as the camera moves: held still, the rock's own thin
         // openings and spires are met on and off as the offset steps, their share the blend's.)
         let over_sky = !agree && bm.y == SKY && lm.y != SKY && edge_hold < EDGE_HOLD
