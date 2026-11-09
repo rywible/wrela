@@ -336,9 +336,21 @@ pub fn ink(
     let c0 = if drawn { styled(s, c0, px, m0, n0.xyz * 2.0 - 1.0, light.sun, scale, seed) } else {
         toned(s, c0, px, m0, scale, seed)
     }
+    // (The clean look draws no ink while all is quiet: it comes only with the action's rise, and
+    // takes the frame as it does.)
+    let action = if clean {
+        band(s.kinetic, 0.2, 0.1)
+    } else { 1.0 }
+    // The line below is multiplied by the action, so where that is none its reads of the marks
+    // and normals (some hundred a pixel: the strands, streaks and flecks) are left out, by loops
+    // of no turns. The picture is the same to the bit.
+    let inked = action > 0.0
+    let strands = if inked { 3 } else { 0 }
+    let taps4 = if inked { 4 } else { 0 }
+    let taps8 = if inked { 8 } else { 0 }
     // The energy here: the frame's, or the most of this pixel's and its near neighbours'.
     var local = n0.w
-    for i in 0..4 {
+    for i in 0..taps4 {
         let o = AROUND[i] * 5.0 * scale
         local = max(local, at8(normal, px + o, size).w * 0.8)
     }
@@ -355,7 +367,7 @@ pub fn ink(
     // Strands: the line drawn again by a hand that doesn't quite find it, each stroke pushed off
     // along a slow wander of its own, the more so the more kinetic it is. Quiet, one strand.
     var line = 0.0
-    for k in 0..3 {
+    for k in 0..strands {
         let kk = f32(k)
         // Quiet, a second strand faintly: the sketch's searching line.
         let sketch = if k == 1 && drawn { 0.25 * s.style } else { 0.0 }
@@ -367,7 +379,7 @@ pub fn ink(
             vec2(0.5)
         let shove = wander * scale * (1.0 + 7.0 * energy) * (if k == 0 { 0.6 } else { 1.0 + kk })
         var e = 0.0
-        for i in 0..8 {
+        for i in 0..taps8 {
             let q = px + shove + AROUND[i] * r * (if k == 0 { 1.0 } else { 0.6 })
             let mq = at(marks, q, size)
             let nq = at8(normal, q, size)
@@ -386,7 +398,7 @@ pub fn ink(
     let athwart = dot(px, vec2(-slant.y, slant.x)) / (scale * 1.6)
     let tear = band(noise(vec2(along + seed * 0.7, athwart)), 0.78 - 0.1 * energy, 0.03)
     var by_line = 0.0
-    for i in 0..8 {
+    for i in 0..taps8 {
         let q = px - slant * scale * (6.0 + 10.0 * f32(i))
         by_line = max(
             by_line,
@@ -412,7 +424,7 @@ pub fn ink(
     let dash = 1.0 - band(abs(dot(rel, vec2(-axis.y, axis.x))), 0.7 * scale, 0.3 * scale)
     let dash_len = 1.0 - band(abs(dot(rel, axis)), 2.2 * scale, 0.6 * scale)
     var near_line = 0.0
-    for i in 0..4 {
+    for i in 0..taps4 {
         let q = centre + AROUND[i] * r * 3.0
         near_line = max(
             near_line,
@@ -437,11 +449,6 @@ pub fn ink(
     } else { 1.0 }
     let faint = if drawn {
         mix(1.0, 0.72, clamp((m0.x - 9.0) / 3.0, 0.0, 1.0) * (1.0 - band(energy, 0.3, 0.1)))
-    } else { 1.0 }
-    // (The clean look draws no ink while all is quiet: it comes only with the action's rise, and
-    // takes the frame as it does.)
-    let action = if clean {
-        band(s.kinetic, 0.2, 0.1)
     } else { 1.0 }
     let ink_line = clamp(max(max(committed, fleck), streak * 0.8), 0.0, 1.0) *
         lifted *
