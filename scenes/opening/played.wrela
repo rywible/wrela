@@ -114,6 +114,8 @@ pub struct State {
     /// once it's ready, and back as it stops serving the camera. Only once it's all in does the
     /// far pass leave the rock to it (`yonder::Yon::vista`).
     pub(package) vista_shown: f32,
+    /// Whether the far pass left the rock to the vista last drawing (`yonder::Yon::vista`).
+    pub(package) vista_in: bool,
     /// The far layer the paint reads: the stacks as `yonder` met them with the vista laid in
     /// (`yonder::far_merge`).
     pub(package) far_colour: Texture<Rgba16Float>,
@@ -234,6 +236,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         vista_storm: 0.0,
         vista_stirred: false,
         vista_shown: 0.0,
+        vista_in: false,
         far_colour: texture(width: width, height: height),
         far_marks: texture(width: width, height: height),
         far_normal: texture(width: width, height: height),
@@ -487,7 +490,17 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
         s.vista_shown = if !s.vista_aimed { 0.0 } else if laid {
             min(s.vista_shown + 1.0 / VISTA_FADE, 1.0)
         } else { max(s.vista_shown - 1.0 / VISTA_FADE, 0.0) }
-        s.yon.vista = if s.vista_shown >= 1.0 { 1 } else { 0 }
+        // (As it's put by, the far pass starts afresh: what it kept from the drawings before
+        // holds no rock, the vista's while it was laid in, and kept, its blocks would show
+        // the rock only on their turns.)
+        // (`next_yon` made `yon` afresh: whether it was laid in is the last drawing's `vista_in`.)
+        let back = s.vista_in && s.vista_shown < 1.0
+        if back {
+            s.yon.held = 0.0
+            s.yon_count = 1.0
+        }
+        s.vista_in = s.vista_shown >= 1.0
+        s.yon.vista = if s.vista_in { 1 } else { 0 }
     }
     jittered(shot, s.jitter)
 }
@@ -535,8 +548,9 @@ fn aim_vista(s: mut State, shot: Shot) {
     )
     s.vista_fits = vista_fits(shot.eye, b, needed, slack: if s.vista_fits { 1.1 } else { 1.0 })
     if !s.vista_fits {
-        // (Held as it is while it fades out (`vista_shown`), dropped once it's gone.)
-        if s.vista_shown <= 0.0 {
+        // (Held as it is while it fades out (`vista_shown`), dropped once it's gone, or at once
+        // after a jump: read from so far off, it would be a ghost.)
+        if s.vista_shown <= 0.0 || jumped(s.vista, shot.eye) {
             s.vista_aimed = false
         }
         return

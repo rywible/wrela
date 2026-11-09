@@ -50,7 +50,8 @@ pub struct Yon: Copy + GpuData {
     /// (`main::ROCK_SPARSE`).
     pub rock_turn: u32,
     /// Whether the rock and the cathedral are the vista's (`main::VISTA`, `vista_look`): 1 once
-    /// it has looked at them whole, 0 before (on a first load), when they're met here as ever.
+    /// it's laid in whole, 0 before (on a first load, or while it fades in or out), when they're
+    /// met here as ever.
     pub vista: u32,
 }
 
@@ -871,7 +872,7 @@ pub fn yonder_low_flat(
     let pf = floor(pixel.position.xy) * f32(SPARSE) + vec2(0.5)
     let d = ray(shot, pf)
     let q = clamp(pf, vec2(0.0), shot.resolution - vec2(1.0))
-    let t = if yon.meshed == 1 {
+    let t = if yon.vista == 1 { 1.0e5 } else if yon.meshed == 1 {
         reach.load(u32(q.x), u32(q.y)).x
     } else { rough_isle(field, shot.eye, d) }
     if t >= 9.0e4 {
@@ -1488,6 +1489,9 @@ fn vista_read(
     (c, vec4(m.x, what, m.z, m.w), n, what)
 }
 
+/// How near (m) what the far pass meets must be to stand in front of the vista while it fades.
+const NEARER: f32 = 2500.0
+
 /// The far layer the paint reads: the stacks and the far islands as this pass met them
 /// (`yon_*`), and the rock and the cathedral as the vista holds them, the nearer over the
 /// farther. The marks and normal are the one that covers more of the pixel's. (`shot` the
@@ -1531,7 +1535,11 @@ pub fn far_merge(
     }
     let a = vc.a
     let vmarks = vec4(vm.x / a, vm.y, vm.z / a, vm.w / a)
-    let near = fc.a > 0.0 && fm.x < vmarks.x
+    // (While it fades in or out the far pass still meets the rock too: two of the same surface,
+    // and whichever came out a little nearer would win, the vista not fading in there but
+    // popping at the end. So till it's all in, only what's well nearer than the rock (a stack)
+    // is in front of it.)
+    let near = fc.a > 0.0 && fm.x < vmarks.x && (shown >= 1.0 || exp2(fm.x) < NEARER)
     let c = if near { fc + vc * (1.0 - fc.a) } else { vc + fc * (1.0 - a) }
     let mine = if near { a * (1.0 - fc.a) } else { a }
     let theirs = if near { fc.a } else { fc.a * (1.0 - a) }

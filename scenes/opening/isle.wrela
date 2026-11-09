@@ -965,9 +965,10 @@ pub fn isle_ao(p: vec3, n: vec3) -> f32 {
     clamp(1.0 - hidden * 0.55, 0.0, 1.0)
 }
 
-/// A bound on how steep the isle's field is (`rock::STEEP`'s): across `r` m it moves at most
-/// this times `r`.
-const FIELD_STEEP: f32 = 1.5
+/// A bound on how steep the isle's cooked field is: across `r` m it moves at most this times `r`,
+/// plus `FIELD_JUMP` where it steps between cooked cells.
+const FIELD_STEEP: f32 = 2.0
+const FIELD_JUMP: f32 = 6.7 * SCALE
 
 @test
 fn the_isle_lies_in_its_box() {
@@ -997,7 +998,7 @@ fn the_isle_lies_in_its_box() {
         }
         met += 1
         let d = isle(c).x
-        if d > FIELD_STEEP * h * 1.7321 {
+        if d > FIELD_STEEP * h * 1.7321 + FIELD_JUMP {
             continue
         }
         assert(h > 2.0, f"the isle may reach {c}, past its box (distance {d})")
