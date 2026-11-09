@@ -19,7 +19,7 @@ use kimodo::{
 /// The hit-stop: how long both bodies hold at contact (s).
 pub const X_HOLD: f32 = 0.15
 /// The impact frame: how long the palette drains at contact (s).
-pub const X_FLASH: f32 = 0.05
+pub const X_FLASH: f32 = 0.1
 /// The camera's kick along the blow (m) and its push in (m), and how fast each eases off (s).
 pub const X_KICK: f32 = 0.07
 pub const X_PUSH: f32 = 0.3
@@ -332,22 +332,34 @@ pub const X_TUCK: f32 = 0.4
 pub fn foe(p: f32) -> Pose {
     let n = HERO.rig.bones.len()
     let h = hit_at()
-    if p < h {
-        return foe_idle(p)
-    }
     let base = HERO.rig.base
     let inv = base.inverse()
-    let i0 = foe_idle(h)
+    // (Away from the striker, in his own place's frame.)
+    let away = vec3(dot(FOE[0].xyz, BLOW), 0.0, dot(FOE[2].xyz, BLOW))
+    if p < h {
+        // He stands off out of reach, and comes in as the cross is thrown: it meets him coming.
+        var q = foe_idle(p)
+        q.hips = q.hips +
+            inv.q.rotate(away * (X_APART * (1.0 - smoothstep(h - X_CLOSE, h, p))))
+        return q
+    }
+    // (The contact drawing: his guard, his head already driven off the fist.)
+    let i0 = knocked(foe_idle(h), away, X_KNOCK)
     let r0 = REACT.pose(REACT_HIT / 30.0)
     let turn = yaw_q(REACT_TURN)
     let from = base.t + base.q.rotate(r0.hips)
     let to = base.t + base.q.rotate(i0.hips)
+    let (neck, head) = (HERO.rig.find("neck"), HERO.rig.find("head"))
     let placed = |q: Pose| -> Pose {
         var c = q
         let hw = base.t + base.q.rotate(c.hips)
         let o = turn.rotate(hw - from)
         c.hips = inv.t + inv.q.rotate(to + o)
         c.turns[0] = base.q.inverse().mul(turn.mul(base.q.mul(c.turns[0])))
+        // (His neck eased toward his guard's: the take throws his head back flat to the sky, a
+        // broken neck's angle on a masked head.)
+        c.turns[neck] = c.turns[neck].nlerp(i0.turns[neck], X_NECK)
+        c.turns[head] = c.turns[head].nlerp(i0.turns[head], X_NECK)
         c
     }
     let v = p - h
@@ -358,10 +370,13 @@ pub fn foe(p: f32) -> Pose {
         i0,
         placed(REACT.pose(REACT_HIT / 30.0 + X_INTO + min(v, home))),
         // (Fast off the mark, eased in to the drawing: the head's already going on the first
-        // frame out of the hit-stop.)
-        1.0 - pow(1.0 - clamp(v / X_TAKE, 0.0, 1.0), 3.0),
+        // frame out of the hit-stop, but never the whole way in one.)
+        1.0 - pow(1.0 - clamp(v / X_TAKE, 0.0, 1.0), 2.0),
         n,
     )
+    // (His guard knocked open by the blow, then gathered again: the take raises his hands to
+    // his face as he goes, and they met the fist that had just landed there.)
+    let r = opened(r, away, smoothstep(0.0, 0.07, v) * (1.0 - smoothstep(0.22, 0.6, v)))
     if v < home {
         return r
     }
@@ -369,15 +384,88 @@ pub fn foe(p: f32) -> Pose {
     let rh = base.t + base.q.rotate(placed(REACT.pose(REACT_HOME / 30.0)).hips)
     var off = rh - to
     off.y = 0.0
-    // (Then he steps back in to where he stood, so the next blow finds him.)
-    off *= 1.0 - smoothstep(home, home + STEP_IN, v)
+    // (Then he gathers himself back to where he stands off, out of reach.)
+    let back = smoothstep(home, home + STEP_IN, v)
+    off = off * (1.0 - back) + away * (X_APART * back)
     var b = foe_idle(p)
     b.hips = b.hips + inv.q.rotate(off)
     humanoid::blend(r, b, smoothstep(0.0, X_BACK, v - home), n)
 }
 
+/// How far out of the blow's reach he stands off (m), and how long before the contact he starts
+/// coming in (s): two bodies a glove apart read as a tangle, and a fist with nowhere to travel
+/// reads as a shove.
+pub const X_APART: f32 = 0.3
+pub const X_CLOSE: f32 = 0.3
+
+/// The one struck standing off, waiting (the lab's, before a press).
+pub fn foe_waiting(p: f32) -> Pose {
+    let inv = HERO.rig.base.inverse()
+    let away = vec3(dot(FOE[0].xyz, BLOW), 0.0, dot(FOE[2].xyz, BLOW))
+    var q = foe_idle(p)
+    q.hips = q.hips + inv.q.rotate(away * X_APART)
+    q
+}
+
+/// How far his head is driven off the fist on the contact drawing itself, held through the
+/// hit-stop (1: turned 0.3 radians from the fist's side, tipped 0.14 back along the blow), and
+/// how far the reaction's neck is eased toward his guard's (0 the take's own).
+pub const X_KNOCK: f32 = 1.0
+pub const X_NECK: f32 = 0.4
+
+/// `p` with his head driven off a fist landing on his left cheek, the blow going `away` (in his
+/// own frame): turned about up, his struck cheek going with the blow, and tipped back along it,
+/// his neck taking a third of each.
+fn knocked(p: Pose, away: vec3, k: f32) -> Pose {
+    if k <= 0.0 {
+        return p
+    }
+    borrow rig = HERO.rig
+    let c0 = one_pose(p)
+    var c = c0.clone()
+    var w = stride::worlds(rig, c0, 0)
+    let (neck, head) = (rig.find("neck"), rig.find("head"))
+    let up = vec3(0.0, 1.0, 0.0)
+    let left = w[rig.find("leftUpperArm")].t - w[rig.find("rightUpperArm")].t
+    let yaw = if dot(cross(up, left), away) > 0.0 { 1.0 } else { -1.0 }
+    let tip = normalize(cross(up, away))
+    for (b, share) in [(neck, 0.33), (head, 0.67)] {
+        stride::turn_below(rig, mut w, b, Quat::axis_angle(up, yaw * 0.3 * k * share))
+        stride::turn_below(rig, mut w, b, Quat::axis_angle(tip, 0.14 * k * share))
+    }
+    stride::store(rig, w, mut c, 0)
+    c.pose(0.0)
+}
+
+/// How far the blow knocks his guard open (m his hands drop; they go a little with the blow
+/// and apart as well).
+pub const X_OPEN: f32 = 0.24
+
+/// `p` with his hands knocked down and apart by `k` (0 to 1) of `X_OPEN`, the blow going `away`.
+fn opened(p: Pose, away: vec3, k: f32) -> Pose {
+    if k <= 1.0e-3 || X_OPEN <= 0.0 {
+        return p
+    }
+    borrow rig = HERO.rig
+    let c0 = one_pose(p)
+    var c = c0.clone()
+    var w = stride::worlds(rig, c0, 0)
+    let mid = (w[rig.find("leftUpperArm")].t + w[rig.find("rightUpperArm")].t) * 0.5
+    for side in 0..2 {
+        let hand = w[rig.find(if side == 0 { "leftHand" } else { "rightHand" })].t
+        var out = hand - mid
+        out.y = 0.0
+        out = out - away * dot(out, away)
+        let apart = if length(out) > 1.0e-4 { normalize(out) } else { vec3(0.0) }
+        let to = hand + (vec3(0.0, -1.0, 0.0) + away * 0.4 + apart * 0.35) * (X_OPEN * k)
+        arm_to(rig, mut w, u32(side), to)
+    }
+    stride::store(rig, w, mut c, 0)
+    c.pose(0.0)
+}
+
 /// How long the struck one takes to go from his guard to the reaction's drawing (s).
-pub const X_TAKE: f32 = 0.14
+pub const X_TAKE: f32 = 0.2
 
 /// How the reaction is turned to stand as his guard did: between squaring its hands and its
 /// chest to his (his guard is bladed, the reaction square; turned by either alone, he'd spin).
@@ -442,8 +530,8 @@ pub fn flash(time: f32, tune: Tune) -> f32 {
 
 /// How kinetic the page stays after the impact frame (0 to 1, below the impact frame's own), and
 /// how fast it lets go once the hit-stop breaks (s).
-pub const X_AFTER: f32 = 0.7
-pub const X_AFTER_LIFE: f32 = 0.09
+pub const X_AFTER: f32 = 0.85
+pub const X_AFTER_LIFE: f32 = 0.13
 
 /// The strike's force at clock `time` (`engine::anime::Force`'s `by`, 0 to 1): it builds as the
 /// fist travels in, is whole at the contact and through the hit-stop, and dies after it.
@@ -456,6 +544,10 @@ pub fn force(time: f32, tune: Tune) -> f32 {
 }
 
 pub const X_FORCE_LIFE: f32 = 0.12
+
+/// How far the striker's forearm and fist are drawn out along their way on the drawings where
+/// the fist is going in fastest (0 none; 1 twice as long).
+pub const X_SMEAR: f32 = 0.8
 
 /// The way the blow travels, along the ground: the way the cross reaches (at its full reach).
 @fuel(2 ** 40)
@@ -589,7 +681,7 @@ pub const X_EASE_OUT: f32 = 0.1
 
 /// How much of the cross's follow-through is passed over after the hit-stop (s), and over how
 /// long (s).
-pub const X_SKIP: f32 = 0.18
+pub const X_SKIP: f32 = 0.24
 pub const X_SKIP_OVER: f32 = 0.2
 
 /// Where the blow lands on him, and which bone carries it: his face (his head's), or the giant's
@@ -630,6 +722,52 @@ fn struck_point(c: vec3, pf: f32, t: Tune) -> vec3 {
 /// rides the place it struck as it's knocked away, and leaves it for its own path, driving
 /// through. (`t.grind` also leans his trunk on in through the hit-stop.)
 pub fn striker_hit(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
+    eyes_on(striker_connecting(ps, pf, wall, t))
+}
+
+/// How far to either side of his target the striker's head may turn (radians; a soft limit).
+/// The take's head goes round with its shoulders through the cross and its follow-through; a
+/// fighter's stays on what he's hitting, and Hakuro's is a mask and a fan of hair, so a head
+/// turned away is a faceless back of a head for ten drawings, then a whip back.
+pub const X_EYES: f32 = 0.3
+
+/// Which way his head faces in his guard (radians about up).
+@fuel(2 ** 40)
+const HEAD_HOME: f32 = head_home()
+
+fn head_home() -> f32 {
+    borrow rig = HERO.rig
+    var x = 0.0
+    var z = 0.0
+    for k in 0..8 {
+        let p = FIGHT_IDLE_M.pose(FIGHT_IDLE_M.length() * f32(k) / 8.0)
+        let a = facing(stride::worlds(rig, one_pose(p), 0)[rig.find("head")].q)
+        x += sin(a)
+        z += cos(a)
+    }
+    atan2(x, z)
+}
+
+/// `p` with his head kept on his target: turned back about up to within `X_EYES` of where it
+/// faces in his guard.
+pub fn eyes_on(p: Pose) -> Pose {
+    borrow rig = HERO.rig
+    let c0 = one_pose(p)
+    var c = c0.clone()
+    var w = stride::worlds(rig, c0, 0)
+    let head = rig.find("head")
+    let off = facing(w[head].q) - HEAD_HOME
+    let d = atan2(sin(off), cos(off))
+    let want = X_EYES * tanh(d / X_EYES)
+    if abs(want - d) < 1.0e-3 {
+        return p
+    }
+    stride::turn_below(rig, mut w, head, Quat::axis_angle(vec3(0.0, 1.0, 0.0), want - d))
+    stride::store(rig, w, mut c, 0)
+    c.pose(0.0)
+}
+
+fn striker_connecting(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
     let base = home_from_hit(striker(ps), ps, wall - t.hold)
     let h = hit_at()
     let since = ps - h

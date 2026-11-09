@@ -644,7 +644,15 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     write(mut s.palette, 0, bones)
     let fight = HAKURO == 1 && (SHOW == 28 || SHOW == 29)
     if fight {
-        s.fighters.pose(0, hakuro_palette(bones))
+        // His punching arm smeared on the drawings where his fist is going in fast.
+        let rw0 = HERO.rig.rest_world()
+        let before = if SHOW == 28 { pose_at(time - 1.0 / 60.0) } else {
+            lab::striker_at(s.lab, s.lab.clock - 1.0 / 60.0)
+        }
+        let was = bone_at(palette(HERO.rig, before, place), rw0, "rightHand")
+        let going = (bone_at(bones, rw0, "rightHand") - was) * 60.0
+        let fast = clamp((dot(going, exchange::BLOW) - 4.0) / 8.0, 0.0, 1.0)
+        s.fighters.pose(0, fighter::smeared(hakuro_palette(bones), going, exchange::X_SMEAR * fast))
     }
     if SHOW == 28 {
         var foe = palette(

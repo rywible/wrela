@@ -268,7 +268,7 @@ fn striker_by(g: f32, p: Press) -> Pose {
 /// The one struck at `g` as press `p` left him.
 fn struck_by(g: f32, p: Press) -> Pose {
     if p.at <= NEVER {
-        return if p.tune.giant { struck(0.0, p.tune) } else { foe_idle(g) }
+        return if p.tune.giant { struck(0.0, p.tune) } else { exchange::foe_waiting(g) }
     }
     struck(played_at(clock(g, p.at), p.tune), p.tune)
 }

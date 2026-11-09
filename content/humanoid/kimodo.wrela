@@ -164,7 +164,7 @@ pub const A_THROUGH: f32 = 0.2
 pub const A_LEAN: f32 = 0.24
 pub const A_REACH: f32 = 0.06
 /// How far above the shoulder the contact drawing levels the fist (m): face height, not a body shot.
-pub const A_AIM: f32 = 0.27
+pub const A_AIM: f32 = 0.33
 
 /// The anime layer's beats (s from the strike's start).
 fn a_at() -> [f32; 7] {
