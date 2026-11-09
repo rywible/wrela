@@ -54,19 +54,22 @@ fn edge(a: vec4, b: vec4, na: vec3, nb: vec3, horizon: f32) -> f32 {
 }
 
 /// The impact frame's line between two samples: a body's outline (against the page, the other
-/// body, its own head), one part of it in front of another, and on a head its seams (the mask's
-/// edge): no creases, no trim, nothing a hand wouldn't draw in the one drawing that has to read.
+/// body, its own head) and one part of it in front of another (by `fold`): no creases, no
+/// seams, no trim, nothing a hand wouldn't draw in the one drawing that has to read.
 fn outline(a: vec4, b: vec4, fold: f32) -> f32 {
-    if abs(a.y - b.y) > 0.5 {
+    // (The struck one's head and body are one shape: his mask tipped back edge on, outlined
+    // against the page and against his own face, was a post the fist ran into.)
+    let whole = |id: f32| -> f32 { if id > BODY + 20.5 { BODY + 20.0 } else { id } }
+    if abs(whole(a.y) - whole(b.y)) > 0.5 {
         let ground = a.y < BODY - 0.5 && b.y < BODY - 0.5
         return if ground { 0.0 } else { 1.0 }
     }
     if a.y < BODY - 0.5 {
         return 0.0
     }
-    let part = a.y - (if a.y >= BODY + 19.5 { BODY + 20.0 } else { BODY })
-    if part > 0.5 {
-        return if (a.z < 0.0) != (b.z < 0.0) { 1.0 } else { 0.0 }
+    // (A head's its outline alone: his mask seen edge on was a bar of two seams.)
+    if a.y - (if a.y >= BODY + 19.5 { BODY + 20.0 } else { BODY }) > 0.5 {
+        return 0.0
     }
     // (One part of him in front of another, where the blow is: his arms across his chest. Away
     // from it his outline alone: his legs and his coat's folds were scraps of line.)
@@ -89,33 +92,6 @@ fn screen_of(s: Shot, p: vec3) -> vec2 {
     let clip = s.cam.view_proj * vec4(p, 1.0)
     let ndc = clip.xy / max(clip.w, 1.0e-4)
     vec2((ndc.x * 0.5 + 0.5) * s.resolution.x, (0.5 - ndc.y * 0.5) * s.resolution.y)
-}
-
-/// The smear's dry brush at pixel `px` of the striker's arm (0 to 1 of the page showing through):
-/// where his fist is going in fast (the force's `from.w`) his arm is one flicked stroke of a
-/// brush, whole at the fist and running dry behind it: streaks of paper along the way it goes,
-/// more of them the further back toward his shoulder, each breaking as it runs. (`energy`: the
-/// first pass's, his striking arm's alone.)
-fn dry_brush(s: Shot, px: vec2, scale: f32, seed: f32, energy: f32) -> f32 {
-    let by = s.force_from.w
-    if by < 0.05 || energy < 0.1 {
-        return 0.0
-    }
-    let a = screen_of(s, s.force_from.xyz)
-    let b = screen_of(s, s.force_to.xyz)
-    let ab = b - a
-    let len = max(length(ab), 1.0)
-    let dir = ab / len
-    let side = vec2(-dir.y, dir.x)
-    let along = dot(px - b, dir)
-    let back = clamp(-along / (len * 0.8), 0.0, 1.0)
-    let lane = floor(dot(px, side) / (2.4 * scale))
-    let h = hash2(vec2(lane, seed * 1.7 + 3.0))
-    let run = noise(vec2(along / (scale * 16.0), lane * 1.7 + seed))
-    band(back, edge: 0.1 + 1.6 * h, soft: 0.03) *
-        band(run, edge: 0.3, soft: 0.08) *
-        band(energy, edge: 0.2, soft: 0.1) *
-        by
 }
 
 @fragment
@@ -154,8 +130,8 @@ pub fn ink(
         var meets = false
         for i in 0..8 {
             let mq = at(marks, px + AROUND[i] * scale * (3.0 + 4.0 * near), size)
-            let other = mq.y >= BODY - 0.5 && (mq.y >= BODY + 19.5) != struck
-            meets = meets || (body && other)
+            // (On the struck one's side only: the striker's fist keeps every pixel of its shape.)
+            meets = meets || (struck && mq.y >= BODY - 0.5 && mq.y < BODY + 19.5)
         }
         if meets {
             return vec4(display(PAPER), 1.0)
@@ -168,9 +144,6 @@ pub fn ink(
                 e = max(e, outline(m0, mq, band(near, edge: 0.3, soft: 0.15)))
             }
         }
-        // (Away from the blow the line runs dry: it breaks, as a brush out of ink does.)
-        let dry = band(noise(px / (scale * 14.0) + vec2(seed, 0.0)), edge: 0.76, soft: 0.05)
-        e *= 1.0 - 0.9 * dry * band(1.0 - near, edge: 0.55, soft: 0.2)
         // (The ink black: at `INK`'s own value it showed a grey violet, weak on the paper.)
         let black = INK * 0.1
         // (The striker's mask left paper inside his black: he keeps his face.)
@@ -193,7 +166,7 @@ pub fn ink(
     }
     let energy = clamp(max(s.kinetic * focus, local), 0.0, 1.0)
     // (The horizon's line goes as the page turns kinetic.)
-    let horizon = 0.18 * (1.0 - band(s.kinetic, edge: 0.12, soft: 0.08))
+    let horizon = 0.18 * (1.0 - band(s.kinetic, edge: 0.5, soft: 0.15))
     // (On a dark form only the one line: a pale line's strands and flecks on black are lint.)
     let dark0 = 1.0 - band(luma(c0), edge: 0.035, soft: 0.02)
     // The pen's width: a hand's, wobbling along the line and boiling between drawings; quiet, the
@@ -205,7 +178,7 @@ pub fn ink(
     var line = 0.0
     for k in 0..3 {
         let kk = f32(k)
-        let lift = if k == 0 { 1.0 } else { band(energy, 0.12 + 0.12 * kk, 0.06) * (1.0 - dark0) }
+        let lift = if k == 0 { 1.0 } else { band(energy, 0.3 + 0.12 * kk, 0.06) * (1.0 - dark0) }
         let wander = vec2(
             noise(px / (scale * 14.0) + vec2(seed * 1.3 + kk * 17.0, kk * 5.0)),
             noise(px / (scale * 14.0) + vec2(kk * 9.0, seed * 0.9 + kk * 23.0)),
@@ -255,7 +228,7 @@ pub fn ink(
     let fleck = dash *
         dash_len *
         band(h, 1.0 - 0.5 * energy, 0.01) *
-        band(energy, edge: 0.2, soft: 0.05) *
+        band(energy, edge: 0.42, soft: 0.05) *
         band(near_line, edge: 0.3, soft: 0.1) *
         (1.0 - dark0)
     // Kinetic, the ink commits: a line is there or it isn't, no grey.
@@ -269,7 +242,8 @@ pub fn ink(
     // and hatching in the middle one, as a page of manga.
     var c = c0
     let v = pow(max(luma(c0), 0.0), 0.4545)
-    let tone = band(v, edge: 0.30, soft: 0.02) * 0.5 + band(v, edge: 0.60, soft: 0.02) * 0.5
+    // (The ground's shadows fall in the middle value: above it, they were outlines of nothing.)
+    let tone = band(v, edge: 0.30, soft: 0.02) * 0.5 + band(v, edge: 0.74, soft: 0.02) * 0.5
     // (The middle one a flat wash: hatched by rule across a whole body, it was a screen laid over
     // him, and it shimmered as he moved under it.)
     let mid = mix(INK * 1.4, PAPER * 0.92, 0.42)
@@ -288,10 +262,6 @@ pub fn ink(
     let loud = mix(INK * 0.7, vec3(0.30, 0.30, 0.36), on_dark)
     let ink_c = mix(quiet, loud, band(energy, edge: 0.25, soft: 0.15))
     c = mix(c, ink_c, ink_line)
-    // The smear: his arm a dry brush's stroke, the page through it.
-    if m0.y >= BODY - 0.5 && m0.y < BODY + 19.5 {
-        c = mix(c, PAPER * 0.95, dry_brush(s, px, scale, seed, n0.w))
-    }
     // A blast thrown off the blow: its air paler, its ink over all.
     let bl = blast(s, px, scale)
     c = mix(c, PAPER * 1.02, bl.y)

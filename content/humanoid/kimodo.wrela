@@ -149,8 +149,8 @@ pub const COCK: f32 = 0.0
 /// the contact drawing held dead still (the hit-stop) and pushed (leaning in, the fist level and
 /// at full reach), an overshoot, then the take's own recovery; all drawn on twos (`A_DRAW`
 /// drawings a second), the contact landing on a drawing of its own.
-pub const A_LOAD: f32 = 0.16
-pub const A_TELL: f32 = 0.03
+pub const A_LOAD: f32 = 0.2
+pub const A_TELL: f32 = 0.09
 pub const A_SNAP: f32 = 0.1
 pub const A_STOP: f32 = 0.03
 pub const A_FOLLOW: f32 = 0.05
@@ -159,7 +159,7 @@ pub const A_DRAW: f32 = 0.0
 /// How far the anime layer winds the trunk in the tell (of `COIL`) and whips it through past
 /// square after the snap (radians of the coil's way the other way), and how far the contact
 /// drawing leans in (radians) and reaches on (m).
-pub const A_TENSION: f32 = 0.6
+pub const A_TENSION: f32 = 1.5
 pub const A_THROUGH: f32 = 0.2
 pub const A_LEAN: f32 = 0.24
 pub const A_REACH: f32 = 0.06
@@ -622,7 +622,7 @@ fn guarded(c: Clip, k: fn(f32) -> f32) -> Clip {
 
 /// The rear fist cocked back `A_CHAMBER` (m) through the wind-up and held there through the
 /// tell, so the strike has a loaded pose to fire from.
-pub const A_CHAMBER: f32 = 0.1
+pub const A_CHAMBER: f32 = 0.22
 
 fn chambered(c: Clip) -> Clip {
     borrow rig = HERO.rig
@@ -653,7 +653,7 @@ fn chambered(c: Clip) -> Clip {
 }
 
 /// How far the wind-up sits the weight back (m).
-pub const A_BACK: f32 = 0.04
+pub const A_BACK: f32 = 0.12
 
 /// Both legs reached so the ankles are at `feet` again, each foot turned as `foot_q`.
 pub fn legs_to(

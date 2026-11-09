@@ -75,43 +75,27 @@ pub fn hakuro_palette(rig_m: [mat4; 64]) -> [mat4; 64] {
     fists_off_mask(curled(m, FIST_CURL))
 }
 
-/// His right elbow at rest (his skeleton's), and the bones below it: his forearm, his hand, his
-/// old finger bones and each finger joint (his right's are the odd ones).
-const ELBOW_RIGHT = vec3(-0.463, 1.455, -0.073)
-
-/// His palette with his punching arm smeared: his right forearm and fist (at `fist`) drawn out
-/// from the elbow along the way the fist is going, by `by` (0 none; 1 twice as long along it),
-/// and his fist drawn half as big again at that: the one drawing between the cocked fist and the
-/// contact, as an animator stretches it.
-pub fn smeared(m: [mat4; 64], fist: vec3, going: vec3, by: f32) -> [mat4; 64] {
-    if by <= 0.0 || length(going) < 1.0e-5 {
+/// His palette with his punching fist (at `fist`, going `going`) drawn `big` times its size, and
+/// smeared: drawn out behind itself along its way by `by` (0 none; 1 twice as long), back over
+/// his forearm, its knuckles kept where they are: the one drawing between the cocked fist and
+/// the contact, as an animator stretches it into a stroke aimed at the face.
+pub fn smeared(m: [mat4; 64], fist: vec3, going: vec3, by: f32, big: f32) -> [mat4; 64] {
+    if (by <= 0.0 && big <= 1.0) || length(going) < 1.0e-5 {
         return m
     }
     let d = normalize(going)
-    let e = (m[11] * vec4(ELBOW_RIGHT, 1.0)).xyz
-    // x -> x + by (x - e)·d d: a stretch along `d` about the elbow.
-    let c0 = vec3(1.0, 0.0, 0.0) + d * (by * d.x)
-    let c1 = vec3(0.0, 1.0, 0.0) + d * (by * d.y)
-    let c2 = vec3(0.0, 0.0, 1.0) + d * (by * d.z)
+    // (About his knuckles, a little on from his wrist.)
+    let e = fist + d * 0.09
+    // x -> big (x + by (x - e)·d d): a stretch along `d` about his knuckles, then grown there.
+    let c0 = (vec3(1.0, 0.0, 0.0) + d * (by * d.x)) * big
+    let c1 = (vec3(0.0, 1.0, 0.0) + d * (by * d.y)) * big
+    let c2 = (vec3(0.0, 0.0, 1.0) + d * (by * d.z)) * big
     let shift = e - (c0 * e.x + c1 * e.y + c2 * e.z)
     let stretch = mat4(vec4(c0, 0.0), vec4(c1, 0.0), vec4(c2, 0.0), vec4(shift, 1.0))
-    // (His fist grown about where the stretch carries it.)
-    let big = 1.0 + 0.5 * by
-    let f = (stretch * vec4(fist, 1.0)).xyz
-    let grow = mat4(
-        vec4(big, 0.0, 0.0, 0.0),
-        vec4(0.0, big, 0.0, 0.0),
-        vec4(0.0, 0.0, big, 0.0),
-        vec4(f * (1.0 - big), 1.0),
-    ) *
-        stretch
     var out = m
-    out[11] = stretch * m[11]
-    for b in [13, 15, 17] {
-        out[b] = grow * m[b]
-    }
+    // (His fingers alone: the hand's own bone also carries his cuff, which drew out as a spike.)
     for j in 0..15 {
-        out[27 + 2 * j] = grow * m[27 + 2 * j]
+        out[27 + 2 * j] = stretch * m[27 + 2 * j]
     }
     out
 }
@@ -467,7 +451,9 @@ fn painted(
     let dark = 1.0 - band(value, edge: 0.12, soft: 0.06)
     // (Not his coat's tails: a flat sheet of cloth seen along itself is all edge, and swung out
     // by a blow his black tails washed grey.)
-    let rim = if own == 2 { 0.0 } else { 1.0 }
+    // (Nor on a kinetic page: drained to three values, a rim is a second outline a step off
+    // the first.)
+    let rim = (if own == 2 { 0.0 } else { 1.0 }) * (1.0 - band(shot.kinetic, edge: 0.45, soft: 0.2))
     col += WARM * edge * (0.07 + 0.2 * back) * lit_side * dark * rim
     col += COOL * edge * 0.05 * (1.0 - lit_side) * dark * rim
     col += albedo * WARM * edge * (0.25 + 0.5 * back) * lit_side * (1.0 - dark)
