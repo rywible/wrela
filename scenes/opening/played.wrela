@@ -899,6 +899,9 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 half_colour: s.half_colour,
                 half_marks: s.half_marks,
                 half_normal: s.half_normal,
+                yon_colour: s.yon_colour,
+                yon_marks: s.yon_marks,
+                yon_normal: s.yon_normal,
             ),
             vertices: 3,
         )

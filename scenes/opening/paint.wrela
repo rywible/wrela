@@ -1959,6 +1959,9 @@ pub fn paint_fill(
     half_colour: Texture<Rgba16Float>,
     half_marks: Texture<Rgba16Float>,
     half_normal: Texture<Rgba8>,
+    yon_colour: Texture<Rgba16Float>,
+    yon_marks: Texture<Rgba16Float>,
+    yon_normal: Texture<Rgba8>,
 ) -> Targets3<vec4, vec4, vec4> {
     let ip = floor(pixel.position.xy)
     let n = round_of(shot, u32(ip.x), u32(ip.y), size)
@@ -1991,5 +1994,87 @@ pub fn paint_fill(
         at = n.r
     }
     // (The ink's reading is no mean: a line or a depth halfway between two isn't either's.)
-    Targets3 { first: c, second: half_marks.load(at.x, at.y), third: half_normal.load(at.x, at.y) }
+    let m = half_marks.load(at.x, at.y)
+    let nm = half_normal.load(at.x, at.y)
+    let (x, y) = (u32(ip.x), u32(ip.y))
+    let f = yon_colour.load(x, y)
+    if f.a <= 0.004 {
+        return Targets3 { first: c, second: m, third: nm }
+    }
+    // Where the far layer (`yonder`, the vista) lies over this pixel, it's laid in as the paint
+    // lays it, this pixel's own, and only what's behind it and in front of it is taken from the
+    // neighbours: a spire's edge filled from the pixels either side of it moved a pixel at a
+    // time as the camera moved, and crawled.
+    let (laid, ok) = laid_far(f, x, y, n, half_colour, half_marks, yon_colour, yon_marks)
+    if !ok {
+        return Targets3 { first: c, second: m, third: nm }
+    }
+    if f.a > 0.5 {
+        let fnn = yon_normal.load(x, y)
+        return Targets3 {
+            first: vec4(laid, c.a),
+            second: yon_marks.load(x, y),
+            third: vec4(fnn.xyz, nm.w),
+        }
+    }
+    Targets3 { first: vec4(laid, c.a), second: m, third: nm }
+}
+
+/// The colour of drawing pixel (`x`, `y`), which the half didn't paint (`paint_fill`), with
+/// the far layer `f` (premultiplied) laid in over what's behind it: what's behind, and what's
+/// in front, from its painted neighbours (`n`), each unmixed from the far layer the paint laid
+/// over it. Whether it can be: not where a neighbour met something nearer than the far layer
+/// (the skiff), nor where no neighbour shows anything behind or in front.
+fn laid_far(
+    f: vec4,
+    x: u32,
+    y: u32,
+    n: Round,
+    half_colour: Texture<Rgba16Float>,
+    half_marks: Texture<Rgba16Float>,
+    yon_colour: Texture<Rgba16Float>,
+    yon_marks: Texture<Rgba16Float>,
+) -> (vec3, bool) {
+    var behind = vec3(0.0)
+    var behind_w = 0.0
+    var front = vec3(0.0)
+    var front_n = 0.0
+    for k in 0..4 {
+        let has = if k == 0 { n.left } else if k == 1 { n.right } else if k == 2 { n.above } else {
+            n.below
+        }
+        if has {
+            let hq = if k == 0 { n.l } else if k == 1 { n.r } else if k == 2 { n.u } else { n.d }
+            let (px, py) = if k == 0 { (x - 1, y) } else if k == 1 { (x + 1, y) } else if k == 2 {
+                (x, y - 1)
+            } else { (x, y + 1) }
+            let ck = half_colour.load(hq.x, hq.y).rgb
+            let mk = half_marks.load(hq.x, hq.y)
+            let fk = yon_colour.load(px, py)
+            let fmk = yon_marks.load(px, py)
+            // (Whether the paint laid the far layer in there: what it met is the far layer's,
+            // the sky, or farther than the far layer.)
+            let over = mk.y >= ROCK || mk.y == SKY || fmk.x < mk.x
+            if !over && fk.a > 0.004 {
+                return (vec3(0.0), false)
+            }
+            let a = if over { fk.a } else { 0.0 }
+            let rest = ck - (if over { fk.rgb } else { vec3(0.0) })
+            if a < 0.95 {
+                // (What's behind, unmixed: `rest / (1 - a)`, weighed by `1 - a`, how much of it
+                // shows.)
+                behind += rest
+                behind_w += 1.0 - a
+            } else {
+                front += rest
+                front_n += 1.0
+            }
+        }
+    }
+    if behind_w <= 0.0 && front_n <= 0.0 {
+        return (vec3(0.0), false)
+    }
+    let b = if behind_w > 0.0 { behind / behind_w } else { vec3(0.0) }
+    let fr = if front_n > 0.0 { front / front_n } else { vec3(0.0) }
+    (max(f.rgb + b * (1.0 - f.a) + fr * f.a, vec3(0.0)), true)
 }
