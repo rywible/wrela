@@ -157,6 +157,16 @@ pub const RENDER_SCALE: f32 = 0.75
 /// (`upscaled_once`).
 pub const UPSCALE: bool = false
 
+/// Whether the sea reads the sky it mirrors from a table worked out once a drawing
+/// (`paint::cook_mirror`), or works it out again for each of a pixel's facets.
+pub const MIRROR_TABLE: bool = true
+
+/// The drawings the mirror table (`MIRROR_TABLE`) is worked out again over, a band of its rows
+/// each, once the dome's whole: as many texels as the sea has pixels, it would cost a drawing
+/// more than it saves worked out whole each, and the dome it mirrors changes a few of its tiles
+/// a drawing.
+pub const MIRROR_PHASES: u32 = 16
+
 /// Whether each frame's passes print their GPU time (`timing <frame> <pass> <us>`), for a host
 /// that can't be asked for timestamps, as the render box's (`--set TIMINGS=true`).
 pub const TIMINGS: bool = false
