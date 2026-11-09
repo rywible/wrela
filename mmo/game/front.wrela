@@ -227,7 +227,9 @@ pub fn init(fonts: take Fonts) -> Front {
             late: 0,
             lately: 0,
             late_from: 0.0,
+            peak: 0,
             noise: 0,
+            fresh_at: 0.0,
         },
         base: 1.0 / 60.0,
         quickest: 1.0,
@@ -384,8 +386,9 @@ fn front_slow_rendering_cannot_relax_a_previously_observed_frame_budget() {
 /// average seconds, and the last two frames' own; when it last changed the height (s); the size
 /// that last ran slow (kept under until `ceiling_until`, `ceiling_for` seconds at a time); its
 /// last growth: when (s), from what height, and whether it's still on trial (`PROBE`); and the
-/// late frames counted since `late_from` (s), in the `LATE_WINDOW` before, and in one before the
-/// last growth (`noise`: the late frames that aren't the size's doing).
+/// late frames counted since `late_from` (s), in the `LATE_WINDOW` before, the most in one of
+/// late (`peak`, one fewer each window), and before the last growth (`noise`: the late frames
+/// that aren't the size's doing); and when it was begun afresh (s).
 struct Budget: Copy {
     tall: f32,
     spent: f32,
@@ -401,7 +404,9 @@ struct Budget: Copy {
     late: u32,
     lately: u32,
     late_from: f32,
+    peak: u32,
     noise: u32,
+    fresh_at: f32,
 }
 
 /// A budget at `tall`, its frames so far taking `spent` seconds.
@@ -421,7 +426,9 @@ fn budget_at(tall: f32, spent: f32) -> Budget {
         late: 0,
         lately: 0,
         late_from: 0.0,
+        peak: 0,
         noise: 0,
+        fresh_at: -10.0,
     }
 }
 
@@ -440,6 +447,7 @@ fn heard(from: Budget, dt: f32, slow: f32, time: f32) -> Budget {
     if time >= b.late_from {
         if time - b.late_from >= LATE_WINDOW {
             b.lately = b.late
+            b.peak = max(b.late, if b.peak > 0 { b.peak - 1 } else { 0 })
             b.late = 0
             b.late_from = time
         }
@@ -452,7 +460,8 @@ fn heard(from: Budget, dt: f32, slow: f32, time: f32) -> Budget {
 
 /// The budget begun afresh at `time`, at the size it has: what ran slow at another pace (the
 /// title's, or the rowing's) doesn't hold it under, and slow frames now aren't put down to a
-/// growth made then.
+/// growth made then. (It doesn't grow for two and a half seconds: its late frames are counted
+/// first, to judge a growth by.)
 fn afresh(from: Budget, time: f32) -> Budget {
     var b = from
     b.ceiling_until = 0.0
@@ -462,7 +471,9 @@ fn afresh(from: Budget, time: f32) -> Budget {
     b.late = 0
     b.lately = 0
     b.late_from = time
+    b.peak = 0
     b.noise = 0
+    b.fresh_at = time
     b
 }
 
@@ -495,9 +506,11 @@ fn stepped(from: Budget, time: f32, slow: f32, quick: f32, least: f32, most: f32
     let was = b.tall
     // (A growth is judged by its late frames, not the average alone: a scene up to a quarter too
     // slow can show one late frame in four or more, an average under `slow`, and a growth to
-    // such a size stayed, stuttering. Three more than there were before it: late frames a
-    // smaller size wouldn't cure don't count against it.)
-    let late = b.late > 2 + b.noise || b.lately > 2 + b.noise
+    // such a size stayed, stuttering. By more than there were before it, and half as many
+    // again: late frames a smaller size wouldn't cure come unevenly, and counted against a
+    // growth they kept a scene with room small for minutes.)
+    let lates = max(b.late, b.lately)
+    let late = lates > 2 + b.noise + b.noise / 2
     if b.probing && (late || b.spent > slow && since > 1.5) {
         // Slow just after growing: the growth was a step too far. Back to the size that held, not
         // a cut under it, and twice as long before it's tried again: tried every minute and cut
@@ -505,7 +518,7 @@ fn stepped(from: Budget, time: f32, slow: f32, quick: f32, least: f32, most: f32
         // minute, for as long as the scene was up. (By its late frames, not the average's
         // second and a half: three are enough to know.)
         b.tall = min(b.tall, b.grew_from)
-        if late {
+        if lates > 2 + b.noise {
             b.ceiling_for = min(b.ceiling_for * 2.0, CEILING_MOST)
         }
         b.ceiling = b.tall
@@ -524,12 +537,12 @@ fn stepped(from: Budget, time: f32, slow: f32, quick: f32, least: f32, most: f32
         b.tall = max(least, cut(b.tall, sure, quick))
         b.ceiling_for = CEILING
         b.ceiling_until = time + b.ceiling_for
-    } else if b.spent < quick && since > 3.0 && b.tall < ceiling {
+    } else if b.spent < quick && since > 3.0 && b.tall < ceiling && time - b.fresh_at >= 2.5 {
         if b.probing {
             // (Quick enough to grow again: the last growth held, and what's above is a new edge.)
             b.ceiling_for = CEILING
         }
-        b.noise = max(b.late, b.lately)
+        b.noise = max(lates, b.peak)
         b.grew_from = b.tall
         b.grew_at = time
         b.probing = true
@@ -550,7 +563,8 @@ fn stepped(from: Budget, time: f32, slow: f32, quick: f32, least: f32, most: f32
 
 /// A rehearsal of the budget: `seconds` of a screen that shows `hz` frames a second, the scene
 /// costing `fixed + per * (tall / 1440)^2` seconds a drawing, rowing (or under the `title`), with
-/// one frame of `hitch` seconds every `every` seconds (none if 0). Each frame takes a whole
+/// one frame of `hitch` seconds every `every` seconds (none if 0; `uneven`, a quarter to seven
+/// quarters of `every` apart). Each frame takes a whole
 /// number of the screen's: as many as its drawing needs, or `mixed`, as many as the drawings so
 /// far have fallen behind (a scene a third too slow then shows two frames on time and one late,
 /// as a browser whose drawings queue does).
@@ -566,12 +580,14 @@ fn rehearsed(
     every: f32 = 0.0,
     mixed: bool = false,
     title: bool = false,
+    uneven: bool = false,
 ) -> (Budget, u32, f32) {
     var b = from
     let base = 1.0 / hz
     let (slow, quick) = frame_limits(title, base)
     var time = 0.0
     var next_hitch = every
+    var hitches = 0.0
     var owed = 0.0
     var changes = 0
     var late = 0.0
@@ -585,7 +601,10 @@ fn rehearsed(
         }
         if every > 0.0 && time >= next_hitch {
             dt = hitch
-            next_hitch += every
+            hitches += 1.0
+            next_hitch += if uneven {
+                every * (0.25 + 1.5 * fract(sin(hitches * 12.9898) * 43758.5453))
+            } else { every }
         }
         time += dt
         b = heard(b, dt, slow, time)
@@ -711,11 +730,9 @@ fn front_a_growth_a_little_too_far_shows_late_frames_among_quick_ones_and_is_tak
 fn front_late_frames_that_were_there_before_a_growth_dont_count_against_it() {
     // A scene with room at any size (12 ms on a 60 Hz screen) and a late frame every 0.7 s
     // whatever its size (the page's own work, not the drawing's): it still grows to the top.
-    // (From a size it has had for a moment, as the page's has: three seconds to grow from.)
-    var from = budget_at(968.0, spent: 1.0 / 60.0)
-    from.resized_at = 0.0
+    // (Begun afresh, as on Play: it counts its late frames before it grows.)
     let (b, _, _) = rehearsed(
-        from,
+        afresh(budget_at(968.0, spent: 1.0 / 60.0), time: 0.0),
         hz: 60.0,
         fixed: 0.002,
         per: 0.010,
@@ -724,6 +741,35 @@ fn front_late_frames_that_were_there_before_a_growth_dont_count_against_it() {
         every: 0.7,
     )
     assert(b.tall == 1440.0, f"grew to {b.tall}")
+    // And when they come unevenly, one a second or so, to a scene cut small by something that
+    // passed (520, kept under 736 for a minute): back at the top well inside three minutes, on
+    // a 60 Hz screen and a 120. (Each window with a few more of them than the one before took
+    // a growth back and doubled its wait: ten minutes and more.)
+    var small = budget_at(520.0, spent: 1.0 / 60.0)
+    small.ceiling = 736.0
+    small.ceiling_until = 60.0
+    let (back, _, _) = rehearsed(
+        small,
+        hz: 60.0,
+        fixed: 0.002,
+        per: 0.010,
+        seconds: 160.0,
+        hitch: 2.0 / 60.0,
+        every: 0.7,
+        uneven: true,
+    )
+    assert(back.tall == 1440.0, f"back to {back.tall} at 60 Hz")
+    let (quick, _, _) = rehearsed(
+        small,
+        hz: 120.0,
+        fixed: 0.001,
+        per: 0.005,
+        seconds: 160.0,
+        hitch: 2.0 / 120.0,
+        every: 1.0,
+        uneven: true,
+    )
+    assert(quick.tall == 1440.0, f"back to {quick.tall} at 120 Hz")
 }
 
 @test
@@ -771,7 +817,16 @@ fn front_a_budget_begun_afresh_forgets_the_other_paces_ceiling_and_late_frames()
     assert(a.tall == 640.0, "at the size it has")
     assert(a.ceiling_until == 0.0 && a.ceiling_for == CEILING, "no ceiling from the other pace")
     assert(!a.probing && a.late == 0 && a.lately == 0, "no growth on trial, no late frames")
-    // So it may grow at once when its frames are quick.
+    // So it may grow when its frames are quick, once it has counted them.
+    let soon = stepped(
+        a,
+        time: 101.0,
+        slow: 1.25 / 120.0,
+        quick: 1.06 / 120.0,
+        least: 360.0,
+        most: 1440.0,
+    )
+    assert(soon.tall == 640.0, "not before it has counted its late frames")
     let grown = stepped(
         a,
         time: 103.5,
