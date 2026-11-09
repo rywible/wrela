@@ -339,8 +339,7 @@ pub fn foe(p: f32) -> Pose {
     if p < h {
         // He stands off out of reach, and comes in as the cross is thrown: it meets him coming.
         var q = foe_idle(p)
-        q.hips = q.hips +
-            inv.q.rotate(away * (X_APART * (1.0 - smoothstep(h - X_CLOSE, h, p))))
+        q.hips = q.hips + inv.q.rotate(away * (X_APART * (1.0 - smoothstep(h - X_CLOSE, h, p))))
         return q
     }
     // (The contact drawing: his guard, his head already driven off the fist.)

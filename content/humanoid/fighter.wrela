@@ -200,7 +200,13 @@ pub struct FighterVertex: Copy {
 }
 
 @vertex
-pub fn fighter_vertex(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, shot: Shot) -> FighterVertex {
+pub fn fighter_vertex(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    palettes: [mat4],
+    first: u32,
+    shot: Shot,
+) -> FighterVertex {
     fighter_at(v, verts, palettes, first, shot)
 }
 
@@ -221,7 +227,13 @@ pub fn coat_vertex(
     f
 }
 
-fn fighter_at(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32, shot: Shot) -> FighterVertex {
+fn fighter_at(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    palettes: [mat4],
+    first: u32,
+    shot: Shot,
+) -> FighterVertex {
     let sv = verts[v.index]
     let m = skin_matrix(sv, palettes, first)
     let world = (m * vec4(sv.pos, 1.0)).xyz
@@ -241,7 +253,13 @@ fn fighter_at(v: VertexIndex, verts: [SkinVertex], palettes: [mat4], first: u32,
 /// His pixel where his fields are behind his mesh (what he wears, his head, his coat's tails):
 /// his normal and his cloth read from them at that point of him at rest.
 @fragment
-pub fn fighter_pixel<F: Parts<Cloth>>(v: FighterVertex, field: F, shot: Shot, who: u32, own: u32) -> Targets3<vec4, vec4, vec4> {
+pub fn fighter_pixel<F: Parts<Cloth>>(
+    v: FighterVertex,
+    field: F,
+    shot: Shot,
+    who: u32,
+    own: u32,
+) -> Targets3<vec4, vec4, vec4> {
     let t = length(v.world - shot.cam.eye)
     let fp = t * 1.5 / shot.resolution.y
     let mask = PartMask { lo: v.lo.value, hi: v.hi.value }
@@ -253,7 +271,12 @@ pub fn fighter_pixel<F: Parts<Cloth>>(v: FighterVertex, field: F, shot: Shot, wh
 /// His pixel where his mesh was sampled from the reference (his body, arms, hands and jacket):
 /// its own normal, and his paint where it is on him at rest.
 @fragment
-pub fn sampled_pixel(v: FighterVertex, shot: Shot, who: u32, jacket: u32) -> Targets3<vec4, vec4, vec4> {
+pub fn sampled_pixel(
+    v: FighterVertex,
+    shot: Shot,
+    who: u32,
+    jacket: u32,
+) -> Targets3<vec4, vec4, vec4> {
     let c = if jacket == 1 { jacket_paint(v.rest) } else { body_paint(v.rest) }
     painted(shot, v.world, normalize(v.normal), c, who, 0)
 }
@@ -278,7 +301,14 @@ fn worn(c: Cloth, who: u32, own: u32) -> vec3 {
 /// light warm and the shade cool, a thin rim round his edge, and into what the ink reads: how
 /// far, that he's a body (the one struck, 20 on), which side of a seam he's on (his dark cloth
 /// against his pale: the ink draws the edge between), and his normal.
-fn painted(shot: Shot, world: vec3, n0: vec3, c: Cloth, who: u32, own: u32) -> Targets3<vec4, vec4, vec4> {
+fn painted(
+    shot: Shot,
+    world: vec3,
+    n0: vec3,
+    c: Cloth,
+    who: u32,
+    own: u32,
+) -> Targets3<vec4, vec4, vec4> {
     let v = normalize(shot.cam.eye - world)
     // (A normal turned from the eye, where his fields' relief is finer than his mesh: brought
     // round to his edge.)
