@@ -226,6 +226,12 @@ impl Sheet {
         // (Each wave as an oscillator about the dent the body holds it in, stepped exactly.)
         for a in 0..count {
             let w = self.omega[a]
+            // (The sheet's mean level has no wave to carry it: it sits in the mean dent at once.)
+            if w <= 0.0 {
+                self.height[a] = vec2(0.0) - pressed[a]
+                self.rate[a] = vec2(0.0)
+                continue
+            }
             let off = self.height[a] + pressed[a]
             let c = cos(w * h)
             let s = sin(w * h)

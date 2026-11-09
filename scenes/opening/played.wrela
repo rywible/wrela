@@ -380,6 +380,9 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
         ..shot_at(START + time, s.width, s.height, KINETIC, view, rig, s.ocean.swell),
     }
     // (Settled into the hollow its own bow wave leaves, as the drawing before measured it.)
+    // (The sim is pressed and measured by the skiff where it floats unsettled, `afloat`: pressing
+    // it with the settled hull would dig the hollow deeper the deeper it settled.)
+    let afloat = shot
     let shot = Shot { boat: shot.boat + vec3(y: s.sink), ..shot }
     s.heavens.step(shot.eye, shot.forward, START + time)
     let shot = Shot { storm: s.heavens.storm, wind: s.heavens.wind, ..shot }
@@ -393,12 +396,12 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     s.ocean.step(held(START + time))
     let now = held(START + time)
     let shot = if STIRRED > 0.5 {
-        s.stir.sheet.follow(vec2(shot.boat.x, shot.boat.z))
-        let u = under(shot, s.drawn_swell, now)
-        let press = pressed(shot, s.stir.sheet, u)
+        s.stir.sheet.follow(vec2(afloat.boat.x, afloat.boat.z))
+        let u = under(afloat, s.drawn_swell, now)
+        let press = pressed(afloat, s.stir.sheet, u)
         s.stir.step(now, press)
         let ease = 1.0 - exp(-4.0 * clamp(now - s.washed_at, 0.0, 1.0))
-        s.sink = mix(s.sink, sunk(shot, s.stir.sheet), ease)
+        s.sink = mix(s.sink, sunk(afloat, s.stir.sheet), ease)
         s.wash = washed(shot, s.stir.sheet, u, s.wash, now - s.washed_at)
         s.washed_at = now
         var wash = [vec4(0.0); 6]
