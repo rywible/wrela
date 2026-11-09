@@ -108,11 +108,17 @@ pub fn lee(rel: vec3, x: vec3, z: vec3) -> f32 {
 const CALM: f32 = 0.35
 pub const MID_CALM: f32 = 0.6
 
+/// How much of the waves it rides is drawn along the hull (`tiles`), where it rides `MID_CALM`
+/// of them: a little more, so they run up its planks and fall away under it as they pass, the
+/// hull too heavy to follow every one. Drawn as it rides them, the sea met it in one rigid line
+/// that followed its planks, and it read as a model laid on the water.
+pub const HULL_MID: f32 = 1.0
+
 /// How much of each of the ocean's tiles there is where the short waves are `calm` (`lee`): the
 /// swell whole, the waves a boat rides broken a little by the hull, the short waves and the
 /// ripples most.
 pub fn tiles(calm: f32) -> vec4 {
-    vec4(1.0, mix(MID_CALM, 1.0, (calm - CALM) / (1.0 - CALM)), calm, calm)
+    vec4(1.0, mix(HULL_MID, 1.0, (calm - CALM) / (1.0 - CALM)), calm, calm)
 }
 
 /// Where the sea holds the skiff at time `t`, at `at` (x, z) and steered `steer` from its drift,
@@ -133,7 +139,7 @@ pub fn bob(t: f32, at: vec2, steer: f32, swell: Swell) -> (vec3, vec3, vec3, vec
     let mid = swell.height(c, t)
     // (Its deck a hand and a half over the water, its bottom a good way under: set higher, it
     // sat on the sea, not in it, and read as floating.)
-    let y = (bow + stern + port + star + mid * 2.0) / 6.0 - 0.04
+    let y = (bow + stern + port + star + mid * 2.0) / 6.0 - 0.11
     // Pitched and rolled as those points lie, but not all the way: the hull's weight steadies it.
     let along_ = normalize(vec3(along0.x, (bow - stern) / 3.0 * 0.8, along0.y))
     let across_ = normalize(vec3(across0.x, (star - port) / 1.0 * 0.6, across0.y))

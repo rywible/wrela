@@ -13,9 +13,11 @@ use look::{
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
 use wind::{air_over}
 use engine::ocean::{Waves, foam_at, level_at, surface_at, whitecaps}
+use engine::stir::stirred as stir_on
+use wake::{STIRRED, WASH_AT, wash_place}
 use isle::{FALLS, SCALE, bounds, isle, isle_material, isle_normal}
 use yonder::falls
-use skiff::{dry, skiff, skiff_material, skiff_normal, vessel}
+use skiff::{dry, hull_off, skiff, skiff_material, skiff_normal, vessel}
 use wake::{lifted, marks, spray, stirred}
 use engine::far::foot
 use engine::light::{Light, Lit, gloss, hazed, matte, sun_disc, world}
@@ -429,7 +431,9 @@ fn sea_level(s: Shot, waves: Waves, p: vec3, foot: f32) -> f32 {
     let near = 1.0 - smoothstep(1.0, 2.6, e)
     // (Heaped by the hull as it makes way: its bow wave, its quarters' hollow, the hump astern:
     // `wake::lifted`; the cap over that too, so the bow wave never stands over the deck.)
-    let heaped = level + lifted(s, p)
+    // (And the water its hull stirs, as `engine::stir` simulates it: pressed down where it
+    // floats, heaped where it shoulders through, the rings it rocks out.)
+    let heaped = level + lifted(s, p) + stir_on(waves.stir, waves.s, waves.stir_at, vec2(p.x, p.z)).x
     let cap = gunwale - 0.14
     let hk = clamp(0.5 + 0.5 * (cap - heaped) / 0.08, 0.0, 1.0)
     let capped = mix(cap, heaped, hk) - 0.08 * hk * (1.0 - hk)
@@ -908,7 +912,9 @@ fn sea_shade(
     let dv = flat * (px_at / max(-d.y, least_slant))
     let (wave, n0, foam_k, squeezed, lost0, rest) = surface_at(waves, xz, du, dv, tiles(calm))
     // Where the skiff has been: its slick, its ripples, its spray falling back.
-    let (n, splash) = stirred(s, xz, rest, n0)
+    let (n1, splash) = stirred(s, xz, rest, n0)
+    let st = stir_on(waves.stir, waves.s, waves.stir_at, xz)
+    let n = if st.y != 0.0 || st.z != 0.0 { normalize(n1 - vec3(st.y, 0.0, st.z)) } else { n1 }
     // (Far off, the wind's lanes: broad patches of rougher and smoother water, as its gusts
     // leave them, foreshortened to long bands of brighter and duller sheen toward the horizon.)
     let lanes = noise(xz * vec2(0.004, 0.0012) + vec2(s.held * 0.003, 5.0))
@@ -1100,7 +1106,47 @@ fn sea_shade(
     // there, a darker pool on the sea round its foot.)
     let sky_up = h.over.up * PI * (1.0 - under_isle(p))
     let horizon_sky = heaven(view, h.light, normalize(vec3(d.x, 0.006, d.z)), dome, smp, h.over).rgb
-    let body = vec3(0.088, 0.22, 0.19) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
+    let water_up = vec3(0.088, 0.22, 0.19) * (h.light.sun_colour * max(l.y, 0.0) * sun + sky_up)
+    // By the hull, the water's clear enough for the eye to see into its top: the planks go on
+    // down under the surface, bent by it, fading into the green as they go deeper, so the hull
+    // stands in the sea rather than stopping where the sea's drawn. (The refracted ray, marched
+    // a little way down to the hull's solid; what it meets there lit by the light that's come
+    // down through the water, and the water between in front of it.)
+    let off_hull = if near < 0.9 { hull_off(s, p) } else { 9.0 }
+    let body = if off_hull < 0.9 {
+        // Snell's bend into the water (eta = 1/1.33; never total internal reflection going in).
+        let ci = dot(n, d)
+        let k = max(1.0 - 0.565 * (1.0 - ci * ci), 0.0)
+        let down = normalize(d * 0.752 - n * (0.752 * ci + sqrt(k)))
+        var u = 0.02
+        var met = -1.0
+        for _ in 0..6 {
+            let f = hull_off(s, p + down * u)
+            if f < 0.01 {
+                met = u
+                break
+            }
+            u += max(f, 0.03)
+            if u > 1.0 {
+                break
+            }
+        }
+        if met > 0.0 {
+            let q = p + down * met
+            let (albedo, _, _) = skiff_material(s, q, -down)
+            let deep = max(p.y - q.y, 0.0)
+            // (Through the water both ways, down to the planks and back: red first, then blue.)
+            let kept = exp(-vec3(4.5, 1.6, 1.9) * (met + deep))
+            let lit_under = albedo * (sky_up * 0.35 + h.light.sun_colour * max(l.y, 0.0) * sun * 0.4)
+            // (Faded out toward where it stops looking, so it never ends in a seam on the water.)
+            let seen = kept * smoothstep(0.9, 0.5, off_hull)
+            lit_under * seen + water_up * (1.0 - seen)
+        } else {
+            water_up
+        }
+    } else {
+        water_up
+    }
     let behind = pow(max(dot(normalize(vec3(-d.x, 0.0, -d.z)), -l) * 0.5 + 0.5, 0.0), 4.0)
     // The sun through the waves' crests: their thin tops, where the waves crowd and sharpen,
     // glowing green on the faces turned to the eye, most when the eye looks toward the sun
@@ -1599,9 +1645,30 @@ fn sample(
             0.35 * edge_k
         })
         c += albedo * bounce + rim * sun
-        // The waterline: the hull dark where the sea has wet it.
+        // The waterline: the hull dark where the sea has wet it: as high as the water stands
+        // now, and as high as it lately washed up the planks and is drying back down from
+        // (`wake::washed`, kept in the skiff's frame): a sharp-edged dark band that rises with
+        // each wave and is left behind as it falls.
         let at_hull = sea_level(s, waves, p, 0.02)
-        let wet = smoothstep(0.2, 0.02, p.y - at_hull)
+        let rel = p - s.boat
+        let along = dot(rel, s.boat_z)
+        let up = dot(rel, s.boat_y) / max(s.boat_y.y, 0.5)
+        let bz = normalize(vec2(s.boat_z.x, s.boat_z.z))
+        let side = if dot(vec2(rel.x, rel.z), vec2(bz.y, -bz.x)) > 0.0 { WASH_AT } else { u32(0) }
+        let k = clamp((along - wash_place(0)) / (wash_place(1) - wash_place(0)), 0.0, f32(WASH_AT) - 1.001)
+        let i = side + u32(k)
+        let washed = mix(s.wash[i / 4][i % 4], s.wash[(i + 1) / 4][(i + 1) % 4], fract(k))
+        // (Only on its outside, under its sheer: inside, or on its deck and what's stowed there, the
+        // sea's never stood, however far it's heeled. Its edge ragged as a wash's is, never one
+        // ruled stripe.)
+        let ragged = 0.03 * noise(vec2(along * 6.0 - s.held * 1.3, 3.0)) + 0.015 * noise(vec2(along * 19.0, s.held * 2.0))
+        let wet = if STIRRED > 0.5 {
+            smoothstep(0.015, -0.01, min(p.y - at_hull, up - washed) + ragged - 0.015) *
+                (1.0 - smoothstep(0.3, 0.6, dot(n, s.boat_y))) *
+                (1.0 - smoothstep(-0.06, -0.02, dot(rel, s.boat_y) - FREEBOARD))
+        } else {
+            smoothstep(0.2, 0.02, p.y - at_hull)
+        }
         c *= 1.0 - 0.65 * wet
         // (And the planks nearest the sea in the dark the sea throws up, not the sky's light:
         // the hull's lower side falls off toward the water, so it sits down in the sea.)

@@ -1,0 +1,322 @@
+// The water a floating body stirs: a small sheet of the sea that rides with it, simulated on the
+// CPU each frame, laid over the ocean (`ocean::Waves`) where the body moves through it.
+//
+// The open sea is the FFT ocean's (`ocean`), deep water's waves as they run; it doesn't know a
+// body's there. This sheet does: a height field a few hundred cells across, the body pressing
+// down on it where its hull sits in the water (`step`'s `press`), the water answering as a
+// shallow sheet does (the wave equation, its waves running at `SPEED`). Driven along, the
+// pressing raises a bow wave that stands up of itself, draws a hollow down along its sides and
+// sheds the two arms of a wake; bobbing, it sends rings out across the water that run off and
+// fade. A body at rest sits in its own dent, and nothing moves.
+//
+// The sheet keeps to the world's axes and steps a whole cell as the body moves on, so what the
+// water holds stays where it was and never smears as the body turns; at its edges a sponge
+// soaks up what reaches it, so nothing comes back.
+//
+// A shader reads it as one texture (`Stir::shape`: the rise, its slopes along x and z, and how
+// fast it's rising), through `stirred` with `Stir::at`.
+
+use std::gpu::{
+    GlobalId, GpuBuffer, Rgba16Float, Sampler, Texels, Texture, buffer, dispatch, label, write,
+    writable_texture,
+}
+
+/// How fast the sheet's waves run (m/s): a wave a metre or so long on deep water. A body making
+/// way faster than this sheds a wake (its arms at asin(SPEED / speed) to its track).
+pub const SPEED: f32 = 1.5
+
+/// How fast a wave on it dies away when nothing drives it (per second): a ring the body rocks out
+/// lasts two or three seconds.
+const SETTLE: f32 = 0.7
+
+/// The steps it's taken in (s), and the most a frame takes (a longer gap starts it afresh).
+const STEP: f32 = 1.0 / 120.0
+const MOST_STEPS: u32 = 8
+
+/// How many cells of its edge soak up what reaches them.
+const SPONGE: u32 = 10
+
+/// The sheet itself, on the CPU.
+pub struct Sheet {
+    /// Its side in cells, and a cell's side (m).
+    pub n: u32,
+    pub cell: f32,
+    /// Its corner cell (the world's, in cells along x and z).
+    pub corner: vec2i,
+    /// Each cell's rise (m) and how fast it's rising (m/s), a row along x after another.
+    pub rise: Vec<f32>,
+    speed: Vec<f32>,
+    /// What presses on each cell (m: how far down the body would hold the water at rest).
+    press: Vec<f32>,
+    /// The time it's at, and whether it's begun.
+    time: f32,
+    begun: bool,
+}
+
+/// The sheet, and what the GPU reads of it: (rise, rising) a cell, and the shape built from them.
+pub struct Stir {
+    pub sheet: Sheet,
+    cells: GpuBuffer<vec2>,
+    pub shape: Texture<Rgba16Float>,
+}
+
+impl Stir {
+    /// A sheet `n` cells a side, each `cell` m.
+    pub fn new(n: u32, cell: f32) -> Stir {
+        Stir { sheet: Sheet::new(n, cell), cells: buffer(n * n), shape: writable_texture(width: n, height: n) }
+    }
+
+    /// Where a shader finds it (`Sheet::at`).
+    pub fn at(self) -> vec4 {
+        self.sheet.at()
+    }
+
+    /// Stepped on (`Sheet::step`), and what it holds sent to the GPU: its cells, and the shape
+    /// built from them.
+    pub fn step(mut self, time: f32, press: [f32]) {
+        self.sheet.step(time, press)
+        let n = self.sheet.n
+        var v: Vec<vec2> = Vec::with_capacity(n * n)
+        for a in 0..n * n {
+            v.push(vec2(self.sheet.rise[a], self.sheet.speed[a]))
+        }
+        write(mut self.cells, 0, v)
+        label("stir")
+        dispatch(shaped.bind(cells: self.cells, n: n, cell: self.sheet.cell, out: mut self.shape), over: (n, n))
+    }
+}
+
+impl Sheet {
+    /// A sheet `n` cells a side, each `cell` m.
+    pub fn new(n: u32, cell: f32) -> Sheet {
+        let k = n * n
+        Sheet {
+            n,
+            cell,
+            corner: vec2i(0),
+            rise: Vec::filled(k, 0.0),
+            speed: Vec::filled(k, 0.0),
+            press: Vec::filled(k, 0.0),
+            time: 0.0,
+            begun: false,
+        }
+    }
+
+    /// Where cell (`i`, `j`)'s middle lies on the level (x, z, m).
+    pub fn middle(self, i: u32, j: u32) -> vec2 {
+        (vec2(self.corner) + vec2(f32(i), f32(j)) + vec2(0.5)) * self.cell
+    }
+
+    /// Its rise at `xz` (x, z, m), between the cells round it; nothing outside it.
+    pub fn rise_at(self, xz: vec2) -> f32 {
+        let c = xz / self.cell - vec2(self.corner) - vec2(0.5)
+        let f = floor(c)
+        let n = i32(self.n)
+        let i = i32(f.x)
+        let j = i32(f.y)
+        if i < 0 || j < 0 || i + 1 >= n || j + 1 >= n {
+            return 0.0
+        }
+        let w = c - f
+        let a = u32(j * n + i)
+        let r0 = mix(self.rise[a], self.rise[a + 1], w.x)
+        let r1 = mix(self.rise[a + self.n], self.rise[a + self.n + 1], w.x)
+        mix(r0, r1, w.y)
+    }
+
+    /// Where a shader finds it: its corner (x, z, m), its side (m), and whether it holds
+    /// anything (0 before its first step).
+    pub fn at(self) -> vec4 {
+        let c = vec2(self.corner) * self.cell
+        vec4(c.x, c.y, f32(self.n) * self.cell, if self.begun { 1.0 } else { 0.0 })
+    }
+
+    /// Moved so `centre` (x, z, m) lies at its middle: whole cells, what it held kept where it
+    /// lies, the cells it newly covers calm.
+    pub fn follow(mut self, centre: vec2) {
+        let half = i32(self.n / 2)
+        let to = vec2i(i32(floor(centre.x / self.cell)) - half, i32(floor(centre.y / self.cell)) - half)
+        let by = to - self.corner
+        if by.x == 0 && by.y == 0 {
+            return
+        }
+        let n = i32(self.n)
+        let k = self.n * self.n
+        var rise: Vec<f32> = Vec::filled(k, 0.0)
+        var speed: Vec<f32> = Vec::filled(k, 0.0)
+        if abs(by.x) >= n || abs(by.y) >= n {
+            // (Jumped clear of it: begun afresh, the body settled into calm water.)
+            self.begun = false
+        } else {
+            for j in 0..n {
+                let from_j = j + by.y
+                if from_j < 0 || from_j >= n {
+                    continue
+                }
+                for i in 0..n {
+                    let from_i = i + by.x
+                    if from_i < 0 || from_i >= n {
+                        continue
+                    }
+                    let a = u32(j * n + i)
+                    let b = u32(from_j * n + from_i)
+                    rise[a] = self.rise[b]
+                    speed[a] = self.speed[b]
+                }
+            }
+        }
+        self.rise = take rise
+        self.speed = take speed
+        self.corner = to
+    }
+
+    /// Stepped on to `time`, `press` (each cell's: how far down the body holds the water) on it.
+    pub fn step(mut self, time: f32, press: [f32]) {
+        let k = self.n * self.n
+        for i in 0..k {
+            self.press[i] = press[i]
+        }
+        let dt = time - self.time
+        self.time = time
+        if !self.begun || dt < 0.0 || dt > 1.0 {
+            // (Begun, or jumped: the water settled into the body's dent, nothing moving.)
+            for i in 0..k {
+                self.rise[i] = -self.press[i]
+                self.speed[i] = 0.0
+            }
+            self.begun = true
+        } else {
+            // (A long gap, a slow machine's or a hitch's, stepped over as the most it takes:
+            // the water runs slow for it, rather than snapping to rest.)
+            let span = min(dt, STEP * f32(MOST_STEPS))
+            let steps = min(u32(ceil(span / STEP)), MOST_STEPS)
+            let h = span / f32(max(steps, 1))
+            for _ in 0..steps {
+                self.once(h)
+            }
+        }
+    }
+
+    /// One step of `h` s: each cell pulled toward its neighbours' level (where the body presses,
+    /// toward its dent), damped, the sponge soaking its edges.
+    fn once(mut self, h: f32) {
+        let n = self.n
+        let c2 = SPEED * SPEED / (self.cell * self.cell)
+        for j in 0..n {
+            for i in 0..n {
+                let a = j * n + i
+                let here = self.rise[a] + self.press[a]
+                let l = if i > 0 { self.rise[a - 1] + self.press[a - 1] } else { here }
+                let r = if i + 1 < n { self.rise[a + 1] + self.press[a + 1] } else { here }
+                let d = if j > 0 { self.rise[a - n] + self.press[a - n] } else { here }
+                let u = if j + 1 < n { self.rise[a + n] + self.press[a + n] } else { here }
+                let edge = min(min(i, n - 1 - i), min(j, n - 1 - j))
+                let soak = if edge < SPONGE {
+                    let f = 1.0 - f32(edge) / f32(SPONGE)
+                    12.0 * f * f
+                } else {
+                    0.0
+                }
+                let pull = c2 * (l + r + d + u - 4.0 * here)
+                self.speed[a] = (self.speed[a] + pull * h) / (1.0 + (SETTLE + soak) * h)
+            }
+        }
+        for a in 0..n * n {
+            self.rise[a] += self.speed[a] * h
+        }
+        // (The sponge draws the level itself back to rest too, not only its motion.)
+        for j in 0..n {
+            for i in 0..n {
+                let edge = min(min(i, n - 1 - i), min(j, n - 1 - j))
+                if edge < SPONGE {
+                    let f = 1.0 - f32(edge) / f32(SPONGE)
+                    self.rise[j * n + i] *= 1.0 / (1.0 + 6.0 * f * f * h)
+                }
+            }
+        }
+    }
+}
+
+/// Each cell's (rise, its slope along x, along z, how fast it's rising), from the cells round it.
+@compute(8, 8)
+fn shaped(cells: [vec2], n: u32, cell: f32, out: mut Texels<Rgba16Float>, id: GlobalId) {
+    if id.x >= n || id.y >= n {
+        return
+    }
+    let a = id.y * n + id.x
+    let l = cells[if id.x > 0 { a - 1 } else { a }].x
+    let r = cells[if id.x + 1 < n { a + 1 } else { a }].x
+    let d = cells[if id.y > 0 { a - n } else { a }].x
+    let u = cells[if id.y + 1 < n { a + n } else { a }].x
+    out.store(id, vec4(cells[a].x, (r - l) / (2.0 * cell), (u - d) / (2.0 * cell), cells[a].y))
+}
+
+/// The stirred water at `xz` (x, z, m) as `shape` holds it (`at`, `Stir::at`): its rise (m), its
+/// slopes along x and z, how fast it's rising (m/s); nothing outside it, and fading to nothing
+/// over its edge, so its edge never shows as a step in the water.
+pub fn stirred(shape: Texture<Rgba16Float>, smp: Sampler, at: vec4, xz: vec2) -> vec4 {
+    let uv = (xz - at.xy) / at.z
+    if at.w < 0.5 || uv.x <= 0.0 || uv.y <= 0.0 || uv.x >= 1.0 || uv.y >= 1.0 {
+        return vec4(0.0)
+    }
+    let edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y))
+    shape.sample_level(smp, uv, 0.0) * smoothstep(0.02, 0.12, edge)
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// A body pressed into still water and left: it settles, and nothing far off moves.
+@test
+fn a_body_at_rest_stirs_nothing() {
+    var s = Sheet::new(32, 0.25)
+    s.follow(vec2(0.0))
+    var press: Vec<f32> = Vec::filled(32 * 32, 0.0)
+    for j in 14..18 {
+        for i in 14..18 {
+            press[j * 32 + i] = 0.1
+        }
+    }
+    s.step(0.0, press)
+    for f in 1..120 {
+        s.step(f32(f) / 60.0, press)
+    }
+    var most = 0.0
+    for a in 0..32 * 32 {
+        most = max(most, abs(s.rise[a] + s.press[a]))
+    }
+    assert(most < 1.0e-4)
+}
+
+/// A body dragged through faster than the sheet's waves: nothing runs ahead of it, the water it
+/// parts heaps up along its sides, and closes in behind it in a trough.
+@test
+fn a_body_driven_parts_the_water() {
+    var s = Sheet::new(64, 0.125)
+    var press: Vec<f32> = Vec::filled(64 * 64, 0.0)
+    for f in 0..240 {
+        let t = f32(f) / 60.0
+        let x = 4.0 * t
+        s.follow(vec2(x, 0.0))
+        for j in 0..64 {
+            for i in 0..64 {
+                let m = s.middle(i: i, j: j)
+                let q = vec2((m.x - x) / 1.5, m.y / 0.4)
+                press[j * 64 + i] = 0.15 * max(1.0 - dot(q, q), 0.0)
+            }
+        }
+        s.step(t, press)
+    }
+    // (Just off the body's side: alongside it, and behind its stern.)
+    var side = -1.0
+    var behind = 1.0
+    var ahead = 0.0
+    for i in 0..64 {
+        let m = s.middle(i: i, j: 32 + 5)
+        let along = m.x - 4.0 * 239.0 / 60.0
+        let h = s.rise[37 * 64 + i]
+        if along > -1.5 && along < 0.0 { side = max(side, h) }
+        if along > -4.0 && along < -1.5 { behind = min(behind, h) }
+        if along > 1.0 { ahead = max(ahead, abs(h)) }
+    }
+    assert(side > 0.03 && behind < -0.02 && ahead < 1.0e-4)
+}

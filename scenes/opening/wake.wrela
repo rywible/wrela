@@ -7,6 +7,112 @@
 use look::{Shot, cells, fbm, hash2, noise}
 use sea::SEA
 use skiff::hull_off
+use engine::ocean::Swell
+use engine::stir::Sheet
+
+/// 1: the water at the hull is `engine::stir`'s too, simulated (`pressed`): the hand-shaped rings
+/// it rocks out, which it replaces, left out. 0 as before (`--set STIRRED=0`).
+pub const STIRRED: f32 = 1.0
+
+/// How far down the hull holds the water where it sits deepest in it (m, `pressed`): the
+/// stirred water (`engine::stir`) is pressed into this dent where the hull floats, and the
+/// dent's moving through it, as the hull makes way, bobs and rolls, is what raises its waves.
+pub const PRESS: f32 = 0.14
+
+/// The sea's surface under the skiff as it's drawn along its hull (the waves at `sea::HULL_MID`,
+/// not the share of them it rides), read at five places along its middle and once out to its
+/// beam: its heights there, the way it slopes across, and the skiff's axes on the level.
+pub struct Under: Copy {
+    at: vec2,
+    bz: vec2,
+    bx: vec2,
+    h: [f32; 5],
+    across: f32,
+}
+
+/// `Under` the skiff of `s`, `swell` at `t`.
+pub fn under(s: Shot, swell: Swell, t: f32) -> Under {
+    let at = vec2(s.boat.x, s.boat.z)
+    let bz = normalize(vec2(s.boat_z.x, s.boat_z.z))
+    let bx = vec2(bz.y, -bz.x)
+    var h = [0.0; 5]
+    for k in 0..5 {
+        h[k] = swell.height(at + bz * (f32(k) - 2.0), t)
+    }
+    let across = (swell.height(at + bx * 0.6, t) - h[2]) / 0.6
+    Under { at, bz, bx, h, across }
+}
+
+/// The surface's height at `p` (x, z): between the places along it, and on out across.
+fn under_at(u: Under, p: vec2) -> f32 {
+    let r = p - u.at
+    let k = clamp(dot(r, u.bz) + 2.0, 0.0, 3.999)
+    let i = u32(k)
+    mix(u.h[i], u.h[i + 1], k - f32(i)) + u.across * dot(r, u.bx)
+}
+
+/// The water the hull presses down (`engine::stir`), each of `sheet`'s cells (m): the hull as it
+/// sits in the surface under it (`under`), deeper the further inside its waterline the cell lies.
+/// As the skiff heaves up out of the water, or pitches and rolls, the waterline it cuts moves
+/// and its dent with it.
+pub fn pressed(s: Shot, sheet: Sheet, u: Under) -> Vec<f32> {
+    let n = sheet.n
+    var press: Vec<f32> = Vec::filled(n * n, 0.0)
+    let reach = 3.0
+    let lo = (u.at - vec2(reach) - sheet.middle(i: 0, j: 0)) / sheet.cell
+    let hi = (u.at + vec2(reach) - sheet.middle(i: 0, j: 0)) / sheet.cell
+    let i0 = u32(clamp(floor(lo.x), 0.0, f32(n - 1)))
+    let i1 = u32(clamp(ceil(hi.x), 0.0, f32(n - 1)))
+    let j0 = u32(clamp(floor(lo.y), 0.0, f32(n - 1)))
+    let j1 = u32(clamp(ceil(hi.y), 0.0, f32(n - 1)))
+    for j in j0..j1 + 1 {
+        for i in i0..i1 + 1 {
+            let m = sheet.middle(i: i, j: j)
+            let inside = -hull_off(s, vec3(m.x, under_at(u, m), m.y))
+            press[j * n + i] = PRESS * smoothstep(0.0, 0.3, inside)
+        }
+    }
+    press
+}
+
+/// How many places along each side the wash is kept at (`washed`), stern to bow.
+pub const WASH_AT: u32 = 12
+
+/// How fast the planks the sea's washed up dry back down (m/s, up the hull): a wave's wash shows
+/// on them for a second or so after it's fallen back.
+const DRY: f32 = 0.12
+
+/// How far along the hull (m, from its middle) place `k` (of `WASH_AT`, stern to bow) lies.
+pub fn wash_place(k: u32) -> f32 {
+    -2.0 + 4.0 * f32(k) / f32(WASH_AT - 1)
+}
+
+/// How far up the hull's side the sea has washed, at each place along it (`wash_place`): port's,
+/// then starboard's (m, up from its waterline, `s.boat_y`'s plane through `s.boat`). As high as
+/// the water stands there now (the surface `under` it, the bow's wave on it, `lifted`, and what
+/// the hull's stirred, `sheet`), or as high as it lately stood (`last`, `dt` s ago), drying down.
+/// Kept in the skiff's own frame, so a wave's mark stays on the planks it wet.
+pub fn washed(s: Shot, sheet: Sheet, u: Under, last: [f32; 24], dt: f32) -> [f32; 24] {
+    var out = [0.0; 24]
+    let fresh = dt < 0.0 || dt > 1.0
+    for side in 0..2 {
+        let sx = if side == 0 { -1.0 } else { 1.0 }
+        for k in 0..WASH_AT {
+            let along = wash_place(k)
+            let w = along / 2.2
+            let beam = 0.62 * sqrt(max(1.0 - w * w, 0.0)) + 0.05
+            let p = u.at + u.bz * along + u.bx * (sx * beam)
+            let y = under_at(u, p)
+            let water = y + lifted(s, vec3(p.x, y, p.y)) + sheet.rise_at(p)
+            let rel = vec3(p.x, water, p.y) - s.boat
+            // (Up from the waterline's plane, along the hull's up.)
+            let up = dot(rel, s.boat_y) / max(s.boat_y.y, 0.5)
+            let i = side * WASH_AT + k
+            out[i] = if fresh { up } else { max(up, last[i] - DRY * dt) }
+        }
+    }
+    out
+}
 
 /// How far the skiff's way has it from drifting (0) to running (1): its wake whitens, lengthens
 /// and its bow throws spray.
@@ -119,7 +225,7 @@ pub fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
         let train = exp(-x * x / 0.003) * sin(x * 80.0)
         tilt += away * (train * (0.05 + 0.1 * s.slap) * smoothstep(2.7, 0.3, r_k))
     }
-    tilt *= step(0.0, off_hull) * (1.0 - 0.7 * run)
+    tilt *= step(0.0, off_hull) * (1.0 - 0.7 * run) * (1.0 - STIRRED)
     // Where the bow's spray falls back, either side and a little aft of it: a scatter of white
     // that's left astern as it runs.
     let fall = vec2(abs(q.x) - 1.1 - 0.5 * run, q.y - 0.2 + 1.2 * run)
@@ -332,3 +438,4 @@ pub fn spray(s: Shot, lit: vec3, o: vec3, d: vec3, hit: f32) -> vec4 {
     // (No flying drops: at this size they read as cheap white dots.)
     vec4(acc.rgb, min(acc.a, 1.0))
 }
+

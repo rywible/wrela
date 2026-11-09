@@ -7,8 +7,10 @@ use main::{HALF_PAINT, HERO, KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, STACK
 use aboard::{Aboard, aboard}
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
-use sea::{MID_CALM, RIDDEN, SEA, held}
-use engine::ocean::{Ocean, Waves}
+use sea::{HULL_MID, MID_CALM, RIDDEN, SEA, held}
+use engine::ocean::{Ocean, Swell, Waves}
+use engine::stir::Stir
+use wake::{STIRRED, pressed, under, washed}
 use engine::upscale::{Body, NO_BODY, Pinhole}
 use paint::{OVERHEAD, overhead_once, paint, paint_fill, paint_half}
 use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder, yonder_low, yonder_rebuild}
@@ -25,6 +27,11 @@ use std::gpu::{
     Texture3d, VertexIndex, begin_pass, begin_pass3, depth_texture, dispatch, draw, label, texture,
     texture3d,
 }
+
+/// The water the skiff stirs (`engine::stir`): its side in cells, and a cell's (m): 12 m round
+/// it, a cell an eighth of a metre.
+const STIR_CELLS: u32 = 96
+const STIR_CELL: f32 = 0.125
 
 /// How finely a live page meets the scene (`Shot::fine`): the rock and the cathedral four times
 /// over a pixel, the rest once.
@@ -119,6 +126,13 @@ pub struct State {
     pub(package) band: u32,
     /// The hero, realized, and what he's drawn into before he's laid over the paint (`aboard`).
     pub(package) aboard: Aboard,
+    /// The water the skiff stirs (`engine::stir`), pressed by its hull (`wake::pressed`) where
+    /// it sits in the waves as they're drawn along it (`sea::HULL_MID`).
+    pub(package) stir: Stir,
+    pub(package) drawn_swell: Swell,
+    /// How far up the hull's sides the sea has lately washed (`wake::washed`), and when.
+    pub(package) wash: [f32; 24],
+    pub(package) washed_at: f32,
 }
 
 pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State {
@@ -188,6 +202,10 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         shot,
         band: 0,
         aboard: aboard(),
+        stir: Stir::new(STIR_CELLS, STIR_CELL),
+        drawn_swell: Swell::new(SEA, RIDDEN, HULL_MID),
+        wash: [0.0; 24],
+        washed_at: -1.0e4,
         width,
         height,
     }
@@ -366,8 +384,25 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     s.plain = shot
     s.body = Body { at: shot.boat, x: shot.boat_x, y: shot.boat_y, z: shot.boat_z }
     next_yon(mut s, shot)
-    // The sea as it is at this drawing.
+    // The sea as it is at this drawing, and the water the skiff stirs in it.
     s.ocean.step(held(START + time))
+    let now = held(START + time)
+    let shot = if STIRRED > 0.5 {
+        s.stir.sheet.follow(vec2(shot.boat.x, shot.boat.z))
+        let u = under(shot, s.drawn_swell, now)
+        let press = pressed(shot, s.stir.sheet, u)
+        s.stir.step(now, press)
+        s.wash = washed(shot, s.stir.sheet, u, s.wash, now - s.washed_at)
+        s.washed_at = now
+        var wash = [vec4(0.0); 6]
+        for i in 0..24 {
+            wash[i / 4][i % 4] = s.wash[i]
+        }
+        Shot { wash, ..shot }
+    } else {
+        shot
+    }
+    s.plain = shot
     // The rock's meshes, and how far each pixel is to them.
     label("rock")
     let ready = step_rock(mut s.rock, shot, s.heavens.light.sun)
@@ -395,6 +430,8 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         ripple_shape: s.ocean.ripple.shape,
         ripple_tilt: s.ocean.ripple.tilt,
         s: s.ocean.s,
+        stir: s.stir.shape,
+        stir_at: if STIRRED > 0.5 { s.stir.at() } else { vec4(0.0) },
     }
     let width = s.width
     // The half paint reads one row beyond the band for its vertical reconstruction. Its

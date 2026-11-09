@@ -105,6 +105,9 @@ pub struct Shot: Copy + GpuData {
     pub eye_aboard: vec3,
     pub sheet: vec3,
     pub rods: [Rod; 15],
+    /// How far up the hull's sides the sea has lately washed (`wake::washed`: port's twelve places
+    /// stern to bow, then starboard's, four to a `vec4`; m up from its waterline).
+    pub wash: [vec4; 6],
     /// The sail's cloth: its belly, twist, luff bubble and flogging, its leech's flutter
     /// (`sail::Motion`).
     pub cloth: vec4,
@@ -328,6 +331,7 @@ pub fn shot_at(
         eye_aboard: vec3(dot(aboard, bx), dot(aboard, by), dot(aboard, bz)),
         sheet: normalize(cross(g.mast, g.boom)),
         rods,
+        wash: [vec4(-1.0); 6],
         cloth: g.cloth,
         quiver: g.quiver,
         look: 0.0,
