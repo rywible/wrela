@@ -45,12 +45,12 @@ const SOAKS: f32 = 0.03
 /// long it lasts (s); and how fast it spreads (m²/s), so a wake's trail widens behind it.
 const CHURNS: f32 = 12.0
 const CHURN_LASTS: f32 = 10.0
-const CHURN_SPREADS: f32 = 0.2
+const CHURN_SPREADS: f32 = 0.3
 
 /// How fast thick froth bursts (a second, for each unit of it there: twice as thick, twice as
 /// fast): a mass of it is lace in a few seconds, and the faint aerated trace it leaves lasts
 /// (`CHURN_LASTS`), a long pale lane behind a short white one.
-const CHURN_THINS: f32 = 0.5
+const CHURN_THINS: f32 = 0.35
 
 /// The sheet itself, on the CPU.
 pub struct Sheet {

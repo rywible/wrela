@@ -158,6 +158,10 @@ fn turned(v: vec2, a: f32) -> vec2 {
 
 /// The shot at `time`, the skiff where the player has rowed it (`r`) on the sea's long waves
 /// (`swell`): the camera behind the skiff and above it, swung round after its steering; at rest,
+/// How much lower the skiff sits than the open sea would hold it (m), in the hollow its own
+/// weight presses into the water round it.
+const SAT: f32 = 0.08
+
 /// the rock up and to the left.
 pub fn shot_at(
     time: f32,
@@ -186,8 +190,11 @@ pub fn shot_at(
     let by = by1 * cos(pitch) - bz0 * sin(pitch)
     let bx = bx1
     // (Lifted a little on the plane; pressed down into the water as it heels into a turn, its
-    // low chine dug in, as a carving hull loads up.)
-    let boat = afloat + vec3(y: 0.06 * pl - 0.2 * abs(sin(hl)))
+    // low chine dug in, as a carving hull loads up. And a hand lower than the sea alone would
+    // hold it, `SAT`: the water it stirs is pressed down under it (`wake::PRESS`) and stands
+    // lower all round it, and riding at the open sea's height it showed its side down to the
+    // keel, a model stood on the water.)
+    let boat = afloat + vec3(y: 0.02 * pl - SAT - 0.2 * abs(sin(hl)))
     let g = pose(r, t)
     // The bounce: how sharply the skiff's fall was stopped over the last drawings. (The sea's
     // alone, `b0`, as the drawings before are: the heel's sink and the plane's lift in it
