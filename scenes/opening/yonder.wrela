@@ -977,11 +977,20 @@ pub fn yonder_rebuild(
         let had = floor(yon.held / (side * side))
         // (Not as far as what was carried: something else stands here now, and what was carried
         // is dropped, not half kept, which would leave a depth that's neither's.)
-        let k = if agree { 1.0 / min(had + 1.0, QUARTER_HOLD) } else { 1.0 }
+        let k = 1.0 / min(had + 1.0, QUARTER_HOLD)
+        // (Its colour blended in either way: a spire or a lit window thinner than the pixel is
+        // met on and off it as the offset steps, and taken whole each time it shimmered.)
         now = mix(before, lc, k)
-        let what = if lm.y != SKY { lm.y } else if now.a > 0.5 { bm.y } else { SKY }
-        marks = vec4(mix(bm.x, lm.x, k), what, mix(bm.z, lm.z, k), mix(bm.w, lm.w, k))
-        third = mix(bn, ln, k)
+        if agree {
+            let what = if lm.y != SKY { lm.y } else if now.a > 0.5 { bm.y } else { SKY }
+            marks = vec4(mix(bm.x, lm.x, k), what, mix(bm.z, lm.z, k), mix(bm.w, lm.w, k))
+            third = mix(bn, ln, k)
+        } else if lm.x < bm.x {
+            // (Not as far as what was carried: the nearer one's marks whole, not a depth that's
+            // neither's.)
+            marks = lm
+            third = ln
+        }
     } else if !agree {
         // What was carried, held to what this drawing met round it.
         var lo = vec4(1.0e9)
