@@ -672,10 +672,6 @@ pub borrow struct Waves {
     pub ripple_shape: borrow Texture<Rgba16Float>,
     pub ripple_tilt: borrow Texture<Rgba16Float>,
     pub s: borrow Sampler,
-    /// The water a body stirs, laid over the waves where it moves (`stir::Stir::shape`), and
-    /// where it lies (`stir::Stir::at`; its last 0 for none).
-    pub stir: borrow Texture<Rgba16Float>,
-    pub stir_at: vec4,
 }
 
 /// The ocean: its sea, its four tiles and what sums them, and the waves the CPU reads
