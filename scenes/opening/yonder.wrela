@@ -913,6 +913,10 @@ fn cooked_at(field: Texture3d<R32Float>, p: vec3) -> f32 {
 /// part in so many of its own.
 const QUARTER_HOLD: f32 = 4.0
 
+/// The least share of a solid met over what was carried as sky (`yonder_rebuild`): over a half,
+/// so the paint takes it as solid at once (`paint_at`).
+const OVER_SKY: f32 = 0.6
+
 /// The far things at the drawing's full size from a quarter met afresh (`yonder_low`): the pixel
 /// met this drawing adds it to what the drawings before met there, carried to where the camera
 /// has gone, as the full pass does; the others keep what was carried. They don't move, so it's
@@ -977,9 +981,14 @@ pub fn yonder_rebuild(
         let had = floor(yon.held / (side * side))
         // (Not as far as what was carried: something else stands here now, and what was carried
         // is dropped, not half kept, which would leave a depth that's neither's.)
-        let k = 1.0 / min(had + 1.0, QUARTER_HOLD)
         // (Its colour blended in either way: a spire or a lit window thinner than the pixel is
-        // met on and off it as the offset steps, and taken whole each time it shimmered.)
+        // met on and off it as the offset steps, and taken whole each time it shimmered. A solid
+        // met over what was carried as sky is taken at least half: any less, the rock's edge
+        // coming in over the sky as the camera turns stays see-through, marked solid, till it's
+        // met again.)
+        let over_sky = !agree && bm.y == SKY && lm.y != SKY
+        let held_k = 1.0 / min(had + 1.0, QUARTER_HOLD)
+        let k = if over_sky { max(held_k, OVER_SKY) } else { held_k }
         now = mix(before, lc, k)
         if agree {
             let what = if lm.y != SKY { lm.y } else if now.a > 0.5 { bm.y } else { SKY }
