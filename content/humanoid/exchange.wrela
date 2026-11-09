@@ -72,7 +72,7 @@ pub const TUNED: Tune = Tune {
     flash: X_FLASH,
     kick: X_KICK,
     push: X_PUSH,
-    blast: X_BLAST,
+    blast: if X_GIANT == 1 { X_BLAST } else { 0.0 },
     give: X_GIVE,
     twos: X_TWOS == 1,
     giant: X_GIANT == 1,
@@ -428,8 +428,34 @@ pub fn camera(time: f32, tune: Tune) -> (f32, f32) {
 /// How kinetic the moment is at clock `time`: the impact frame drains the palette.
 pub fn flash(time: f32, tune: Tune) -> f32 {
     let t = time - hit_at()
-    if t >= 0.0 && t < tune.flash { 1.0 } else { 0.0 }
+    if t < 0.0 {
+        return 0.0
+    }
+    if t < tune.flash {
+        return 1.0
+    }
+    // (After the impact frame the page is still kinetic: its lines frayed and its palette part
+    // drained through the rest of the hit-stop, then let go quickly as the bodies move.)
+    let held = max(tune.hold, tune.flash)
+    X_AFTER * exp(-max(t - held, 0.0) / X_AFTER_LIFE)
 }
+
+/// How kinetic the page stays after the impact frame (0 to 1, below the impact frame's own), and
+/// how fast it lets go once the hit-stop breaks (s).
+pub const X_AFTER: f32 = 0.7
+pub const X_AFTER_LIFE: f32 = 0.09
+
+/// The strike's force at clock `time` (`engine::anime::Force`'s `by`, 0 to 1): it builds as the
+/// fist travels in, is whole at the contact and through the hit-stop, and dies after it.
+pub fn force(time: f32, tune: Tune) -> f32 {
+    let t = time - hit_at()
+    if t < 0.0 {
+        return smoothstep(-X_SNAP_WARP, -0.02, t)
+    }
+    exp(-max(t - max(tune.hold, tune.flash), 0.0) / X_FORCE_LIFE)
+}
+
+pub const X_FORCE_LIFE: f32 = 0.12
 
 /// The way the blow travels, along the ground: the way the cross reaches (at its full reach).
 @fuel(2 ** 40)

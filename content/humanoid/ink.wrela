@@ -27,7 +27,9 @@ fn edge(a: vec4, b: vec4, na: vec3, nb: vec3) -> f32 {
     if abs(a.y - b.y) > 0.5 {
         // The horizon's a thin line; any other change of what was met, a full one.
         let horizon = (a.y == BACKDROP && b.y == GROUND) || (a.y == GROUND && b.y == BACKDROP)
-        let w = if horizon { 0.35 } else { max(near.w, 0.6) }
+        // (Under what the flecks and the fray take for a line: kinetic, the horizon stays a
+        // quiet line, no static along it.)
+        let w = if horizon { 0.18 } else { max(near.w, 0.6) }
         return w
     }
     if a.y == BACKDROP {
@@ -169,9 +171,11 @@ pub fn ink(
                 }
             }
         }
-        let flat = if body && !struck { INK * 1.2 } else { PAPER }
+        // (The ink black: at `INK`'s own value it showed a grey violet, weak on the paper.)
+        let black = INK * 0.1
+        let flat = if body && !struck { black } else { PAPER }
         let bl = blast(s, px, scale)
-        let fc = mix(mix(flat, PAPER, bl.y), INK * 1.2, max(band(e, edge: 0.35, soft: 0.1), bl.x))
+        let fc = mix(mix(flat, PAPER, bl.y), black, max(band(e, edge: 0.35, soft: 0.1), bl.x))
         return vec4(display(fc), 1.0)
     }
     // The energy here: the frame's, or the most of this pixel's and its near neighbours'.

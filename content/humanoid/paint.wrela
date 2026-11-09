@@ -68,22 +68,35 @@ pub fn ground(vertex: VertexIndex, shot: Shot) -> GroundVertex {
     GroundVertex { clip: ClipPosition { position: shot.cam.clip(world) }, world }
 }
 
+/// A body's shadow on the ground at `off` from its feet: how deep (pooled under them, and cast
+/// away from the sun a body's length), and how far along the cast it is (m).
+fn shadow_of(off: vec2, sun: vec3) -> (f32, f32) {
+    let away = -normalize(sun.xz)
+    let along = dot(off, away)
+    let across = dot(off, vec2(-away.y, away.x))
+    let reach = 1.8 * length(sun.xz) / max(sun.y, 0.2)
+    let cast = band(along, edge: -0.15, soft: 0.1) *
+        (1.0 - band(along, reach, 0.4)) *
+        (1.0 - band(abs(across), 0.22 + 0.05 * along, 0.08))
+    let pool = 1.0 - band(length(off * vec2(1.0, 1.4)), edge: 0.32, soft: 0.12)
+    (max(cast * 0.7, pool * 0.85), along)
+}
+
 @fragment
 pub fn paint_ground(g: GroundVertex, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     let p = g.world
     let t = length(p - shot.cam.eye)
     // Its shadow: pooled under the body's feet, and thrown away from the sun along the ground,
-    // a body's length, softening as it goes.
-    let off = p.xz - shot.feet.xz
-    let away = -normalize(shot.sun.xz)
-    let along = dot(off, away)
-    let across = dot(off, vec2(-away.y, away.x))
-    let reach = 1.8 * length(shot.sun.xz) / max(shot.sun.y, 0.2)
-    let cast = band(along, edge: -0.15, soft: 0.1) *
-        (1.0 - band(along, reach, 0.4)) *
-        (1.0 - band(abs(across), 0.22 + 0.05 * along, 0.08))
-    let pool = 1.0 - band(length(off * vec2(1.0, 1.4)), edge: 0.32, soft: 0.12)
-    let shade = max(cast * 0.7, pool * 0.85)
+    // a body's length, softening as it goes. (Two fighters: one under each.)
+    let one = shadow_of(p.xz - shot.feet.xz, shot.sun)
+    var shade = one.0
+    var along = one.1
+    if shot.pair_a.w > 0.5 {
+        let (sa, la) = shadow_of(p.xz - shot.pair_a.xz, shot.sun)
+        let (sb, lb) = shadow_of(p.xz - shot.pair_b.xz, shot.sun)
+        shade = max(sa, sb)
+        along = if sa > sb { la } else { lb }
+    }
     // The page: paper with a little tooth, falling off into the wash far away.
     let tooth = noise(p.xz * 3.0) * 0.04
     let lit = PAPER * (0.86 + tooth) * mix(vec3(1.0), WARM, vec3(0.12))

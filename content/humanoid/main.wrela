@@ -741,6 +741,19 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         shot.blast = b0
         shot.blast_dir = b1
     }
+    if fight {
+        // Each fighter's own shadow, and the strike's force along the striker's arm.
+        let rw = HERO.rig.rest_world()
+        let mine = bone_at(bones, rw, "hips")
+        let his = if SHOW == 28 { exchange::PLACE[3].xyz } else { exchange::place(shown)[3].xyz }
+        shot.pair_a = vec4(mine.x, 0.0, mine.z, 1.0)
+        shot.pair_b = vec4(his.x, 0.0, his.z, 1.0)
+        if SHOW == 28 {
+            let by = exchange::force(time, exchange::TUNED)
+            shot.force_from = vec4(bone_at(bones, rw, "rightUpperArm"), 0.0)
+            shot.force_to = vec4(bone_at(bones, rw, "rightHand"), by)
+        }
+    }
     if SHOW == 29 {
         let (b0, b1) = lab::blast(s.lab, s.lab.clock)
         shot.blast = b0

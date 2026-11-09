@@ -40,6 +40,10 @@ pub struct Shot: Copy + GpuData {
     /// none), and the way it goes and its size (m).
     pub blast: vec4,
     pub blast_dir: vec4,
+    /// Two fighters' feet (xyz each; `pair_a.w` above 0.5 when there are two): the ground pools a
+    /// shadow under each, not under `feet`.
+    pub pair_a: vec4,
+    pub pair_b: vec4,
 }
 
 /// The shot of a body standing at `feet`, its left `left`: from `side` of its front (+x its left),
@@ -70,6 +74,8 @@ pub fn shot_at(
         tint: vec4(0.0),
         blast: vec4(0.0, 0.0, 0.0, -1.0),
         blast_dir: vec4(0.0),
+        pair_a: vec4(0.0),
+        pair_b: vec4(0.0),
     }
 }
 
