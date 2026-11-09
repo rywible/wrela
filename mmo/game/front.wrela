@@ -474,6 +474,18 @@ fn afresh(from: Budget, time: f32) -> Budget {
     b
 }
 
+/// The budget kept as it is at `time` while the scene isn't shown yet, on a screen whose pace is
+/// `base`: the frames of the load (the sky and the isle cooking) are the load's, not the scene's
+/// at this size. Counted, at the screen's own pace they cut the title before it rose, and held
+/// it small for its first minute. It's begun afresh when the scene shows, as on time so far.
+fn waiting(from: Budget, time: f32, base: f32) -> Budget {
+    var b = afresh(from, time)
+    b.spent = base
+    b.dt = base
+    b.before = base
+    b
+}
+
 /// The scene's height once frames at `tall` have taken `spent` seconds against a pace of `pace`:
 /// cut by what the overrun asks, the drawing's cost taken to go as its pixels (the square of its
 /// height), by no less than a step (0.85) and no more than 0.6 at once, to a multiple of 8.
@@ -784,21 +796,50 @@ fn front_a_scene_far_too_slow_is_cut_on_a_quick_screen_too() {
 }
 
 @test
+fn front_the_frames_of_the_load_dont_set_the_scenes_size() {
+    // A 120 Hz screen, the load's frames 50 ms each for three seconds: the size stays as it
+    // was, neither cut by them nor grown without a frame to go by.
+    let base = 1.0 / 120.0
+    let (slow, quick) = frame_limits(base)
+    var b = budget_at(720.0, spent: 1.0 / 60.0)
+    var time = 0.0
+    while time < 3.0 {
+        time += 0.05
+        b = waiting(b, time, base)
+        b = stepped(b, time, slow, quick, least: 360.0, most: 1440.0)
+    }
+    assert(b.tall == 720.0, f"the load left it at {b.tall}")
+    // Shown, it's judged by its own frames: quick ones grow it, once it has counted them.
+    while time < 6.5 {
+        time += base
+        b = heard(b, base, slow, time)
+        b = stepped(b, time, slow, quick, least: 360.0, most: 1440.0)
+    }
+    assert(b.tall > 720.0, f"then it grew to {b.tall}")
+}
+
+@test
 fn front_a_title_that_held_thirty_at_full_size_is_drawn_smaller_to_keep_the_screens_pace() {
     // The title at 1440 costing 30 ms (3 ms and 27 by its pixels): it ran sharp at 30 a second.
-    // On a 60 Hz screen it's now cut to a size that keeps 60 (under 16.7 ms), within two
-    // seconds, and stays there; on a 120 Hz screen to one that keeps 120.
-    let (at60, _, _) = rehearsed(
+    // On a 60 Hz screen it's now cut to a size that keeps 60 (under 16.7 ms: 1024 at most),
+    // within two seconds, and a minute on is at the largest that does, not cut to the least;
+    // on a 120 Hz screen to one that keeps 120 (640 at most).
+    let (soon, _, _) = rehearsed(
         budget_at(1440.0, spent: 0.03),
         hz: 60.0,
         fixed: 0.003,
         per: 0.027,
         seconds: 2.0,
     )
-    assert(
-        0.003 + 0.027 * (at60.tall / 1440.0) * (at60.tall / 1440.0) <= 1.0 / 60.0,
-        f"at 60 Hz it keeps {at60.tall}",
+    assert(soon.tall >= 800.0 && soon.tall <= 1024.0, f"at 60 Hz it's cut to {soon.tall}")
+    let (at60, _, _) = rehearsed(
+        budget_at(1440.0, spent: 0.03),
+        hz: 60.0,
+        fixed: 0.003,
+        per: 0.027,
+        seconds: 60.0,
     )
+    assert(at60.tall >= 896.0 && at60.tall <= 1024.0, f"at 60 Hz it keeps {at60.tall}")
     let (at120, _, late) = rehearsed(
         budget_at(1440.0, spent: 0.03),
         hz: 120.0,
@@ -806,10 +847,7 @@ fn front_a_title_that_held_thirty_at_full_size_is_drawn_smaller_to_keep_the_scre
         per: 0.027,
         seconds: 60.0,
     )
-    assert(
-        0.003 + 0.027 * (at120.tall / 1440.0) * (at120.tall / 1440.0) <= 1.0 / 120.0,
-        f"at 120 Hz it keeps {at120.tall}",
-    )
+    assert(at120.tall >= 560.0 && at120.tall <= 640.0, f"at 120 Hz it keeps {at120.tall}")
     assert(late < 4.0, f"{late} s of late frames")
 }
 
@@ -956,7 +994,9 @@ pub fn frame<A: Account>(
     f.reduced = reduced
     if f.drawings > 2 && dt > 0.0 {
         let (slow, _) = frame_limits(f.base)
-        f.budget = heard(f.budget, dt, slow, f.time)
+        f.budget = if f.cooked { heard(f.budget, dt, slow, f.time) } else {
+            waiting(f.budget, f.time, f.base)
+        }
         // Infer the screen's pace from its fastest window; later rendering load must not
         // make a known faster display appear slower.
         f.quickest = min(f.quickest, dt)
