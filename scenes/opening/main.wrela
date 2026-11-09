@@ -123,6 +123,17 @@ pub const ROCK_SPARSE: bool = true
 /// `paint::paint_fill`): about half the paint's cost.
 pub const HALF_PAINT: bool = true
 
+/// Whether the rock and the cathedral are drawn into a picture of their own pinned to the world,
+/// not the screen (`engine::far::Vista`, `yonder::vista_look`), a band of its rows a drawing, each
+/// texel the mean of its looks, and read each drawing through its rays (`yonder::far_merge`).
+/// Off, they're met in the screen's pixels a few at a time with the stacks (`QUARTER`,
+/// `ROCK_SPARSE`), and a spire or a window finer than a pixel flickers as it's met on and off.
+pub const VISTA: bool = true
+
+/// The vista's texels a side till it's first aimed: then as many as the screen asks
+/// (`engine::far::vista_side`), every texel looked at once in `engine::far::SWEEP` drawings.
+pub const VISTA_SIZE: u32 = 512
+
 /// Whether the rock and the cathedral are realized as meshes (`rock`), which say where the far
 /// pass's march starts: a few steps to the surface, none where no mesh is near.
 pub const MESHED: bool = true
@@ -154,8 +165,23 @@ pub const UPSCALE: bool = false
 /// that can't be asked for timestamps, as the render box's (`--set TIMINGS=true`).
 pub const TIMINGS: bool = false
 
+/// Whether the clouds move (`--set MOVING_CLOUDS=true`): off (Ryan, Nov 8: no refresh glitch, and
+/// the lightning reads better over a still deck), the dome is marched whole once and
+/// then held, the clouds' march skipped every drawing after.
+pub const MOVING_CLOUDS: bool = false
+
 /// The passes `TIMINGS` prints.
-const TIMED: [Text; 7] = ["clouds", "ocean", "rock", "yonder", "paint", "weather", "ink"]
+const TIMED: [Text; 9] = [
+    "clouds",
+    "ocean",
+    "rock",
+    "vista",
+    "yonder",
+    "merge",
+    "paint",
+    "weather",
+    "ink",
+]
 
 /// Whether the hero (Hakuro, content/hakuro: his fields realized and drawn into the painted
 /// scene, `aboard`) stands to the sail: 1, him; 0 a few plain solids in his place, traced, to
