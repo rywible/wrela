@@ -146,6 +146,10 @@ pub const X_ROCK: f32 = 1.0
 
 /// How far above where it struck the fist may rise after the hit-stop (m).
 pub const X_RISE: f32 = 0.04
+/// How much of his head's rise the fist follows while it's on it and carrying through, and up
+/// to how far (m).
+pub const X_RISE_SHARE: f32 = 0.5
+pub const X_RISE_ON: f32 = 0.14
 pub const X_BACK_OFF_TIME: f32 = 0.16
 pub const X_LET_GO: f32 = 0.14
 /// How far his trunk leans on into the blow through the hit-stop at `X_GRIND` (radians).
@@ -406,7 +410,7 @@ pub fn foe(p: f32) -> Pose {
     )
     // (His guard knocked open by the blow, then gathered again: the take raises his hands to
     // his face as he goes, and they met the fist that had just landed there.)
-    let r = opened(r, i0, away, smoothstep(0.0, 0.08, v) * (1.0 - smoothstep(0.26, 0.62, v)))
+    let r = opened(r, i0, away, v)
     if v < home {
         return r
     }
@@ -431,7 +435,7 @@ pub const X_REAR_TO: f32 = 0.62
 /// When the take lifts his lead foot to step it back, from and to (s after the contact, played):
 /// till then it's kept where it stood (it crept under him through the hit-stop).
 pub const X_LEAD_FROM: f32 = 0.05
-pub const X_LEAD_TO: f32 = 0.1
+pub const X_LEAD_TO: f32 = 0.26
 
 /// `p` with his lead (left) foot kept `lead` (0 to 1) and his rear (right) foot `rear` of the way
 /// back where `i0` has them; the rear one lifted a little as it's let go, a step, not a skate.
@@ -529,17 +533,29 @@ fn knocked(p: Pose, away: vec3, k: f32) -> Pose {
     c.pose(0.0)
 }
 
-/// How far the blow knocks his guard open (m his hands are thrown apart; they drop half as
-/// far), and how much of the way his hands are left behind where his guard held them as his
-/// body's knocked back from under them (0 to 1).
-pub const X_OPEN: f32 = 0.24
-pub const X_LAG: f32 = 0.7
+/// How much bigger his fist is drawn on the contact drawing (of its size, added), given back
+/// as the hit-stop breaks.
+pub const X_FIST: f32 = 0.35
 
-/// `p` with his guard broken open by `k` (0 to 1), the blow going `away`: his hands left behind
-/// where `i0` (the contact drawing) held them as his head and trunk go, thrown apart and
-/// dropped a little, his arms dragged out after him; they don't rise to the fist, nor fold.
-fn opened(p: Pose, i0: Pose, away: vec3, k: f32) -> Pose {
-    if k <= 1.0e-3 || X_OPEN <= 0.0 {
+/// How far the blow throws his arms (m): apart, down at once and further as they fall
+/// (`X_FLING_DROP`), and back the way he's going; how long the
+/// throw takes to reach them (s: his hands trail his trunk by a few drawings), and how much less
+/// his rear arm is thrown than his lead.
+pub const X_OPEN: f32 = 0.3
+pub const X_FLING_DOWN: f32 = 0.12
+pub const X_FLING_DROP: f32 = 0.3
+pub const X_FLING_BACK: f32 = 0.45
+pub const X_FLING_LATE: f32 = 0.16
+pub const X_FLING_REAR: f32 = 0.65
+
+/// `p` (`v` s after the contact) with his arms thrown by the blow, going `away`: his guard as
+/// `i0` (the contact drawing) held it is left behind for a drawing or two as his trunk's
+/// knocked from under it, then carried with his chest and flung apart, back past it and down,
+/// then dropped as he gathers himself. They don't rise to the fist, nor fold, nor stay
+/// reaching at the one who hit him.
+fn opened(p: Pose, i0: Pose, away: vec3, v: f32) -> Pose {
+    let k = 1.0 - smoothstep(0.34, 0.8, v)
+    if k <= 1.0e-3 || v <= 0.0 || X_OPEN <= 0.0 {
         return p
     }
     borrow rig = HERO.rig
@@ -547,19 +563,30 @@ fn opened(p: Pose, i0: Pose, away: vec3, k: f32) -> Pose {
     var c = c0.clone()
     var w = stride::worlds(rig, c0, 0)
     let w0 = stride::worlds(rig, one_pose(i0), 0)
+    let chest = rig.find("upperChest")
     let mid = (w0[rig.find("leftUpperArm")].t + w0[rig.find("rightUpperArm")].t) * 0.5
     for side in 0..2 {
         let h = rig.find(if side == 0 { "leftHand" } else { "rightHand" })
+        let lead = (side == 0) == LEAD_LEFT
+        let much = if lead { 1.0 } else { X_FLING_REAR }
+        // (His rear arm a drawing later than his lead: thrown together they're a puppet's.)
+        let late = if lead { 0.0 } else { 0.033 }
         var out = w0[h].t - mid
         out.y = 0.0
         out = out - away * dot(out, away)
         let apart = if length(out) > 1.0e-4 { normalize(out) } else { vec3(0.0) }
-        let left = w0[h].t + (apart + vec3(0.0, -0.5, 0.0)) * X_OPEN
+        let thrown = smoothstep(0.02 + late, 0.02 + late + X_FLING_LATE, v) * much
+        let flung = w[chest].t +
+            (w0[h].t - w0[chest].t) +
+            (apart * X_OPEN + away * X_FLING_BACK) * thrown -
+            // (Loose, falling as he goes: held out level behind him they were a diver's.)
+            vec3(0.0, X_FLING_DOWN * thrown + X_FLING_DROP * much * smoothstep(0.1, 0.45, v), 0.0)
+        let at = mix(w0[h].t, flung, smoothstep(late, late + 0.12, v))
         // (His wrist keeps its own bend: his hand left facing as it did while his forearm swung
         // out from under it, his wrist was wrung and his skin stood off it in a spike.)
         let fore = rig.find(if side == 0 { "leftLowerArm" } else { "rightLowerArm" })
         let bend = w[fore].q.inverse().mul(w[h].q)
-        arm_to(rig, mut w, u32(side), mix(w[h].t, left, X_LAG * k))
+        arm_to(rig, mut w, u32(side), mix(w[h].t, at, k))
         stride::turn_below(rig, mut w, h, w[fore].q.mul(bend).mul(w[h].q.inverse()))
     }
     stride::store(rig, w, mut c, 0)
@@ -1001,7 +1028,7 @@ fn striker_connecting(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
         // (Through the hit-stop it stays on the place it struck, riding it back along the blow,
         // not up as the head tips back.)
         let moved = struck_point(at, pf, t) - at
-        let on = at + BLOW * max(dot(moved, BLOW), 0.0) + vec3(0.0, moved.y * 0.3, 0.0)
+        let on = at + BLOW * max(dot(moved, BLOW), 0.0) + vec3(0.0, moved.y * X_RISE_SHARE, 0.0)
         arm_to(rig, mut w, 1, mix(own, on, 1.0 - smoothstep(free, end, since)))
     } else {
         // (After, it goes no further along the blow than where it struck, and a hair, and it's
@@ -1036,9 +1063,14 @@ fn striker_connecting(ps: f32, pf: f32, wall: f32, t: Tune) -> Pose {
             let rode = max(dot(struck_point(at, h + crept(t.hold, t), t) - at, BLOW), 0.0)
             let want = rode + X_CARRY * smoothstep(0.0, 0.1, u)
             held += BLOW * ((want - dot(held - at, BLOW)) * keep)
+            // (And up with it, some of the way: his head leaves upward as it tips, and a fist
+            // kept level slid off under his chin onto his collar.)
+            let up = clamp(struck_point(at, pf, t).y - at.y, 0.0, X_RISE_ON) * X_RISE_SHARE
+            held.y = min(mix(held.y, at.y + up, keep), at.y + max(X_RISE, up))
+        } else {
+            // (Nor up his face as his chin tips back: no higher than it struck.)
+            held.y = min(held.y, at.y + X_RISE)
         }
-        // (Nor up his face as his chin tips back: no higher than it struck.)
-        held.y = min(held.y, at.y + X_RISE)
         arm_to(rig, mut w, 1, held)
     }
     // The shock: as the hit-stop breaks, the blow runs back up the arm the way it came, a

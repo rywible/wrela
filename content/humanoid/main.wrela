@@ -681,7 +681,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                 fist,
                 way,
                 exchange::X_SMEAR * swift,
-                1.0 + 0.3 * max(swift, landed),
+                1.0 + max(0.3 * swift, exchange::X_FIST * landed),
             ),
         )
     }
