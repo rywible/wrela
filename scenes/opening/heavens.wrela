@@ -11,6 +11,7 @@ use std::gpu::{Address, Sampler, sampler}
 use std::math::PI
 use look::{BREAK, LIFT, OVERCAST, SUN, THIN, VEIL}
 use wind::{cleared_at, climates, gale, mean_wind}
+use main::MOVING_CLOUDS
 
 /// The engine's approved switches: the sky's march at full size, or at half each way where
 /// `main::HALF_SKY` asks.
@@ -39,7 +40,17 @@ pub struct Heavens {
     /// The cook's steps done: the tables (1), the noises (2), the weather and its shadow (3);
     /// after, the dome marches.
     cooked: u32,
+    /// With the clouds held (`main::MOVING_CLOUDS` off): the round of the dome's march it's
+    /// marched until, and the storm and the eye's place it was last marched for.
+    until: u32,
+    held_storm: f32,
+    held_at: vec2,
 }
+
+/// How far the storm (`Heavens::storm`) and the eye (m) go from what the held dome was marched
+/// for before it's marched a round again.
+const RESTORM: f32 = 0.05
+const REMOVE: f32 = 3000.0
 
 /// The weather: overcast (`OVERCAST`). A deck of heavy cloud over the whole sky, thicker and
 /// thinner in broad swells; no clear stretch toward the sun; a quick drift before the gale.
@@ -141,6 +152,9 @@ pub fn heavens(sun: vec3, eye: f32) -> Heavens {
         storm: OVERCAST,
         wind: gale(),
         cooked: 0,
+        until: 0,
+        held_storm: OVERCAST,
+        held_at: vec2(0.0),
     }
 }
 
@@ -167,8 +181,20 @@ impl Heavens {
                 self.sky.cook_weather_band(w, band)
             }
             self.sky.cook_shadow(self.light.sun, self.repeat, shadows: true)
+        } else if !MOVING_CLOUDS &&
+            self.sky.frames >= max(self.until, 2 * self.sky.phases) &&
+            abs(self.storm - self.held_storm) < RESTORM &&
+            length(eye.xz - self.held_at) < REMOVE {
+            // (Held: marched whole twice at load, the second round's upsample the seamless one,
+            // and a round again only when the weather or the eye's place has moved on from it.)
         } else {
-            let drift = weather().wind * time
+            if !MOVING_CLOUDS && self.sky.frames >= max(self.until, 2 * self.sky.phases) {
+                self.until = self.sky.frames + self.sky.phases
+            }
+            self.held_storm = self.storm
+            self.held_at = eye.xz
+            // (Held, the field where it lay at the start: a round marched later matches the rest.)
+            let drift = if MOVING_CLOUDS { weather().wind * time } else { vec2(0.0) }
             self.clouds = self.sky.march::<Approved>(
                 self.air,
                 self.light,

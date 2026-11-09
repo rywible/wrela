@@ -690,8 +690,10 @@ pub fn ink(
             c = mix(c, deep * (luma(c) / luma(deep)) * 0.86, top_k * (0.15 + 0.15 * away))
         } else { c *= mix(vec3(1.0), vec3(0.72, 0.82, 1.02), top_k) }
     }
-    // (For the upscaler (`engine::upscale`), with `settled`: 0 where the pixel is the far pass's,
-    // which its own drawings have settled at the pixel's middle, 1 where it was met through the
-    // jittered ray.)
-    vec4(c, if settled == 1 && m0.y >= ROCK { 0.0 } else { 1.0 })
+    // (For the upscaler (`engine::upscale`), with `settled`: how much of the pixel was met
+    // through the jittered ray, as the paint left it in the colour's alpha (the rest the far
+    // pass's, which its own drawings settled at the pixel's middle). By its share, not by what
+    // the pixel is: a far edge's pixel half covered would flip between the two as it crossed
+    // half, and the upscaler read it at a jitter's distance apart.)
+    vec4(c, if settled == 1 { clamp(at(colour, px, size).w, 0.0, 1.0) } else { 1.0 })
 }
