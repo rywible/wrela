@@ -30,6 +30,16 @@ pub struct Shot: Copy + GpuData {
     pub feet: vec3,
     /// The body's left (its hips'), so its far side's limbs are drawn a step back.
     pub left: vec3,
+    /// A strike's force (`engine::anime::Force`): where it runs from (xyz) and how hard (w, 0 to
+    /// 1), and where to: the ink piles its fury along it.
+    pub force_from: vec4,
+    pub force_to: vec4,
+    /// What the body's clothes are multiplied by (rgb), and how much (w): a second fighter.
+    pub tint: vec4,
+    /// A blast thrown off a blow (`exchange::blast`): where it starts and its age (s; below 0,
+    /// none), and the way it goes and its size (m).
+    pub blast: vec4,
+    pub blast_dir: vec4,
 }
 
 /// The shot of a body standing at `feet`, its left `left`: from `side` of its front (+x its left),
@@ -55,6 +65,11 @@ pub fn shot_at(
         sun: normalize(SUN),
         feet,
         left,
+        force_from: vec4(0.0),
+        force_to: vec4(0.0),
+        tint: vec4(0.0),
+        blast: vec4(0.0, 0.0, 0.0, -1.0),
+        blast_dir: vec4(0.0),
     }
 }
 

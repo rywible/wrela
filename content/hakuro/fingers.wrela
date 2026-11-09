@@ -1,0 +1,76 @@
+// His fingers: how each joint curls toward his palm, a hand hanging relaxed and a closed fist, so
+// a move whose capture holds no fingers (the fighting moves) still closes his hands.
+
+use hakuro::skeleton
+use engine::creature::{Bone, Skeleton}
+use std::transform::translate
+
+/// A turn of `degrees` about `axis` (unit) about the point `at`.
+pub fn turn_about(axis: vec3, degrees: f32, at: vec3) -> mat4 {
+    let a = degrees * 0.0174532925
+    let c = cos(a)
+    let s = sin(a)
+    let t = 1.0 - c
+    let x = axis.x
+    let y = axis.y
+    let z = axis.z
+    let r = mat4(
+        vec4(t * x * x + c, t * x * y + s * z, t * x * z - s * y, 0.0),
+        vec4(t * x * y - s * z, t * y * y + c, t * y * z + s * x, 0.0),
+        vec4(t * x * z + s * y, t * y * z - s * x, t * z * z + c, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    )
+    translate(at) * r * translate(-at)
+}
+
+/// Whether bone `b` is `of` or below it.
+pub fn below(s: Skeleton, b: u32, of: u32) -> bool {
+    var i = b
+    loop {
+        if i == of {
+            return true
+        }
+        let p = s.parent(Bone { index: i }).index
+        if p == i {
+            return false
+        }
+        i = p
+    }
+}
+
+/// `m` with each finger's joints set by its hand's, curled toward the palm by `curl` (degrees a
+/// joint, as `HIP_CURL`), each joint about its own rest z (the thumb's, `THUMB_AXIS`).
+pub fn curled(m: [mat4; 64], curl: [f32; 15]) -> [mat4; 64] {
+    let s = skeleton()
+    var out = m
+    for side in 0..2 {
+        for j in 0..15 {
+            out[26 + 2 * j + side] = out[12 + side]
+        }
+    }
+    for side in 0..2 {
+        for j in 0..15 {
+            let b = 26 + 2 * j + side
+            let at = (out[b] * vec4(s.rest(Bone { index: b }), 1.0)).xyz
+            let axis = normalize((out[b] * vec4(if j >= 12 { THUMB_AXIS } else { vec3(0.0, 0.0, 1.0) }, 0.0)).xyz)
+            let r = turn_about(axis, curl[j], at)
+            for k in 26..56 {
+                if below(s, k, b) {
+                    out[k] = r * out[k]
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A hand hanging relaxed (degrees, as `HIP_CURL`): the fingers curled more toward the little
+/// one, the thumb resting along the index.
+pub const RELAXED_CURL = [30.0, 40.0, 25.0, 36.0, 46.0, 25.0, 42.0, 50.0, 28.0, 48.0, 55.0, 30.0, 10.0, 22.0, 18.0]
+
+/// A closed fist's curl (degrees; index, middle, ring, little, thumb): knuckles square, the
+/// thumb folded across the middle bones.
+pub const FIST_CURL = [88.0, 105.0, 70.0, 90.0, 108.0, 70.0, 92.0, 108.0, 70.0, 94.0, 108.0, 70.0, 35.0, 50.0, 40.0]
+
+/// The thumb's joints' axis at rest (his left's): across its pad, so it closes toward the palm.
+pub const THUMB_AXIS = vec3(-0.35, 0.55, 0.76)
