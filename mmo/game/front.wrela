@@ -212,12 +212,15 @@ pub fn init(fonts: take Fonts) -> Front {
         budget: Budget {
             tall: 720.0,
             spent: 1.0 / 60.0,
+            dt: 1.0 / 60.0,
+            before: 1.0 / 60.0,
             resized_at: 0.0,
             ceiling: TALLEST,
             ceiling_until: 0.0,
             ceiling_for: CEILING,
             grew_at: -PROBE,
             grew_from: 720.0,
+            probing: false,
         },
         base: 1.0 / 60.0,
         quickest: 1.0,
@@ -370,26 +373,71 @@ fn front_slow_rendering_cannot_relax_a_previously_observed_frame_budget() {
     }
 }
 
-/// The budget of the scene's height: the height it would draw the scene at (pixels), the frames'
-/// average seconds, when it last changed the height (s), the size that last ran slow (kept under
-/// until `ceiling_until`, `ceiling_for` seconds at a time), and its last growth: when (s) and
-/// from what height.
+/// The budget of the scene's height: the height it would draw the scene at (pixels); the frames'
+/// average seconds, and the last two frames' own; when it last changed the height (s); the size
+/// that last ran slow (kept under until `ceiling_until`, `ceiling_for` seconds at a time); and its
+/// last growth: when (s), from what height, and whether it's still on trial (`PROBE`).
 struct Budget: Copy {
     tall: f32,
     spent: f32,
+    dt: f32,
+    before: f32,
     resized_at: f32,
     ceiling: f32,
     ceiling_until: f32,
     ceiling_for: f32,
     grew_at: f32,
     grew_from: f32,
+    probing: bool,
+}
+
+/// A budget at `tall`, its frames so far taking `spent` seconds.
+fn budget_at(tall: f32, spent: f32) -> Budget {
+    Budget {
+        tall,
+        spent,
+        dt: spent,
+        before: spent,
+        resized_at: -10.0,
+        ceiling: TALLEST,
+        ceiling_until: 0.0,
+        ceiling_for: CEILING,
+        grew_at: -PROBE,
+        grew_from: tall,
+        probing: false,
+    }
+}
+
+/// The budget once a frame has taken `dt` seconds on a screen whose own pace is `base`. (A
+/// frame counts for three of the screen's at most: one long frame, a tab come back to or a
+/// pause of the browser's, is not a slow scene, and counted whole it cut the scene's size for a
+/// minute. Three is as slow as the deepest cut answers.)
+fn heard(from: Budget, dt: f32, base: f32) -> Budget {
+    var b = from
+    b.before = b.dt
+    b.dt = dt
+    b.spent += (min(dt, 3.0 * base) - b.spent) * 0.1
+    b
+}
+
+/// The budget begun afresh at `time`, at the size it has: what ran slow at another pace (the
+/// title's, or the rowing's) doesn't hold it under, and slow frames now aren't put down to a
+/// growth made then.
+fn afresh(from: Budget, time: f32) -> Budget {
+    var b = from
+    b.ceiling_until = 0.0
+    b.ceiling_for = CEILING
+    b.grew_at = time - PROBE
+    b.probing = false
+    b
 }
 
 /// The scene's height once frames at `tall` have taken `spent` seconds against a pace of `pace`:
 /// cut by what the overrun asks, the drawing's cost taken to go as its pixels (the square of its
 /// height), by no less than a step (0.85) and no more than 0.6 at once, to a multiple of 8.
-/// (A step a second and a half apart, whatever the overrun, took a scene twice too slow, as the
-/// title's size can be when Play is pressed, five steps to settle: six seconds of slow frames.)
+/// (A step a second and a half apart, whatever the overrun, took a scene three times too slow,
+/// as the title's size can be when Play is pressed, five steps to settle: six seconds of slow
+/// frames.)
 fn cut(tall: f32, spent: f32, pace: f32) -> f32 {
     let k = clamp(sqrt(pace / max(spent, pace)), 0.6, 0.85)
     round(tall * k / 8.0) * 8.0
@@ -400,30 +448,46 @@ fn cut(tall: f32, spent: f32, pace: f32) -> f32 {
 /// least a second and a half after the last change to go smaller and three to grow.
 fn stepped(from: Budget, time: f32, slow: f32, quick: f32, least: f32, most: f32) -> Budget {
     var b = from
+    // (A growth that has held is no longer on trial, and the next one that fails waits the
+    // first wait again: the scene got cheaper, and what's above is a new edge.)
+    if b.probing && time - b.grew_at >= PROBE {
+        b.probing = false
+        b.ceiling_for = CEILING
+    }
     // A size that ran slow isn't tried again for a while: the scene would only pop between two.
     let ceiling = if time < b.ceiling_until { min(b.ceiling, most) } else { most }
     let since = time - b.resized_at
     let was = b.tall
     if b.spent > slow && since > 1.5 {
-        if time - b.grew_at < PROBE {
+        // How slow for sure: the average, but no slower than each of the last two frames was (a
+        // frame's time is whole frames of the screen's, and the average right after it crosses
+        // the limit or after one long frame says little).
+        let sure = min(b.spent, min(b.dt, b.before))
+        if b.probing {
             // Slow just after growing: the growth was a step too far. Back to the size that held,
-            // not a cut under it, and twice as long before it's tried again: tried every minute,
-            // it was a second and a half of slow frames and two pops of the scene's size a minute,
-            // for as long as the scene was up.
+            // not a cut under it, and twice as long before it's tried again: tried every minute
+            // and cut under, it was a second and a half of slow frames and two pops of the
+            // scene's size a minute, for as long as the scene was up.
             b.tall = min(b.tall, b.grew_from)
-            b.ceiling_for = min(b.ceiling_for * 2.0, CEILING_MOST)
+            if sure > quick {
+                b.ceiling_for = min(b.ceiling_for * 2.0, CEILING_MOST)
+            }
+            b.ceiling = b.tall
         } else {
-            // Too slow: cut well under, and stay under that for a while, so the scene settles at
-            // a size it keeps instead of climbing back to the edge and falling off it again.
-            b.tall = max(least, cut(b.tall, b.spent, quick))
+            // Too slow: cut well under. It may grow back at once as far as a step under the size
+            // that ran slow (a cut deeper than a step may have gone too far), and stays under
+            // that for a while, so the scene settles at a size it keeps instead of climbing back
+            // to the edge and falling off it again.
+            b.ceiling = max(least, round(b.tall * 0.85 / 8.0) * 8.0)
+            b.tall = max(least, cut(b.tall, sure, quick))
             b.ceiling_for = CEILING
         }
-        b.grew_at = time - PROBE
-        b.ceiling = b.tall
+        b.probing = false
         b.ceiling_until = time + b.ceiling_for
     } else if b.spent < quick && since > 3.0 && b.tall < ceiling {
         b.grew_from = b.tall
         b.grew_at = time
+        b.probing = true
         b.tall = min(ceiling, round(b.tall * 1.12 / 8.0) * 8.0)
     }
     b.tall = clamp(b.tall, least, most)
@@ -436,20 +500,34 @@ fn stepped(from: Budget, time: f32, slow: f32, quick: f32, least: f32, most: f32
 
 /// A rehearsal of the budget: `seconds` of a screen that shows `hz` frames a second, the scene
 /// costing `fixed + per * (tall / 1440)^2` seconds a drawing and each frame taking a whole number
-/// of the screen's, rowing. Gives the budget after, how many times the height changed, and the
-/// seconds spent in frames that missed the screen's pace.
-fn rehearsed(from: Budget, hz: f32, fixed: f32, per: f32, seconds: f32) -> (Budget, u32, f32) {
+/// of the screen's, rowing, with one frame of `hitch` seconds every `every` seconds (none if 0).
+/// Gives the budget after, how many times the height changed, and the seconds spent in frames
+/// that missed the screen's pace.
+fn rehearsed(
+    from: Budget,
+    hz: f32,
+    fixed: f32,
+    per: f32,
+    seconds: f32,
+    hitch: f32 = 0.0,
+    every: f32 = 0.0,
+) -> (Budget, u32, f32) {
     var b = from
     let base = 1.0 / hz
     let (slow, quick) = frame_limits(title: false, base: base)
     var time = 0.0
+    var next_hitch = every
     var changes = 0
     var late = 0.0
     while time < seconds {
         let cost = fixed + per * (b.tall / 1440.0) * (b.tall / 1440.0)
-        let dt = base * max(1.0, ceil(cost / base - 0.0001))
+        var dt = base * max(1.0, ceil(cost / base - 0.0001))
+        if every > 0.0 && time >= next_hitch {
+            dt = hitch
+            next_hitch += every
+        }
         time += dt
-        b.spent += (dt - b.spent) * 0.1
+        b = heard(b, dt, base)
         let was = b.tall
         b = stepped(b, time, slow, quick, least: 360.0, most: 1440.0)
         if b.tall != was {
@@ -460,20 +538,6 @@ fn rehearsed(from: Budget, hz: f32, fixed: f32, per: f32, seconds: f32) -> (Budg
         }
     }
     (b, changes, late)
-}
-
-/// A budget at `tall`, its frames so far taking `spent` seconds.
-fn budget_at(tall: f32, spent: f32) -> Budget {
-    Budget {
-        tall,
-        spent,
-        resized_at: -10.0,
-        ceiling: TALLEST,
-        ceiling_until: 0.0,
-        ceiling_for: CEILING,
-        grew_at: -PROBE,
-        grew_from: tall,
-    }
 }
 
 @test
@@ -489,19 +553,17 @@ fn front_a_scene_twice_too_slow_is_cut_at_once_and_a_little_slow_by_a_step() {
 }
 
 @test
-fn front_play_at_a_size_three_times_too_slow_settles_in_two_cuts() {
+fn front_play_at_a_size_three_times_too_slow_holds_the_pace_within_two_seconds() {
     // A 120 Hz screen, the scene at the title's 1440 costing 25 ms (3 ms and 22 by its pixels):
     // three frames of the screen's a drawing. Steps of 0.85 took five, six seconds, to 640.
-    let (b, changes, late) = rehearsed(
-        budget_at(1440.0, spent: 0.025),
-        hz: 120.0,
-        fixed: 0.003,
-        per: 0.022,
-        seconds: 20.0,
-    )
-    assert(changes == 2, f"{changes} changes of size")
-    assert(b.tall >= 600.0 && b.tall <= 660.0, f"settled at {b.tall}")
-    assert(late < 2.5, f"{late} s of late frames")
+    let from = budget_at(1440.0, spent: 0.025)
+    let (soon, cuts, _) = rehearsed(from, hz: 120.0, fixed: 0.003, per: 0.022, seconds: 2.0)
+    assert(cuts == 2 && soon.tall == 632.0, f"{cuts} cuts to {soon.tall} in two seconds")
+    // Then it tries a little larger, and keeps the largest that holds (704: 8.3 ms).
+    let (b, changes, late) = rehearsed(from, hz: 120.0, fixed: 0.003, per: 0.022, seconds: 60.0)
+    assert(b.tall == 704.0, f"settled at {b.tall}")
+    assert(changes <= 5, f"{changes} changes of size")
+    assert(late < 3.5, f"{late} s of late frames")
 }
 
 @test
@@ -516,11 +578,41 @@ fn front_a_growth_that_fails_goes_back_to_the_size_that_held_and_waits_longer() 
         seconds: 600.0,
     )
     // It grows once to the size that holds, then tries the next at 3 s, 2 min, 6 min: up and back
-    // each time, to the same size. (Tried every minute and cut under it, it changed size 22
-    // times in ten minutes, with 14 s of late frames.)
+    // each time, to the same size. (Tried every minute and cut under it, it changed size 25
+    // times in ten minutes, with 15 s of late frames.)
     assert(b.tall == 1088.0, f"it keeps {b.tall}")
     assert(changes <= 9, f"{changes} changes of size")
     assert(late < 6.0, f"{late} s of late frames")
+}
+
+@test
+fn front_one_long_frame_now_and_then_is_not_a_slow_scene() {
+    // A scene that keeps 1440 with room (12 ms on a 60 Hz screen), a quarter-second frame every
+    // minute and a half: a tab come back to. (Each one cut it to 1224 for a minute.)
+    let (b, changes, _) = rehearsed(
+        budget_at(1440.0, spent: 1.0 / 60.0),
+        hz: 60.0,
+        fixed: 0.002,
+        per: 0.010,
+        seconds: 600.0,
+        hitch: 0.25,
+        every: 90.0,
+    )
+    assert(changes == 0 && b.tall == 1440.0, f"{changes} changes of size, to {b.tall}")
+}
+
+@test
+fn front_a_scene_that_gets_cheaper_grows_back_without_the_longer_wait() {
+    // Held at 896 by an edge it failed twice (a 4 minute wait by then); the scene then gets
+    // cheap enough for the full 1440 (14 ms). Each growth holds, so it is there inside a minute.
+    var held = budget_at(896.0, spent: 1.0 / 60.0)
+    held.ceiling = 896.0
+    held.ceiling_until = 10.0
+    held.ceiling_for = 240.0
+    let (b, _, late) = rehearsed(held, hz: 60.0, fixed: 0.002, per: 0.012, seconds: 60.0)
+    assert(b.tall == 1440.0, f"grew back to {b.tall}")
+    assert(b.ceiling_for == CEILING, "and the next edge waits the first wait")
+    assert(late == 0.0, f"{late} s of late frames")
 }
 
 /// The scene's height next (`stepped`), by the frames' pace on this screen.
@@ -633,7 +725,7 @@ pub fn frame<A: Account>(
     f.dt = dt
     f.reduced = reduced
     if f.drawings > 2 && dt > 0.0 {
-        f.budget.spent += (dt - f.budget.spent) * 0.1
+        f.budget = heard(f.budget, dt, f.base)
         // Infer the screen's pace from its fastest window; later rendering load must not
         // make a known faster display appear slower.
         f.quickest = min(f.quickest, dt)
@@ -695,11 +787,8 @@ pub fn frame<A: Account>(
             // At once, so the rest of this frame's input rows: and a stroke that chose it is
             // the first.
             f.stage = Stage::Rowing
-            // (Rowing has its own pace: what ran slow under the title doesn't hold it under,
-            // and slow frames now aren't a growth's under the title.)
-            f.budget.ceiling_until = 0.0
-            f.budget.ceiling_for = CEILING
-            f.budget.grew_at = f.time - PROBE
+            // (Rowing has its own pace: what ran slow under the title doesn't hold it under.)
+            f.budget = afresh(f.budget, f.time)
             f.pressed = NONE
             f.keyboard = false
             input(mut f.scene, e)
@@ -710,6 +799,8 @@ pub fn frame<A: Account>(
             save(mut f)
             release(mut f.scene)
             f.stage = Stage::Page
+            // (And the title its own: what ran slow rowing doesn't hold it under.)
+            f.budget = afresh(f.budget, f.time)
             f.focus = PLAY
             f.pressed = NONE
             f.saved = true
