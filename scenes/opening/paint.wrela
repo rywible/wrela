@@ -2015,9 +2015,11 @@ pub fn paint_fill(
         return Targets3 { first: c, second: m, third: nm }
     }
     let laid = mix(c.rgb, laid, fnn.w)
-    // (Its share met through the jittered ray (`sample`): all but the far pass's own.)
-    let jittered = 1.0 - f.a * (1.0 - fnn.w)
-    if f.a > 0.5 {
+    // (Its share met through the jittered ray (`sample`): all but the far pass's own. And, as
+    // the colour, the fill's as much as the vista's isn't: else where a sliver of the vista
+    // lies over a stack, or it fades in, what the ink reads would flip in a drawing.)
+    let jittered = mix(c.a, 1.0 - f.a * (1.0 - fnn.w), fnn.w)
+    if f.a > 0.5 && fnn.w > 0.5 {
         return Targets3 {
             first: vec4(laid, jittered),
             second: yon_marks.load(x, y),
@@ -2049,6 +2051,7 @@ fn laid_far(
     var front = vec3(0.0)
     var front_shows = 0.0
     var front_n = 0.0
+    var behind_n = 0.0
     for k in 0..4 {
         let has = if k == 0 { n.left } else if k == 1 { n.right } else if k == 2 { n.above } else {
             n.below
@@ -2076,12 +2079,14 @@ fn laid_far(
             // from all but the neighbours it hardly shows in: an edge pixel's neighbours are mostly
             // part covered, and taking fewer of them left it to one or two, so it crawled. What
             // the paint laid in front (a fall, spray) is left in `rest` too, and where little shows
-            // the unmixing blows it up: hence the fallback below where the neighbours show less of
-            // what's behind than this pixel needs. In the rest, what's in front: `rest` less what
+            // the unmixing blows it up: hence the fallback below where they show on average less
+            // than half of what's behind this pixel shows (a one-pixel gap among part-covered
+            // neighbours, a fall over it, would have it at several times). In the rest, what's in front: `rest` less what
             // still shows of what's behind, `b * (1 - a)`, taken off once `b` is known below.)
             if a < 0.95 {
                 behind += rest
                 behind_w += 1.0 - a
+                behind_n += 1.0
             } else {
                 front += rest
                 front_shows += 1.0 - a
@@ -2089,7 +2094,7 @@ fn laid_far(
             }
         }
     }
-    if behind_w < 0.5 * (1.0 - f.a) || (behind_w <= 0.0 && front_n <= 0.0) {
+    if behind_w < 0.5 * (1.0 - f.a) * behind_n || (behind_w <= 0.0 && front_n <= 0.0) {
         return (vec3(0.0), false)
     }
     let b = if behind_w > 0.0 { behind / behind_w } else { vec3(0.0) }
