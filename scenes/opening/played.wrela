@@ -3,14 +3,14 @@
 // it the keys while the player sails (`input`), and each frame draws it into its `image` (`play`),
 // which it lays on its own screen.
 
-use main::{HALF_PAINT, HERO, KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, START, STYLE}
+use main::{HALF_PAINT, HERO, KINETIC, LANTERN, LOOK, MIRROR_PHASES, MIRROR_TABLE, OFF, QUARTER, SPARSE, START, STYLE}
 use aboard::{Aboard, aboard}
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
 use sea::{MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Waves}
 use engine::upscale::{Body, NO_BODY, Pinhole}
-use paint::{OVERHEAD, overhead_once, paint, paint_fill, paint_half}
+use paint::{MIRROR_H, MIRROR_W, OVERHEAD, cook_mirror, overhead_once, paint, paint_fill, paint_half}
 use yonder::{FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, yonder, yonder_low, yonder_rebuild}
 use ink::ink
 use rock::{Rock, reach, rock, step_rock}
@@ -22,7 +22,7 @@ use std::input::Event
 use std::gpu::{
     ClipPosition, DepthTexture, GpuBuffer, buffer, R32Float, Rg32Float, Rgba16Float, Rgba8, Texture,
     Texture3d, VertexIndex, begin_pass, begin_pass3, depth_texture, dispatch, draw, label, texture,
-    texture3d,
+    texture3d, writable_texture,
 }
 
 /// How finely a live page meets the scene (`Shot::fine`): the rock and the cathedral four times
@@ -94,6 +94,12 @@ pub struct State {
     pub(package) unbaked: GpuBuffer<vec4>,
     /// The sky's colours the same for every pixel of the drawing (`paint::overhead_once`).
     pub(package) overhead: GpuBuffer<vec4>,
+    /// The sky the sea mirrors, along each direction over the horizon, this drawing's
+    /// (`paint::cook_mirror`).
+    pub(package) mirror: Texture<Rgba16Float>,
+    pub(package) mirror_phase: u32,
+    /// Whether the mirror table was last worked out whole from the whole dome.
+    pub(package) mirror_whole: bool,
     /// The passes' times asked for and not yet answered (which, the ask, its frame), and the
     /// frames drawn (`main::TIMINGS`).
     pub(package) asks: Vec<(u32, Pending<f32>, u32)>,
@@ -174,6 +180,9 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         plain: shot,
         unbaked: buffer(1),
         overhead: buffer(OVERHEAD),
+        mirror: writable_texture::<Rgba16Float>(width: MIRROR_W, height: MIRROR_H),
+        mirror_phase: 0,
+        mirror_whole: false,
         asks: Vec::new(),
         frames: 0,
         image: texture(width: 1, height: 1),
@@ -413,6 +422,32 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         ),
         over: OVERHEAD,
     )
+    if MIRROR_TABLE {
+        // (Whole while the dome's still being marched whole, and once more from the whole dome;
+        // then a band of rows a drawing.)
+        label("mirror")
+        let band = (MIRROR_H + MIRROR_PHASES - 1) / MIRROR_PHASES
+        let (row0, rows) = if hv.whole() && s.mirror_whole {
+            s.mirror_phase = (s.mirror_phase + 1) % MIRROR_PHASES
+            (s.mirror_phase * band, band)
+        } else {
+            s.mirror_whole = hv.whole()
+            (0, MIRROR_H)
+        }
+        dispatch(
+            cook_mirror.bind(
+                view: hv.tables.view,
+                light: hv.light,
+                dome: hv.sky.dome,
+                smp: hv.linear,
+                once: s.overhead.items(),
+                row0: row0,
+                rows: rows,
+                out: mut s.mirror,
+            ),
+            groups: ((MIRROR_W + 7) / 8, (MIRROR_H + 7) / 8, 1),
+        )
+    }
     label("yonder")
     if QUARTER {
         // (A row of the half-size pass either side of the band's own: the rebuild reads the
@@ -504,6 +539,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 view: hv.tables.view,
                 aerial: hv.tables.aerial,
                 dome: hv.sky.dome,
+                mirror: s.mirror,
                 cloud: hv.sky.shadow,
                 smp: hv.linear,
                 waves: waves,
@@ -544,6 +580,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
             view: hv.tables.view,
             aerial: hv.tables.aerial,
             dome: hv.sky.dome,
+            mirror: s.mirror,
             cloud: hv.sky.shadow,
             smp: hv.linear,
             waves: waves,
