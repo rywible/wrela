@@ -75,6 +75,20 @@ pub fn pressed(s: Shot, sheet: Sheet, u: Under) -> Vec<f32> {
     press
 }
 
+/// How far the skiff has settled into the water it stirs (m, down negative): the sheet's mean
+/// rise along its keel, less the dent its weight holds at rest (`PRESS`). Under way the hull sits
+/// in the hollow its own bow wave leaves amidships, as a real hull squats; without it the hollow
+/// bared the keel and the skiff looked perched on the water.
+pub fn sunk(s: Shot, sheet: Sheet) -> f32 {
+    let at = vec2(s.boat.x, s.boat.z)
+    let bz = normalize(vec2(s.boat_z.x, s.boat_z.z))
+    var sum = 0.0
+    for k in 0..7 {
+        sum += sheet.rise_at(at + bz * (-1.5 + 0.5 * f32(k)))
+    }
+    min(sum / 7.0 + PRESS, 0.0)
+}
+
 /// How many places along each side the wash is kept at (`washed`), stern to bow.
 pub const WASH_AT: u32 = 12
 
@@ -171,7 +185,10 @@ pub fn lifted(s: Shot, p: vec3) -> f32 {
     let climb = 0.15 * smoothstep(0.25, 0.8, u) * (1.0 - smoothstep(0.92, 1.0, u)) -
         0.05 * exp(-pow((u + 0.1) / 0.3, 2.0)) +
         0.05 * exp(-pow((u + 0.8) / 0.15, 2.0))
-    pile + ridge + quarter + hump * step(0.0, behind + 0.3) + climb * hug * way
+    // (By the hull, the water `engine::stir` simulates does all of this itself (`STIRRED`): its
+    // bow's crest, the trough amidships, the hump astern; only the wave's arms, running on past
+    // where the sheet reaches, kept.)
+    ridge + (pile + quarter + hump * step(0.0, behind + 0.3) + climb * hug * way) * (1.0 - STIRRED)
 }
 
 /// Foam's lace at `w` (m, where the water rests): clots of froth and the bubbles round them,
