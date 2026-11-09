@@ -18,11 +18,9 @@
 use heavens::heavens
 use look::{SEA, SKIFF, SUN}
 use ink::ink
-use engine::upscale::{Upscale, cycle_of, jitter_of, shown, upscaled}
-use played::{State, cover, detailed, painted, sized, targets, weathered}
+use engine::upscale::{Upscale, jitter_of, shown, upscaled}
+use played::{State, cover, painted, sized, targets, weathered}
 use sail::key
-use sea::HELD
-use engine::ocean::STEADY
 use std::input::events
 use std::gpu::{
     FragCoord, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, draw, label, texture,
@@ -148,11 +146,6 @@ pub const RENDER_SCALE: f32 = 0.75
 /// (`upscaled_once`).
 pub const UPSCALE: bool = false
 
-/// How wide a pixel's footprint the scene reads its patterns through, in drawing pixels: brought
-/// up over the frames (`UPSCALE`), a screen pixel's, finer than the drawing's own, so the history
-/// gathers detail the drawing alone can't hold (the jitter moves it a screen pixel's width).
-pub const FOOTPRINT: f32 = if UPSCALE && RENDER_SCALE < 1.0 { RENDER_SCALE } else { 1.0 }
-
 /// Whether each frame's passes print their GPU time (`timing <frame> <pass> <us>`), for a host
 /// that can't be asked for timestamps, as the render box's (`--set TIMINGS=true`).
 pub const TIMINGS: bool = false
@@ -189,7 +182,6 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if UPSCALE && low && s.history_size != (width, height) {
         s.history_a = texture(width: width, height: height)
         s.history_b = texture(width: width, height: height)
-        s.detail = texture(width: width, height: height)
         s.history_size = (width, height)
         s.fresh = true
     }
@@ -246,9 +238,6 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         body: s.body,
         last_body: s.last_body,
         restless: SEA,
-        finest: s.ocean.view().finest,
-        wider: STEADY,
-        dt: if s.last_time < 0.0 { 1.0 / HELD } else { max(shot.time - s.last_time, 0.0) },
     }
     if s.flip {
         let p = begin_pass(mut s.history_b, clear: vec4(0.0))
@@ -269,19 +258,16 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         )
         p.end()
     }
-    // The sea's ripples at the screen's size, drawn afresh (`paint::sea_detail`).
-    detailed(mut s, f32(w) / f32(width))
     borrow now = if s.flip { s.history_b } else { s.history_a }
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-    draw(screen, cover, shown.bind(history: now, detail: s.detail), vertices: 3)
+    draw(screen, cover, shown.bind(history: now), vertices: 3)
     screen.present()
     s.flip = !s.flip
     s.fresh = false
     s.last_pinhole = s.pinhole
     s.last_body = s.body
     s.upscaled_frames += 1
-    s.last_time = shot.time
-    s.jitter = jitter_of(s.upscaled_frames, cycle_of(RENDER_SCALE))
+    s.jitter = jitter_of(s.upscaled_frames)
 }
 
 /// The inked drawing (`from` px) brought up to the screen (`to` px): Catmull-Rom, its sixteen
