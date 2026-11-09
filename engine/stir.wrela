@@ -33,9 +33,12 @@ const SETTLE: f32 = 0.3
 /// slow for it rather than jumping; past a second it starts afresh.
 const LONGEST: f32 = 0.1
 
-/// How much of its side, at each edge, soaks up what reaches it, and how fast (per second).
+/// How much of its side, at each edge, soaks up what reaches it, and how fast (per second); and
+/// how often it soaks (s): the soaking takes a transform of its own, and a wave is a good while
+/// crossing the sponge, so on a fast screen it's every few frames' work, not every frame's.
 const SPONGE: f32 = 0.14
 const SOAK: f32 = 8.0
+const SOAKS: f32 = 0.03
 
 /// The churned water a body leaves (`Sheet::churn`): how much each metre of water it shoves aside
 /// churns, by how fast it's shoved (so a hull under way leaves a trail and one at rest none); how
@@ -76,12 +79,15 @@ pub struct Sheet {
     /// The time it's at, and whether it's begun.
     time: f32,
     begun: bool,
-    /// Each wave's turn over a step (its cos and sin), and what the sponge keeps of each cell
-    /// over it, as last worked out, and the step (s) they were worked out for: a steady frame
-    /// rate's steps are all one length.
+    /// Each wave's turn over a step (its cos and sin) as last worked out, and the step (s) it
+    /// was worked out for: a steady frame rate's steps are all one length.
     turned: Vec<vec2>,
-    soaked: Vec<f32>,
     stepped: f32,
+    /// How long since the sponge last soaked its edges (s); and what it keeps of each cell
+    /// over a while, as last worked out, and the while (s).
+    unsoaked: f32,
+    soaked: Vec<f32>,
+    soaked_for: f32,
     /// Whether what a shader reads of it (`shaped`) has changed since it was last sent.
     pub stale: bool,
 }
@@ -158,6 +164,8 @@ impl Sheet {
             turned: Vec::filled(count, vec2(1.0, 0.0)),
             soaked: Vec::filled(count, 1.0),
             stepped: -1.0,
+            unsoaked: 0.0,
+            soaked_for: -1.0,
             stale: true,
         }
     }
@@ -316,7 +324,6 @@ impl Sheet {
             for a in 0..count {
                 let w = self.omega[a]
                 self.turned[a] = vec2(cos(w * h), sin(w * h))
-                self.soaked[a] = if self.keep[a] < 1.0 { pow(self.keep[a], h) } else { 1.0 }
             }
             self.stepped = h
         }
@@ -336,11 +343,14 @@ impl Sheet {
             self.rate[a] = (self.rate[a] * c - off * (w * s)) * settle
             self.height[a] = next - pressed[a]
         }
-        // (Back to the cells, soaked at the edges, and to its waves again: its rise and how fast
-        // it's rising both, or a wave soaked of its height alone runs on through the edge on its
-        // speed and comes round ahead of the body. Both are real on the cells, so they go as one
-        // complex field, rise + i rate, through one transform each way, and are told apart
-        // after by each wave's mirror: a real field's wave at -k is its wave at k's conjugate.)
+        // (Back to the cells, soaked at the edges (every `SOAKS`), and to its waves again: its
+        // rise and how fast it's rising both, or a wave soaked of its height alone runs on
+        // through the edge on its speed and comes round ahead of the body. Both are real on the
+        // cells, so they go as one complex field, rise + i rate, through one transform each way,
+        // and are told apart after by each wave's mirror: a real field's wave at -k is its wave
+        // at k's conjugate.)
+        self.unsoaked += h
+        let soaking = self.unsoaked >= SOAKS
         var cells: Vec<vec2> = Vec::with_capacity(count)
         for a in 0..count {
             let hi = self.height[a]
@@ -348,21 +358,34 @@ impl Sheet {
             cells.push(vec2(hi.x - ra.y, hi.y + ra.x))
         }
         fft(mut cells, n, self.turns, inverse: true)
-        for a in 0..count {
-            let v = cells[a] * self.soaked[a]
-            self.rise[a] = v.x
-            cells[a] = v
-        }
-        fft(mut cells, n, self.turns, inverse: false)
-        for j in 0..n {
-            for i in 0..n {
-                let a = j * n + i
-                let b = ((n - j) % n) * n + (n - i) % n
-                let here = cells[a]
-                let there = vec2(cells[b].x, -cells[b].y)
-                let d = (here - there) * 0.5
-                self.height[a] = (here + there) * 0.5
-                self.rate[a] = vec2(d.y, -d.x)
+        if soaking {
+            if self.unsoaked != self.soaked_for {
+                for a in 0..count {
+                    self.soaked[a] = if self.keep[a] < 1.0 { pow(self.keep[a], self.unsoaked) } else { 1.0 }
+                }
+                self.soaked_for = self.unsoaked
+            }
+            self.unsoaked = 0.0
+            for a in 0..count {
+                let v = cells[a] * self.soaked[a]
+                self.rise[a] = v.x
+                cells[a] = v
+            }
+            fft(mut cells, n, self.turns, inverse: false)
+            for j in 0..n {
+                for i in 0..n {
+                    let a = j * n + i
+                    let b = ((n - j) % n) * n + (n - i) % n
+                    let here = cells[a]
+                    let there = vec2(cells[b].x, -cells[b].y)
+                    let d = (here - there) * 0.5
+                    self.height[a] = (here + there) * 0.5
+                    self.rate[a] = vec2(d.y, -d.x)
+                }
+            }
+        } else {
+            for a in 0..count {
+                self.rise[a] = cells[a].x
             }
         }
         if froth.len() == count {
@@ -583,6 +606,38 @@ fn a_fast_body_sends_nothing_round_ahead() {
         for i in 0..128 {
             let m = s.middle(i: i, j: j)
             // (From the bow on to where the sponge begins.)
+            if m.x - x > 4.7 && m.x - x < 7.2 && abs(m.y) < 6.0 {
+                ahead = max(ahead, abs(s.rise[j * 128 + i]))
+            }
+        }
+    }
+    assert(ahead < 0.01, f"ahead {ahead}")
+}
+
+/// And as little when it's stepped faster than the sponge soaks (`SOAKS`: every other step here).
+@test
+fn a_fast_body_sends_nothing_round_ahead_stepped_fast() {
+    var s = Sheet::new(128, 0.25)
+    var press: Vec<f32> = Vec::filled(128 * 128, 0.0)
+    let v = 10.0
+    for f in 0..270 {
+        let t = f32(f) / 60.0
+        let x = v * t
+        s.follow(vec2(x - 6.0, 0.0))
+        for j in 52..76 {
+            for i in 0..128 {
+                let m = s.middle(i: i, j: j)
+                let q = vec2((m.x - x) / 2.2, m.y / 0.6)
+                press[j * 128 + i] = 0.14 * smoothstep(0.0, 0.3, 1.0 - dot(q, q))
+            }
+        }
+        s.step(t, press, [])
+    }
+    let x = v * 269.0 / 60.0
+    var ahead = 0.0
+    for j in 0..128 {
+        for i in 0..128 {
+            let m = s.middle(i: i, j: j)
             if m.x - x > 4.7 && m.x - x < 7.2 && abs(m.y) < 6.0 {
                 ahead = max(ahead, abs(s.rise[j * 128 + i]))
             }

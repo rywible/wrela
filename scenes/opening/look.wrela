@@ -196,8 +196,10 @@ pub fn shot_at(
     let dt = 1.0 / HELD
     let (b1, _, _, _) = bob(t - dt, r.shown_at, r.shown_steer, swell)
     let (b2, _, _, _) = bob(t - 2.0 * dt, r.shown_at, r.shown_steer, swell)
-    let (b0, _, _, _) = bob(t, r.shown_at, r.shown_steer, swell)
-    let lift = (b0.y - 2.0 * b1.y + b2.y) / (dt * dt)
+    // (Now, it's what the rig already found as it floated to this drawing, `Rig::float`: the
+    // sea's own height under it, not summed again.)
+    let b0 = if r.floated { r.shown_float.x } else { bob(t, r.shown_at, r.shown_steer, swell).0.y }
+    let lift = (b0 - 2.0 * b1.y + b2.y) / (dt * dt)
     let behind = turned(vec2(0.5 - OPEN_SIDE, -21.0), r.shown_look)
     let ahead = turned(vec2(-530.5, 5421.0), r.shown_look)
     let low = vec3(r.shown_at.x + behind.x, 1.9 + boat.y * 0.6, r.shown_at.y + behind.y)
