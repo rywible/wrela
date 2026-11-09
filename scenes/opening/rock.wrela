@@ -142,27 +142,11 @@ pub fn reach(
     out: mut Texture<Rg32Float>,
     depth: mut DepthTexture,
 ) -> bool {
-    reach_rows(rock, s, ready, unbaked, mut out, mut depth, from: 0, to: u32(s.resolution.y))
-}
-
-/// `reach`, drawn only in rows `from` to `to` of `out` (the rest `FAR`): for a picture only a
-/// band of which is read (`engine::far::Vista`).
-pub fn reach_rows(
-    rock: Rock,
-    s: Shot,
-    ready: bool,
-    unbaked: GpuBuffer<vec4>,
-    out: mut Texture<Rg32Float>,
-    depth: mut DepthTexture,
-    from: u32,
-    to: u32,
-) -> bool {
-    if !MESHED || !ready || to <= from {
+    if !MESHED || !ready {
         return false
     }
     let vp = view_proj(s)
     let pass = begin_pass_with_depth(mut out, mut depth, clear: vec4(FAR, 0.0, 0.0, 0.0))
-    pass.scissor(x: 0, y: from, width: u32(s.resolution.x), height: to - from)
     for i in 0..rock.len() {
         borrow m = rock.mesh(i)
         let cooked = rock.has_baked(i)

@@ -167,7 +167,17 @@ pub const TIMINGS: bool = false
 pub const MOVING_CLOUDS: bool = false
 
 /// The passes `TIMINGS` prints.
-const TIMED: [Text; 7] = ["clouds", "ocean", "rock", "yonder", "paint", "weather", "ink"]
+const TIMED: [Text; 9] = [
+    "clouds",
+    "ocean",
+    "rock",
+    "vista",
+    "yonder",
+    "merge",
+    "paint",
+    "weather",
+    "ink",
+]
 
 /// Whether the hero (Hakuro, content/hakuro: his fields realized and drawn into the painted
 /// scene, `aboard`) stands to the sail: 1, him; 0 a few plain solids in his place, traced, to

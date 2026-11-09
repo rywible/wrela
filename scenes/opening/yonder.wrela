@@ -18,12 +18,15 @@ use far::far_off
 use rock::{baked_at, march_from}
 use stacks::{march_stacks, stacks_albedo, stacks_ao, stacks_normal, stacks_shadow}
 use paint::{Heaven, aired, hazed_far, heaven, lit_solid, overhead, sphere}
-use engine::far::{KEPT, Vista, foot, gathered, stratum, vista_at, vista_ray}
+use engine::far::{
+    KEPT, Vista, foot, gathered, stratum, turn_index, turn_of, turn_texel, turn_texels, vista_at,
+    vista_ray,
+}
 use engine::light::{Light, sky as clear_sky}
 use engine::sky::{Clouds, cloud_shadow}
 use std::gpu::{
-    FragCoord, GlobalId, R32Float, Rg32Float, Rgba16Float, Rgba8, Sampler, Targets3, Texels3d,
-    Texture, Texture3d,
+    FragCoord, GlobalId, R32Float, Rg32Float, Rgba16Float, Rgba8, Sampler, Slots, Targets3, Texels,
+    Texels3d, Texture, Texture3d,
 }
 
 /// What the drawings before left, and where from: the camera of the last drawing (its eye, its
@@ -92,6 +95,21 @@ fn sharp(t: Texture<Rgba16Float>, smp: Sampler, at: vec2, size: vec2) -> vec4 {
     r += t.sample_level(smp, vec2(p12.x, p3.y)) * (w12.x * w3.y)
     let wsum = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y
     max(r / wsum, vec4(0.0))
+}
+
+/// `sharp`, held within the four texels round `at`: the filter's lobes overshoot a hard edge,
+/// and carried from aim to aim an overshoot would grow (a stone's edge brighter than the stone,
+/// more than all of a texel covered).
+fn sharp_within(t: Texture<Rgba16Float>, smp: Sampler, at: vec2, size: vec2) -> vec4 {
+    let base = clamp(floor(at - vec2(0.5)), vec2(0.0), size - vec2(2.0))
+    var lo = vec4(1.0e9)
+    var hi = vec4(-1.0e9)
+    for k in 0..4 {
+        let texel = t.load(u32(base.x) + (k & 1), u32(base.y) + (k >> 1))
+        lo = min(lo, texel)
+        hi = max(hi, texel)
+    }
+    clamp(sharp(t, smp, at, size), lo, hi)
 }
 
 /// Where from the world point `w` the camera of `y` saw (px), and whether it saw it at all.
@@ -1234,14 +1252,15 @@ fn isle_look(
     (vec4(c, 1.0), vec4(log2(t), id, l, w), vec4(n, 1.0))
 }
 
-/// A band of the vista's texels looked at once more: each texel's next look, at its own place
-/// in it (`stratum`, by how many times the vista has been looked at whole, `seq`: not by its
-/// count, which stops at `KEPT` and would put every look after on one spot), added to the mean
-/// of those before (`held_*`, the count in the normal's w). What it is (the marks' y) is the first solid thing a texel met: a mean of what things
-/// are would be none of them.
-@fragment
+/// The vista's texels whose turn of `period` this drawing's is (`engine::far::turn_texel`, the
+/// `id`th of them) looked at once more: each one's next look, at its own place in it (`stratum`,
+/// by how many times the vista has been looked at whole, `seq`: not by its count, which stops at
+/// `KEPT` and would put every look after on one spot), added to the mean of those before
+/// (`held_*`, the count in the normal's w), into slots of their own (`vista_lay` lays them in).
+/// A kernel over those texels alone: drawn as a pass, a pixel's work runs in fours, and each
+/// texel's three neighbours, not their turn, would be shaded with it.
+@compute(64)
 pub fn vista_look(
-    pixel: FragCoord,
     shot: Shot,
     light: Light,
     clouds: Clouds,
@@ -1257,14 +1276,27 @@ pub fn vista_look(
     held_marks: Texture<Rgba16Float>,
     held_normal: Texture<Rgba16Float>,
     seq: u32,
+    side: u32,
+    turn: u32,
+    period: u32,
+    kept: f32,
     once: [vec4],
-) -> Targets3<vec4, vec4, vec4> {
-    let q = floor(pixel.position.xy)
+    colour: mut Slots<vec4>,
+    marks: mut Slots<vec4>,
+    normal: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= turn_texels(side, period) {
+        return
+    }
+    let q = turn_texel(id.x, side, turn, period)
     let (x, y) = (u32(q.x), u32(q.y))
     let oc = held_colour.load(x, y)
     let om = held_marks.load(x, y)
     let on = held_normal.load(x, y)
-    let n = on.w
+    // (Held as at most `kept` looks: fewer while the light is changing, so the new light comes
+    // in within a few sweeps, not the half minute all `KEPT` would take.)
+    let n = min(on.w, kept - 1.0)
     let (c, m, nn) = isle_look(
         shot,
         Heaven { light, clouds, over: overhead(once) },
@@ -1281,23 +1313,34 @@ pub fn vista_look(
     )
     let k = 1.0 / min(n + 1.0, KEPT)
     let what = if n > 0.0 && om.y > SKY + 0.5 { om.y } else { m.y }
-    Targets3 {
-        first: gathered(oc, c, n),
-        second: vec4(mix(om.x, m.x, k), what, mix(om.z, m.z, k), mix(om.w, m.w, k)),
-        third: vec4(mix(on.xyz, nn.xyz, k), min(n + 1.0, KEPT)),
-    }
+    colour[id] = gathered(oc, c, n)
+    marks[id] = vec4(mix(om.x, m.x, k), what, mix(om.z, m.z, k), mix(om.w, m.w, k))
+    normal[id] = vec4(mix(on.xyz, nn.xyz, k), min(n + 1.0, KEPT))
 }
 
-/// The band `vista_look` wrote, copied back to what the next reads.
-@fragment
-pub fn vista_keep(
-    pixel: FragCoord,
-    colour: Texture<Rgba16Float>,
-    marks: Texture<Rgba16Float>,
-    normal: Texture<Rgba16Float>,
-) -> Targets3<vec4, vec4, vec4> {
-    let (x, y) = (u32(pixel.position.x), u32(pixel.position.y))
-    Targets3 { first: colour.load(x, y), second: marks.load(x, y), third: normal.load(x, y) }
+/// The looks `vista_look` took this drawing laid into the vista, each at its texel: a kernel
+/// over the whole vista, the texels not of this turn left as they are.
+@compute(8, 8)
+pub fn vista_lay(
+    colour: [vec4],
+    marks: [vec4],
+    normal: [vec4],
+    side: u32,
+    turn: u32,
+    period: u32,
+    out_colour: mut Texels<Rgba16Float>,
+    out_marks: mut Texels<Rgba16Float>,
+    out_normal: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
+    let q = vec2(f32(id.x), f32(id.y))
+    if id.x >= side || id.y >= side || turn_of(q, period) != turn {
+        return
+    }
+    let i = turn_index(q, side, turn, period)
+    out_colour.store(id, colour[i])
+    out_marks.store(id, marks[i])
+    out_normal.store(id, normal[i])
 }
 
 /// How many looks a texel carried to a vista aimed afresh counts as (`vista_carry`): enough
@@ -1340,11 +1383,11 @@ pub fn vista_carry(
     // (Else through a Catmull-Rom filter, not bilinear: a bilinear read halfway between texels
     // blurs them, and each re-aim would blur the vista more.)
     let size = vec2(was.size)
-    let c = sharp(colour, smp, at.xy, size)
-    let m = sharp(marks, smp, at.xy, size)
-    let n = sharp(normal, smp, at.xy, size)
+    let c = sharp_within(colour, smp, at.xy, size)
+    let m = sharp_within(marks, smp, at.xy, size)
+    let n = sharp_within(normal, smp, at.xy, size)
     Targets3 {
-        first: vec4(c.rgb, min(c.a, 1.0)),
+        first: c,
         second: vec4(m.x, vista_what(was, colour, marks, at.xy), m.z, m.w),
         third: vec4(n.xyz, min(n.w, CARRIED)),
     }
@@ -1447,12 +1490,14 @@ fn vista_read(
 
 /// The far layer the paint reads: the stacks and the far islands as this pass met them
 /// (`yon_*`), and the rock and the cathedral as the vista holds them, the nearer over the
-/// farther. The marks and normal are the one that covers more of the pixel's.
+/// farther. The marks and normal are the one that covers more of the pixel's. (`shot` the
+/// jittered one: the vista is read where this drawing's ray goes.)
 @fragment
 pub fn far_merge(
     pixel: FragCoord,
     shot: Shot,
     vista: Vista,
+    shown: f32,
     smp: Sampler,
     yon_colour: Texture<Rgba16Float>,
     yon_marks: Texture<Rgba16Float>,
@@ -1477,6 +1522,10 @@ pub fn far_merge(
         ray(shot, pixel.position.xy + vec2(0.25, 0.0)) - d,
         ray(shot, pixel.position.xy + vec2(0.0, 0.25)) - d,
     )
+    // (As much of it as is shown: faded in over what the far pass meets as it's laid in, and out
+    // as it's put by, not swapped in a drawing.)
+    let vc = vc * shown
+    let vm = vec4(vm.x * shown, vm.y, vm.z * shown, vm.w * shown)
     if vc.a <= 0.004 {
         return Targets3 { first: fc, second: fm, third: fnn }
     }
@@ -1486,11 +1535,16 @@ pub fn far_merge(
     let c = if near { fc + vc * (1.0 - fc.a) } else { vc + fc * (1.0 - a) }
     let mine = if near { a * (1.0 - fc.a) } else { a }
     let theirs = if near { fc.a } else { fc.a * (1.0 - a) }
+    // (The normal's w, how much of what's laid in is the vista's: read through the jittered ray,
+    // unlike the far pass's, which its own drawings settle at the pixel's middle. The paint passes
+    // it on to the upscaler (`engine::upscale`), whose jitter gathers the vista's edges over the
+    // frames as it does the sea's.)
+    let jittered = mine / max(mine + theirs, 1.0e-4)
     if mine >= theirs {
         Targets3 {
             first: c,
             second: vmarks,
-            third: vec4(normalize(vn.xyz + vec3(0.0, 1.0e-6, 0.0)) * 0.5 + 0.5, 0.0),
+            third: vec4(normalize(vn.xyz + vec3(0.0, 1.0e-6, 0.0)) * 0.5 + 0.5, jittered),
         }
-    } else { Targets3 { first: c, second: fm, third: fnn } }
+    } else { Targets3 { first: c, second: fm, third: vec4(fnn.xyz, jittered) } }
 }

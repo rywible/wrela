@@ -1492,7 +1492,7 @@ fn sample(
     yon_marks: Texture<Rgba16Float>,
     yon_normal: Texture<Rgba8>,
     px: vec2,
-) -> (vec3, vec4, vec4) {
+) -> (vec4, vec4, vec4) {
     let h = Heaven { light, clouds, over }
     let d = ray(s, px)
     let o = s.eye
@@ -1612,18 +1612,27 @@ fn sample(
     }
     // The rock, the cathedral and their falls, met in a pass of their own (`yonder`), over what
     // this ray met behind them: unless what it met is nearer.
+    // (How much of the pixel is the far pass's own, which its drawings settled at the pixel's
+    // middle, not met through this drawing's jittered ray (the vista's is: the far layer's
+    // normal's w): for the upscaler, in the colour's alpha. And how much of the sky is still
+    // open behind it, for the cathedral's shine.)
+    var settled = 0.0
+    var open = if id == SKY { 1.0 } else { 0.0 }
     let q = clamp(floor(px), vec2(0.0), s.resolution - vec2(1.0))
     let fc = yon_colour.load(u32(q.x), u32(q.y))
     if fc.a > 0.0 {
         let fm = yon_marks.load(u32(q.x), u32(q.y))
         if id == SKY || exp2(fm.x) < t {
             c = c * (1.0 - fc.a) + fc.rgb
+            let fn_ = yon_normal.load(u32(q.x), u32(q.y))
+            settled = fc.a * (1.0 - fn_.w)
+            open *= 1.0 - fc.a
             if fc.a > 0.5 {
                 t = exp2(fm.x)
                 id = fm.y
                 line = fm.z
                 weight = fm.w
-                n = yon_normal.load(u32(q.x), u32(q.y)).xyz * 2.0 - 1.0
+                n = fn_.xyz * 2.0 - 1.0
             }
         }
     }
@@ -1632,15 +1641,18 @@ fn sample(
         (vec4(0.0), t)
     }
     c = c * (1.0 - fall.a) + fall.rgb
+    settled *= 1.0 - fall.a
     // (Its drops lit by the deck's light from above, and the sun through them toward it.)
     let toward = pow(max(dot(d, light.sun), 0.0), 6.0)
     let drops_lit = light.sun_colour * (0.9 + 9.0 * toward) +
         vec3(0.22, 0.25, 0.29) * mix(1.0, 1.6, light.storm)
     let thrown = if (OFF & 128) == 0 { spray(s, drops_lit, o, d, t) } else { vec4(0.0) }
     c = c * (1.0 - thrown.a) + thrown.rgb
+    settled *= 1.0 - thrown.a
     if s.lantern > 0.5 {
         let beam = beams(s, h, aerial, smp, o, d, t)
         c = c * (1.0 - beam.a) + beam.rgb
+        settled *= 1.0 - beam.a
     }
     let gull = birds(s, px)
     if gull.y < t {
@@ -1651,12 +1663,18 @@ fn sample(
     // Behind the spires it's strongest: they stand dark-edged and gilt against it.
     if id != SKIFF && t > 400.0 {
         let k = max(dot(d, s.glow), 0.0)
-        let over = if id == SKY { 1.0 } else { 0.0 }
+        // (As much as the sky's still open behind the far layer: all or nothing, the shine would
+        // blink on and off along the spires' edges as they cross half a pixel.)
+        let over = open
         c += light.sun_colour * vec3(1.0, 0.8, 0.5) * (0.05 * pow(k, 250.0) + (if LOOK > 2.5 {
             0.0
         } else { 0.85 }) * pow(k, 1400.0)) * over
     }
-    (c, vec4(log2(max(t, 0.01)), id, line, weight), vec4(n * 0.5 + 0.5, clamp(energy, 0.0, 1.0)))
+    (
+        vec4(c, 1.0 - settled),
+        vec4(log2(max(t, 0.01)), id, line, weight),
+        vec4(n * 0.5 + 0.5, clamp(energy, 0.0, 1.0)),
+    )
 }
 
 /// Four places in a pixel, on a turned grid: each its own row and column.
@@ -1693,10 +1711,10 @@ fn paint_at(
     let boat_k = if dot(to_boat, d) > 0.0 { smoothstep(3.8, 2.9, pass) } else { 0.0 }
     // (One call of `sample` in one loop, met once or four times: written twice, the shader
     // would be over what a browser compiles as it loads.)
-    var c = vec3(0.0)
+    var c = vec4(0.0)
     var marks = vec4(0.0)
     var third = vec4(0.0)
-    var sum = vec3(0.0)
+    var sum = vec4(0.0)
     var weight = 0.0
     var count = 1
     var i = 0
@@ -1728,7 +1746,7 @@ fn paint_at(
                 count = 4
             }
         }
-        let wk = 1.0 / (1.0 + luma(ck) * light.exposure)
+        let wk = 1.0 / (1.0 + luma(ck.rgb) * light.exposure)
         sum += ck * wk
         weight += wk
         i += 1
@@ -1736,7 +1754,7 @@ fn paint_at(
     if count > 1 {
         c = mix(c, sum / weight, boat_k)
     }
-    (vec4(c, 1.0), marks, third)
+    (c, marks, third)
 }
 
 @fragment
@@ -1832,11 +1850,11 @@ fn shift(s: Shot, slot: u32, y: u32) -> u32 {
         (along > 0.0 && length(to_boat - d * along) < NEAR_SKIFF)
     // (And over the rock and the cathedral: a spire a pixel wide crossing the columns as the
     // camera turns would be met in one and filled between two in the next, and shimmer; in a
-    // checkerboard the fill has the rows above and below it. Only where the ray meets the
-    // rock's sphere above the sea: the sphere reaches below it, and the sea's glints there would
-    // break into dots.)
+    // checkerboard the fill has the rows above and below it. Only where the ray is still above
+    // the sea where it leaves the rock's sphere: the sphere reaches below the sea, and the sea's
+    // glints under the rock would break into dots.)
     let isle = sphere(s.eye, d, bounds(), 1.0e5)
-    let over = isle.x < isle.y && s.eye.y + d.y * max(isle.x, 0.0) > 0.0
+    let over = isle.x < isle.y && s.eye.y + d.y * isle.y > 0.0
     if near || over { y % 2 } else { 0 }
 }
 

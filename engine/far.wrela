@@ -4,6 +4,8 @@
 // some of the air back makes a far thing read near and small, like a model held close. A big
 // thing is big by having more parts at their own size, not by being a smaller thing scaled up.
 
+use std::derive::Box3
+
 /// How much of a pattern repeating every `period` m a pixel `foot` m wide can show: all of it
 /// while it spans four pixels, none once it spans two. (Finer, it would only crawl.)
 pub fn shown(period: f32, foot: f32) -> f32 {
@@ -58,18 +60,44 @@ pub const KEPT: f32 = 32.0
 /// uncover what's behind, far past this at kilometres off.
 pub const REAIM: f32 = 120.0
 
-/// A vista from `eye` of a thing within the sphere `bound` (its middle, its radius), `size`
-/// texels a side, the sphere filling all but `margin` of it.
-pub fn aimed(eye: vec3, bound: vec4, size: f32, margin: f32) -> Vista {
-    let to = bound.xyz - eye
+/// A vista from `eye` of a thing within the box `over`, `size` texels a side, aimed at the box's
+/// middle, the box filling all but `margin` of it. (A box, not a sphere round it: a thing as
+/// wide as it is tall and deep fills its sphere's square less than half, and the rest would be
+/// texels looked at for nothing.)
+pub fn aimed(eye: vec3, over: Box3, size: f32, margin: f32) -> Vista {
+    let (forward, right, up, depth) = axes(eye, over)
+    let half = widest(eye, over, forward, right, up)
+    Vista { eye, forward, right, up, focal: 1.0 / (half * (1.0 + margin)), size, depth }
+}
+
+/// A vista's axes from `eye` at the box `over`'s middle, and how far that is.
+fn axes(eye: vec3, over: Box3) -> (vec3, vec3, vec3, f32) {
+    let to = over.center() - eye
     let depth = length(to)
     let forward = to / depth
     let side = if abs(forward.y) > 0.99 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) }
     let right = normalize(cross(forward, side) * -1.0)
     let up = cross(right, forward)
-    // (The sphere's edge seen from the eye: its half width's tangent.)
-    let half = bound.w / sqrt(max(depth * depth - bound.w * bound.w, 1.0))
-    Vista { eye, forward, right, up, focal: 1.0 / (half * (1.0 + margin)), size, depth }
+    (forward, right, up, depth)
+}
+
+/// The widest the box `over` is seen from `eye` off `forward`, along `right` or `up`: the
+/// tangent its farthest corner is off. (Any corner behind the eye or beside it: as good as a
+/// right angle.)
+fn widest(eye: vec3, over: Box3, forward: vec3, right: vec3, up: vec3) -> f32 {
+    var half = 0.0
+    for k in 0..8 {
+        let c = vec3(
+            if (k & 1) == 0 { over.lo.x } else { over.hi.x },
+            if (k & 2) == 0 { over.lo.y } else { over.hi.y },
+            if (k & 4) == 0 { over.lo.z } else { over.hi.z },
+        )
+        let r = c - eye
+        let z = dot(r, forward)
+        let t = max(abs(dot(r, right)), abs(dot(r, up))) / max(z, 1.0e-3)
+        half = max(half, if z > 1.0 { t } else { 1.0e3 })
+    }
+    half
 }
 
 /// The ray from the vista's eye through texel place `px` (texel centres at half-integers, y
@@ -116,13 +144,12 @@ pub fn jumped(v: Vista, eye: vec3) -> bool {
     length(eye - v.eye) > 2.0 * REAIM
 }
 
-/// How many texels a side a vista of the sphere `bound` from `eye` needs for one texel to a pixel
-/// of a camera `rows` pixels high with focal length `focal` (a pixel `2 / (rows * focal)` of its
+/// How many texels a side a vista of the box `over` from `eye` needs for one texel to a pixel of
+/// a camera `rows` pixels high with focal length `focal` (a pixel `2 / (rows * focal)` of its
 /// tangent): its texels are `2 * half * (1 + margin) / size` of theirs.
-pub fn texels_needed(eye: vec3, bound: vec4, margin: f32, rows: f32, focal: f32) -> f32 {
-    let depth = length(bound.xyz - eye)
-    let half = bound.w / sqrt(max(depth * depth - bound.w * bound.w, 1.0))
-    half * (1.0 + margin) * rows * focal
+pub fn texels_needed(eye: vec3, over: Box3, margin: f32, rows: f32, focal: f32) -> f32 {
+    let (forward, right, up, _) = axes(eye, over)
+    widest(eye, over, forward, right, up) * (1.0 + margin) * rows * focal
 }
 
 /// How many texels a vista's are to a screen pixel (`vista_side`): sharper than the screen, so
@@ -135,9 +162,81 @@ pub const MOST_SIDE: u32 = 1024
 /// The fewest.
 const FEWEST_SIDE: u32 = 256
 
-/// What a vista's side rounds up to: so many drawings go to looking at it whole
-/// (`side / SWEEP` rows a drawing).
-pub const SWEEP: u32 = 32
+/// How many drawings go to looking at a vista whole: each texel once, on its turn (`turn_of`).
+/// At `FINER` texels a pixel each way, a sixteenth of a pixel's worth of looks a drawing, as
+/// many as a far pass meeting a pixel in sixteen. Its side rounds up to a whole number of them.
+pub const SWEEP: u32 = 64
+
+/// Which of `period` drawings (8, 16, 32 or 64) texel `texel` is looked at again on: the 8x8
+/// ordered dither (Bayer's), so the texels round any one, those a pixel reads, are each looked
+/// at on a different drawing. Looked at all at once, a band at a time, a pixel's every texel
+/// moves together, one jump where there could be a few small steps, and the eye sees the band
+/// roll down the thing.
+pub fn turn_of(texel: vec2, period: u32) -> u32 {
+    let (x, y) = (u32(texel.x), u32(texel.y))
+    bayer(x % 8, y % 8) * period / 64
+}
+
+/// The `i`th texel (its corner) of a vista `side` texels a side whose turn of `period` is
+/// `turn` (`turn_of`), of the `side * side / period` there are: `turn_of` turned about, so a pass
+/// draws only those texels, not the whole vista to skip the rest.
+pub fn turn_texel(i: u32, side: u32, turn: u32, period: u32) -> vec2 {
+    let per = 64 / period
+    let tile = i / per
+    let v = turn * per + i % per
+    var x: u32 = 0
+    var y: u32 = 0
+    for k in 0..3 {
+        let c = (v >> (4 - 2 * k)) & 3
+        let yb = c & 1
+        x |= (((c >> 1) ^ yb) << k)
+        y |= (yb << k)
+    }
+    let (tx, ty) = tile_at(tile, side / 8)
+    vec2(f32(tx * 8 + x), f32(ty * 8 + y))
+}
+
+/// Which of the texels of turn `turn` of `period` texel `texel` is (`turn_texel`'s `i`), if it's
+/// one of them.
+pub fn turn_index(texel: vec2, side: u32, turn: u32, period: u32) -> u32 {
+    let (x, y) = (u32(texel.x), u32(texel.y))
+    let per = 64 / period
+    let tile = tile_of(x / 8, y / 8, side / 8)
+    tile * per + bayer(x % 8, y % 8) - turn * per
+}
+
+/// Where the `t`th 8x8 tile of a vista `across` tiles a side is (in tiles): taken in blocks of
+/// 8x8 tiles, row by row in a block, so the 64 looks a workgroup makes are of one patch of the
+/// thing, not strung along a whole row of the vista. (`across` a whole number of 8s: the side
+/// a whole number of `SWEEP`s.)
+fn tile_at(t: u32, across: u32) -> (u32, u32) {
+    let block = t / 64
+    let within = t % 64
+    let blocks = across / 8
+    ((block % blocks) * 8 + within % 8, (block / blocks) * 8 + within / 8)
+}
+
+/// Which tile (`tile_at`'s `t`) the tile at (`tx`, `ty`) is.
+fn tile_of(tx: u32, ty: u32, across: u32) -> u32 {
+    let block = (ty / 8) * (across / 8) + tx / 8
+    block * 64 + (ty % 8) * 8 + tx % 8
+}
+
+/// The 8x8 ordered dither's number (0 to 63) at (`x`, `y`).
+fn bayer(x: u32, y: u32) -> u32 {
+    var v: u32 = 0
+    for k in 0..3 {
+        let xb = (x >> k) & 1
+        let yb = (y >> k) & 1
+        v |= (2 * (xb ^ yb) + yb) << (4 - 2 * k)
+    }
+    v
+}
+
+/// How many texels of a vista `side` texels a side are looked at on each of `period` turns.
+pub fn turn_texels(side: u32, period: u32) -> u32 {
+    side * side / period
+}
 
 /// A vista's side for `needed` texels (`texels_needed`): `FINER` times, a whole number of
 /// `SWEEP`s, from `FEWEST_SIDE` to `MOST_SIDE`.
@@ -147,36 +246,44 @@ pub fn vista_side(needed: f32) -> u32 {
 }
 
 /// Whether a vista serves a camera that `needed` texels (`texels_needed`) would show one to a
-/// pixel, from `eye`, of the sphere `bound`: its texels no coarser than `COARSEST` pixels, and
-/// the eye well outside the sphere (near, a pinhole's texels stretch at its edges, and the thing
-/// fills the screen: drawn as ever there). `slack` above 1 widens both, for one already in use, so
-/// it doesn't come and go on the line.
-pub fn vista_fits(eye: vec3, bound: vec4, needed: f32, slack: f32) -> bool {
-    let depth = length(bound.xyz - eye)
-    needed <= f32(MOST_SIDE) * COARSEST * slack && depth * slack >= bound.w * NEAREST
+/// pixel, from `eye`, of the box `over`: its texels no coarser than `COARSEST` pixels, and the
+/// eye well outside the box (near, a pinhole's texels stretch at its edges, and the thing fills
+/// the screen: drawn as ever there). `slack` above 1 widens both, for one already in use, so it
+/// doesn't come and go on the line.
+pub fn vista_fits(eye: vec3, over: Box3, needed: f32, slack: f32) -> bool {
+    let depth = length(over.center() - eye)
+    let radius = 0.5 * length(over.hi - over.lo)
+    needed <= f32(MOST_SIDE) * COARSEST * slack && depth * slack >= radius * NEAREST
 }
 
 /// The coarsest a vista's texels may be, in screen pixels.
 const COARSEST: f32 = 1.5
 
-/// The nearest the eye may be to the sphere's middle, in radii.
+/// The nearest the eye may be to the box's middle, in its half diagonals.
 const NEAREST: f32 = 1.6
+
+/// A box like the opening's rock's, 8 km off.
+const ROCKLIKE = Box3 { lo: vec3(-2960.0, 540.0, 6700.0), hi: vec3(-820.0, 2800.0, 8420.0) }
 
 @test
 fn a_vista_point_is_where_its_ray_goes() {
-    let v = aimed(
-        vec3(0.0, 3.0, 0.0),
-        vec4(-1890.0, 1500.0, 7560.0, 1890.0),
-        size: 512.0,
-        margin: 0.05,
-    )
+    let v = aimed(vec3(0.0, 3.0, 0.0), ROCKLIKE, size: 512.0, margin: 0.05)
     for px in [vec2(0.5, 0.5), vec2(256.0, 256.0), vec2(100.25, 400.75), vec2(511.5, 3.5)] {
         let w = v.eye + vista_ray(v, px) * 7000.0
         let at = vista_at(v, w)
         assert(at.z > 0.5 && length(at.xy - px) < 1.0e-2, f"texel {px} came back at {at.xy}")
     }
-    let edge = vista_at(v, vec3(-1890.0, 1500.0 + 1890.0, 7560.0))
-    assert(edge.z > 0.5, "the vista doesn't hold its sphere's top")
+    for k in 0..8 {
+        let c = vec3(
+            if (k & 1) == 0 { ROCKLIKE.lo.x } else { ROCKLIKE.hi.x },
+            if (k & 2) == 0 { ROCKLIKE.lo.y } else { ROCKLIKE.hi.y },
+            if (k & 4) == 0 { ROCKLIKE.lo.z } else { ROCKLIKE.hi.z },
+        )
+        let at = vista_at(v, c)
+        assert(at.z > 0.5, f"the vista doesn't hold its box's corner {c}: at {at.xy}")
+    }
+    let tight = vista_at(v, vec3(ROCKLIKE.lo.x, ROCKLIKE.center().y, ROCKLIKE.lo.z))
+    assert(tight.x < 0.2 * 512.0, f"the vista leaves {tight.x} texels beside its box")
 }
 
 @test
@@ -197,7 +304,7 @@ fn a_texels_looks_spread_over_it() {
 
 @test
 fn a_vista_is_finer_than_the_screen_and_gives_way_near() {
-    let b = vec4(-1890.0, 1500.0, 7560.0, 1890.0)
+    let b = ROCKLIKE
     let eye = vec3(0.0, 3.0, 0.0)
     // (The opening's sailing camera at 720p, a sixth of the screen's height to its focal.)
     let n = texels_needed(eye, b, 0.04, rows: 540.0, focal: 1.75)
@@ -206,10 +313,65 @@ fn a_vista_is_finer_than_the_screen_and_gives_way_near() {
     assert(side % SWEEP == 0, f"a side of {side} isn't whole sweeps")
     assert(vista_fits(eye, b, n, 1.0), "the sailing camera's vista doesn't fit")
     // (Under the rock: drawn as ever.)
-    assert(!vista_fits(vec3(-1890.0, 3.0, 7000.0), b, n, 1.0), "a vista fits from under the rock")
+    let under = vec3(-1890.0, 3.0, 7000.0)
+    let n_under = texels_needed(under, b, 0.04, rows: 540.0, focal: 1.75)
+    assert(!vista_fits(under, b, n_under, 1.0), "a vista fits from under the rock")
     // (A long lens on a big screen: past the most texels, drawn as ever.)
     let tele = texels_needed(eye, b, 0.04, rows: 2160.0, focal: 6.0)
     assert(!vista_fits(eye, b, tele, 1.0), f"a vista of {tele} texels fits")
+}
+
+@test
+fn a_texels_neighbours_are_looked_at_on_other_drawings() {
+    let periods: [u32; 2] = [8, 32]
+    for period in periods {
+        var seen: [u32; 64] = [0; 64]
+        for y in 0..8 {
+            for x in 0..8 {
+                let t = turn_of(vec2(f32(x), f32(y)), period)
+                assert(t < period, f"turn {t} of {period}")
+                seen[t] += 1
+            }
+        }
+        for t in 0..period {
+            assert(seen[t] == 64 / period, f"turn {t} of {period} taken {seen[t]} times in 8x8")
+        }
+    }
+    // (Each 4x4 a different turn of 32, wherever it lies.)
+    for oy in 0..4 {
+        for ox in 0..4 {
+            for a in 0..16 {
+                for b in 0..16 {
+                    if a < b {
+                        let pa = vec2(f32(ox + a % 4), f32(oy + a / 4))
+                        let pb = vec2(f32(ox + b % 4), f32(oy + b / 4))
+                        assert(turn_of(pa, 32) != turn_of(pb, 32), f"{pa} and {pb} share a turn")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@test
+fn each_turns_texels_are_its_own_and_all_are_someones() {
+    let side: u32 = 128
+    let periods: [u32; 3] = [8, 32, 64]
+    for period in periods {
+        var hit: [u32; 16384] = [0; 16384]
+        for turn in 0..period {
+            for i in 0..turn_texels(side, period) {
+                let q = turn_texel(i, side, turn, period)
+                assert(turn_of(q, period) == turn, f"texel {q} drawn on turn {turn} of {period}")
+                let back = turn_index(q, side, turn, period)
+                assert(back == i, f"texel {q}, the {i}th of turn {turn}, comes back the {back}th")
+                hit[u32(q.y) * side + u32(q.x)] += 1
+            }
+        }
+        for k in 0..16384 {
+            assert(hit[k] == 1, f"texel {k} drawn {hit[k]} times in {period} turns")
+        }
+    }
 }
 
 @test
