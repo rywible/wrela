@@ -35,7 +35,7 @@ use std::gpu::{
 /// trails out long behind it.
 const STIR_CELLS: u32 = 128
 const STIR_CELL: f32 = 0.25
-const STIR_AFT: f32 = 6.0
+const STIR_AFT: f32 = 8.0
 
 /// How finely a live page meets the scene (`Shot::fine`): the rock and the cathedral four times
 /// over a pixel, the rest once.
@@ -397,17 +397,21 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     s.body = Body { at: shot.boat, x: shot.boat_x, y: shot.boat_y, z: shot.boat_z }
     next_yon(mut s, shot)
     // The sea as it is at this drawing, and the water the skiff stirs in it.
-    s.ocean.step(held(START + time))
     let now = held(START + time)
+    s.ocean.step(now)
     let shot = if STIRRED > 0.5 {
-        s.stir.sheet.follow(vec2(afloat.boat.x, afloat.boat.z) - normalize(vec2(afloat.boat_z.x, afloat.boat_z.z)) * STIR_AFT)
-        let u = under(afloat, s.drawn_swell, now)
-        let (press, froth) = pressed(afloat, s.stir.sheet, u)
-        s.stir.step(now, press, froth)
-        let ease = 1.0 - exp(-4.0 * clamp(now - s.washed_at, 0.0, 1.0))
-        s.sink = mix(s.sink, sunk(afloat, s.stir.sheet), ease)
-        s.wash = washed(shot, s.stir.sheet, u, s.wash, now - s.washed_at)
-        s.washed_at = now
+        // (Only as the scene's own drawings come: a frame between two of them, on a screen
+        // faster than they are, has moved nothing on.)
+        if now != s.washed_at {
+            s.stir.sheet.follow(vec2(afloat.boat.x, afloat.boat.z) - normalize(vec2(afloat.boat_z.x, afloat.boat_z.z)) * STIR_AFT)
+            let u = under(afloat, s.drawn_swell, now)
+            let (press, froth) = pressed(afloat, s.stir.sheet, u)
+            s.stir.step(now, press, froth)
+            let ease = 1.0 - exp(-4.0 * clamp(now - s.washed_at, 0.0, 1.0))
+            s.sink = mix(s.sink, sunk(afloat, s.stir.sheet), ease)
+            s.wash = washed(shot, s.stir.sheet, u, s.wash, now - s.washed_at)
+            s.washed_at = now
+        }
         var wash = [vec4(0.0); 6]
         for i in 0..24 {
             wash[i / 4][i % 4] = s.wash[i]

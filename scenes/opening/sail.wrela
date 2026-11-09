@@ -438,7 +438,10 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     r.perch += (windward - r.perch) * (1.0 - exp(-dt * 0.35))
     moved(mut r, time, dt, swell, off)
     // What the drawing holds, renewed as each drawing comes.
-    let drawing = floor(time * HELD)
+    // (Half a drawing on, as `sea::held` rounds the time it's given: floored bare, a time already
+    // on a drawing's start fell, by its rounding, in the one before now and then, and that
+    // drawing wasn't renewed; the hull stood a frame and jumped two.)
+    let drawing = floor(time * HELD + 0.5)
     if drawing != r.drawing {
         r.shown_m = r.m
         r.drawing = drawing
@@ -458,17 +461,17 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
 }
 
 /// How stiffly the skiff rolls back to where the sea would hold it, and how hard the water damps
-/// it (per s², per s; its third: the others aren't used). A light hull's heave and pitch are
+/// it (per s², per s). A light hull's heave and pitch are
 /// stiff and heavily damped (its whole waterplane lifts it, and it sheds the motion as waves): it
 /// follows the water within a hand, so they're the sea's own. Its roll isn't: a narrow hull under
 /// a standing traveller is tender, a roll of a second and three quarters that the water hardly
 /// damps, so each wave and gust leaves it rocking. (On soft springs in all three it lagged the
 /// waves it met by half their height: at a run it hung clear of the water, then dipped under.)
-const FLOAT_STIFF: vec3 = vec3(81.0, 49.0, 13.0)
-const FLOAT_DAMP: vec3 = vec3(9.0, 6.3, 1.0)
+const ROLL_STIFF: f32 = 13.0
+const ROLL_DAMP: f32 = 1.0
 
-/// The skiff's float stepped on by `dt` to `time` (`Rig::float`), in steps short enough for the
-/// stiffest spring.
+/// The skiff's float stepped on by `dt` to `time` (`Rig::float`): its height and pitch the sea's
+/// own, its roll sprung after the sea's (`ROLL_STIFF`), in steps short enough for the spring.
 fn floats(r: mut Rig, time: f32, dt: f32, swell: Swell) {
     let want = bearing(time, r.at, r.steer, swell)
     if !r.floated {
@@ -479,14 +482,16 @@ fn floats(r: mut Rig, time: f32, dt: f32, swell: Swell) {
     }
     let steps = ceil(dt / 0.02)
     let h = dt / max(steps, 1.0)
+    var roll = r.float.z
+    var rate = r.float_rate.z
     var k = 0.0
     while k < steps {
-        r.float_rate += ((want - r.float) * FLOAT_STIFF - r.float_rate * FLOAT_DAMP) * h
-        r.float += r.float_rate * h
+        rate += ((want.z - roll) * ROLL_STIFF - rate * ROLL_DAMP) * h
+        roll += rate * h
         k += 1.0
     }
-    // (Its height and pitch the sea's own: `FLOAT_STIFF`.)
-    r.float = vec3(want.x, want.y, r.float.z)
+    r.float = vec3(want.x, want.y, roll)
+    r.float_rate = vec3(0.0, 0.0, rate)
 }
 
 /// The rig and the traveller as a drawing holds them, in the skiff's frame (across, up, along):

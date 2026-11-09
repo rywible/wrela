@@ -885,9 +885,13 @@ fn under_isle(p: vec3) -> f32 {
 const HULL_SEAM: f32 = 0.7
 const HULL_FOOT: f32 = 0.7
 const WET_SHEEN: f32 = 0.06
-const STIR_SHOWN: f32 = 2.0
+const STIR_SHOWN: f32 = 3.0
 const SLICK: f32 = 0.15
 const AERATED: f32 = 0.6
+/// What's left of the short waves in the skiff's wake (the smooth lane it leaves), and how
+/// bright its froth's greyest grain is lit (of the foam's full light).
+const WAKE_CALM: f32 = 0.4
+const WAKE_TONE: f32 = 0.5
 
 fn sea_shade(
     s: Shot,
@@ -913,7 +917,12 @@ fn sea_shade(
     // glint instead (`engine::ocean::surface_at`). By the hull its shorter waves are broken, so
     // the skiff sits in the water it's drawn on.
     let px_m = t * 2.0 / (s.resolution.y * s.focal)
-    let calm = lee(p - s.boat, s.boat_x, s.boat_z)
+    // Where the skiff has stirred the water (`engine::stir`): its waves, and the froth it's left.
+    let st = stir_on(stir, s.stir_at, xz)
+    // (The short waves are broken by the hull, and laid flat where its wake's churned them: the
+    // turbulence it leaves kills the ripples, so its wake's a smooth lane on a rough sea, the
+    // widest mark a boat makes.)
+    let calm = lee(p - s.boat, s.boat_x, s.boat_z) * mix(1.0, WAKE_CALM, smoothstep(0.02, 0.7, st.w))
     let flat = normalize(vec2(d.x, d.z))
     // (A pixel's step on the water: to the right on the screen, along the eye's level right; down
     // it, along the ray's own heading, as far as the slant stretches it.)
@@ -927,7 +936,6 @@ fn sea_shade(
     let (wave, n0, foam_k, squeezed, lost0, rest) = surface_at(waves, xz, du, dv, tiles(calm))
     // Where the skiff has been: its slick, its ripples, its spray falling back.
     let (n1, splash) = stirred(s, xz, rest, n0)
-    let st = stir_on(stir, s.stir_at, xz)
     // (Its waves' slopes drawn steeper than they stand, `STIR_SHOWN`: a skiff's wake is a hand
     // high on a storm's swell, and what shows of it on a real sea is how it turns the water's
     // faces to the sky, far more than its height. And where the water's churned it's smoothed:
@@ -1139,8 +1147,10 @@ fn sea_shade(
         let down = normalize(d * 0.752 - n * (0.752 * ci + sqrt(k)))
         var u = 0.02
         var met = -1.0
+        var last = 1.0
         for _ in 0..6 {
             let f = hull_off(s, p + down * u)
+            last = f
             if f < 0.01 {
                 met = u
                 break
@@ -1149,6 +1159,11 @@ fn sea_shade(
             if u > 1.0 {
                 break
             }
+        }
+        // (Out of steps a finger off the planks: met, or a ray that grazes them down their
+        // length falls through to plain water beside one that met them, a speckled edge.)
+        if met < 0.0 && last < 0.06 && u <= 1.0 {
+            met = u
         }
         if met > 0.0 {
             let q = p + down * met
@@ -1449,7 +1464,12 @@ fn sea_shade(
     // metres down the wind of it, in streaks (the fresh foam upwind, read blurred).
     // (Wisps, not a sheet: torn finer the nearer, and thin.)
     c = mix(c, foam_light * 0.75, veil)
-    c = mix(c, foam_light, max(max(foam * 0.9, wake), splash))
+    // (The skiff's froth lit as the whitecaps': a mass of bubbles, grained, its domes bright and
+    // its creases grey; fresher than theirs, so a little whiter, but never a sheet of paper laid
+    // on the water.)
+    let grain = mix(0.5, noise(laid * 11.0 + vec2(3.0, 7.0)), web_k)
+    let wake_tone = WAKE_TONE + 0.2 * lace + 0.3 * grain
+    c = mix(c, foam_light * wake_tone, max(max(foam * 0.9, wake), splash))
     // The crests' ink strokes and pale lips, light: the ink sits on the water's form.
     let footprint = t * 2.0 / (s.resolution.y * s.focal)
     let crest_ink = if LOOK > 2.5 { vec2(0.0) } else {
@@ -1682,10 +1702,17 @@ fn sample(
         let along = dot(rel, s.boat_z)
         let up = dot(rel, s.boat_y) / max(s.boat_y.y, 0.5)
         let bz = normalize(vec2(s.boat_z.x, s.boat_z.z))
-        let side = if dot(vec2(rel.x, rel.z), vec2(bz.y, -bz.x)) > 0.0 { WASH_AT } else { u32(0) }
         let k = clamp((along - wash_place(0)) / (wash_place(1) - wash_place(0)), 0.0, f32(WASH_AT) - 1.001)
-        let i = side + u32(k)
-        let washed = mix(s.wash[i / 4][i % 4], s.wash[(i + 1) / 4][(i + 1) % 4], fract(k))
+        let i = u32(k)
+        let j = WASH_AT + u32(k)
+        // (Either side's wash, the one eased into the other across its middle: heeled, they
+        // stand a hand apart, and switched at the centreline the wet band stepped there, on the
+        // transom the eye follows.)
+        let washed = mix(
+            mix(s.wash[i / 4][i % 4], s.wash[(i + 1) / 4][(i + 1) % 4], fract(k)),
+            mix(s.wash[j / 4][j % 4], s.wash[(j + 1) / 4][(j + 1) % 4], fract(k)),
+            smoothstep(-0.25, 0.25, dot(vec2(rel.x, rel.z), vec2(bz.y, -bz.x))),
+        )
         // (Only on its outside, under its sheer: inside, or on its deck and what's stowed there, the
         // sea's never stood, however far it's heeled. Its edge ragged as a wash's is, never one
         // ruled stripe.)

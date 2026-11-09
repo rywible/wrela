@@ -307,22 +307,6 @@ fn spars(s: Shot, q: vec3) -> f32 {
     d
 }
 
-/// The hero's joints and the wind on its coat, from the rig's pose.
-fn rider(s: Shot) -> (Joints, vec3) {
-    let j = Joints {
-        hips: s.hips,
-        neck: s.neck,
-        fore_hand: s.fore_hand,
-        aft_hand: s.aft_hand,
-        fore_foot: s.fore_foot,
-        aft_foot: s.aft_foot,
-        sit: 0.0,
-        gaze: s.gaze,
-    }
-    let blow = normalize(vec3(s.belly.x, 0.0, s.belly.z) - vec3(0.0, 0.0, 0.6 + 0.08 * s.speed))
-    (j, blow)
-}
-
 /// The skiff's parts without its traveller at `q` (the skiff's frame): the hull and its thwart,
 /// the sail and the spars.
 fn rig_parts(s: Shot, q: vec3) -> vec3 {
