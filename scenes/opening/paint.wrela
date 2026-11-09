@@ -5,7 +5,7 @@
 // (`engine::light::hazed`). Beside the colour it writes what the ink reads: how far, what it is,
 // a line field, the line's weight, the normal and the moment's energy.
 
-use main::{FREEBOARD, HERO, LOOK, LOW_CLOUD, MIRROR_TABLE, OFF, WAKE_DEBUG}
+use main::{FREEBOARD, HERO, LOOK, LOW_CLOUD, OFF, WAKE_DEBUG}
 use look::{
     STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot,
     band, cells, hash2, luma, fbm, noise, ray,
@@ -23,9 +23,9 @@ use engine::far::foot
 use engine::light::{Light, Lit, gloss, hazed, matte, sun_disc, world}
 use engine::air::aerial_uvw
 use engine::light::sky as clear_sky
-use engine::sky::{Clouds, SKY_H, SKY_W, cloud_shadow, sky_dir, sky_uv, stormy_air}
+use engine::sky::{Clouds, cloud_shadow, sky_uv, stormy_air}
 use std::gpu::{
-    FragCoord, GlobalId, Rgba16Float, Rgba8, Sampler, Slots, Targets3, Texels, Texture, Texture3d,
+    FragCoord, GlobalId, Rgba16Float, Rgba8, Sampler, Slots, Targets3, Texture, Texture3d,
 }
 use weather::horizon_air
 use std::math::PI
@@ -301,41 +301,6 @@ fn mirrored_sky(
         under_the_far_deck(view, light, d, dome, smp, over)
     }
     into_the_air(vec4(mix(clear, cloudy, lost), 1.0), view, light, d, dome, smp, over).rgb
-}
-
-/// The sky as the water mirrors it (`mirrored_sky`'s) along every direction over the horizon,
-/// worked out once a drawing into a table laid out as the dome is (`sky_uv`), not again for each
-/// of a sea pixel's facets: `wrela pipelines` lists `mirrored_sky` among the calls a table could
-/// answer (four a sea pixel, each a function of its direction alone). A quarter of the dome's
-/// size each way: the facets' spread blurs the mirror more than that.
-pub const MIRROR_W: u32 = SKY_W / 4
-pub const MIRROR_H: u32 = SKY_H / 4
-
-/// The mirror table's texels (`MIRROR_W` by `MIRROR_H`) in rows `row0` to `row0 + rows`:
-/// `mirrored_sky` along each one's direction (`sky_dir`), under the drawing's `light` and its
-/// sky's colours (`once`).
-@compute(8, 8)
-pub fn cook_mirror(
-    view: Texture<Rgba16Float>,
-    light: Light,
-    dome: Texture<Rgba16Float>,
-    smp: Sampler,
-    once: [vec4],
-    row0: u32,
-    rows: u32,
-    out: mut Texels<Rgba16Float>,
-    id: GlobalId,
-) {
-    if id.x >= MIRROR_W || id.y < row0 || id.y >= min(row0 + rows, MIRROR_H) {
-        return
-    }
-    let uv = (vec2(f32(id.x), f32(id.y)) + 0.5) / vec2(f32(MIRROR_W), f32(MIRROR_H))
-    out.store(id, vec4(mirrored_sky(view, light, sky_dir(uv), dome, smp, overhead(once)), 1.0))
-}
-
-/// The sky the water mirrors along `d` (over the horizon), from the table (`cook_mirror`).
-fn mirror_along(table: Texture<Rgba16Float>, smp: Sampler, d: vec3) -> vec3 {
-    table.sample_level(smp, sky_uv(d)).rgb
 }
 
 /// Where the ray from `o` along `d` meets the sea (`d` going down), or `far`. Near, found on the
@@ -930,7 +895,6 @@ fn sea_shade(
     view: Texture<Rgba16Float>,
     aerial: Texture3d<Rgba16Float>,
     dome: Texture<Rgba16Float>,
-    mirror: Texture<Rgba16Float>,
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     waves: Waves,
@@ -1020,10 +984,7 @@ fn sea_shade(
         let rk = vec3(ak.x * cos(e), sin(e), ak.y * cos(e))
         let facing = sqrt(max((1.0 + dot(-d, rk)) * 0.5, 0.0))
         let f = 0.02 + 0.98 * pow(1.0 - facing, 5.0)
-        let sky_k = if MIRROR_TABLE { mirror_along(mirror, smp, rk) } else {
-            mirrored_sky(view, h.light, rk, dome, smp, h.over)
-        }
-        mirrored += sky_k * w * f
+        mirrored += mirrored_sky(view, h.light, rk, dome, smp, h.over) * w * f
         fresnel += w * f
         seen += w
     }
@@ -1075,12 +1036,14 @@ fn sea_shade(
         // stands on the sea, so it sits in it rather than over it.)
         mirrored *= mix(HULL_SEAM, 1.0, smoothstep(0.02, 0.4, near_hull))
     }
-    // (Over `LOST_HIGH` and `STORM_LOW` as it is, the mirror's sky is the sky's own: the table's.)
-    let spread = if MIRROR_TABLE {
-        mirror_along(mirror, smp, normalize(r + vec3(0.0, 0.5, 0.0)))
-    } else {
-        storm_sky(view, h.light, normalize(r + vec3(0.0, 0.5, 0.0)), dome, smp, disc: false).rgb
-    }
+    let spread = storm_sky(
+        view,
+        h.light,
+        normalize(r + vec3(0.0, 0.5, 0.0)),
+        dome,
+        smp,
+        disc: false,
+    ).rgb
     let reflected = mix(
         mirrored,
         spread,
@@ -1594,7 +1557,6 @@ fn sample(
     view: Texture<Rgba16Float>,
     aerial: Texture3d<Rgba16Float>,
     dome: Texture<Rgba16Float>,
-    mirror: Texture<Rgba16Float>,
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     waves: Waves,
@@ -1650,7 +1612,6 @@ fn sample(
             view,
             aerial,
             dome,
-            mirror,
             cloud,
             smp,
             waves,
@@ -1811,7 +1772,6 @@ fn paint_at(
     view: Texture<Rgba16Float>,
     aerial: Texture3d<Rgba16Float>,
     dome: Texture<Rgba16Float>,
-    mirror: Texture<Rgba16Float>,
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     waves: Waves,
@@ -1853,7 +1813,6 @@ fn paint_at(
             view,
             aerial,
             dome,
-            mirror,
             cloud,
             smp,
             waves,
@@ -1891,7 +1850,6 @@ pub fn paint(
     view: Texture<Rgba16Float>,
     aerial: Texture3d<Rgba16Float>,
     dome: Texture<Rgba16Float>,
-    mirror: Texture<Rgba16Float>,
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     waves: Waves,
@@ -1909,7 +1867,6 @@ pub fn paint(
         view,
         aerial,
         dome,
-        mirror,
         cloud,
         smp,
         waves,
@@ -1937,7 +1894,6 @@ pub fn paint_half(
     view: Texture<Rgba16Float>,
     aerial: Texture3d<Rgba16Float>,
     dome: Texture<Rgba16Float>,
-    mirror: Texture<Rgba16Float>,
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     waves: Waves,
@@ -1957,7 +1913,6 @@ pub fn paint_half(
         view,
         aerial,
         dome,
-        mirror,
         cloud,
         smp,
         waves,
