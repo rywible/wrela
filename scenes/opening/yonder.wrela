@@ -917,6 +917,13 @@ const QUARTER_HOLD: f32 = 4.0
 /// so the paint takes it as solid at once (`paint_at`).
 const OVER_SKY: f32 = 0.6
 
+/// The most drawings a pixel holds where what's met there jumps (`yonder_rebuild`).
+const EDGE_HOLD: f32 = 12.0
+
+/// How far (the drawing's pixels) what's carried has come since the last drawing before it's
+/// taken as the camera turning (`yonder_rebuild`).
+const MOVING_PX: f32 = 0.5
+
 /// The far things at the drawing's full size from a quarter met afresh (`yonder_low`): the pixel
 /// met this drawing adds it to what the drawings before met there, carried to where the camera
 /// has gone, as the full pass does; the others keep what was carried. They don't move, so it's
@@ -986,8 +993,14 @@ pub fn yonder_rebuild(
         // met over what was carried as sky is taken at least half: any less, the rock's edge
         // coming in over the sky as the camera turns stays see-through, marked solid, till it's
         // met again.)
-        let over_sky = !agree && bm.y == SKY && lm.y != SKY
-        let held_k = 1.0 / min(had + 1.0, QUARTER_HOLD)
+        // (Only as the camera turns: held still, the rock's own thin openings and spires are
+        // met on and off as the offset steps, and their share of the pixel is the blend's.)
+        let moving = length(was.xy - (ip + vec2(0.5))) > MOVING_PX
+        let over_sky = !agree && bm.y == SKY && lm.y != SKY && moving
+        // (Longer where what's met there jumps from drawing to drawing, a spire's edge or a window's
+        // opening: its share of the pixel is the mean of many; on a face, as long as the face's
+        // own detail stays still.)
+        let held_k = 1.0 / min(had + 1.0, if agree { QUARTER_HOLD } else { EDGE_HOLD })
         let k = if over_sky { max(held_k, OVER_SKY) } else { held_k }
         now = mix(before, lc, k)
         if agree {
