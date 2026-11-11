@@ -51,7 +51,8 @@ pub fn leg_right() -> Chain {
 
 /// His trunk: from 12 cm under his pelvis' joint (the fork of his legs), up his spine's joints
 /// to 7 cm past the root of his neck (where a collar stands). Its bones are his pelvis and his spine's three. Angle 0 is his
-/// front, a quarter turn his right.
+/// front, a quarter turn his right. Its path is a smooth curve through his spine's joints: a
+/// spine's bends are spread along it.
 pub fn trunk() -> Chain {
     chain(
         [
@@ -64,7 +65,7 @@ pub fn trunk() -> Chain {
         vec3(z: 1.0),
         before: 0.12,
         after: 0.07,
-        round: 0.04,
+        round: 0.0,
     )
 }
 

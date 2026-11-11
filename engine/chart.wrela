@@ -294,7 +294,8 @@ pub const JOINTS: u32 = 8
 
 /// A chain of joints a path runs along, at rest: its joints from its root's end to its tip
 /// (`count` of them), how far the path runs on before the first and after the last (straight
-/// on), how far either side of a joint between them its bend is rounded, angle 0 at its start,
+/// on), how far either side of a joint between them its bend is rounded (0 for a path that is
+/// a smooth curve through its joints, as a spine is), angle 0 at its start,
 /// and for each bone (bone `i` runs from joint `i` to joint `i + 1`) how far along it its own
 /// turn about its length is reached (`spread`: 1 for a forearm, whose two bones cross all the
 /// way from elbow to wrist; a third for an upper arm or a thigh, whose skin turns with the bone
@@ -387,6 +388,14 @@ impl Chain {
                 at[n] = j[last] + unit(j[last] - j[last - 1]) * self.after
                 bone[n] = i
                 other[n] = i
+                reach[n] = 1.0
+                n += 1
+            } else if self.rounded(i + 1) <= 0.0 {
+                // (No rounding: the joint's own point alone, and the path a smooth curve
+                // through the joints, its bends spread along it. A spine's.)
+                at[n] = j[i + 1]
+                bone[n] = i
+                other[n] = i + 1
                 reach[n] = 1.0
                 n += 1
             } else {
@@ -1732,6 +1741,30 @@ fn a_folded_hinge_keeps_a_limbs_sides_apart() {
         ) <
             0.0001,
     )
+}
+
+@test
+fn a_chain_with_no_rounding_curves_through_its_joints() {
+    // A spine of four joints, each bone leaning a little more: the path goes through each
+    // joint, and turns no more between two pieces than a twentieth of a turn anywhere.
+    let c = chain(
+        [vec3(0.0, 1.0, 0.0), vec3(0.0, 1.1, 0.01), vec3(0.0, 1.2, 0.04), vec3(0.0, 1.3, 0.09)],
+        vec3(z: 1.0),
+        round: 0.0,
+    )
+    let p = c.rest()
+    for k in 0..4 {
+        let pl = p.place(c.joints[k])
+        assert(pl.rho < 0.0005, f"joint {k} is {pl.rho} m off the path")
+    }
+    for i in 1..p.vertices {
+        assert(dot(p.normal[i], p.normal[i - 1]) > cos(0.05 * TAU))
+    }
+    // Posed as it rests, it is its rest path.
+    let posed = c.posed_by(SAME, [SAME, SAME, SAME])
+    for i in 0..p.vertices {
+        assert(length(posed.at[i] - p.at[i]) < 0.000001)
+    }
 }
 
 @test

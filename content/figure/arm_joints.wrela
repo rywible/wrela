@@ -1,13 +1,13 @@
 // Written by the forms tool (`wrela tool forms`, studio/forms): don't edit it by hand, change
-// the tool or what it fits and write it again. How the arm's form changes where its shoulder
-// and its elbow bend (engine::chart::Change): each a form times the bend's angle and a form
-// times its square, written for a bend toward angle 0. Solved against the reference body
-// (Quaternius's Superhero Male, CC0) posed by its own skin weights, over poses of captured
-// motion (studio/forms/joints.wrela).
+// the tool or what it fits and write it again. How a limb's form changes where its two joints
+// bend (engine::chart::Change): each a form times the bend's angle and a form times its
+// square, written for a bend toward angle 0. Solved against the reference body (Quaternius's
+// Superhero Male, CC0) posed by its own skin weights, over poses of captured motion
+// (studio/forms/joints.wrela).
 
 use engine::chart::Radial
 
-/// His shoulder's change, a radian of its bend (m).
+/// The joint's change, a radian of its bend (m).
 pub const SHOULDER_BY_ANGLE: Radial<10, 7> = Radial {
     from: 0.0000,
     to: 1.0000,
@@ -25,7 +25,7 @@ pub const SHOULDER_BY_ANGLE: Radial<10, 7> = Radial {
     ],
 }
 
-/// His shoulder's change, a radian squared of its bend (m).
+/// The joint's change, a radian squared of its bend (m).
 pub const SHOULDER_BY_SQUARE: Radial<10, 7> = Radial {
     from: 0.0000,
     to: 1.0000,
@@ -43,7 +43,7 @@ pub const SHOULDER_BY_SQUARE: Radial<10, 7> = Radial {
     ],
 }
 
-/// His elbow's change, a radian of its bend (m).
+/// The joint's change, a radian of its bend (m).
 pub const ELBOW_BY_ANGLE: Radial<10, 7> = Radial {
     from: 0.0000,
     to: 1.0000,
@@ -61,7 +61,7 @@ pub const ELBOW_BY_ANGLE: Radial<10, 7> = Radial {
     ],
 }
 
-/// His elbow's change, a radian squared of its bend (m).
+/// The joint's change, a radian squared of its bend (m).
 pub const ELBOW_BY_SQUARE: Radial<10, 7> = Radial {
     from: 0.0000,
     to: 1.0000,
