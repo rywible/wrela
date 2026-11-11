@@ -7,9 +7,6 @@ use engine::chart::{Bend, Chain, JOINTS, Path, Radial, Sample}
 use engine::humanoid::{BodyVertex, Clip, Humanoid, palette}
 use figure::chains
 use humanoid::body::HERO
-use std::io::print
-use std::math::{PI, TAU}
-use std::transform::translate
 use targets::{Triangles, rays}
 
 /// Where `v` is as palette `m` poses it: each of its four bones' matrices, by its weights.
@@ -126,51 +123,4 @@ pub fn rest_rays(l: Limb, span: vec2, along: u32, about: u32, shift: vec2) -> Ve
     keep[l.part] = true
     let tris = targets::triangles_of(HERO.clone(), keep, vec3(-9.0), vec3(9.0))
     targets::every_ray(tris, l.chain.rest(), span, along, about, shift, 0.14)
-}
-
-@test
-fn the_arms_form_changes_with_its_pose() {
-    // The reference's arm in a few poses, against its form at rest: how much its radius
-    // differs, by place, with nothing changed for the pose.
-    let rig = HERO.rig.clone()
-    let form = figure::arm::ARM
-    let clips = [
-        ("idle", humanoid::body::IDLE.clone(), 0.0),
-        ("boxing 1.0", humanoid::accad_fists::BOXING.clone(), 1.0),
-        ("boxing 2.5", humanoid::accad_fists::BOXING.clone(), 2.5),
-        ("boxing 4.0", humanoid::accad_fists::BOXING.clone(), 4.0),
-    ]
-    for c in clips {
-        let m = palette(rig.clone(), c.1.pose(c.2), translate(vec3(0.0)))
-        let bends = as_weighted(ARM_LEFT.chain).bends(bones_of(ARM_LEFT, m))
-        let seen = posed_rays(
-            ARM_LEFT,
-            m,
-            vec2(0.02, 1.0),
-            along: 49,
-            about: 24,
-            shift: vec2(0.0, 0.0),
-        )
-        var sum = 0.0
-        var sums = [[0.0; 8]; 14]
-        var counts = [[0; 8]; 14]
-        for s in seen {
-            let d = (s.r - form.radius(s.f, s.theta)) * 1000.0
-            sum += d * d
-            let i = min(u32(s.f * 14.0), 13)
-            let j = min(u32(fract(s.theta / TAU + 1.0) * 8.0), 7)
-            sums[i][j] += d
-            counts[i][j] += 1
-        }
-        print(
-            f"{c.0}: shoulder bent {bends[1].angle * 180.0 / PI:.0} toward {bends[1].toward * 180.0 / PI:.0}, elbow {bends[2].angle * 180.0 / PI:.0} toward {bends[2].toward * 180.0 / PI:.0}; {seen.len()} rays differ by {sqrt(sum / f32(max(seen.len(), 1))):.1} mm rms",
-        )
-        for i in 0..14 {
-            var line = f"  {(f32(i) + 0.5) / 14.0:.2}:"
-            for j in 0..8 {
-                line = f"{line} {sums[i][j] / f32(max(counts[i][j], 1)):.0}"
-            }
-            print(line)
-        }
-    }
 }

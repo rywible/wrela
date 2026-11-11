@@ -298,34 +298,11 @@ fn the_arms_joints_changes_solved() {
     std::io::print(
         f"{held.len()} poses held out: {on_held.z:.1} mm rms with no change ({on_held.w:.1} outside the bends); with the changes {on_held.x:.1} ({on_held.y:.1} outside)",
     )
-    // What's left on the held-out poses by place: along the arm, and round from each sample's
-    // nearest bent joint's lean (column 0 is the inside of the bend, column 4 its outside).
-    var before = [[0.0; 8]; 12]
-    var after = [[0.0; 8]; 12]
-    var counts = [[0; 8]; 12]
-    for r in held {
-        for s in r.samples {
-            let b = if abs(s.f - r.bends[1].at) < abs(s.f - r.bends[2].at) { r.bends[1] } else {
-                r.bends[2]
-            }
-            let i = min(u32(s.f * 12.0), 11)
-            let j = min(u32(fract((s.theta - b.lean_at(s.f)) / TAU + 1.0625) * 8.0), 7)
-            before[i][j] += s.r * 1000.0
-            after[i][j] += (s.r - added(changes, [1, 2], r.bends, s.f, s.theta)) * 1000.0
-            counts[i][j] += 1
-        }
-    }
-    for i in 0..12 {
-        var line = f"  {(f32(i) + 0.5) / 12.0:.2}:"
-        for j in 0..8 {
-            line = f"{line} {before[i][j] / f32(max(counts[i][j], 1)):.0}"
-        }
-        line = f"{line}   then"
-        for j in 0..8 {
-            line = f"{line} {after[i][j] / f32(max(counts[i][j], 1)):.0}"
-        }
-        std::io::print(line)
-    }
+    // On poses the solve never saw, the changes take off some of what's left outside the bends.
+    assert(
+        on_held.y < on_held.w,
+        f"held out: {on_held.y} mm rms with the changes, {on_held.w} without",
+    )
 }
 
 @test

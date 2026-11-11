@@ -3,7 +3,10 @@
 // the fit without writing the forms again (`wrela tool forms`) fails here.
 
 use engine::chart::Radial
-use main::{Fitted, arm, hakuro_arm_left, hakuro_arm_right}
+use main::{
+    Fitted, arm, hakuro_arm_left, hakuro_arm_right, hakuro_head, hakuro_jacket, hakuro_leg,
+    hakuro_trunk, leg,
+}
 
 /// The most two forms' numbers differ (m).
 fn apart<const A: u32, const R: u32>(a: Radial<A, R>, b: Radial<A, R>) -> f32 {
@@ -56,4 +59,51 @@ fn the_arms_written_joints_are_the_reference_solved() {
     }
     // Outside its bends, the changes take off some of what the posed reference differs by.
     assert(left.y < left.x, f"the joints' changes leave {left.y} mm rms of {left.x}")
+}
+
+@test
+fn each_written_leg_is_its_reference_fitted() {
+    let species = leg()
+    assert(apart(species.form, figure::leg::LEG) < 0.000011, "content/figure/leg.wrela is stale")
+    let m = species.miss.spread
+    assert(m.rms < 1.3 && m.most < 2.6 && m.worst < 12.0, f"the leg misses by {m.rms} mm rms")
+    // Hakuro's trouser leg: within 1.3 mm rms; its worst is where his trousers' legs join.
+    let his = hakuro_leg(species.form)
+    assert(
+        apart(his.form, hakuro::leg_form::LEG_OVER) < 0.000011,
+        "content/hakuro/leg_form.wrela is stale",
+    )
+    let h = his.miss.spread
+    assert(h.rms < 1.3 && h.most < 2.6 && h.worst < 18.0, f"his leg misses by {h.rms} mm rms")
+}
+
+@test
+fn hakuros_written_trunk_and_head_are_his_body_fitted() {
+    let trunk = hakuro_trunk()
+    assert(
+        apart(trunk.form, hakuro::trunk_form::TRUNK) < 0.000011,
+        "content/hakuro/trunk_form.wrela is stale",
+    )
+    let t = trunk.miss.spread
+    assert(t.rms < 1.8 && t.most < 4.0 && t.worst < 13.0, f"his trunk misses by {t.rms} mm rms")
+    // His head is under his mask and his hair: within 3 mm rms.
+    let head = hakuro_head()
+    assert(
+        apart(head.form, hakuro::head_form::HEAD) < 0.000011,
+        "content/hakuro/head_form.wrela is stale",
+    )
+    assert(head.miss.spread.rms < 3.0, f"his head misses by {head.miss.spread.rms} mm rms")
+}
+
+@test
+fn hakuros_written_jacket_is_his_jacket_fitted() {
+    // His jacket: within 2.6 mm rms. Its worst, 2 cm, is at its collar and its shoulders' tops,
+    // which lie square to his spine: what a chart about a spine is poorest at.
+    let jacket = hakuro_jacket()
+    assert(
+        apart(jacket.form, hakuro::jacket_form::JACKET) < 0.000011,
+        "content/hakuro/jacket_form.wrela is stale",
+    )
+    let j = jacket.miss.spread
+    assert(j.rms < 2.6 && j.most < 4.8 && j.worst < 22.0, f"his jacket misses by {j.rms} mm rms")
 }
