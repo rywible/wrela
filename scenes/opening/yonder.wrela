@@ -256,10 +256,12 @@ fn isle_shade(
     // (Its shadows likewise: none from a recess too small for a pixel to hold.)
     // (Cooked onto the rock's meshes, where they have it (`rock::Shade`): read, not marched.)
     let lift = max(2.0, t * 0.0012)
-    let shadow = if baked.x >= 0.0 { baked.x } else {
+    // (And not marched where the clouds let no sun through: there's nothing for it to shade.)
+    let clouded = mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, light.storm))
+    let shadow = if baked.x >= 0.0 { baked.x } else if clouded > 0.0 {
         isle_shadow(p + n * lift, light.sun, lift, hash2(px * 1.37))
-    }
-    let sun = shadow * mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, light.storm))
+    } else { 0.0 }
+    let sun = shadow * clouded
     let ao = if baked.y >= 0.0 { baked.y } else { isle_ao(p, n) }
     // The rock and the cathedral on it in the same air: all the air their 8 km holds, and a
     // little past it toward the sky's own colour, as a painter pushes back what's far; so the
@@ -397,8 +399,11 @@ fn stacks_shade(
     let n = stacks_normal(p, max(0.04, px * 0.6), px)
     let albedo = stacks_albedo(p, n, px)
     let lift = max(0.1, px)
-    let sun = stacks_shadow(p + n * lift, h.light.sun, px) *
-        mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, h.light.storm))
+    // (No march of the stacks' shadow where the clouds let no sun through.)
+    let clouded = mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, h.light.storm))
+    let sun = if clouded > 0.0 { stacks_shadow(p + n * lift, h.light.sun, px) * clouded } else {
+        0.0
+    }
     let ao = stacks_ao(p, n, px)
     // (All the air between, and the farther a little past it toward the deck's own colour, as
     // the rock is pushed back: so a stack two kilometres off stands paler than one at three
