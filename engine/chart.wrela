@@ -805,10 +805,63 @@ impl<const A: u32, const R: u32> Radial<A, R> {
 
 // ---- a limb -------------------------------------------------------------------------------------
 
-/// A form about a path: its radius at each place on the path's chart.
+/// The most hinges a limb folds at.
+pub const FOLDS: u32 = 2
+
+/// How far a limb's two sides of a folded hinge press into each other (m): flesh gives, so
+/// the crease lies this far in from the hinge's own line and the limb's sides aren't pinched
+/// beside it.
+pub const GIVE: f32 = 0.012
+
+/// A hinge a limb is folded at in a pose (an elbow, a knee): inside the bend, the limb's two
+/// lengths meet at the plane that halves it, and neither passes through the other. Where the
+/// hinge is on the chart (`at`, of the way along the path), the cotangent of half the bend's
+/// angle (`slope`: how fast the room to that plane grows along the path; below 0 for no fold),
+/// where the inside of the bend is on the chart (`toward`, `after`, `reached`: as `Bend`'s),
+/// and the path's length (m).
+pub struct Fold: Copy + GpuData {
+    pub at: f32,
+    pub slope: f32,
+    pub toward: f32,
+    pub after: f32,
+    pub reached: f32,
+    pub length: f32,
+}
+
+/// No fold.
+pub const NO_FOLD: Fold = Fold {
+    at: 0.0,
+    slope: -1.0,
+    toward: 0.0,
+    after: 0.0,
+    reached: 0.0,
+    length: 1.0,
+}
+
+impl Fold {
+    /// The most a limb's radius is at `f` of the way along and angle `theta`, so its side
+    /// stays its own side of the plane that halves the bend (and `GIVE` past it): within a
+    /// quarter turn of the bend's inside, the room to that plane along that angle; no limit
+    /// elsewhere.
+    pub fn most(self, f: f32, theta: f32) -> f32 {
+        let x = saturate((f - self.at) / max(self.reached - self.at, 0.000001))
+        let lean = self.toward + wrapped(self.after - self.toward) * x
+        let facing = cos(theta - lean)
+        let room = abs(f - self.at) * self.length * self.slope + GIVE
+        select(
+            if_false: room / max(facing, 0.05),
+            if_true: 1000.0,
+            cond: self.slope < 0.0 || facing <= 0.05,
+        )
+    }
+}
+
+/// A form about a path: its radius at each place on the path's chart, less where a folded
+/// hinge leaves it no room (`folds`).
 pub struct Limb<const A: u32, const R: u32>: Copy + GpuData {
     pub path: Path,
     pub form: Radial<A, R>,
+    pub folds: [Fold; FOLDS] = [NO_FOLD; FOLDS],
 }
 
 impl<const A: u32, const R: u32> Limb<A, R> {
@@ -819,7 +872,14 @@ impl<const A: u32, const R: u32> Limb<A, R> {
     pub fn side(self, f: f32, theta: f32) -> vec3 {
         let x = saturate(f)
         let fr = self.path.frame(x * self.path.length())
-        fr.at + (fr.up * cos(theta) + fr.left * sin(theta)) * self.form.radius(x, theta)
+        var r = self.form.radius(x, theta)
+        for k in 0..FOLDS {
+            // (The lesser of the two, eased over 4 mm: a crease, not a tear.)
+            let most = self.folds[k].most(x, theta)
+            let h = saturate(0.5 + 0.5 * (most - r) / 0.004)
+            r = mix(most, r, h) - 0.004 * h * (1.0 - h)
+        }
+        fr.at + (fr.up * cos(theta) + fr.left * sin(theta)) * r
     }
 
     /// A point of its side (`side`) and the side's outward normal (unit) there: across the
@@ -851,6 +911,83 @@ impl<const A: u32, const R: u32> Limb<A, R> {
     }
 }
 
+// ---- where a form is ----------------------------------------------------------------------------
+
+/// How many places along a path, and round it, a cover marks.
+pub const COVER_ALONG: u32 = 96
+pub const COVER_ROUND: u32 = 256
+
+/// The words a cover's marks take: a bit a place.
+pub const COVER_WORDS: u32 = 768
+
+/// Where on its chart a form is: a garment's openings (a jacket's front, its armholes) are
+/// where it isn't. A bit a place, `COVER_ALONG` along the path by `COVER_ROUND` round it from
+/// angle 0, set where the form is; read between places (`covered`), so an opening's edge is
+/// smooth.
+pub struct Cover: Copy + GpuData {
+    pub words: [u32; COVER_WORDS],
+}
+
+impl Cover {
+    /// Whether the form is at place (`i` along, `j` round, counted round the whole turn).
+    fn mark(self, i: u32, j: u32) -> f32 {
+        let k = min(i, COVER_ALONG - 1) * COVER_ROUND + j % COVER_ROUND
+        f32((self.words[k / 32] >> (k % 32)) & 1)
+    }
+
+    /// How much of the form is at `f` of the way along and angle `theta`: 1 well inside it, 0
+    /// well inside an opening, and a half at an opening's edge.
+    pub fn covered(self, f: f32, theta: f32) -> f32 {
+        let x = clamp(f * f32(COVER_ALONG) - 0.5, 0.0, f32(COVER_ALONG - 1))
+        let y = fract(theta / TAU + 1.0) * f32(COVER_ROUND) - 0.5 + f32(COVER_ROUND)
+        let i = u32(x)
+        let j = u32(y)
+        let fx = x - f32(i)
+        let fy = y - f32(j)
+        mix(
+            mix(self.mark(i, j), self.mark(i + 1, j), fx),
+            mix(self.mark(i, j + 1), self.mark(i + 1, j + 1), fx),
+            fy,
+        )
+    }
+}
+
+/// A cover from marks: `marks[i * COVER_ROUND + j]` says whether the form is at place `i`
+/// along, `j` round.
+pub fn cover_of(marks: [bool]) -> Cover {
+    assert(marks.len() == COVER_ALONG * COVER_ROUND, "a cover has a mark a place")
+    var words = [0; COVER_WORDS]
+    for k in 0..marks.len() {
+        if marks[k] {
+            words[k / 32] = words[k / 32] | (1 << (k % 32))
+        }
+    }
+    Cover { words }
+}
+
+/// `cover` as a Wrela constant named `name`, after `doc` (its doc comment's lines, without
+/// `///`): its words in hexadecimal, seven a line.
+pub fn cover_source(cover: Cover, name: str, doc: [String]) -> String {
+    var out = String::new()
+    for line in doc {
+        out.push_str(f"/// {line}\n")
+    }
+    out.push_str(f"pub const {name}: Cover = Cover {{\n    words: [\n")
+    var k = 0
+    while k < COVER_WORDS {
+        out.push_str("       ")
+        for _ in 0..7 {
+            if k < COVER_WORDS {
+                out.push_str(f" 0x{cover.words[k]:08x},")
+                k += 1
+            }
+        }
+        out.push_str("\n")
+    }
+    out.push_str("    ],\n}\n")
+    out
+}
+
 // ---- a part of a creature -----------------------------------------------------------------------
 
 /// A charted part of a creature: the chain it's charted about; which of the creature's bones
@@ -867,6 +1004,9 @@ pub struct Part<const A: u32, const R: u32>: Copy {
     pub changes: [Change<A, R>; JOINTS],
     pub band: Band,
     pub sunk: vec2,
+    /// Which of its joints are hinges it folds at (`Fold`: an elbow, a knee), by their place in
+    /// its chain; 0 for none.
+    pub folds: [u32; FOLDS] = [0; FOLDS],
 }
 
 /// No change at a joint.
@@ -893,7 +1033,23 @@ impl<const A: u32, const R: u32> Part<A, R> {
         for i in 1..self.chain.count - 1 {
             form = form.bent(self.changes[i], bends[i])
         }
-        Limb { path: self.chain.posed(palette[self.root], bones), form }
+        let path = self.chain.posed(palette[self.root], bones)
+        var folds = [NO_FOLD; FOLDS]
+        for k in 0..FOLDS {
+            let b = bends[self.folds[k]]
+            // (A hinge bent less than a sixth of a turn has room for both its sides.)
+            if self.folds[k] > 0 && b.angle > 1.0 {
+                folds[k] = Fold {
+                    at: b.at,
+                    slope: 1.0 / tan(0.5 * min(b.angle, 3.0)),
+                    toward: b.toward,
+                    after: b.after,
+                    reached: b.reached,
+                    length: path.length(),
+                }
+            }
+        }
+        Limb { path, form, folds }
     }
 
     /// How far under what covers it its side is drawn, `f` of the way along its path (m).
@@ -971,12 +1127,20 @@ pub fn fit<const A: u32, const R: u32>(
                 let k1 = (i + a1) * R + j1
                 let v1 = w[a1] * round[j1]
                 g[k1] += v1 * f64(s.r)
-                for a2 in 0..4 {
-                    for j2 in 0..R {
-                        m[k1 * n + (i + a2) * R + j2] += v1 * w[a2] * round[j2]
+                // (The sums' upper half: the matrix is symmetric, and is filled out after.)
+                for a2 in a1..4 {
+                    let row = k1 * n + (i + a2) * R
+                    let v = v1 * w[a2]
+                    for j2 in (if a2 == a1 { j1 } else { 0 })..R {
+                        m[row + j2] += v * round[j2]
                     }
                 }
             }
+        }
+    }
+    for x in 0..n {
+        for y in x + 1..n {
+            m[y * n + x] = m[x * n + y]
         }
     }
     // Each control value near the line through its neighbours along the path.
@@ -1500,6 +1664,74 @@ fn a_part_posed_is_its_chain_posed_and_its_form_bent() {
             0.000001,
     )
     assert(part.sunk_at(0.0) == 0.04 && part.sunk_at(0.2) == 0.0 && part.sunk_at(0.9) == 0.0)
+}
+
+@test
+fn a_cover_says_where_a_form_is() {
+    // A form with an opening down its front, a tenth of a turn either side of angle 0: none of
+    // it in the opening, all of it away from it, half at the opening's edge.
+    var marks: Vec<bool> = Vec::new()
+    for _ in 0..COVER_ALONG {
+        for j in 0..COVER_ROUND {
+            let turn = (f32(j) + 0.5) / f32(COVER_ROUND)
+            marks.push(turn > 0.1 && turn < 0.9)
+        }
+    }
+    let c = cover_of(marks)
+    assert(c.covered(0.5, 0.0) == 0.0 && c.covered(0.3, 0.05 * TAU) == 0.0)
+    assert(c.covered(0.5, PI) == 1.0 && c.covered(0.9, 0.3 * TAU) == 1.0)
+    // (The edge is between the last place in the opening and the first out of it: 26 places
+    // round from angle 0.)
+    let edge = TAU * 26.0 / f32(COVER_ROUND)
+    assert(abs(c.covered(0.5, edge) - 0.5) < 0.01, f"{c.covered(0.5, edge)}")
+    assert(abs(c.covered(0.5, -edge) - 0.5) < 0.01, f"{c.covered(0.5, -edge)}")
+}
+
+@test
+fn a_folded_hinge_keeps_a_limbs_sides_apart() {
+    // A round arm 4 cm thick, its elbow folded two thirds of a turn's half (120 degrees)
+    // forward: inside the bend, no point of the upper arm's side is past the plane that halves
+    // the bend by more than the give, where without the fold its side went 2 cm through it;
+    // and its outside is as round as it was.
+    let part = Part {
+        chain: arm_chain(),
+        bones: [1, 2, 0, 0, 0, 0, 0, 0],
+        root: 0,
+        form: round::<8, 7>(0.04),
+        changes: [unchanged(); JOINTS],
+        band: WHOLE,
+        sunk: vec2(0.0, 0.1),
+        folds: [1, 0],
+    }
+    var palette = [SAME; 64]
+    let elbow = vec3(0.45, 1.4, 0.0)
+    palette[2] = turn_about(vec3(0.0, 1.0, 0.0), -2.0944, elbow)
+    let posed = part.posed(palette)
+    let loose = Limb { path: posed.path, form: posed.form }
+    // The plane that halves the bend: through the elbow, its normal from the upper arm's way
+    // (back toward the shoulder) to the forearm's.
+    let fore = unit(posed.path.at[posed.path.vertices - 1] - elbow)
+    let n = unit(fore - vec3(-1.0, 0.0, 0.0))
+    var deepest = 0.0
+    var was = 0.0
+    for i in 0..40 {
+        for j in 0..48 {
+            let f = 0.15 + 0.35 * f32(i) / 39.0
+            let theta = TAU * f32(j) / 48.0
+            deepest = max(deepest, dot(posed.side(f, theta) - elbow, n))
+            was = max(was, dot(loose.side(f, theta) - elbow, n))
+        }
+    }
+    assert(deepest < 2.5 * GIVE, f"the upper arm is {deepest} m through the fold")
+    assert(was > 0.02, f"unfolded, it was only {was} m through")
+    let outside = 0.5 * PI
+    assert(
+        abs(
+            length(posed.side(0.4, outside) - posed.path.frame(0.4 * posed.path.length()).at) -
+                0.04,
+        ) <
+            0.0001,
+    )
 }
 
 @test

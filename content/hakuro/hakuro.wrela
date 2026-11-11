@@ -8,7 +8,9 @@
 // (This file is written by a script from the measured pieces; the shapes, the paint and the
 // skeleton are its template's.)
 
-use engine::chart::Part
+use engine::chart
+use engine::chart::{Band, JOINTS, Part, Radial}
+use std::math::TAU
 use engine::creature::{Bone, Creature, Skeleton, creature, hard, smooth, split}
 use engine::character::Shaded
 use shapes::{
@@ -216,23 +218,86 @@ pub const ARM_RIGHT: figure::limbs::Form = figure::arm::ARM
     .mirrored()
     .plus(arm_right_form::ARM_RIGHT_OVER)
 
-/// How many of his parts are drawn along their charts.
-pub const CHARTS: u32 = 2
+/// His left leg at rest, in his trousers: the figure's leg and what his is over it
+/// (`leg_form`), about `figure::chains::leg_left`. His right is its mirror image.
+pub const LEG_LEFT: figure::limbs::Form = figure::leg::LEG.plus(leg_form::LEG_OVER)
 
-/// His charted parts: his left arm, bare, and his right, sleeved. Each is drawn to inside the
-/// wrap or the gauntlet at his wrist, where his hand takes over, and its root is under his
-/// jacket, whose armhole's edge lies over it.
+/// How many of his parts are drawn along their charts as limbs are, and how many as his trunk
+/// is (a larger form).
+pub const CHARTS: u32 = 5
+pub const WIDE_CHARTS: u32 = 2
+
+/// His charted limbs: his left arm, bare, and his right, sleeved, each drawn to inside the wrap
+/// or the gauntlet at his wrist, where his hand takes over, its root under his jacket; his
+/// legs, in his trousers, each drawn to inside his boot, its root under his trousers' seat; and
+/// his neck and head, under his mask and his hair, to his crown.
 pub fn charts() -> [Part<16, 13>; CHARTS] {
     [
         figure::limbs::arm(ARM_LEFT, 0, [6, 8, 10], to: 0.84, under: 0.04),
         figure::limbs::arm(ARM_RIGHT, 1, [7, 9, 11], to: 0.84, under: 0.04),
+        figure::limbs::leg(LEG_LEFT, 0, [0, 18, 20], to: 0.78, under: 0.02),
+        figure::limbs::leg(LEG_LEFT.mirrored(), 1, [0, 19, 21], to: 0.78, under: 0.02),
+        Part {
+            chain: figure::chains::neck(),
+            bones: [3, 4, 5, 0, 0, 0, 0, 0],
+            root: 3,
+            form: head_form::HEAD,
+            changes: [chart::unchanged(); JOINTS],
+            band: Band { f: vec2(0.0, 0.93), theta: vec2(0.0, TAU) },
+            sunk: vec2(0.0, 0.1),
+        },
     ]
 }
 
-/// His paint on charted part `part` (`charts`' order), by place on its chart (`at`: how far
-/// along its path, the angle round it).
-pub fn chart_paint(part: u32, at: vec2) -> Cloth {
-    if part == 0 { arm_left_paint(at.x) } else { arm_right_paint(at.x) }
+/// His charted trunk and the jacket over it, both about his spine (`figure::chains::trunk`),
+/// so the jacket goes where his trunk goes and can't pass through it.
+pub fn wide_charts() -> [Part<24, 21>; WIDE_CHARTS] {
+    let on_spine = |form: Radial<24, 21>, from: f32| Part {
+        chain: figure::chains::trunk(),
+        bones: [0, 1, 2, 3, 0, 0, 0, 0],
+        root: 0,
+        form,
+        changes: [chart::unchanged(); JOINTS],
+        band: Band { f: vec2(from, 1.0), theta: vec2(0.0, TAU) },
+        sunk: vec2(0.0, 0.1),
+    }
+    [on_spine(trunk_form::TRUNK, 0.0), on_spine(jacket_form::JACKET, 0.03)]
+}
+
+/// His paint on charted part `part` (`charts`' order, then `wide_charts`'), by place on its
+/// chart (`at`: how far along its path, the angle round it) for his arms, and by where the
+/// place is on him at rest (`rest`) for the others, as his outfit's regions are written.
+pub fn chart_paint(part: u32, at: vec2, rest: vec3) -> Cloth {
+    if part == 0 {
+        return arm_left_paint(at.x)
+    }
+    if part == 1 {
+        return arm_right_paint(at.x)
+    }
+    if part == CHARTS + 1 {
+        return jacket_paint(rest)
+    }
+    body_paint(rest)
+}
+
+/// Whether charted part `part` is cut away at a place (`at`: on its chart; `rest`: where that
+/// is on him at rest): his jacket's open front and its armholes, as his sampled jacket has
+/// them (`jacket_cover`), and its front's edge where `body_paint` has his shirt showing, so the
+/// gold along it keeps its width.
+pub fn chart_cut(part: u32, at: vec2, rest: vec3) -> bool {
+    if part != CHARTS + 1 {
+        return false
+    }
+    if jacket_cover::JACKET_COVER.covered(at.x, at.y) < 0.5 {
+        return true
+    }
+    if rest.z > 0.0 && rest.y < 1.52 && rest.y >= 0.97 {
+        let t = clamp((1.50 - rest.y) / 0.50, 0.0, 1.0)
+        if abs(rest.x + 0.05 * t) - (0.040 + 0.070 * sqrt(t)) < 0.0 {
+            return true
+        }
+    }
+    false
 }
 
 /// Where the wrap round his left forearm starts, as a fraction of his arm's path's length.

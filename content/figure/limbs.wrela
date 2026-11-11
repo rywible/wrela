@@ -29,7 +29,7 @@ pub const ELBOW: Change<16, 13> = Change {
 /// its path (where a hand takes over), its root `under` what's worn over its shoulder (m) until
 /// it has left it, a quarter of the way along. Its shoulder and its elbow change as the forms
 /// tool solved for them, and its elbow as its muscles do (`flex`); a right arm's are the
-/// left's, mirrored.
+/// left's, mirrored. It folds at its elbow.
 pub fn arm(rest: Form, side: u32, bones: [u32; 3], to: f32, under: f32) -> Part<16, 13> {
     let left = side == 0
     var changes: [Change<16, 13>; JOINTS] = [chart::unchanged(); JOINTS]
@@ -44,5 +44,43 @@ pub fn arm(rest: Form, side: u32, bones: [u32; 3], to: f32, under: f32) -> Part<
         changes,
         band: Band { f: vec2(0.0, to), theta: vec2(0.0, TAU) },
         sunk: vec2(under, 0.24),
+        folds: [2, 0],
+    }
+}
+
+/// His hip's change with its bend, the size of his leg's form.
+@fuel(2 ** 36)
+pub const HIP: Change<16, 13> = Change {
+    by_angle: leg_joints::HIP_BY_ANGLE.resized(),
+    by_square: leg_joints::HIP_BY_SQUARE.resized(),
+}
+
+/// His knee's change with its bend, the size of his leg's form.
+@fuel(2 ** 36)
+pub const KNEE: Change<16, 13> = Change {
+    by_angle: leg_joints::KNEE_BY_ANGLE.resized(),
+    by_square: leg_joints::KNEE_BY_SQUARE.resized(),
+}
+
+/// A leg as a charted part of a creature: on `side` (0 left, 1 right), `rest` its form about
+/// that side's chain, its bones the creature's `bones` (its pelvis, which carries its root and
+/// which it hangs from, its thigh, its calf), drawn as far as `to` of the way along its path
+/// (where a boot or a foot takes over), its root `under` what's worn over its hip (m) until a
+/// fifth of the way along. Its hip and its knee change as the forms tool solved for them; a
+/// right leg's are the left's, mirrored. It folds at its knee.
+pub fn leg(rest: Form, side: u32, bones: [u32; 3], to: f32, under: f32) -> Part<16, 13> {
+    let left = side == 0
+    var changes: [Change<16, 13>; JOINTS] = [chart::unchanged(); JOINTS]
+    changes[1] = if left { HIP } else { HIP.mirrored() }
+    changes[2] = if left { KNEE } else { KNEE.mirrored() }
+    Part {
+        chain: if left { chains::leg_left() } else { chains::leg_right() },
+        bones: [bones[0], bones[1], bones[2], 0, 0, 0, 0, 0],
+        root: bones[0],
+        form: rest,
+        changes,
+        band: Band { f: vec2(0.0, to), theta: vec2(0.0, TAU) },
+        sunk: vec2(under, 0.2),
+        folds: [2, 0],
     }
 }

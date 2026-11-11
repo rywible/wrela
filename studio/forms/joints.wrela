@@ -251,18 +251,27 @@ pub fn left_over<const N: u32>(
 /// Where the arm's hinge (its elbow) takes over from its shoulder: 35% of the way along.
 pub const ARM_HINGES_FROM: f32 = 0.35
 
-/// The arm's shoulder's and elbow's changes, solved over every pose (`poses`): how the
-/// reference's own radius changes from rest, and how much of that is left outside its bends
-/// with no change and with them (mm rms).
-pub fn arm_changes() -> ([Solved; 2], vec2) {
-    let at_rest = posed::rest_rays(ARM_LEFT, vec2(FROM, 1.0), 44, 24, vec2(0.0, 0.0))
+/// Where the leg's hinge (its knee) takes over from its hip: 30% of the way along.
+pub const LEG_HINGES_FROM: f32 = 0.3
+
+/// A limb's two joints' changes (its joint against the trunk, then its hinge, which takes
+/// over `hinges_from` of the way along), solved over every pose (`poses`): how the reference's
+/// own radius changes from rest, and how much of that is left outside its bends with no change
+/// and with them (mm rms).
+pub fn changes_of(limb: Limb, hinges_from: f32) -> ([Solved; 2], vec2) {
+    let at_rest = posed::rest_rays(limb, vec2(FROM, 1.0), 44, 24, vec2(0.0, 0.0))
     var readings: Vec<Reading> = Vec::new()
     for m in poses() {
-        readings.push(reading(ARM_LEFT, at_rest, m, vec2(0.0, 0.0)))
+        readings.push(reading(limb, at_rest, m, vec2(0.0, 0.0)))
     }
-    let changes = solved(readings, [1, 2], ARM_HINGES_FROM)
+    let changes = solved(readings, [1, 2], hinges_from)
     let left = left_over(changes, [1, 2], readings)
     (changes, vec2(left.w, left.y))
+}
+
+/// The arm's shoulder's and elbow's changes (`changes_of`).
+pub fn arm_changes() -> ([Solved; 2], vec2) {
+    changes_of(ARM_LEFT, ARM_HINGES_FROM)
 }
 
 @test
@@ -321,9 +330,9 @@ fn the_arms_joints_changes_solved() {
 
 @test
 fn the_arm_as_its_drawn_against_the_posed_reference() {
-    // The arm as a game draws it: the species' form bent by its written changes
-    // (`figure::limbs::arm_bent`), on its chain as its bones pose it. Against the reference
-    // posed, read from that same path.
+    // The arm as a game draws it: the species' arm as a part (`figure::limbs::arm`), posed by
+    // the rig's own bones (its collarbone, upper arm and forearm: bones 14 to 16). Against the
+    // reference posed, read from that same path.
     var keep = [false; 6]
     keep[ARM_LEFT.part] = true
     var k = 0
@@ -335,7 +344,8 @@ fn the_arm_as_its_drawn_against_the_posed_reference() {
         let bones = bones_of(ARM_LEFT, m)
         let chain = ARM_LEFT.chain
         let bends = chain.bends(bones)
-        let form = figure::limbs::arm_bent(figure::arm::ARM, bends)
+        let part = figure::limbs::arm(figure::arm::ARM, 0, ARM_LEFT.bones, to: 1.0, under: 0.0)
+        let form = part.posed(m).form
         let tris = posed::posed_triangles(HERO.clone(), m, keep)
         let seen = targets::rays(
             tris,

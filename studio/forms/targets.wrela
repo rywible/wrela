@@ -227,3 +227,153 @@ pub fn miss<const A: u32, const R: u32>(
         by_place,
     }
 }
+
+/// How near a form the size of `_like` comes to reference `t` about `path` over `span`: fitted at
+/// four places a number, measured between them (mm: rms, 95% under, worst).
+fn tried<const A: u32, const R: u32, T: Reference>(
+    _like: Radial<A, R>,
+    t: T,
+    path: Path,
+    span: vec2,
+    most: f32,
+) -> vec3 {
+    let seen = rays(t, path, span, 4 * A, 4 * R, vec2(0.0, 0.0), most)
+    let form: Radial<A, R> = engine::chart::fit(seen, from: span.x, to: span.y)
+    let unseen = rays(t, path, span, 4 * A, 4 * R, vec2(0.5, 0.5), most)
+    let m = miss(form, unseen, span, path.length()).spread
+    vec3(m.rms, m.most, m.worst)
+}
+
+@test
+fn the_legs_and_trunks_references_by_size() {
+    // How near a form of each size comes to the leg's and the trunk's references.
+    let body = humanoid::body::HERO.clone()
+    let leg = figure::chains::leg_left().rest()
+    let trunk = figure::chains::trunk().rest()
+    let leg_tris = triangles_of(
+        body.clone(),
+        [false, false, true, false, false, false],
+        vec3(-9.0),
+        vec3(9.0),
+    )
+    let all = triangles_of(body, [true, true, true, true, true, true], vec3(-9.0), vec3(9.0))
+    let s16: Radial<16, 13> = engine::chart::round(0.0)
+    let s20: Radial<20, 17> = engine::chart::round(0.0)
+    let s24: Radial<24, 21> = engine::chart::round(0.0)
+    let a: vec3 = tried(s16, leg_tris, leg, vec2(0.17, 1.0), 0.16)
+    std::io::print(f"the body's leg, 16 by 13: {a.x:.2} mm rms, 95% under {a.y:.2}, worst {a.z:.1}")
+    let b: vec3 = tried(
+        s16,
+        Grid { samples: hakuro::body_grid::samples(0) },
+        leg,
+        vec2(0.42, 0.78),
+        0.16,
+    )
+    std::io::print(
+        f"Hakuro's leg below the fork, 16 by 13: {b.x:.2} mm rms, 95% under {b.y:.2}, worst {b.z:.1}",
+    )
+    let c: vec3 = tried(
+        s16,
+        Grid { samples: hakuro::body_grid::samples(0) },
+        trunk,
+        vec2(0.05, 1.0),
+        0.32,
+    )
+    std::io::print(f"Hakuro's trunk, 16 by 13: {c.x:.2} mm rms, 95% under {c.y:.2}, worst {c.z:.1}")
+    let d: vec3 = tried(
+        s20,
+        Grid { samples: hakuro::body_grid::samples(0) },
+        trunk,
+        vec2(0.05, 1.0),
+        0.32,
+    )
+    std::io::print(f"Hakuro's trunk, 20 by 17: {d.x:.2} mm rms, 95% under {d.y:.2}, worst {d.z:.1}")
+    let e: vec3 = tried(
+        s24,
+        Grid { samples: hakuro::body_grid::samples(0) },
+        trunk,
+        vec2(0.05, 1.0),
+        0.32,
+    )
+    std::io::print(f"Hakuro's trunk, 24 by 21: {e.x:.2} mm rms, 95% under {e.y:.2}, worst {e.z:.1}")
+    let g: vec3 = tried(s20, all, trunk, vec2(0.05, 1.0), 0.24)
+    std::io::print(
+        f"the body's trunk (rays that leave within 24 cm), 20 by 17: {g.x:.2} mm rms, 95% under {g.y:.2}, worst {g.z:.1}",
+    )
+}
+
+@test
+fn the_jackets_and_necks_references_by_station() {
+    let trunk = figure::chains::trunk().rest()
+    let jacket = Grid { samples: hakuro::jacket_grid::samples(0) }
+    let body = Grid { samples: hakuro::body_grid::samples(0) }
+    std::io::print(
+        f"trunk path {trunk.length():.3} m; station: y, rays of 32 that meet the jacket (least, most radius mm), then the body",
+    )
+    for i in 0..26 {
+        let f = (f32(i) + 0.5) / 26.0
+        let a = rays(jacket, trunk, vec2(f, f + 0.0001), 1, 32, vec2(0.0, 0.0), 0.34)
+        let b = rays(body, trunk, vec2(f, f + 0.0001), 1, 32, vec2(0.0, 0.0), 0.34)
+        var alo = 9.0
+        var ahi = 0.0
+        for s in a {
+            alo = min(alo, s.r)
+            ahi = max(ahi, s.r)
+        }
+        var blo = 9.0
+        var bhi = 0.0
+        for s in b {
+            blo = min(blo, s.r)
+            bhi = max(bhi, s.r)
+        }
+        std::io::print(
+            f"{f:.3}: y {trunk.frame(f * trunk.length()).at.y:.3}  jacket {a.len()} {alo * 1000.0:.0} {ahi * 1000.0:.0}  body {b.len()} {blo * 1000.0:.0} {bhi * 1000.0:.0}",
+        )
+    }
+}
+
+@test
+fn where_the_jacket_is_on_its_chart() {
+    // A row a station up the trunk's path (its foot first), a mark an angle round it from his
+    // front (64 of them: his front, his right, his back, his left): # where a ray meets the
+    // jacket, . where it meets none.
+    let trunk = figure::chains::trunk().rest()
+    let jacket = Grid { samples: hakuro::jacket_grid::samples(0) }
+    let every = every_ray(jacket, trunk, vec2(0.0, 1.0), 40, 64, vec2(0.5, 0.5), 0.34)
+    for i in 0..40 {
+        var line = f"{trunk.frame((f32(i) + 0.5) / 40.0 * trunk.length()).at.y:.3} "
+        for j in 0..64 {
+            line = f"{line}{if every[i * 64 + j].r > 0.0 { "#" } else { "." }}"
+        }
+        std::io::print(line)
+    }
+}
+
+@test
+fn the_jackets_miss_by_size_at_its_top() {
+    // The jacket's top quarter (its shoulders and its collar), by the form's size along its
+    // path.
+    let trunk = figure::chains::trunk().rest()
+    let s6: Radial<6, 21> = engine::chart::round(0.0)
+    let s10: Radial<10, 21> = engine::chart::round(0.0)
+    let a = tried(
+        s6,
+        Grid { samples: hakuro::jacket_grid::samples(0) },
+        trunk,
+        vec2(0.75, 1.0),
+        0.34,
+    )
+    let b = tried(
+        s10,
+        Grid { samples: hakuro::jacket_grid::samples(0) },
+        trunk,
+        vec2(0.75, 1.0),
+        0.34,
+    )
+    std::io::print(
+        f"the jacket's top quarter alone, 6 along (as 24 over the whole) by 21 round: {a.x:.2} mm rms, 95% under {a.y:.2}, worst {a.z:.1}",
+    )
+    std::io::print(
+        f"10 along (as 40 over the whole) by 21: {b.x:.2} mm rms, 95% under {b.y:.2}, worst {b.z:.1}",
+    )
+}

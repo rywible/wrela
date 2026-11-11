@@ -99,6 +99,91 @@ pub const HAKURO_ARM_RIGHT: Spec = Spec {
     tuck: 0.5,
 }
 
+/// The species' left leg: the reference body's own, bare, from where it leaves his trunk to
+/// his ankle.
+pub const LEG: Spec = Spec {
+    name: "leg",
+    file: "content/figure/leg.wrela",
+    constant: "LEG",
+    about: [
+        "The figure's left leg, bare: Quaternius's Superhero Male (CC0), read along rays from the",
+        "line through its hip, knee and ankle (`chains::leg_left`) and fitted by the forms tool.",
+        "His right is its mirror image (`Radial::mirrored`).",
+    ],
+    chain: chains::leg_left(),
+    span: vec2(0.17, 1.0),
+    most: 0.16,
+    tuck: 0.6,
+}
+
+/// What Hakuro's left leg is over the species': his trousers, as his sampled body has them,
+/// from his hip to inside his boot, less the species' leg.
+pub const HAKURO_LEG: Spec = Spec {
+    name: "hakuro-leg",
+    file: "content/hakuro/leg_form.wrela",
+    constant: "LEG_OVER",
+    about: [
+        "What Hakuro's left leg is over the figure's (`figure::leg::LEG`): his loose trousers, as",
+        "his sampled body has them (`body_grid`), less the figure's leg, read along rays from the",
+        "line through his hip, knee and ankle. His right is its mirror image.",
+    ],
+    chain: chains::leg_left(),
+    span: vec2(0.2, 0.78),
+    most: 0.16,
+    tuck: 0.6,
+}
+
+/// Hakuro's trunk as he's dressed: his shirt and his trousers' seat, as his sampled body has
+/// them, from the fork of his legs to his neck.
+pub const HAKURO_TRUNK: Spec = Spec {
+    name: "hakuro-trunk",
+    file: "content/hakuro/trunk_form.wrela",
+    constant: "TRUNK",
+    about: [
+        "Hakuro's trunk as he's dressed, from the fork of his legs to his neck: his sampled body's",
+        "surface (`body_grid`), read along rays from the line of his spine",
+        "(`figure::chains::trunk`) and fitted by the forms tool.",
+    ],
+    chain: chains::trunk(),
+    span: vec2(0.03, 1.0),
+    most: 0.32,
+    tuck: 0.7,
+}
+
+/// Hakuro's jacket: its outer face as its sampled shell has it, from its hem to its collar's
+/// top, run on smoothly across its open front and its armholes (which its paint cuts).
+pub const HAKURO_JACKET: Spec = Spec {
+    name: "hakuro-jacket",
+    file: "content/hakuro/jacket_form.wrela",
+    constant: "JACKET",
+    about: [
+        "Hakuro's jacket's outer face, from its hem to its collar's top: his sampled jacket's",
+        "(`jacket_grid`), read along rays from the line of his spine and fitted by the forms tool.",
+        "It runs on across the jacket's open front and its armholes, which its paint cuts away.",
+    ],
+    chain: chains::trunk(),
+    span: vec2(0.03, 1.0),
+    most: 0.34,
+    tuck: 1.0,
+}
+
+/// Hakuro's neck and head under his mask and his hair: his sampled body's, from the root of
+/// his neck to his crown.
+pub const HAKURO_HEAD: Spec = Spec {
+    name: "hakuro-head",
+    file: "content/hakuro/head_form.wrela",
+    constant: "HEAD",
+    about: [
+        "Hakuro's neck and head, under his mask and his hair: his sampled body's surface",
+        "(`body_grid`), read along rays from the line through his neck's and his head's joints",
+        "(`figure::chains::neck`) and fitted by the forms tool.",
+    ],
+    chain: chains::neck(),
+    span: vec2(0.12, 0.93),
+    most: 0.2,
+    tuck: 0.8,
+}
+
 /// A form fitted: its numbers as written, how far it is from its reference where it wasn't
 /// fitted, and how many rays it was fitted to.
 pub struct Fitted<const A: u32, const R: u32>: Copy {
@@ -108,11 +193,14 @@ pub struct Fitted<const A: u32, const R: u32>: Copy {
 }
 
 /// What's fitted of `s` over `base`: the reference `t` read at four places a control value
-/// along by four a term round over its span, less `base` there; the root's radius narrowing
-/// evenly from where the reference starts to `tuck` of it at the path's start (or, over a base
-/// that isn't nothing, the difference held: the base is tucked already); and past the
-/// reference's end, what it is at its end. Solved, rounded as it's written, and measured with
-/// `base` added back, between the fit's places.
+/// along by four a term round over its span, less `base` there. A place whose ray meets no
+/// side of the reference (an opening in a garment, where a limb is joined to something else)
+/// is given what the places either side of it round its station have, so the form runs on
+/// smoothly across it. The root's radius narrows evenly from where the reference starts to
+/// `tuck` of it at the path's start (or, over a base that isn't nothing, the difference is
+/// held: the base is tucked already); and past the reference's end the form keeps what it is
+/// at its end. Solved, rounded as it's written, and measured with `base` added back, between
+/// the fit's places.
 pub fn fitted_over<const A: u32, const R: u32, T: Reference>(
     t: T,
     s: Spec,
@@ -122,45 +210,75 @@ pub fn fitted_over<const A: u32, const R: u32, T: Reference>(
     let path = s.chain.rest()
     let along = 4 * A
     let about = 4 * R
-    let read = rays(t, path, s.span, along, about, vec2(0.0, 0.0), s.most)
+    let every = targets::every_ray(t, path, s.span, along, about, vec2(0.0, 0.0), s.most)
     var seen: Vec<Sample> = Vec::new()
-    for k in read {
-        seen.push(Sample { r: k.r - base.radius(k.f, k.theta), ..k })
+    var read = 0
+    // The first and the last station's rows, as they're fitted: the root and the tail run on
+    // from them.
+    var first: Vec<Sample> = Vec::new()
+    var last: Vec<Sample> = Vec::new()
+    for i in 0..along {
+        var row: Vec<Sample> = Vec::new()
+        var met = 0
+        for j in 0..about {
+            let k = every[i * about + j]
+            if k.r > 0.0 {
+                met += 1
+            }
+            row.push(Sample { r: k.r - base.radius(k.f, k.theta), ..k })
+        }
+        if met == 0 {
+            continue
+        }
+        read += met
+        for j in 0..about {
+            if every[i * about + j].r > 0.0 {
+                continue
+            }
+            // The nearest places round the station, before and after, whose rays met a side.
+            var before = 1
+            while every[i * about + (j + about - before) % about].r <= 0.0 {
+                before += 1
+            }
+            var after = 1
+            while every[i * about + (j + after) % about].r <= 0.0 {
+                after += 1
+            }
+            let a = every[i * about + (j + about - before) % about]
+            let b = every[i * about + (j + after) % about]
+            let x = f32(before) / f32(before + after)
+            row[j].r = mix(a.r - base.radius(a.f, a.theta), b.r - base.radius(b.f, b.theta), x)
+        }
+        if first.is_empty() {
+            first = row.clone()
+        }
+        last = row.clone()
+        for k in row {
+            seen.push(k)
+        }
     }
     // The root, before the reference starts.
-    let first = rays(t, path, vec2(s.span.x, s.span.x + 0.0001), 1, about, vec2(0.0, 0.0), s.most)
     let steps = max(u32(f32(along) * s.span.x / max(s.span.y - s.span.x, 0.001)), 2)
     for i in 0..steps {
         let f = s.span.x * f32(i) / f32(steps)
         for k in first {
-            let r = if based { k.r - base.radius(s.span.x, k.theta) } else {
-                k.r * mix(s.tuck, 1.0, smoothstep(0.0, s.span.x, f))
-            }
+            let r = if based { k.r } else { k.r * mix(s.tuck, 1.0, smoothstep(0.0, s.span.x, f)) }
             seen.push(Sample { f, theta: k.theta, r })
         }
     }
     // Past the reference's end.
     if s.span.y < 0.999 {
-        let last = rays(
-            t,
-            path,
-            vec2(s.span.y - 0.0001, s.span.y),
-            1,
-            about,
-            vec2(0.0, 0.0),
-            s.most,
-        )
         let more = max(u32(f32(along) * (1.0 - s.span.y) / max(s.span.y - s.span.x, 0.001)), 2)
         for i in 0..more {
             let f = s.span.y + (1.0 - s.span.y) * f32(i + 1) / f32(more)
             for k in last {
-                seen.push(Sample { f, theta: k.theta, r: k.r - base.radius(s.span.y, k.theta) })
+                seen.push(Sample { f, theta: k.theta, r: k.r })
             }
         }
     }
     let form: Radial<A, R> = chart::rounded(chart::fit(seen))
     let unseen = rays(t, path, s.span, along, about, vec2(0.5, 0.5), s.most)
-    Fitted { form, miss: miss(base.plus(form), unseen, s.span, path.length()), rays: read.len() }
+    Fitted { form, miss: miss(base.plus(form), unseen, s.span, path.length()), rays: read }
 }
 
 /// `s`'s form fitted to reference `t`, over nothing.
@@ -197,6 +315,39 @@ pub fn hakuro_arm_right(base: Radial<16, 13>) -> Fitted<16, 13> {
         base.mirrored(),
         true,
     )
+}
+
+/// The species' leg, fitted to the reference body's left leg's triangles.
+pub fn leg() -> Fitted<16, 13> {
+    fitted(
+        triangles_of(
+            HERO.clone(),
+            [false, false, true, false, false, false],
+            vec3(-9.0),
+            vec3(9.0),
+        ),
+        LEG,
+    )
+}
+
+/// What Hakuro's left leg is over the species' leg `base`, fitted.
+pub fn hakuro_leg(base: Radial<16, 13>) -> Fitted<16, 13> {
+    fitted_over(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_LEG, base, true)
+}
+
+/// Hakuro's trunk, fitted.
+pub fn hakuro_trunk() -> Fitted<24, 21> {
+    fitted(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_TRUNK)
+}
+
+/// Hakuro's jacket, fitted.
+pub fn hakuro_jacket() -> Fitted<24, 21> {
+    fitted(Grid { samples: hakuro::jacket_grid::samples(0) }, HAKURO_JACKET)
+}
+
+/// Hakuro's neck and head, fitted.
+pub fn hakuro_head() -> Fitted<16, 13> {
+    fitted(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_HEAD)
 }
 
 /// What's said of a fitted form: its misses' spread, and their size by place.
@@ -251,44 +402,45 @@ fn written<const A: u32, const R: u32>(s: Spec, f: Fitted<A, R>) -> Result<Strin
     Ok(said(s, f))
 }
 
-/// The arm's joints' changes written (content/figure/arm_joints.wrela): what to print of
-/// them, or why it failed.
-fn arm_joints_written() -> Result<String, String> {
-    let file = "content/figure/arm_joints.wrela"
-    let Some(path) = rooted("ws", file) else {
+/// A limb's joints' changes written: `name` on the command line, into `file`, its two
+/// joints' constants named after `joints` (as "SHOULDER", "ELBOW"), solved for `limb` whose
+/// hinge takes over `hinges_from` of the way along. What to print of them, or why it failed.
+fn joints_written(
+    name: Text,
+    file: Text,
+    joints: [Text; 2],
+    limb: posed::Limb,
+    hinges_from: f32,
+) -> Result<String, String> {
+    let Some(path) = rooted("ws", file.to_string().as_str()) else {
         return Err(f"no path for {file}")
     }
-    let (changes, left) = joints::arm_changes()
+    let (changes, left) = joints::changes_of(limb, hinges_from)
     var out = String::new()
     out.push_str(
         "// Written by the forms tool (`wrela tool forms`, studio/forms): don't edit it by hand, change\n",
     )
     out.push_str(
-        "// the tool or what it fits and write it again. How the arm's form changes where its shoulder\n",
+        "// the tool or what it fits and write it again. How a limb's form changes where its two joints\n",
     )
     out.push_str(
-        "// and its elbow bend (engine::chart::Change): each a form times the bend's angle and a form\n",
+        "// bend (engine::chart::Change): each a form times the bend's angle and a form times its\n",
     )
     out.push_str(
-        "// times its square, written for a bend toward angle 0. Solved against the reference body\n",
+        "// square, written for a bend toward angle 0. Solved against the reference body (Quaternius's\n",
     )
     out.push_str(
-        "// (Quaternius's Superhero Male, CC0) posed by its own skin weights, over poses of captured\n",
+        "// Superhero Male, CC0) posed by its own skin weights, over poses of captured motion\n",
     )
-    out.push_str("// motion (studio/forms/joints.wrela).\n\n")
+    out.push_str("// (studio/forms/joints.wrela).\n\n")
     out.push_str("use engine::chart::Radial\n\n")
-    let names = ["SHOULDER_BY_ANGLE", "SHOULDER_BY_SQUARE", "ELBOW_BY_ANGLE", "ELBOW_BY_SQUARE"]
-    let about = [
-        "His shoulder's change, a radian of its bend (m).",
-        "His shoulder's change, a radian squared of its bend (m).",
-        "His elbow's change, a radian of its bend (m).",
-        "His elbow's change, a radian squared of its bend (m).",
-    ]
     for k in 0..4 {
         let form = if k % 2 == 0 { changes[k / 2].by_angle } else { changes[k / 2].by_square }
+        let by = if k % 2 == 0 { "ANGLE" } else { "SQUARE" }
+        let what = if k % 2 == 0 { "a radian" } else { "a radian squared" }
         var doc: Vec<String> = Vec::new()
-        doc.push(about[k].to_string())
-        out.push_str(chart::source(form, names[k], doc).as_str())
+        doc.push(f"The joint's change, {what} of its bend (m).")
+        out.push_str(chart::source(form, f"{joints[k / 2]}_BY_{by}".as_str(), doc).as_str())
         if k < 3 {
             out.push_str("\n")
         }
@@ -297,7 +449,55 @@ fn arm_joints_written() -> Result<String, String> {
         return Err(f"couldn't write {path}")
     }
     Ok(
-        f"arm-joints: {file}, the shoulder's and the elbow's changes; outside its bends the posed reference is {left.x:.1} mm rms from itself at rest, {left.y:.1} with the changes taken off\n",
+        f"{name}: {file}, its two joints' changes; outside its bends the posed reference is {left.x:.1} mm rms from itself at rest, {left.y:.1} with the changes taken off\n",
+    )
+}
+
+/// Where Hakuro's jacket is on its chart, written (content/hakuro/jacket_cover.wrela): a mark a
+/// place, set where a ray from the line of his spine meets his sampled jacket. What to print of
+/// it, or why it failed.
+fn jacket_cover_written() -> Result<String, String> {
+    let file = "content/hakuro/jacket_cover.wrela"
+    let Some(path) = rooted("ws", file) else {
+        return Err(f"no path for {file}")
+    }
+    let every = targets::every_ray(
+        Grid { samples: hakuro::jacket_grid::samples(0) },
+        chains::trunk().rest(),
+        vec2(0.0, 1.0),
+        chart::COVER_ALONG,
+        chart::COVER_ROUND,
+        vec2(0.5, 0.5),
+        HAKURO_JACKET.most,
+    )
+    var marks: Vec<bool> = Vec::new()
+    var met = 0
+    for k in every {
+        marks.push(k.r > 0.0)
+        if k.r > 0.0 {
+            met += 1
+        }
+    }
+    var out = String::new()
+    out.push_str(
+        "// Written by the forms tool (`wrela tool forms`, studio/forms): don't edit it by hand, change\n",
+    )
+    out.push_str(
+        "// the tool or what it fits and write it again. Where a garment is on its chart\n",
+    )
+    out.push_str("// (engine::chart::Cover): a bit a place, set where it is.\n\n")
+    out.push_str("use engine::chart::Cover\n\n")
+    var doc: Vec<String> = Vec::new()
+    doc.push(
+        "Where Hakuro's jacket is on its chart (`figure::chains::trunk`): everywhere but its open".to_string(),
+    )
+    doc.push("front and its armholes, as his sampled jacket has them (`jacket_grid`).".to_string())
+    out.push_str(chart::cover_source(chart::cover_of(marks), "JACKET_COVER", doc).as_str())
+    if files::write(path.as_str(), out.as_bytes()).wait().is_err() {
+        return Err(f"couldn't write {path}")
+    }
+    Ok(
+        f"hakuro-jacket-cover: {file}, the jacket is at {met} of {every.len()} places on its chart\n",
     )
 }
 
@@ -331,7 +531,45 @@ pub fn tool() -> u32 {
         results.push(written(HAKURO_ARM_RIGHT, hakuro_arm_right(species.form)))
     }
     if chosen(wanted, "arm-joints") {
-        results.push(arm_joints_written())
+        results.push(
+            joints_written(
+                "arm-joints",
+                "content/figure/arm_joints.wrela",
+                ["SHOULDER", "ELBOW"],
+                posed::ARM_LEFT,
+                joints::ARM_HINGES_FROM,
+            ),
+        )
+    }
+    if chosen(wanted, HAKURO_TRUNK.name) {
+        results.push(written(HAKURO_TRUNK, hakuro_trunk()))
+    }
+    if chosen(wanted, HAKURO_JACKET.name) {
+        results.push(written(HAKURO_JACKET, hakuro_jacket()))
+    }
+    if chosen(wanted, "hakuro-jacket-cover") {
+        results.push(jacket_cover_written())
+    }
+    if chosen(wanted, HAKURO_HEAD.name) {
+        results.push(written(HAKURO_HEAD, hakuro_head()))
+    }
+    let species_leg = leg()
+    if chosen(wanted, LEG.name) {
+        results.push(written(LEG, species_leg))
+    }
+    if chosen(wanted, HAKURO_LEG.name) {
+        results.push(written(HAKURO_LEG, hakuro_leg(species_leg.form)))
+    }
+    if chosen(wanted, "leg-joints") {
+        results.push(
+            joints_written(
+                "leg-joints",
+                "content/figure/leg_joints.wrela",
+                ["HIP", "KNEE"],
+                posed::LEG_LEFT,
+                joints::LEG_HINGES_FROM,
+            ),
+        )
     }
     for r in results {
         match r {

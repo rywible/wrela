@@ -25,7 +25,8 @@ fn bump(f: f32, theta: f32, at: f32, along: f32, toward: f32, height: f32) -> f3
     height * exp(-x * x) * lobe * lobe * lobe
 }
 
-/// What the arm's muscles add for each radian its elbow bends (m):
+/// What the arm's muscles add for each radian its elbow bends (m), before `by_square` takes
+/// some off again (at `FULLEST`, three quarters of a radian's worth is left):
 ///
 /// - the biceps' belly rises on the inside of the bend, a little toward the shoulder from the
 ///   middle of the upper arm, as it shortens;
@@ -36,17 +37,27 @@ fn bump(f: f32, theta: f32, at: f32, along: f32, toward: f32, height: f32) -> f3
 ///   form bent along a path is only round.
 fn by_angle(f: f32, theta: f32) -> f32 {
     let mid = 0.5 * (SHOULDER_AT + ELBOW_AT)
-    bump(f, theta, at: mid - 0.02, along: 0.085, toward: 0.0, height: 0.0045) -
-        bump(f, theta, at: mid + 0.02, along: 0.11, toward: 3.1416, height: 0.002) +
-        bump(f, theta, at: ELBOW_AT + 0.075, along: 0.06, toward: 0.35, height: 0.002) +
-        bump(f, theta, at: ELBOW_AT + 0.004, along: 0.035, toward: 3.1416, height: 0.005)
+    bump(f, theta, at: mid - 0.02, along: 0.085, toward: 0.0, height: 0.0075) -
+        bump(f, theta, at: mid + 0.02, along: 0.11, toward: 3.1416, height: 0.0033) +
+        bump(f, theta, at: ELBOW_AT + 0.075, along: 0.06, toward: 0.35, height: 0.003) +
+        bump(f, theta, at: ELBOW_AT + 0.004, along: 0.035, toward: 3.1416, height: 0.0045)
+}
+
+/// How far the elbow bends when its muscles are most bunched (radians): past it they've no
+/// more to give, and the forearm closing on the upper arm presses them flat again.
+pub const FULLEST: f32 = 1.5
+
+/// Less for each radian squared: what `by_angle` adds, over twice `FULLEST`, so the muscles'
+/// change is greatest at `FULLEST` and falls off past it.
+fn by_square(f: f32, theta: f32) -> f32 {
+    -by_angle(f, theta) / (2.0 * FULLEST)
 }
 
 /// The elbow's named change, the size of the arm's form.
 @fuel(2 ** 36)
 pub const ELBOW_FLEX: Change<16, 13> = Change {
     by_angle: chart::of(by_angle),
-    by_square: chart::round(0.0),
+    by_square: chart::of(by_square),
 }
 
 @test

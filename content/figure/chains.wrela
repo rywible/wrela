@@ -26,3 +26,60 @@ pub fn arm_left() -> Chain {
 pub fn arm_right() -> Chain {
     arm_left().mirrored()
 }
+
+/// His left leg: from 8 cm above his hip (a point his pelvis carries, so the leg's root stays
+/// inside his trunk while the leg swings), through his hip and knee to his ankle. Its bones are
+/// his pelvis, his thigh and his calf. Angle 0 is his front, a quarter turn his left. His
+/// thigh's turn about its length is reached a third of the way to his knee.
+pub fn leg_left() -> Chain {
+    chain(
+        [
+            vec3(0.114, 1.051, -0.036),
+            vec3(0.114, 0.971, -0.036),
+            vec3(0.114, 0.542, -0.036),
+            vec3(0.114, 0.086, -0.088),
+        ],
+        vec3(z: 1.0),
+        spread: [1.0, 0.33, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    )
+}
+
+/// His right leg: his left's, mirrored.
+pub fn leg_right() -> Chain {
+    leg_left().mirrored()
+}
+
+/// His trunk: from 12 cm under his pelvis' joint (the fork of his legs), up his spine's joints
+/// to 7 cm past the root of his neck (where a collar stands). Its bones are his pelvis and his spine's three. Angle 0 is his
+/// front, a quarter turn his right.
+pub fn trunk() -> Chain {
+    chain(
+        [
+            vec3(0.0, 0.949, -0.043),
+            vec3(0.0, 1.072, -0.007),
+            vec3(0.0, 1.178, 0.004),
+            vec3(0.0, 1.311, 0.007),
+            vec3(0.0, 1.52, -0.041),
+        ],
+        vec3(z: 1.0),
+        before: 0.12,
+        after: 0.07,
+        round: 0.04,
+    )
+}
+
+/// His neck and head: from 6 cm under the root of his neck (a point his chest carries), through
+/// his neck's and his head's joints to his crown. Its bones are his chest (spine 3), his neck
+/// and his head. Angle 0 is his front, a quarter turn his right.
+pub fn neck() -> Chain {
+    chain(
+        [
+            vec3(0.0, 1.46, -0.045),
+            vec3(0.0, 1.52, -0.041),
+            vec3(0.0, 1.6, -0.017),
+            vec3(0.0, 1.8, -0.01),
+        ],
+        vec3(z: 1.0),
+        round: 0.025,
+    )
+}
