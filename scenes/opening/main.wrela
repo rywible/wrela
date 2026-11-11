@@ -138,6 +138,10 @@ pub const VISTA_SIZE: u32 = 512
 /// pass's march starts: a few steps to the surface, none where no mesh is near.
 pub const MESHED: bool = true
 
+/// Whether the sea stacks are realized as meshes too (`stacked`), drawn with the rock's: a pixel
+/// no stack's mesh is near doesn't march them (`--set STACKED=false`, the march from the eye).
+pub const STACKED: bool = true
+
 /// How many frames march the clouds' dome whole, a share of its tiles each
 /// (`engine::switches::Switches::DOME_PHASES`; 32, 64 or 128): at 128 a frame's march costs a
 /// quarter of 32's, and at 120 frames a second the dome is still marched whole about once a
@@ -359,3 +363,8 @@ fn frames_record_valid_draws() {}
 /// The storm's low cloud: 1 the scud torn under the deck and the lifted air on the horizon as
 /// they were; 0 neither, the deck going down into its own air (`--set LOW_CLOUD=0`).
 pub const LOW_CLOUD: f32 = 1.0
+
+/// 1: the sea painted as what the water the skiff stirs holds (`engine::stir`): its rise red, its
+/// fall blue, its churn green. For looking at its wake's reach.
+pub const WAKE_DEBUG: f32 = 0.0
+

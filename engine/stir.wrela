@@ -1,0 +1,689 @@
+// The water a floating body stirs: a small sheet of the sea that rides with it, simulated on the
+// CPU each frame, laid over the ocean (`ocean::Waves`) where the body moves through it.
+//
+// The open sea is the FFT ocean's (`ocean`), deep water's waves as they run; it doesn't know a
+// body's there. This sheet does: a height field, the body pressing down on it
+// where its hull sits in the water (`step`'s `press`), the water answering as deep water does,
+// each of its waves running at its own speed (ω² = g k: the long ones faster, as the ocean's
+// own). Held in its waves (its spectrum, `fft`), each stepped exactly over the frame however
+// long, so it never blows up. Driven along, the pressing raises a crest at the bow and along its
+// forward shoulders, draws a trough down amidships, lifts a crest again at the stern, and sheds
+// the feathered arms of a Kelvin wake; bobbing, it sends rings out that run off and fade. A body
+// at rest sits in its own dent, and nothing moves.
+//
+// The sheet keeps to the world's axes and steps a whole cell as the body moves on (its waves
+// turned by that step's phase), so what the water holds stays where it was and never smears as
+// the body turns; at its edges a sponge soaks up what reaches it (its rise and how fast it's
+// rising both), so nothing comes back round.
+//
+// A shader reads it as one buffer (`Stir::cells`: each cell's rise, its slopes along x and z, and
+// its churn), through `stirred` with `Stir::at`: a buffer, not a texture, so a pass at the limit
+// of the textures a stage may bind can still read it.
+
+use std::gpu::{GpuBuffer, buffer, write}
+use std::math::TAU
+
+const G: f32 = 9.81
+
+/// How fast a wave on it dies away when nothing drives it (per second): a ring the body rocks out
+/// lasts several seconds, so a wake trails well out behind a moving body.
+const SETTLE: f32 = 0.3
+
+/// The longest a frame's step runs (s): a longer gap (a slow machine's, a hitch's) runs the water
+/// slow for it rather than jumping; past a second it starts afresh.
+const LONGEST: f32 = 0.1
+
+/// How much of its side, at each edge, soaks up what reaches it, and how fast (per second); and
+/// how often it soaks (s): the soaking takes a transform of its own, and a wave is a good while
+/// crossing the sponge, so on a fast screen it's every few frames' work, not every frame's.
+const SPONGE: f32 = 0.14
+const SOAK: f32 = 8.0
+const SOAKS: f32 = 0.03
+
+/// The churned water a body leaves (`Sheet::churn`): how much each metre of water it shoves aside
+/// churns, by how fast it's shoved (so a hull under way leaves a trail and one at rest none); how
+/// long it lasts (s); and how fast it spreads (m²/s), so a wake's trail widens behind it.
+const CHURNS: f32 = 12.0
+const CHURN_LASTS: f32 = 10.0
+const CHURN_SPREADS: f32 = 0.3
+
+/// How fast thick froth bursts (a second, for each unit of it there: twice as thick, twice as
+/// fast): a mass of it is lace in a few seconds, and the faint aerated trace it leaves lasts
+/// (`CHURN_LASTS`), a long pale lane behind a short white one.
+const CHURN_THINS: f32 = 0.35
+
+/// The sheet itself, on the CPU.
+pub struct Sheet {
+    /// Its side in cells (a power of two), and a cell's side (m).
+    pub n: u32,
+    pub cell: f32,
+    /// Its corner cell (the world's, in cells along x and z).
+    pub corner: vec2i,
+    /// Each cell's rise (m), a row along x after another.
+    pub rise: Vec<f32>,
+    /// Each cell's churn: the broken, aerated water a body has left there (0 none, about 1 a
+    /// hull's wake under way). It stays where it's left, fading and spreading.
+    pub churn: Vec<f32>,
+    /// Its waves: the rise's and its rate's (each a complex number per wave, `fft`'s order), and
+    /// each wave's angular frequency (rad/s) and wavenumbers along x and z (rad per cell).
+    height: Vec<vec2>,
+    rate: Vec<vec2>,
+    omega: Vec<f32>,
+    k: Vec<vec2>,
+    /// The FFT's turns, e^(-iτm/n) for m below n/2.
+    turns: Vec<vec2>,
+    /// How much of each cell the sponge keeps a second (1 inside, less toward the edge).
+    keep: Vec<f32>,
+    /// What presses on each cell (m: how far down the body would hold the water at rest).
+    press: Vec<f32>,
+    /// The time it's at, and whether it's begun.
+    time: f32,
+    begun: bool,
+    /// Each wave's turn over a step (its cos and sin) as last worked out, and the step (s) it
+    /// was worked out for: a steady frame rate's steps are all one length.
+    turned: Vec<vec2>,
+    stepped: f32,
+    /// How long since the sponge last soaked its edges (s); and what it keeps of each cell
+    /// over a while, as last worked out, and the while (s).
+    unsoaked: f32,
+    soaked: Vec<f32>,
+    soaked_for: f32,
+    /// Whether what a shader reads of it (`shaped`) has changed since it was last sent.
+    pub stale: bool,
+}
+
+/// The sheet, and what the GPU reads of it: each cell's (rise, slope along x, slope along z,
+/// churn), a row along x after another (`Sheet::shaped`).
+pub struct Stir {
+    pub sheet: Sheet,
+    pub cells: GpuBuffer<vec4>,
+}
+
+impl Stir {
+    /// A sheet `n` cells a side (a power of two), each `cell` m.
+    pub fn new(n: u32, cell: f32) -> Stir {
+        Stir { sheet: Sheet::new(n, cell), cells: buffer(n * n) }
+    }
+
+    /// Where a shader finds it (`Sheet::at`).
+    pub fn at(self) -> vec4 {
+        self.sheet.at()
+    }
+
+    /// Stepped on (`Sheet::step`), and what it holds sent to the GPU.
+    pub fn step(mut self, time: f32, press: [f32], froth: [f32]) {
+        self.sheet.step(time, press, froth)
+        // (A frame that moved nothing on, a screen faster than the scene's drawings: nothing
+        // new to send.)
+        if self.sheet.stale {
+            write(mut self.cells, 0, self.sheet.shaped())
+            self.sheet.stale = false
+        }
+    }
+}
+
+impl Sheet {
+    /// A sheet `n` cells a side (a power of two), each `cell` m.
+    pub fn new(n: u32, cell: f32) -> Sheet {
+        let count = n * n
+        var omega: Vec<f32> = Vec::filled(count, 0.0)
+        var k: Vec<vec2> = Vec::filled(count, vec2(0.0))
+        var keep: Vec<f32> = Vec::filled(count, 1.0)
+        for j in 0..n {
+            for i in 0..n {
+                let a = j * n + i
+                let w = vec2(f32(wave_of(i, n)), f32(wave_of(j, n))) * (TAU / f32(n))
+                k[a] = w
+                omega[a] = sqrt(G * length(w) / cell)
+                let u = (vec2(f32(i), f32(j)) + vec2(0.5)) / f32(n)
+                let e = min(min(u.x, 1.0 - u.x), min(u.y, 1.0 - u.y))
+                let f = 1.0 - clamp(e / SPONGE, 0.0, 1.0)
+                keep[a] = exp(-SOAK * f * f)
+            }
+        }
+        var turns: Vec<vec2> = Vec::with_capacity(n / 2)
+        for m in 0..n / 2 {
+            let p = -TAU * f32(m) / f32(n)
+            turns.push(vec2(cos(p), sin(p)))
+        }
+        Sheet {
+            n,
+            cell,
+            corner: vec2i(0),
+            turns,
+            rise: Vec::filled(count, 0.0),
+            churn: Vec::filled(count, 0.0),
+            height: Vec::filled(count, vec2(0.0)),
+            rate: Vec::filled(count, vec2(0.0)),
+            omega,
+            k,
+            keep,
+            press: Vec::filled(count, 0.0),
+            time: 0.0,
+            begun: false,
+            turned: Vec::filled(count, vec2(1.0, 0.0)),
+            soaked: Vec::filled(count, 1.0),
+            stepped: -1.0,
+            unsoaked: 0.0,
+            soaked_for: -1.0,
+            stale: true,
+        }
+    }
+
+    /// Where cell (`i`, `j`)'s middle lies on the level (x, z, m).
+    pub fn middle(self, i: u32, j: u32) -> vec2 {
+        (vec2(self.corner) + vec2(f32(i), f32(j)) + vec2(0.5)) * self.cell
+    }
+
+    /// Its rise at `xz` (x, z, m), between the cells round it; nothing outside it.
+    pub fn rise_at(self, xz: vec2) -> f32 {
+        let c = xz / self.cell - vec2(self.corner) - vec2(0.5)
+        let f = floor(c)
+        let n = i32(self.n)
+        let i = i32(f.x)
+        let j = i32(f.y)
+        if i < 0 || j < 0 || i + 1 >= n || j + 1 >= n {
+            return 0.0
+        }
+        let w = c - f
+        let a = u32(j * n + i)
+        let r0 = mix(self.rise[a], self.rise[a + 1], w.x)
+        let r1 = mix(self.rise[a + self.n], self.rise[a + self.n + 1], w.x)
+        mix(r0, r1, w.y)
+    }
+
+    /// Where a shader finds it: its corner (x, z, m), its side (m), and its side in cells (0
+    /// before its first step: it holds nothing yet).
+    pub fn at(self) -> vec4 {
+        let c = vec2(self.corner) * self.cell
+        vec4(c.x, c.y, f32(self.n) * self.cell, if self.begun { f32(self.n) } else { 0.0 })
+    }
+
+    /// What a shader reads of it (`stirred`): each cell's (rise, its slope along x, along z,
+    /// churn), from the cells round it; fading to nothing over its edge, so its edge never shows
+    /// as a step in the water.
+    pub fn shaped(self) -> Vec<vec4> {
+        let n = self.n
+        var out: Vec<vec4> = Vec::with_capacity(n * n)
+        let by = 1.0 / (2.0 * self.cell)
+        for j in 0..n {
+            for i in 0..n {
+                let a = j * n + i
+                let l = self.rise[if i > 0 { a - 1 } else { a }]
+                let r = self.rise[if i + 1 < n { a + 1 } else { a }]
+                let d = self.rise[if j > 0 { a - n } else { a }]
+                let u = self.rise[if j + 1 < n { a + n } else { a }]
+                let e = f32(min(min(i, n - 1 - i), min(j, n - 1 - j))) / f32(n)
+                let k = smoothstep(0.02, 0.12, e)
+                out.push(vec4(self.rise[a], (r - l) * by, (u - d) * by, self.churn[a]) * k)
+            }
+        }
+        out
+    }
+
+    /// Moved so `centre` (x, z, m) lies at its middle: whole cells, what it held kept where it
+    /// lies (each wave turned by the step), the sponge soaking what comes round from behind.
+    pub fn follow(mut self, centre: vec2) {
+        let half = i32(self.n / 2)
+        let to = vec2i(i32(floor(centre.x / self.cell)) - half, i32(floor(centre.y / self.cell)) - half)
+        let by = to - self.corner
+        self.corner = to
+        if by.x == 0 && by.y == 0 {
+            return
+        }
+        self.stale = true
+        let n = i32(self.n)
+        if abs(by.x) >= n / 4 || abs(by.y) >= n / 4 {
+            // (Jumped well across it: begun afresh, the body settled into calm water.)
+            self.begun = false
+            return
+        }
+        // (A cell's rise now the one `by` on from it was: each wave turned by its phase over
+        // `by`, its turn along x times its turn along z.)
+        var along_x: Vec<vec2> = Vec::with_capacity(self.n)
+        var along_z: Vec<vec2> = Vec::with_capacity(self.n)
+        for i in 0..self.n {
+            let w = f32(wave_of(i, self.n)) * (TAU / f32(self.n))
+            along_x.push(vec2(cos(w * f32(by.x)), sin(w * f32(by.x))))
+            along_z.push(vec2(cos(w * f32(by.y)), sin(w * f32(by.y))))
+        }
+        for j in 0..self.n {
+            for i in 0..self.n {
+                let a = j * self.n + i
+                let turn = times(along_x[i], along_z[j])
+                self.height[a] = times(self.height[a], turn)
+                self.rate[a] = times(self.rate[a], turn)
+            }
+        }
+        // (Its cells, the churn and the press on them moved as well: churn coming in over the
+        // edge is none.)
+        var rise: Vec<f32> = Vec::filled(self.n * self.n, 0.0)
+        var churn: Vec<f32> = Vec::filled(self.n * self.n, 0.0)
+        var press: Vec<f32> = Vec::filled(self.n * self.n, 0.0)
+        for j in 0..n {
+            for i in 0..n {
+                let a = u32(j * n + i)
+                let b = u32(((j + by.y) % n + n) % n * n + ((i + by.x) % n + n) % n)
+                rise[a] = self.rise[b]
+                press[a] = self.press[b]
+                let si = i + by.x
+                let sj = j + by.y
+                if si >= 0 && si < n && sj >= 0 && sj < n {
+                    churn[a] = self.churn[b]
+                }
+            }
+        }
+        self.rise = take rise
+        self.churn = take churn
+        self.press = take press
+    }
+
+    /// Stepped on to `time`, `press` (each cell's: how far down the body holds the water) on it,
+    /// and `froth` churned into it (each cell's, a second: the water a body breaks as it goes,
+    /// along its sides and behind it; empty for none).
+    pub fn step(mut self, time: f32, press: [f32], froth: [f32]) {
+        let n = self.n
+        let count = n * n
+        // (Short of what it needs: left as it is.)
+        if press.len() < count {
+            return
+        }
+        let dt = time - self.time
+        // (No time gone by: nothing moves.)
+        if self.begun && dt == 0.0 {
+            return
+        }
+        self.time = time
+        self.stale = true
+        let fresh = !self.begun || dt < 0.0 || dt > 1.0
+        var pressed: Vec<vec2> = Vec::with_capacity(count)
+        var shoved: Vec<f32> = Vec::filled(count, 0.0)
+        for a in 0..count {
+            if !fresh && dt > 0.0 {
+                let d = max(press[a] - self.press[a], 0.0)
+                shoved[a] = CHURNS * d * d / dt
+            }
+            self.press[a] = press[a]
+            pressed.push(vec2(press[a], 0.0))
+        }
+        fft(mut pressed, n, self.turns, inverse: false)
+        if fresh {
+            // (Begun, or jumped: the water settled into the body's dent, nothing moving.)
+            for a in 0..count {
+                self.height[a] = -pressed[a]
+                self.rate[a] = vec2(0.0)
+                self.rise[a] = -self.press[a]
+                self.churn[a] = 0.0
+            }
+            self.begun = true
+            return
+        }
+        let h = min(dt, LONGEST)
+        let settle = exp(-SETTLE * h)
+        if h != self.stepped {
+            for a in 0..count {
+                let w = self.omega[a]
+                self.turned[a] = vec2(cos(w * h), sin(w * h))
+            }
+            self.stepped = h
+        }
+        // (Each wave as an oscillator about the dent the body holds it in, stepped exactly.)
+        for a in 0..count {
+            let w = self.omega[a]
+            // (The sheet's mean level has no wave to carry it: it sits in the mean dent at once.)
+            if w <= 0.0 {
+                self.height[a] = vec2(0.0) - pressed[a]
+                self.rate[a] = vec2(0.0)
+                continue
+            }
+            let off = self.height[a] + pressed[a]
+            let c = self.turned[a].x
+            let s = self.turned[a].y
+            let next = off * c + self.rate[a] * (s / w)
+            self.rate[a] = (self.rate[a] * c - off * (w * s)) * settle
+            self.height[a] = next - pressed[a]
+        }
+        // (Back to the cells, soaked at the edges (every `SOAKS`), and to its waves again: its
+        // rise and how fast it's rising both, or a wave soaked of its height alone runs on
+        // through the edge on its speed and comes round ahead of the body. Both are real on the
+        // cells, so they go as one complex field, rise + i rate, through one transform each way,
+        // and are told apart after by each wave's mirror: a real field's wave at -k is its wave
+        // at k's conjugate.)
+        self.unsoaked += h
+        let soaking = self.unsoaked >= SOAKS
+        var cells: Vec<vec2> = Vec::with_capacity(count)
+        for a in 0..count {
+            let hi = self.height[a]
+            let ra = self.rate[a]
+            cells.push(vec2(hi.x - ra.y, hi.y + ra.x))
+        }
+        fft(mut cells, n, self.turns, inverse: true)
+        if soaking {
+            if self.unsoaked != self.soaked_for {
+                for a in 0..count {
+                    self.soaked[a] = if self.keep[a] < 1.0 { pow(self.keep[a], self.unsoaked) } else { 1.0 }
+                }
+                self.soaked_for = self.unsoaked
+            }
+            self.unsoaked = 0.0
+            for a in 0..count {
+                let v = cells[a] * self.soaked[a]
+                self.rise[a] = v.x
+                cells[a] = v
+            }
+            fft(mut cells, n, self.turns, inverse: false)
+            for j in 0..n {
+                for i in 0..n {
+                    let a = j * n + i
+                    let b = ((n - j) % n) * n + (n - i) % n
+                    let here = cells[a]
+                    let there = vec2(cells[b].x, -cells[b].y)
+                    let d = (here - there) * 0.5
+                    self.height[a] = (here + there) * 0.5
+                    self.rate[a] = vec2(d.y, -d.x)
+                }
+            }
+        } else {
+            for a in 0..count {
+                self.rise[a] = cells[a].x
+            }
+        }
+        if froth.len() == count {
+            for a in 0..count {
+                shoved[a] += froth[a] * h
+            }
+        }
+        self.churned(shoved, h)
+    }
+
+    /// The churn stepped on by `h` (s): what's `shoved` (`step`) added, the rest spreading to
+    /// its neighbours and fading.
+    fn churned(mut self, shoved: [f32], h: f32) {
+        let n = self.n
+        let spread = min(CHURN_SPREADS * h / (self.cell * self.cell), 0.24)
+        let fade = exp(-h / CHURN_LASTS)
+        var next: Vec<f32> = Vec::filled(n * n, 0.0)
+        for j in 0..n {
+            for i in 0..n {
+                let a = j * n + i
+                let c = self.churn[a]
+                let l = if i > 0 { self.churn[a - 1] } else { c }
+                let r = if i + 1 < n { self.churn[a + 1] } else { c }
+                let d = if j > 0 { self.churn[a - n] } else { c }
+                let u = if j + 1 < n { self.churn[a + n] } else { c }
+                // (Thick froth bursts fast, the thinner the slower: its own square, stepped exactly,
+                // so what's left of a mass of it is a faint trace that lingers.)
+                // (The last trace of it gone outright: nothing left to draw, or to work on.)
+                let left = (c + spread * (l + r + d + u - 4.0 * c)) * fade
+                let kept = if left < 1.0e-3 { 0.0 } else { left }
+                next[a] = min(kept / (1.0 + CHURN_THINS * kept * h) + shoved[a], 3.0)
+            }
+        }
+        self.churn = take next
+    }
+}
+
+/// Wave `i` of `n`'s wavenumber (cycles over the sheet): 0 to n/2 - 1, then -n/2 to -1.
+fn wave_of(i: u32, n: u32) -> i32 {
+    if i < n / 2 { i32(i) } else { i32(i) - i32(n) }
+}
+
+/// `a` times `b`, complex.
+fn times(a: vec2, b: vec2) -> vec2 {
+    vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x)
+}
+
+/// `data` (`n` × `n` complex, a row along x after another) to its waves, or back (`inverse`,
+/// scaled by 1 / n²): along each row, then down each column.
+fn fft(data: mut Vec<vec2>, n: u32, turns: [vec2], inverse: bool) {
+    var line: Vec<vec2> = Vec::filled(n, vec2(0.0))
+    for j in 0..n {
+        for i in 0..n {
+            line[i] = data[j * n + i]
+        }
+        fft_line(mut line, n, turns, inverse)
+        for i in 0..n {
+            data[j * n + i] = line[i]
+        }
+    }
+    for i in 0..n {
+        for j in 0..n {
+            line[j] = data[j * n + i]
+        }
+        fft_line(mut line, n, turns, inverse)
+        for j in 0..n {
+            data[j * n + i] = line[j]
+        }
+    }
+    if inverse {
+        let s = 1.0 / f32(n * n)
+        for a in 0..n * n {
+            data[a] *= s
+        }
+    }
+}
+
+/// One line of `n` (a power of two) complex values to its waves, or back (`inverse`, unscaled):
+/// in place, radix 2, its turns from `turns` (`Sheet::turns`).
+fn fft_line(a: mut Vec<vec2>, n: u32, turns: [vec2], inverse: bool) {
+    // (Its values put in bit-reversed order.)
+    var j: u32 = 0
+    for i in 1..n {
+        var bit = n >> 1
+        while (j & bit) != 0 {
+            j ^= bit
+            bit >>= 1
+        }
+        j |= bit
+        if i < j {
+            let t = a[i]
+            a[i] = a[j]
+            a[j] = t
+        }
+    }
+    var len: u32 = 2
+    while len <= n {
+        let stride = n / len
+        let half = len / 2
+        var start: u32 = 0
+        while start < n {
+            for m in 0..half {
+                let t = turns[m * stride]
+                let w = if inverse { vec2(t.x, -t.y) } else { t }
+                let u = a[start + m]
+                let v = times(a[start + m + half], w)
+                a[start + m] = u + v
+                a[start + m + half] = u - v
+            }
+            start += len
+        }
+        len <<= 1
+    }
+}
+
+/// The stirred water at `xz` (x, z, m) as `cells` holds it (`Stir::cells`, found by `at`,
+/// `Stir::at`): its rise (m), its slopes along x and z, and its churn (`Sheet::churn`), between
+/// the cells round it; nothing outside it.
+pub fn stirred(cells: [vec4], at: vec4, xz: vec2) -> vec4 {
+    if at.w < 0.5 {
+        return vec4(0.0)
+    }
+    let c = (xz - at.xy) * (at.w / at.z) - vec2(0.5)
+    if c.x < 0.0 || c.y < 0.0 || c.x >= at.w - 1.0 || c.y >= at.w - 1.0 {
+        return vec4(0.0)
+    }
+    let f = floor(c)
+    let w = c - f
+    let n = u32(at.w)
+    let a = u32(f.y) * n + u32(f.x)
+    mix(mix(cells[a], cells[a + 1], w.x), mix(cells[a + n], cells[a + n + 1], w.x), w.y)
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// A body pressed into still water and left: it settles, and nothing far off moves.
+@test
+fn a_body_at_rest_stirs_nothing() {
+    var s = Sheet::new(32, 0.25)
+    s.follow(vec2(0.0))
+    var press: Vec<f32> = Vec::filled(32 * 32, 0.0)
+    for j in 14..18 {
+        for i in 14..18 {
+            press[j * 32 + i] = 0.1
+        }
+    }
+    s.step(0.0, press, [])
+    for f in 1..120 {
+        s.step(f32(f) / 60.0, press, [])
+    }
+    var most = 0.0
+    for a in 0..32 * 32 {
+        most = max(most, abs(s.rise[a] + s.press[a]))
+    }
+    assert(most < 1.0e-4)
+}
+
+/// A body dragged through: nothing runs ahead of it; the water heaps at its forward shoulders, is
+/// drawn down along its middle, and the feathered wake spreads behind.
+@test
+fn a_body_driven_parts_the_water() {
+    var s = Sheet::new(64, 0.1875)
+    var press: Vec<f32> = Vec::filled(64 * 64, 0.0)
+    let v = 3.0
+    for f in 0..180 {
+        let t = f32(f) / 60.0
+        let x = v * t
+        s.follow(vec2(x, 0.0))
+        for j in 0..64 {
+            for i in 0..64 {
+                let m = s.middle(i: i, j: j)
+                let q = vec2((m.x - x) / 2.2, m.y / 0.6)
+                let inside = 1.0 - dot(q, q)
+                press[j * 64 + i] = 0.14 * smoothstep(0.0, 0.3, inside)
+            }
+        }
+        s.step(t, press, [])
+    }
+    // (Just off its side, 0.8 m out from its middle.)
+    let x = v * 179.0 / 60.0
+    let k = u32(clamp(floor((0.8 - s.middle(i: 0, j: 0).y) / s.cell), 0.0, 63.0))
+    var crest = -1.0
+    var trough = 1.0
+    var ahead = 0.0
+    for i in 0..64 {
+        let along = s.middle(i: i, j: 0).x - x
+        let h = s.rise[k * 64 + i]
+        if along > 0.0 && along < 1.5 { crest = max(crest, h) }
+        if along > -1.5 && along < 0.0 { trough = min(trough, h) }
+        if along > 2.6 && along < 4.5 { ahead = max(ahead, abs(h)) }
+    }
+    assert(crest > 0.05 && trough < -0.05 && ahead < 0.02)
+}
+
+/// A body driven fast, as a hull at a run: what it sheds is soaked at the sheet's edge, not
+/// carried round to stand in the water ahead of it.
+@test
+fn a_fast_body_sends_nothing_round_ahead() {
+    var s = Sheet::new(128, 0.25)
+    var press: Vec<f32> = Vec::filled(128 * 128, 0.0)
+    let v = 10.0
+    for f in 0..150 {
+        let t = f32(f) / 30.0
+        let x = v * t
+        s.follow(vec2(x - 6.0, 0.0))
+        for j in 0..128 {
+            for i in 0..128 {
+                let m = s.middle(i: i, j: j)
+                let q = vec2((m.x - x) / 2.2, m.y / 0.6)
+                press[j * 128 + i] = 0.14 * smoothstep(0.0, 0.3, 1.0 - dot(q, q))
+            }
+        }
+        s.step(t, press, [])
+    }
+    let x = v * 149.0 / 30.0
+    var ahead = 0.0
+    for j in 0..128 {
+        for i in 0..128 {
+            let m = s.middle(i: i, j: j)
+            // (From the bow on to where the sponge begins.)
+            if m.x - x > 4.7 && m.x - x < 7.2 && abs(m.y) < 6.0 {
+                ahead = max(ahead, abs(s.rise[j * 128 + i]))
+            }
+        }
+    }
+    assert(ahead < 0.01, f"ahead {ahead}")
+}
+
+/// And as little when it's stepped faster than the sponge soaks (`SOAKS`: every other step here).
+@test
+fn a_fast_body_sends_nothing_round_ahead_stepped_fast() {
+    var s = Sheet::new(128, 0.25)
+    var press: Vec<f32> = Vec::filled(128 * 128, 0.0)
+    let v = 10.0
+    for f in 0..270 {
+        let t = f32(f) / 60.0
+        let x = v * t
+        s.follow(vec2(x - 6.0, 0.0))
+        for j in 52..76 {
+            for i in 0..128 {
+                let m = s.middle(i: i, j: j)
+                let q = vec2((m.x - x) / 2.2, m.y / 0.6)
+                press[j * 128 + i] = 0.14 * smoothstep(0.0, 0.3, 1.0 - dot(q, q))
+            }
+        }
+        s.step(t, press, [])
+    }
+    let x = v * 269.0 / 60.0
+    var ahead = 0.0
+    for j in 0..128 {
+        for i in 0..128 {
+            let m = s.middle(i: i, j: j)
+            if m.x - x > 4.7 && m.x - x < 7.2 && abs(m.y) < 6.0 {
+                ahead = max(ahead, abs(s.rise[j * 128 + i]))
+            }
+        }
+    }
+    assert(ahead < 0.01, f"ahead {ahead}")
+}
+
+/// A body dragged through leaves churned water in a trail behind it, none ahead; one at rest
+/// churns nothing.
+@test
+fn a_driven_body_leaves_a_churned_trail() {
+    var s = Sheet::new(64, 0.25)
+    var press: Vec<f32> = Vec::filled(64 * 64, 0.0)
+    let v = 3.0
+    for f in 0..180 {
+        let t = f32(f) / 60.0
+        let x = v * t
+        s.follow(vec2(x - 3.0, 0.0))
+        for j in 0..64 {
+            for i in 0..64 {
+                let m = s.middle(i: i, j: j)
+                let q = vec2((m.x - x) / 2.2, m.y / 0.6)
+                press[j * 64 + i] = 0.14 * smoothstep(0.0, 0.3, 1.0 - dot(q, q))
+            }
+        }
+        s.step(t, press, [])
+    }
+    let x = v * 179.0 / 60.0
+    let k = u32(floor((0.0 - s.middle(i: 0, j: 0).y) / s.cell))
+    var behind = 0.0
+    var ahead = 0.0
+    for i in 0..64 {
+        let along = s.middle(i: i, j: 0).x - x
+        let c = s.churn[k * 64 + i]
+        if along < -4.0 && along > -6.0 { behind = max(behind, c) }
+        if along > 3.5 { ahead = max(ahead, c) }
+    }
+    assert(behind > 0.2 && ahead < 0.01, f"behind {behind} ahead {ahead}")
+    // (Then held still: what's left fades, and nothing new is churned.)
+    var still = 0.0
+    for f in 180..1080 {
+        s.step(f32(f) / 60.0, press, [])
+    }
+    for a in 0..64 * 64 {
+        still = max(still, s.churn[a])
+    }
+    assert(still < 0.05, f"still {still}")
+}
