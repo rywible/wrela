@@ -315,11 +315,11 @@ pub fn stirred(s: Shot, xz: vec2, rest: vec2, n: vec3) -> (vec3, f32) {
     }
     // Where the bow's spray falls back, either side and a little aft of it: a scatter of white
     // that's left astern as it runs.
-    let fall = vec2(abs(q.x) - 1.1 - 0.5 * run, q.y - 0.2 + 1.2 * run)
     // (Small and torn: soft and broad, it lay on the water as white tubes.)
     // (With the water it stirs simulated, `STIRRED`, the froth its bow breaks is the sheet's,
     // left where it fell: these patches, carried along beside the bow, read as cut-outs.)
     let splash = if STIRRED > 0.5 { 0.0 } else {
+        let fall = vec2(abs(q.x) - 1.1 - 0.5 * run, q.y - 0.2 + 1.2 * run)
         exp(-dot(fall, fall) / (0.12 + 0.2 * run)) *
             smoothstep(
                 0.5,

@@ -7,7 +7,7 @@
 
 use main::{FREEBOARD, HERO, LOOK, LOW_CLOUD, OFF, WAKE_DEBUG}
 use look::{
-    STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot,
+    STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SAT, SEA, SKIFF, SKY, STONE, Shot,
     band, cells, hash2, luma, fbm, noise, ray,
 }
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
@@ -434,7 +434,9 @@ fn sea_level(s: Shot, waves: Waves, stir: [vec4], p: vec3, foot: f32) -> f32 {
     // (And the water its hull stirs, as `engine::stir` simulates it: pressed down where it
     // floats, heaped where it shoulders through, the rings it rocks out.)
     let heaped = level + lifted(s, p) + stir_on(stir, s.stir_at, vec2(p.x, p.z)).x
-    let cap = gunwale - 0.14
+    // (As far over where the sea rests on it as before it sat `SAT` lower: left at its old
+    // height, the cap stood under the resting sea and cut all of it at the hull to one line.)
+    let cap = gunwale - 0.14 + SAT
     let hk = clamp(0.5 + 0.5 * (cap - heaped) / 0.08, 0.0, 1.0)
     let capped = mix(cap, heaped, hk) - 0.08 * hk * (1.0 - hk)
     mix(heaped, capped, near * near * (3.0 - 2.0 * near))

@@ -145,7 +145,7 @@ pub fn bearing(t: f32, at: vec2, steer: f32, swell: Swell) -> vec3 {
     let star = swell.height(c + across0 * 0.5, t)
     let mid = swell.height(c, t)
     // (Its deck a hand and a half over the water, its bottom a good way under: set higher, it
-    // sat on the sea, not in it, and read as floating.)
+    // sat on the sea, not in it, and read as floating. `look::SAT` sets it lower again.)
     let y = (bow + stern + port + star + mid * 2.0) / 6.0 - 0.11
     // Pitched and rolled as those points lie, but not all the way: the hull's weight steadies it.
     vec3(y, (bow - stern) / 3.0 * 0.8, (star - port) / 1.0 * 0.6)
