@@ -172,6 +172,8 @@ The project's budget is about $20 a month on Workers Paid. Two alarms watch it:
 | `motion`             | A scene in motion: frames, a clip and a contact sheet                                                     |
 | `moves`              | A reference clip written as Wrela motion in content/moves; `--sheet <dir>` a strike's timing sheet and chart |
 | `steady`             | A scene's flicker as numbers: each kind of pixel's crawl, and its crawl of its own (what steps in it that doesn't in a reference drawn every pixel every frame), a picture of where, and with `--switches` which switch it follows (`wrela tool steady -- build/steady --switches`). `--shot held` stops the scene first: nothing moves, so any step there is the drawing's own and the target is none |
+| `forms`              | Each charted form's numbers solved against its reference and written into content, with its miss by place on its chart (`docs/charted-forms.md`) |
+| `judge`              | Two builds of a scene (another revision's with `--against <rev>`, or other constants) on a fixed list of shots, each pair shuffled under a sealed key with the critics' brief, `--clips` for both sides' clips, and `--tally` for the critics' votes read through the key (`wrela tool judge -- build/judge/arms --against origin/main`) |
 | `styles`             | Each look under content/styles built into a scene, and the check that adding one changed nothing in `engine/` |
 | `serve`              | A directory served to a browser                                                                           |
 | `audio`              | A piece's take and measurements                                                                           |

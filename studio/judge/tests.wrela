@@ -1,0 +1,259 @@
+// The judging tool's tests: its command line, its shots, a crop, a pair's layout, the shuffle
+// and its key, and a critic's answer read and tallied, on small fixtures.
+
+use pairs::{
+    GAP, MOST, Pick, brief, by_chance, counted, cropped, key_of, key_text, page_name, pages,
+    rows_a_page, size_of, swapped, tally, thousandths, votes_of,
+}
+use shots::{Crop, LISTS, chosen, list, parse_args, scene}
+
+fn texts(lines: [Text]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for l in lines {
+        out.push(String::from(l))
+    }
+    out
+}
+
+@test
+fn the_command_line_takes_a_directory_a_revision_and_each_sides_constants() {
+    let given = texts(
+        [
+            "build/judge",
+            "--against",
+            "origin/main",
+            "--new-set",
+            "KINETIC=0.6",
+            "--seed",
+            "7",
+            "--critics",
+            "12",
+            "--only",
+            "impact",
+            "--clips",
+        ],
+    )
+    let Ok(o) = parse_args(given) else { panic("a run") }
+    assert(o.out.as_str() == "ws/build/judge" && o.against.as_str() == "origin/main")
+    assert(o.new_sets.len() == 1 && o.new_sets[0].name.as_str() == "KINETIC")
+    assert(o.base_sets.is_empty() && o.seed == 7 && o.critics == 12 && o.clips && !o.tally)
+    let kept = chosen(o)
+    assert(kept.len() == 1 && kept[0].name == "impact")
+    let Ok(t) = parse_args(texts(["build/judge", "--tally"])) else { panic("a tally") }
+    assert(t.tally && t.critics == 10 && chosen(t).len() == 7)
+    let Err(why) = parse_args(texts(["build/judge", "--only", "elbow"])) else {
+        panic("an unknown shot")
+    }
+    assert(why.as_str().find("no shot elbow").is_some(), why.as_str())
+    assert(parse_args(texts([])).is_err(), "no directory")
+    assert(parse_args(texts(["build/judge", "--base-set", "KINETIC"])).is_err(), "no value")
+    assert(parse_args(texts(["build/judge", "--critics", "0"])).is_err(), "no critics")
+}
+
+@test
+fn each_shot_is_of_a_scene_and_keeps_its_frames_in_order_inside_the_screen() {
+    for name in LISTS {
+        let Some(shots) = list(name) else { panic(name) }
+        for s in shots {
+            let Some(sc) = scene(s.scene) else { panic(s.name) }
+            assert(!s.frames.is_empty(), s.name)
+            for i in 1..s.frames.len() {
+                assert(s.frames[i - 1] < s.frames[i], s.name)
+            }
+            assert(s.crop.x0 < s.crop.x1 && s.crop.x1 <= sc.width, s.name)
+            assert(s.crop.y0 < s.crop.y1 && s.crop.y1 <= sc.height, s.name)
+        }
+    }
+}
+
+/// A screen `w` × `h` whose pixel at (x, y) is (x, y, 7, 255).
+fn screen(w: u32, h: u32) -> Vec<u8> {
+    var px: Vec<u8> = Vec::new()
+    for y in 0..h {
+        for x in 0..w {
+            px.push(u8(x))
+            px.push(u8(y))
+            px.push(7)
+            px.push(255)
+        }
+    }
+    px
+}
+
+/// A frame `w` × `h` of one red level.
+fn flat(w: u32, h: u32, red: u8) -> Vec<u8> {
+    var px: Vec<u8> = Vec::new()
+    for _ in 0..w * h {
+        px.push(red)
+        px.push(0)
+        px.push(0)
+        px.push(255)
+    }
+    px
+}
+
+@test
+fn a_crop_keeps_its_pixels_and_is_clipped_to_the_screen() {
+    let px = screen(w: 8, h: 6)
+    let c = Crop { x0: 2, y0: 1, x1: 5, y1: 4 }
+    let out = cropped(px, 8, c)
+    assert(out.len() == 3 * 3 * 4)
+    // Its first pixel is the screen's (2, 1), its last (4, 3).
+    assert(out[0] == 2 && out[1] == 1 && out[2] == 7 && out[3] == 255)
+    assert(out[32] == 4 && out[33] == 3)
+    assert(size_of(c, width: 8, height: 6) == (3, 3))
+    let over = Crop { x0: 6, y0: 4, x1: 20, y1: 20 }
+    assert(cropped(px, 8, over).len() == 2 * 2 * 4)
+    assert(size_of(over, width: 8, height: 6) == (2, 2))
+}
+
+@test
+fn a_stills_pair_is_laid_the_way_that_keeps_it_larger() {
+    // A wide still: one over the other.
+    let a = Vec::from([flat(w: 1400, h: 300, red: 100)])
+    let b = Vec::from([flat(w: 1400, h: 300, red: 200)])
+    let wide = pages(a, b, w: 1400, h: 300, numbers: [7], first: "A", second: "B")
+    assert(wide.len() == 1 && wide[0].w == 1400 && wide[0].h == 2 * 300 + GAP)
+    // (The first's last row, and the second's.)
+    assert(wide[0].px[3 * (299 * 1400 + 1399)] == 100)
+    assert(wide[0].px[3 * ((300 + GAP + 299) * 1400 + 1399)] == 200)
+    // A tall one: side by side.
+    let c = Vec::from([flat(w: 300, h: 900, red: 100)])
+    let d = Vec::from([flat(w: 300, h: 900, red: 200)])
+    let tall = pages(c, d, w: 300, h: 900, numbers: [7], first: "A", second: "B")
+    assert(tall.len() == 1 && tall[0].w == 2 * 300 + GAP && tall[0].h == 900)
+    assert(tall[0].px[3 * (899 * tall[0].w + 300 + GAP + 299)] == 200)
+    assert(page_name("guard", page: 0, pages: 1).as_str() == "guard.png")
+}
+
+@test
+fn a_strips_pairs_are_a_row_a_frame_over_as_many_pages_as_they_need() {
+    var a: Vec<Vec<u8>> = Vec::new()
+    var b: Vec<Vec<u8>> = Vec::new()
+    for k in 0..5 {
+        a.push(flat(w: 700, h: 400, red: u8(10 * (k + 1))))
+        b.push(flat(w: 700, h: 400, red: u8(100 + 10 * (k + 1))))
+    }
+    assert(rows_a_page(400) == 3 && 3 * 400 + 2 * GAP <= MOST)
+    let made = pages(a, b, w: 700, h: 400, numbers: [1, 2, 3, 4, 5], first: "A", second: "B")
+    assert(made.len() == 2 && made[0].w == 2 * 700 + GAP)
+    assert(made[0].h == 3 * 400 + 2 * GAP && made[1].h == 2 * 400 + GAP)
+    // The second page's first row is the fourth frame: its left's and its right's last pixels.
+    assert(made[1].px[3 * (399 * made[1].w + 699)] == 40)
+    assert(made[1].px[3 * (399 * made[1].w + 700 + GAP + 699)] == 140)
+    assert(page_name("cross", page: 1, pages: 2).as_str() == "cross-2.png")
+}
+
+@test
+fn each_shot_is_shown_each_way_round_to_half_its_panel_and_the_key_says_it() {
+    // Every shot of every seed: swapped for exactly half of a panel of ten, four of nine.
+    for seed in 200..212 {
+        for k in 0..9 {
+            var of_ten = 0
+            var of_nine = 0
+            for c in 1..11 {
+                assert(
+                    swapped(seed: seed, critics: 10, critic: c, k: k) ==
+                        swapped(seed: seed, critics: 10, critic: c, k: k),
+                )
+                if swapped(seed: seed, critics: 10, critic: c, k: k) {
+                    of_ten += 1
+                }
+                if c < 10 && swapped(seed: seed, critics: 9, critic: c, k: k) {
+                    of_nine += 1
+                }
+            }
+            assert(of_ten == 5 && of_nine == 4, f"seed {seed}, shot {k}: {of_ten}, {of_nine}")
+        }
+    }
+    // No two shots split a panel the same way throughout, nor two critics see every shot alike.
+    var same_shots = 0
+    var same_critics = 0
+    for k in 0..40 {
+        var alike = true
+        var twins = true
+        for c in 1..11 {
+            if swapped(seed: 303, critics: 10, critic: c, k: k) !=
+                swapped(seed: 303, critics: 10, critic: c, k: k + 1) {
+                alike = false
+            }
+        }
+        for j in 0..7 {
+            if swapped(seed: 303, critics: 10, critic: 1 + k % 9, k: j) !=
+                swapped(seed: 303, critics: 10, critic: 2 + k % 9, k: j) {
+                twins = false
+            }
+        }
+        if alike {
+            same_shots += 1
+        }
+        if twins {
+            same_critics += 1
+        }
+    }
+    assert(same_shots <= 2 && same_critics <= 4, f"{same_shots} shots, {same_critics} critics")
+    var swaps: Vec<bool> = Vec::new()
+    for k in 0..3 {
+        swaps.push(swapped(seed: 101, critics: 10, critic: 1, k: k))
+    }
+    let text = key_text(["guard", "step", "cross"], swaps)
+    let key = key_of(text.as_str())
+    assert(key.len() == 3 && key[1].shot.as_str() == "step")
+    for k in 0..3 {
+        assert(key[k].new_is_a == swaps[k])
+    }
+}
+
+@test
+fn a_critics_answer_is_read_by_its_verdict_and_tallied_through_its_own_key() {
+    let said = "Here is my read.\n\nguard: B better (confidence medium) - the elbow reads as a joint with a clean highlight, lower left\n**step**: A better (confidence low) - cleaner cuff\n- `impact`: no visible difference (confidence high) - same\nfollow: neither\ncross: A better (confidence low) - most frames show no visible difference at this size, but B better in none\n\nOverall: B better in most."
+    let names = texts(["guard", "step", "impact", "follow", "cross"])
+    let votes = votes_of(said, names)
+    assert(votes.len() == 4)
+    // (A note's "highlight" isn't its confidence, nor its "no visible difference" its pick.)
+    assert(votes[0].pick == Pick::B && votes[0].sure == 2)
+    assert(votes[1].pick == Pick::A && votes[1].sure == 1 && votes[1].shot.as_str() == "step")
+    assert(votes[2].pick == Pick::Same)
+    assert(votes[3].pick == Pick::A && votes[3].sure == 1 && votes[3].shot.as_str() == "cross")
+    // Under a key whose guard's B is the new and whose step's A is the base.
+    let key = key_of("guard: A=base B=new\nstep: A=base B=new\nimpact: A=new B=base\n")
+    let guard = counted(votes, "guard", key[0].new_is_a)
+    assert(guard.new == 1 && guard.base == 0 && guard.sure[2] == 1)
+    let step = counted(votes, "step", key[1].new_is_a)
+    assert(step.new == 0 && step.base == 1)
+    // A second critic, whose letters are the other way round, says the same of the same sides.
+    let other = votes_of(
+        "guard: A better (confidence high) - x\nstep: B better (confidence low) - y\n",
+        names,
+    )
+    let turned = key_of("guard: A=new B=base\nstep: A=new B=base\nimpact: A=base B=new\n")
+    let page = tally([take key, take turned], texts(["1", "2"]), [take votes, take other])
+    assert(page.as_str().find("| guard | 2 | 0 | 0 | 0, 1, 1 | 0.250 |").is_some(), page.as_str())
+    assert(page.as_str().find("| step | 0 | 2 | 0 | 0, 0, 0 | 1.000 |").is_some(), page.as_str())
+    assert(page.as_str().find("2 of 5 votes for the new").is_some(), page.as_str())
+    assert(page.as_str().find("A was chosen 3 times and B 2 times").is_some(), page.as_str())
+}
+
+@test
+fn a_coins_chance_of_a_tally() {
+    assert(abs(by_chance(k: 5, n: 5) - 1.0 / 32.0) < 1.0e-9)
+    assert(abs(by_chance(k: 4, n: 5) - 6.0 / 32.0) < 1.0e-9)
+    assert(by_chance(k: 0, n: 5) == 1.0 && by_chance(k: 0, n: 0) == 1.0)
+    assert(abs(by_chance(k: 24, n: 30) - 0.000715) < 0.00002)
+    assert(thousandths(1.0 / 32.0).as_str() == "0.031" && thousandths(1.0).as_str() == "1.000")
+}
+
+@test
+fn the_brief_names_each_shot_and_its_files_and_never_which_side_is_which() {
+    let Some(shots) = list("arms") else { panic("arms") }
+    var files: Vec<Vec<String>> = Vec::new()
+    for s in shots {
+        files.push(Vec::from([page_name(s.name, page: 0, pages: 1)]))
+    }
+    let text = brief(shots, files, "how each fighter's arms are drawn", "build/judge/pairs/3")
+    for s in shots {
+        assert(text.as_str().find(f"`{s.name}.png`").is_some(), s.name)
+    }
+    assert(text.as_str().find("how each fighter's arms are drawn").is_some())
+    assert(text.as_str().find("base").is_none() && text.as_str().find("the new").is_none())
+}

@@ -1,0 +1,11 @@
+# The judging tool (`wrela tool judge`): two builds of a scene (another revision's, or the same
+# with constants set otherwise) rendered on a fixed list of shots, each pair shuffled under a
+# sealed key for critics who aren't told which is which, and their votes tallied (main.wrela
+# says how).
+[package]
+name = "judge_tool"
+
+[dependencies]
+audio_tool = { workspace = true }
+lookbook_tool = { workspace = true }
+toolkit = { workspace = true }
