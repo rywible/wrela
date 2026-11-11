@@ -419,13 +419,13 @@ fn chart_drawn<P: RenderPass, const A: u32, const R: u32>(
     let span = chart::level_span(level)
     draw(
         p,
-        charted_vertex.bind(
+        chart::vertex.bind(
             rest: rest,
             form: form,
             band: band,
-            sunk: sunk,
+            under: sunk,
             level: level,
-            shot: shot,
+            seen: shot.cam,
         ),
         charted_pixel.bind(
             shade: form.form.softened(SHADED_DETAIL),
@@ -463,41 +463,6 @@ fn chart_shadow<P: RenderPass, const A: u32, const R: u32>(
         cull: Cull::None,
         depth: engine::view::NEAREST,
     )
-}
-
-/// A charted part's vertex, in posed space: where its place on the chart (`band`: what of the
-/// chart is drawn) is on the form his bones pose this frame (`form`), the side's normal there
-/// across its neighbouring points, where the same place is on him at rest (`rest`, which his
-/// paint reads), the place itself with whether a folded hinge holds the side in there (`tx`:
-/// how far along, the angle round, and 1 where it's folded), and the section's plane there
-/// (`ty`, angle 0; `tz`, a quarter turn on), from which a pixel reads its own normal
-/// (`charted_pixel`). Its root is drawn under what covers it (`sunk`). No skin weights: the
-/// form is made again where his bones are.
-@vertex
-pub fn charted_vertex<const A: u32, const R: u32>(
-    v: VertexIndex,
-    rest: Limb<A, R>,
-    form: Limb<A, R>,
-    band: Band,
-    sunk: vec2,
-    level: u32,
-    shot: Shot,
-) -> FighterVertex {
-    let at = chart::place_of(v.index, level, band)
-    let (world, normal) = form.side_and_normal(f: at.x, theta: at.y)
-    let under = chart::sunk(world, shot.cam.eye, chart::sunk_by(sunk, at.x))
-    let section = form.path.frame(saturate(at.x) * form.path.length())
-    FighterVertex {
-        clip: ClipPosition { position: shot.cam.clip(under) },
-        world,
-        rest: rest.side(f: at.x, theta: at.y),
-        tx: vec3(at, form.folded(f: at.x, theta: at.y)),
-        ty: section.up,
-        tz: section.left,
-        normal,
-        lo: Flat { value: 0 },
-        hi: Flat { value: 0 },
-    }
 }
 
 /// A charted part's shadow.
@@ -634,12 +599,11 @@ pub fn sampled_pixel(
 /// His pixel where his form is drawn along its chart (charted part `part`): his paint by the
 /// part and where the place is on him at rest, and its normal read at the pixel itself from the
 /// form's slopes at its place (`shade`: the posed form, its finest ripples left out; about a
-/// path `length` long), so his light's bands are as clean on a coarse grid as on a fine one.
-/// Where a folded hinge holds the side in, the normal is the side's own. Nothing where the
-/// part isn't (`cover`: his jacket's front and armholes) or is cut away.
+/// path `length` long: `chart::Vertex::normal_from`). Nothing where the part isn't (`cover`:
+/// his jacket's front and armholes) or is cut away.
 @fragment
 pub fn charted_pixel<const A: u32, const R: u32>(
-    v: FighterVertex,
+    v: chart::Vertex,
     shade: Radial<A, R>,
     length: f32,
     cover: [u32],
@@ -647,15 +611,13 @@ pub fn charted_pixel<const A: u32, const R: u32>(
     who: u32,
     part: u32,
 ) -> Targets3<vec4, vec4, vec4> {
-    if part == COVERED && chart::covered(cover, v.tx.x, v.tx.y) < 0.5 {
+    if part == COVERED && chart::covered(cover, v.place.x, v.place.y) < 0.5 {
         discard()
     }
     if chart_cut(part, v.rest) {
         discard()
     }
-    let read = chart::normal_at(shade, v.ty, v.tz, length, v.tx.x, v.tx.y)
-    let n = normalize(mix(read, normalize(v.normal), vec3(saturate(v.tx.z))))
-    painted(shot, v.world, n, chart_paint(part, v.rest), who, 0)
+    painted(shot, v.world, v.normal_from(shade, length), chart_paint(part, v.rest), who, 0)
 }
 
 /// What his black cloth's lit planes are raised by (linear).

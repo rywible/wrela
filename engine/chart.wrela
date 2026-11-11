@@ -18,9 +18,10 @@
 
 use cycle
 use std::collections::Vec
-use std::gpu::{GpuBuffer, buffer_of}
+use std::gpu::{ClipPosition, GpuBuffer, VertexIndex, buffer_of}
 use std::math::{PI, TAU}
 use std::string::String
+use view::Camera
 
 // ---- the path -----------------------------------------------------------------------------------
 
@@ -1454,6 +1455,81 @@ pub fn level_for(length: f32, radius: f32, distance: f32, pixels: f32, tan_half:
 /// armhole) is drawn so: the garment's edge then lies over it however the two were posed.
 pub fn sunk(world: vec3, eye: vec3, by: f32) -> vec3 {
     world + unit(world - eye) * by
+}
+
+// ---- drawing a form -----------------------------------------------------------------------------
+
+/// What a charted form is seen with: where a point of the world lands in clip space, and where
+/// the eye is. A camera is one; a scene that casts its own view makes its view one.
+pub trait Seen: Copy + GpuData {
+    fn clip_at(self, world: vec3) -> vec4
+    fn seen_from(self) -> vec3
+}
+
+impl Seen for Camera {
+    fn clip_at(self, world: vec3) -> vec4 {
+        self.clip(world)
+    }
+
+    fn seen_from(self) -> vec3 {
+        self.eye
+    }
+}
+
+/// What a charted form's vertex passes on to its pixels: where it is, where the same place is
+/// on the form at rest (which paint reads), its place on the chart with whether a folded hinge
+/// holds the side in there (`place`: how far along, the angle round, and 1 where it's folded),
+/// the section's plane there (`up`, angle 0; `left`, a quarter turn on), and the side's normal
+/// across its neighbouring points.
+pub struct Vertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub rest: vec3,
+    pub place: vec3,
+    pub up: vec3,
+    pub left: vec3,
+    pub normal: vec3,
+}
+
+/// A charted form's vertex: vertex `v` of `level`'s grid (`grids`, `level_span`), where its
+/// place on the chart (`band`: what of the chart is drawn) is on the form as a pose has it
+/// (`form`), with where that place is on the form at rest (`rest`). Its root is drawn under
+/// what covers it (`under`: `Part::sunk`). No skin weights: the form is made again where its
+/// bones are.
+@vertex
+pub fn vertex<const A: u32, const R: u32, S: Seen>(
+    v: VertexIndex,
+    rest: Limb<A, R>,
+    form: Limb<A, R>,
+    band: Band,
+    under: vec2,
+    level: u32,
+    seen: S,
+) -> Vertex {
+    let at = place_of(v.index, level, band)
+    let (world, normal) = form.side_and_normal(f: at.x, theta: at.y)
+    let drawn = sunk(world, seen.seen_from(), sunk_by(under, at.x))
+    let section = form.path.frame(saturate(at.x) * form.path.length())
+    Vertex {
+        clip: ClipPosition { position: seen.clip_at(drawn) },
+        world,
+        rest: rest.side(f: at.x, theta: at.y),
+        place: vec3(at, form.folded(f: at.x, theta: at.y)),
+        up: section.up,
+        left: section.left,
+        normal,
+    }
+}
+
+impl Vertex {
+    /// The side's normal at a pixel (unit): read from the form's slopes at the pixel's own place
+    /// (`shade`: the posed form, as `Radial::softened` leaves it; about a path `length` long),
+    /// so light falls in bands as clean on a coarse grid as on a fine one; where a folded hinge
+    /// holds the side in, the side's own across its points.
+    pub fn normal_from<const A: u32, const R: u32>(self, shade: Radial<A, R>, length: f32) -> vec3 {
+        let read = normal_at(shade, self.up, self.left, length, self.place.x, self.place.y)
+        unit(mix(read, unit(self.normal), vec3(saturate(self.place.z))))
+    }
 }
 
 // ---- tests --------------------------------------------------------------------------------------
