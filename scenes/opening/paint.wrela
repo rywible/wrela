@@ -7,7 +7,7 @@
 
 use main::{FREEBOARD, HERO, LOOK, LOW_CLOUD, OFF, WAKE_DEBUG}
 use look::{
-    STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SAT, SEA, SKIFF, SKY, STONE, Shot,
+    STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot,
     band, cells, hash2, luma, fbm, noise, ray,
 }
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
@@ -434,9 +434,12 @@ fn sea_level(s: Shot, waves: Waves, stir: [vec4], p: vec3, foot: f32) -> f32 {
     // (And the water its hull stirs, as `engine::stir` simulates it: pressed down where it
     // floats, heaped where it shoulders through, the rings it rocks out.)
     let heaped = level + lifted(s, p) + stir_on(stir, s.stir_at, vec2(p.x, p.z)).x
-    // (As far over where the sea rests on it as before it sat `SAT` lower: left at its old
-    // height, the cap stood under the resting sea and cut all of it at the hull to one line.)
-    let cap = gunwale - 0.14 + SAT
+    // (Left where it was when the skiff was set `look::SAT` lower, so it stands a little under
+    // the resting sea and the water dips to the hull in a shallow dark hollow. Raised with the
+    // hull, the water stood higher on the planks but froth lay straight against dry-looking
+    // wood with no dark line between, and a blind critic took the hollow, narrowly. To try
+    // next: raise it and the soaked band (`skiff`) together, the band showing over the water.)
+    let cap = gunwale - 0.14
     let hk = clamp(0.5 + 0.5 * (cap - heaped) / 0.08, 0.0, 1.0)
     let capped = mix(cap, heaped, hk) - 0.08 * hk * (1.0 - hk)
     mix(heaped, capped, near * near * (3.0 - 2.0 * near))
