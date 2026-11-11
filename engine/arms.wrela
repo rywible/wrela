@@ -115,6 +115,10 @@ pub fn real(rig: Rig, takes: [Clip], shapes: Bytes) -> Real {
         }
     }
     for s in 0..2 {
+        assert(
+            length(r.hinge[s]) > 1.0e-4,
+            "no take bends this elbow far enough to learn its hinge",
+        )
         r.hinge[s] = normalize(r.hinge[s])
     }
     shapes_of(shapes, mut r)
@@ -131,7 +135,10 @@ fn shapes_of(b: Bytes, r: mut Real) {
         f32(if v > 127 { v - 256 } else { v }) / 127.0
     }
     for s in 0..2 {
-        let n = u32(b.at(at)) + u32(b.at(at + 1)) * 256 + u32(b.at(at + 2)) * 65536 + u32(b.at(at + 3)) * 16777216
+        let n = u32(b.at(at)) +
+            u32(b.at(at + 1)) * 256 +
+            u32(b.at(at + 2)) * 65536 +
+            u32(b.at(at + 3)) * 16777216
         at += 4
         for _ in 0..n {
             r.upper[s].push(normalize(vec3(signed(at), signed(at + 1), signed(at + 2))))
@@ -210,13 +217,19 @@ pub fn checked(rig: Rig, c: Clip, r: Real) -> Checked {
     }
     let name = |s: u32| -> Text { if s == 0 { "left" } else { "right" } }
     if out.hinge_off > HINGE_OFF {
-        out.flags.push(f"the {name(sides[0])} elbow bends {out.hinge_off:.0} degrees across its own hinge (the arm twisted, or bent the wrong way), at {out.hinge_at:.2} s")
+        out.flags.push(
+            f"the {name(sides[0])} elbow bends {out.hinge_off:.0} degrees across its own hinge (the arm twisted, or bent the wrong way), at {out.hinge_at:.2} s",
+        )
     }
     if out.head_in > HEAD_IN {
-        out.flags.push(f"the {name(sides[1])} hand is {out.head_in * 100.0:.1} cm inside the head at {out.head_at:.2} s")
+        out.flags.push(
+            f"the {name(sides[1])} hand is {out.head_in * 100.0:.1} cm inside the head at {out.head_at:.2} s",
+        )
     }
     if out.unreal > UNREAL {
-        out.flags.push(f"the {name(sides[2])} arm is {out.unreal:.0} degrees from any arm a person made, at {out.unreal_at:.2} s")
+        out.flags.push(
+            f"the {name(sides[2])} arm is {out.unreal:.0} degrees from any arm a person made, at {out.unreal_at:.2} s",
+        )
     }
     out
 }

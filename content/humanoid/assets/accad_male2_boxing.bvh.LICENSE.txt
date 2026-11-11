@@ -12,5 +12,7 @@ set's markers as C3D too), in centimetres.
 
 sha256 696158c170e09b4e36e1e2fbec14d8d4e7dbf18225ca6857328e67afcda9f25c
 
-Changes made here: none to the file. It's read only by tests: engine::arms learns from it how
-real arms move (their elbows' bends and their shapes), to check other clips' arms against.
+Changes made here: none to the file. engine::arms learns from it how real arms move (their
+elbows' bends and their shapes), to check other clips' arms against in tests; and the humanoid
+workbench plays it on the hero as a reference view (content/humanoid/kimodo.wrela), retargeted at
+build time.

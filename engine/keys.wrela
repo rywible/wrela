@@ -81,6 +81,16 @@ pub fn eased(ease: u32, x: f32) -> f32 {
 }
 
 /// Two keys mixed: `a` where `t` is 0, `b` where it's 1 (`b`'s time and ease).
+/// An elbow's pole between `a`'s and `b`'s: their mix's direction, or the nearer key's where
+/// the two point opposite ways and their mix has none.
+fn pole(a: vec3, b: vec3, t: f32) -> vec3 {
+    let v = a + (b - a) * t
+    if length(v) < 1.0e-4 {
+        return if t < 0.5 { a } else { b }
+    }
+    normalize(v)
+}
+
 pub fn mixed(a: Key, b: Key, t: f32) -> Key {
     let m = |x: vec3, y: vec3| -> vec3 { x + (y - x) * t }
     let m4 = |x: vec4, y: vec4| -> vec4 { x + (y - x) * t }
@@ -94,8 +104,8 @@ pub fn mixed(a: Key, b: Key, t: f32) -> Key {
         collars: [m(a.collars[0], b.collars[0]), m(a.collars[1], b.collars[1])],
         fists: [m(a.fists[0], b.fists[0]), m(a.fists[1], b.fists[1])],
         elbows: [
-            normalize(m(a.elbows[0], b.elbows[0])),
-            normalize(m(a.elbows[1], b.elbows[1])),
+            pole(a.elbows[0], b.elbows[0], t),
+            pole(a.elbows[1], b.elbows[1], t),
         ],
         rolls: [
             a.rolls[0] + (b.rolls[0] - a.rolls[0]) * t,
@@ -198,8 +208,10 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
         let yaw = about(vec3(0.0, 1.0, 0.0), f.z * DEG)
         let heel = about(yaw.rotate(vec3(1.0, 0.0, 0.0)), f.w * DEG)
         let q = heel.mul(yaw)
-        let ball = vec3(f.x, rw[l.toes].t.y + k.lifts[i], f.y)
-        let ankle = ball + q.rotate(rw[l.ankle].t - rw[l.toes].t)
+        // (A leg with no toes plants its ankle.)
+        let toe = if l.toes != NONE { l.toes } else { l.ankle }
+        let ball = vec3(f.x, rw[toe].t.y + k.lifts[i], f.y)
+        let ankle = ball + q.rotate(rw[l.ankle].t - rw[toe].t)
         let hinge = rw[l.knee].q.inverse().rotate(vec3(1.0, 0.0, 0.0))
         let (qu, ql) = reach(w[l.hip], w[l.knee], w[l.ankle].t, ankle, hinge)
         turn_below(rig, mut w, l.hip, qu.mul(w[l.hip].q.inverse()))
@@ -225,6 +237,7 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
 /// the first before them and the last after.
 pub fn key_at(keys: [Key], time: f32) -> Key {
     let n = keys.len()
+    assert(n > 0, "a move needs at least one key")
     if time <= keys[0].at {
         return keys[0]
     }
@@ -251,6 +264,7 @@ pub fn travels(keys: [Key], fps: f32, frames: u32) -> Vec<vec3> {
 /// that), its hands made fists (`fist`, as `stride::curled_hands`).
 pub fn keyed(rig: Rig, keys: [Key], fps: f32, fist: f32) -> Clip {
     let nb = rig.bones.len()
+    assert(keys.len() > 0, "a move needs at least one key")
     let last = keys[keys.len() - 1].at
     let n = u32(last * fps + 0.5) + 1
     var c = humanoid::rest_clip(rig)

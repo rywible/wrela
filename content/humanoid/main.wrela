@@ -366,7 +366,6 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
     (pose, playback::placed(s.mover))
 }
 
-/// The pose at `time`, and how far into its clip it's walked (for the camera to follow).
 /// The struck fighter's palette from the rig's `foe`: Hakuro's, his head squashed along the blow
 /// while the fist is in it (the exchange's clock `xc`, below 0 none).
 fn struck_palette(foe: [mat4; 64], xc: f32, xt: exchange::Tune) -> [mat4; 64] {
