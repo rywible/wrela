@@ -1104,9 +1104,11 @@ impl Wood {
 
     /// Its kind `k`'s impostor read through net `nn` (its weights then its grid's, `w`, half
     /// floats as shipped: decoded here, once) in place of its atlas (§B14.2); every kind's if `k`
-    /// is `impostor::EVERY_KIND`.
+    /// is `impostor::EVERY_KIND`. A grid of one cell isn't read (`impostor::net_texel`), so `w`
+    /// needn't hold it.
     pub fn read_through(mut self, k: u32, nn: Neural, w: [Half2]) {
-        self.net = buffer_of(unhalves(w, nn.model.size() + nn.grid * nn.grid * nn.features))
+        let grid = if nn.grid > 1 { nn.grid * nn.grid * nn.features } else { 0 }
+        self.net = buffer_of(unhalves(w, nn.model.size() + grid))
         self.neural = Neural { layer: k, on: 1, ..nn }
     }
 

@@ -556,7 +556,7 @@ fn rejector_inputs(f: Found, scene: Texture<Rgba16Float>) -> [f32; 48] {
 }
 
 /// This frame's share as the learned rejector gives it at what `f` found: the sigmoid of its
-/// net's output (`net`, half floats).
+/// net's output (`net`, its weights decoded).
 fn learned_share(f: Found, r: Resolve, scene: Texture<Rgba16Float>, net: [f32]) -> f32 {
     1.0 / (1.0 + exp(-eval_gpu(REJECTOR, net, rejector_inputs(f, scene))[0]))
 }
