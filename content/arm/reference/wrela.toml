@@ -1,0 +1,11 @@
+# The arm against its reference: what the sampled arm is, as sections an author can read; the
+# target table the arm is solved against (written from the reference); and how far the solved arm
+# is from it, everywhere. Kept apart from the arm so the arm's own package never holds the
+# reference: a solve's lifted build reads the target's table alone.
+[package]
+name = "arm_reference"
+
+[dependencies]
+arm = { workspace = true }
+engine = { workspace = true }
+hakuro = { workspace = true }

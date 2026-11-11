@@ -1,0 +1,6 @@
+# A lifted build of a program on the engine builds (`wrela build --lift`, which `wrela solve` and
+# `wrela run`'s hot reload are): a lifted build binds its table of literals as one more storage
+# buffer on every pipeline, so an engine kernel that binds WebGPU's eight of its own stops every
+# such build (E0602). The tool test builds one through `std::tool::toolchain`.
+[package]
+name = "lifted"

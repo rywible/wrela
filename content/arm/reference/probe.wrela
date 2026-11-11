@@ -1,0 +1,258 @@
+// What the reference arm is, as numbers an author can read: its radius about the line of its
+// joints, at stations along it and angles round it (the sweep's own chart: 0 up, then toward the
+// back, down, the front).
+
+use engine::realize::BLOCK
+use engine::sampled::Samples
+use hakuro::arm_left_grid
+use engine::sweep::Sweep
+use std::io::print
+use std::math::{PI, TAU}
+
+/// How far the reference's surface is from `from` toward `dir` (m): the first place its distance
+/// turns from inside to outside, by steps of half a millimetre; -1 where `from` is outside it,
+/// and 9 where the surface isn't met within 30 cm.
+pub fn reach(s: Samples, from: vec3, dir: vec3) -> f32 {
+    if s.distance(from) >= 0.0 {
+        return -1.0
+    }
+    var t = 0.0
+    var last = s.distance(from)
+    while t < 0.3 {
+        t += 0.0005
+        let d = s.distance(from + dir * t)
+        if d >= 0.0 {
+            return t - 0.0005 * d / max(d - last, 0.000001)
+        }
+        last = d
+    }
+    9.0
+}
+
+@test
+fn the_reference_arms_sections() {
+    let s = arm_left_grid::samples(0)
+    print(
+        "x(m)   axis(mm)  radius (mm) at 0 30 60 .. 330 degrees: up, back at 90, down at 180, front at 270",
+    )
+    for i in 0..22 {
+        let x = 0.14 + 0.03 * f32(i)
+        let from = vec3(x, 1.455, -0.069)
+        var line = f"{x:.2}  {s.distance(from) * 1000.0:.1}  "
+        for j in 0..12 {
+            let a = TAU * f32(j) / 12.0
+            let r = reach(s, from, vec3(0.0, cos(a), -sin(a)))
+            line = f"{line} {r * 1000.0:.0}"
+        }
+        print(line)
+    }
+}
+
+/// The middle of the reference's section across x (the mean of the points inside it there, by
+/// steps of 2 mm), and its area (cm²).
+pub fn middle(s: Samples, x: f32) -> vec3 {
+    var sum = vec2()
+    var n = 0.0
+    for iy in 0..230 {
+        for iz in 0..175 {
+            let y = 1.19 + 0.002 * f32(iy)
+            let z = -0.23 + 0.002 * f32(iz)
+            if s.distance(vec3(x, y, z)) < 0.0 {
+                sum += vec2(y, z)
+                n += 1.0
+            }
+        }
+    }
+    vec3(sum.x / max(n, 1.0), sum.y / max(n, 1.0), n * 0.04)
+}
+
+@test
+fn the_reference_arms_middle() {
+    let s = arm_left_grid::samples(0)
+    print("x(m)  middle y z (m)  area(cm2)  radius (mm) from the middle at 0 30 .. 330 degrees")
+    for i in 0..26 {
+        let x = 0.15 + 0.02 * f32(i)
+        let m = middle(s, x)
+        let from = vec3(x, m.x, m.y)
+        var line = f"{x:.2}  {m.x:.3} {m.y:.3}  {m.z:.0}  "
+        for j in 0..12 {
+            let a = TAU * f32(j) / 12.0
+            let r = reach(s, from, vec3(0.0, cos(a), -sin(a)))
+            line = f"{line} {r * 1000.0:.0}"
+        }
+        print(line)
+    }
+}
+
+/// The part of the arm that's fitted: between the reference's cut ends (x, m).
+pub const FROM: f32 = 0.205
+pub const TO: f32 = 0.605
+
+/// How near the reference's surface a lattice point is to count (m).
+pub const NEAR: f32 = 0.008
+
+/// The reference's lattice points within `NEAR` of its surface between `FROM` and `TO`, every
+/// `stride`th each way: each a point and the reference's distance there.
+pub fn near_surface(stride: u32) -> Vec<vec4> {
+    let s = arm_left_grid::samples(0)
+    var out = Vec::new()
+    let n = arm_left_grid::SIZE * BLOCK / stride
+    for ix in 0..n.x {
+        for iy in 0..n.y {
+            for iz in 0..n.z {
+                let p = arm_left_grid::ORIGIN +
+                    vec3(vec3u(ix, iy, iz) * stride) * arm_left_grid::CELL
+                if p.x >= FROM && p.x <= TO {
+                    let d = s.distance(p)
+                    if abs(d) < NEAR {
+                        out.push(vec4(p, d))
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Writes `target.wrela`'s table (each line after its `T `): every second lattice point each way,
+/// as whole numbers (a point in tenths of a millimetre, its distance in micrometres).
+@test
+fn the_target_table() {
+    let pts = near_surface(2)
+    print(f"T pub const POINTS: u32 = {pts.len()}")
+    print(f"T pub const TARGET: [i32; {4 * pts.len()}] = [")
+    for t in pts {
+        print(
+            f"T     {i32(round(t.x * 10000.0))}, {i32(round(t.y * 10000.0))}, {i32(round(t.z * 10000.0))}, {i32(round(t.w * 1000000.0))},",
+        )
+    }
+    print("T ]")
+}
+
+/// How far the solved arm is from the reference, everywhere: at every lattice point near the
+/// reference's surface, the arm's distance less the reference's (mm; more than 0 where the arm's
+/// surface is inside the reference's). Its spread over the points nearest the surface (within
+/// 3 mm), and its mean by where each point is about the arm: how far along, and at what angle.
+@test
+fn the_arm_against_its_reference() {
+    let a = arm::arm::arm()
+    let pts = near_surface(1)
+    var sum = 0.0
+    var close = 0.0
+    var close_sum = 0.0
+    var worst = 0.0
+    var hist = [0; 80]
+    var by = [vec2(); 96]
+    for t in pts {
+        let e = (a.near(t.xyz) - t.w) * 1000.0
+        sum += e * e
+        if abs(t.w) < 0.003 {
+            close += 1.0
+            close_sum += e * e
+            worst = max(worst, abs(e))
+            hist[min(u32(abs(e) * 4.0), 79)] += 1
+            let pl = a.place(t.xyz)
+            let i = min(u32(8.0 * (t.x - FROM) / (TO - FROM)), 7)
+            let j = u32(12.0 * (pl.theta + PI) / TAU + 6.5) % 12
+            by[i * 12 + j] += vec2(e, 1.0)
+        }
+    }
+    var seen = 0
+    var p50 = 0.0
+    var p95 = 0.0
+    for k in 0..80 {
+        seen += hist[k]
+        if p50 == 0.0 && f32(seen) >= 0.5 * close {
+            p50 = 0.25 * f32(k + 1)
+        }
+        if p95 == 0.0 && f32(seen) >= 0.95 * close {
+            p95 = 0.25 * f32(k + 1)
+        }
+    }
+    let rms = sqrt(close_sum / close)
+    assert(rms < 2.5, f"the arm is {rms:.2} mm (rms) from its reference, past 2.5 mm")
+    print(f"all {pts.len()} points within 8 mm: rms {sqrt(sum / f32(pts.len())):.2} mm")
+    print(
+        f"the {close:.0} within 3 mm: rms {rms:.2} mm, half under {p50:.2}, 95% under {p95:.2}, worst {worst:.1}",
+    )
+    print(
+        "mean miss (mm) by x (rows, from the shoulder) and angle (0 up, 90 back, 180 down, 270 front)",
+    )
+    print("  x(m)      0    30    60    90   120   150   180   210   240   270   300   330")
+    for i in 0..8 {
+        var line = f"  {FROM + (f32(i) + 0.5) * (TO - FROM) / 8.0:.3}"
+        for j in 0..12 {
+            let c = by[i * 12 + j]
+            line = f"{line} {c.x / max(c.y, 1.0):5.1}"
+        }
+        print(line)
+    }
+}
+
+/// As `reach`, of the arm.
+fn arm_reach(a: Sweep<11>, from: vec3, dir: vec3) -> f32 {
+    if a.near(from) >= 0.0 {
+        return -1.0
+    }
+    var t = 0.0
+    var last = a.near(from)
+    while t < 0.3 {
+        t += 0.0005
+        let d = a.near(from + dir * t)
+        if d >= 0.0 {
+            return t - 0.0005 * d / max(d - last, 0.000001)
+        }
+        last = d
+    }
+    9.0
+}
+
+/// The reference's outline and the arm's across x at eight places, from the middle of the
+/// reference's section there: each line a place, an angle (degrees), and the two radii (mm), for
+/// a drawing of one over the other.
+@test
+fn the_sections_side_by_side() {
+    let s = arm_left_grid::samples(0)
+    let a = arm::arm::arm()
+    for i in 0..8 {
+        let x = FROM + (f32(i) + 0.5) * (TO - FROM) / 8.0
+        let m = middle(s, x)
+        let from = vec3(x, m.x, m.y)
+        for j in 0..72 {
+            let t = TAU * f32(j) / 72.0
+            let dir = vec3(0.0, cos(t), -sin(t))
+            print(
+                f"S {x:.3} {j * 5} {reach(s, from, dir) * 1000.0:.1} {arm_reach(a, from, dir) * 1000.0:.1}",
+            )
+        }
+    }
+}
+
+/// Where along the arm the miss is: its spread over the points within 3 mm of the reference's
+/// surface, by x in sixteen parts, and where the worst point is.
+@test
+fn the_miss_along_the_arm() {
+    let a = arm::arm::arm()
+    let pts = near_surface(1)
+    var by = [vec2(); 16]
+    var worst = vec4()
+    for t in pts {
+        if abs(t.w) < 0.003 {
+            let e = (a.near(t.xyz) - t.w) * 1000.0
+            let i = min(u32(16.0 * (t.x - FROM) / (TO - FROM)), 15)
+            by[i] += vec2(e * e, 1.0)
+            if abs(e) > abs(worst.w) {
+                worst = vec4(t.xyz, e)
+            }
+        }
+    }
+    for i in 0..16 {
+        print(
+            f"x {FROM + (f32(i) + 0.5) * (TO - FROM) / 16.0:.3}  rms {sqrt(by[i].x / max(by[i].y, 1.0)):.2} mm  ({by[i].y:.0} points)",
+        )
+    }
+    let pl = a.place(worst.xyz)
+    print(
+        f"worst {worst.w:.1} mm at ({worst.x:.3}, {worst.y:.3}, {worst.z:.3}), {pl.theta * 57.3:.0} degrees round",
+    )
+}

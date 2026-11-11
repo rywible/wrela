@@ -1,0 +1,9 @@
+# Hakuro's left arm as a fitted form: a sweep along his arm's joints (engine::sweep) whose numbers
+# a solver finds against the sampled reference (hakuro::arm_left_grid), which here is only the
+# target (`target`, a table of points). An experiment: can a structured field hold what the
+# sampled grid holds?
+[package]
+name = "arm"
+
+[dependencies]
+engine = { workspace = true }

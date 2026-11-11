@@ -1,0 +1,159 @@
+// Hakuro's left arm as one form: a sweep from inside his armhole to his wrist's wrap, through his
+// elbow, by eleven sections. Each section has three bumps: the muscle up and back of the arm (the
+// triceps' outer head, then the forearm's extensors), the muscle up and in front (the biceps, then
+// the forearm's flexors), and the hollow under it.
+//
+// Its structure is written; its numbers are solved against the sampled reference (`fit::miss`:
+// `wrela solve content/arm --minimize fit::miss --free arm.wrela:<PATH's lines and the
+// sections'> --write`), so none of them is an author's guess.
+
+use engine::sweep::{Sweep, section, sweep}
+
+/// Where the path's points are along the arm (x, m): just outside the part the target covers,
+/// and his elbow's joint. Held, while the solver moves the rest.
+const FROM_X: f32 = 0.195
+const ELBOW_X: f32 = 0.463
+const TO_X: f32 = 0.615
+
+/// How far a bump reaches either side of its middle (radians). Held: a solver's trial step past
+/// 0 would stop the solve (`Section::bump` asserts it).
+const WIDE: f32 = 0.6
+
+/// The path's height and depth at each (y, z; m).
+const PATH: [vec2; 3] = [
+    vec2(1.4570, -0.0254),
+    vec2(1.4232, -0.0773),
+    vec2(1.4566, -0.0828),
+]
+
+/// The arm at rest (his T-pose): +x toward the hand, angle 0 up, a quarter turn his back.
+pub fn arm() -> Sweep<11> {
+    sweep(
+        [vec3(FROM_X, PATH[0]), vec3(ELBOW_X, PATH[1]), vec3(TO_X, PATH[2])],
+        up: vec3(y: 1.0),
+        sections: [
+            section(
+                up: 0.0489,
+                down: 0.5024,
+                left: 0.0868,
+                right: 0.0213,
+                square: 1.00,
+                turn: -1.656,
+            )
+                .bump(at: 0.086, height: -0.0026, width: WIDE)
+                .bump(at: 4.965, height: -0.0487, width: WIDE)
+                .bump(at: 3.709, height: 0.0379, width: WIDE),
+            section(
+                up: 0.0838,
+                down: 0.0864,
+                left: 0.1310,
+                right: 0.0290,
+                square: 2.01,
+                turn: 0.119,
+            )
+                .bump(at: 0.648, height: 0.0136, width: WIDE)
+                .bump(at: 6.056, height: -0.0038, width: WIDE)
+                .bump(at: 3.694, height: -0.0093, width: WIDE),
+            section(
+                up: 0.0695,
+                down: 0.0446,
+                left: 0.1217,
+                right: 0.0349,
+                square: 3.20,
+                turn: 0.426,
+            )
+                .bump(at: 0.812, height: 0.0177, width: WIDE)
+                .bump(at: 5.280, height: 0.0084, width: WIDE)
+                .bump(at: 3.656, height: 0.0070, width: WIDE),
+            section(
+                up: 0.0605,
+                down: 0.0440,
+                left: 0.1137,
+                right: 0.0463,
+                square: 2.76,
+                turn: 0.499,
+            )
+                .bump(at: 1.218, height: 0.0179, width: WIDE)
+                .bump(at: 5.300, height: 0.0097, width: WIDE)
+                .bump(at: 3.941, height: 0.0058, width: WIDE),
+            section(
+                up: 0.0616,
+                down: 0.0425,
+                left: 0.0975,
+                right: 0.0591,
+                square: 2.21,
+                turn: 0.638,
+            )
+                .bump(at: 1.036, height: 0.0188, width: WIDE)
+                .bump(at: 5.189, height: 0.0059, width: WIDE)
+                .bump(at: 4.353, height: 0.0103, width: WIDE),
+            section(
+                up: 0.0625,
+                down: 0.0406,
+                left: 0.0715,
+                right: 0.0641,
+                square: 2.09,
+                turn: 0.627,
+            )
+                .bump(at: 1.092, height: 0.0029, width: WIDE)
+                .bump(at: 5.158, height: 0.0045, width: WIDE)
+                .bump(at: 4.488, height: 0.0093, width: WIDE),
+            section(
+                up: 0.0787,
+                down: 0.0406,
+                left: 0.0624,
+                right: 0.0464,
+                square: 2.40,
+                turn: -0.008,
+            )
+                .bump(at: 0.702, height: -0.0090, width: WIDE)
+                .bump(at: 5.111, height: 0.0094, width: WIDE)
+                .bump(at: 3.884, height: -0.0154, width: WIDE),
+            section(
+                up: 0.0905,
+                down: 0.0605,
+                left: 0.0639,
+                right: 0.0390,
+                square: 1.69,
+                turn: -0.366,
+            )
+                .bump(at: 0.384, height: 0.0041, width: WIDE)
+                .bump(at: 5.467, height: 0.0032, width: WIDE)
+                .bump(at: 3.748, height: 0.0024, width: WIDE),
+            section(
+                up: 0.0822,
+                down: 0.0596,
+                left: 0.0531,
+                right: 0.0390,
+                square: 2.34,
+                turn: -0.398,
+            )
+                .bump(at: 0.958, height: 0.0061, width: WIDE)
+                .bump(at: 4.994, height: 0.0056, width: WIDE)
+                .bump(at: 3.287, height: -0.0039, width: WIDE),
+            section(
+                up: 0.0614,
+                down: 0.0670,
+                left: 0.0489,
+                right: 0.0485,
+                square: 2.07,
+                turn: -0.550,
+            )
+                .bump(at: 0.917, height: 0.0034, width: WIDE)
+                .bump(at: 4.596, height: 0.0045, width: WIDE)
+                .bump(at: 3.425, height: -0.0025, width: WIDE),
+            section(
+                up: 0.0565,
+                down: 0.0511,
+                left: 0.0403,
+                right: 0.0778,
+                square: 1.44,
+                turn: -0.852,
+            )
+                .bump(at: -0.307, height: 0.0053, width: WIDE)
+                .bump(at: 5.837, height: -0.0058, width: WIDE)
+                .bump(at: 4.630, height: -0.0159, width: WIDE),
+        ],
+        places: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    )
+}
