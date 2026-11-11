@@ -26,14 +26,15 @@ fn each_written_arm_is_its_reference_fitted() {
     assert(apart(species.form, figure::arm::ARM) < 0.000011, "content/figure/arm.wrela is stale")
     let m = species.miss.spread
     assert(m.rms < 1.2 && m.most < 2.5 && m.worst < 6.0, f"the arm misses by {m.rms} mm rms")
-    // Hakuro's arms, as the species' and what each is over it: his sampled grids', within
-    // 1.3 mm rms.
+    // Hakuro's arms, as the species' and what each is over it: kept where they were written,
+    // and within 1.3 mm rms of his sampled arms' radii as they were measured.
     let left = hakuro_arm_left(species.form)
     assert(
         apart(left.form, hakuro::arm_left_form::ARM_LEFT_OVER) < 0.000011,
         "content/hakuro/arm_left_form.wrela is stale",
     )
     let l = left.miss.spread
+    assert(l.count > 380, f"{l.count} of his left arm's radii")
     assert(l.rms < 1.3 && l.most < 2.6 && l.worst < 6.0, f"his left arm misses by {l.rms} mm rms")
     let right = hakuro_arm_right(species.form)
     assert(
@@ -41,7 +42,31 @@ fn each_written_arm_is_its_reference_fitted() {
         "content/hakuro/arm_right_form.wrela is stale",
     )
     let r = right.miss.spread
+    assert(r.count > 380, f"{r.count} of his right arm's radii")
     assert(r.rms < 1.3 && r.most < 2.6 && r.worst < 6.0, f"his right arm misses by {r.rms} mm rms")
+}
+
+@test
+fn a_characters_limb_stays_where_it_is_when_its_species_limb_changes() {
+    // The species' arm a centimetre thicker: his arm's difference from it takes that off, and
+    // his arm's own radius is what it was, at every place.
+    let was = figure::arm::ARM
+    let now = was.plus(engine::chart::round(0.01))
+    let over = hakuro::arm_left_form::ARM_LEFT_OVER
+    let kept = main::kept_over(
+        main::HAKURO_ARM_LEFT,
+        over,
+        was,
+        now,
+        measured::samples(measured::ARM_LEFT),
+    )
+    for i in 0..12 {
+        let f = 0.05 + 0.08 * f32(i)
+        let theta = 0.7 * f32(i)
+        let his = was.plus(over).radius(f, theta)
+        assert(abs(now.plus(kept.form).radius(f, theta) - his) < 0.00003, f"at {f}")
+        assert(abs(kept.form.radius(f, theta) - (over.radius(f, theta) - 0.01)) < 0.00003)
+    }
 }
 
 @test

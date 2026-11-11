@@ -285,6 +285,18 @@ pub fn wide_charts() -> [Part<24, 21>; WIDE_CHARTS] {
     [on_spine(trunk_form::TRUNK, 0.0), on_spine(jacket_form::JACKET, 0.03)]
 }
 
+/// His arms' charted parts (`charts`' first `ARM_CHARTS`): his arms, then the wrap and the
+/// gauntlet over them. Every program that draws him draws these along their charts.
+pub fn arm_charts() -> [Part<16, 13>; ARM_CHARTS] {
+    let all = charts()
+    [all[0], all[1], all[2], all[3]]
+}
+
+/// How fine the detail round a charted part's path its shading keeps (harmonics): his light's
+/// bands are read off his forms without the ripples finer than this (`Radial::softened`). More
+/// kept, and dark spots stand inside a highlight.
+pub const SHADED_DETAIL: f32 = 3.5
+
 /// His paint on charted part `part` (`charts`' order, then `wide_charts`'): his arms and what's
 /// over them each one cloth, the others by where the place is on him at rest (`rest`), as his
 /// outfit's regions are written.
@@ -583,9 +595,9 @@ fn tails_paint(p: vec3) -> Cloth {
 }
 
 /// His rig: his body's pieces as they were fitted to the reference, each on its bone or split
-/// between two across a joint. Never realized: his skin is sampled from the reference
-/// (`body_grid`, `arm_left_grid`, `arm_right_grid`), and this only says which bones move it
-/// (`sampled_skin::skinned`).
+/// between two across a joint. Never realized: his body's skin is sampled from the reference
+/// (`body_grid`) and his arms are drawn along their charts (`arm_charts`), and this only says
+/// which bones move it (`sampled_skin::skinned`).
 pub fn rig() -> Creature<Cloth> {
     let s = skeleton()
     let b = |name: Text| s.find(name)

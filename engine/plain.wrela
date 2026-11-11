@@ -7,6 +7,7 @@
 // shows its creature walking by the engine's gait (`Viewer`).
 
 use character::{ByChannels, Shaded, colours, skin_matrix}
+use chart::Seen
 use creature::{Creature, MAX_BONES, Skeleton}
 use gait::{Body, Palette, Path, Walk, Walker, stand, step}
 use light::aces
@@ -32,6 +33,16 @@ pub struct View: Copy + GpuData {
     pub light: mat4,
     pub eye: vec3,
     pub sun: vec3,
+}
+
+impl Seen for View {
+    fn clip_at(self, world: vec3) -> vec4 {
+        self.view_proj * vec4(world, 1.0)
+    }
+
+    fn seen_from(self) -> vec3 {
+        self.eye
+    }
 }
 
 /// The lights: a sun with a shadow map, a hemisphere's ambient light, normalized Blinn-Phong

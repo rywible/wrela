@@ -7,12 +7,12 @@
 
 use engine::chart
 use engine::chart::{Band, Grids, Limb, Part, Radial}
-use hakuro::arms::{Drape, CHARTED, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body}
+use hakuro::arms::{Drape, CHARTED, drape_room, draped, follow_legs, hand, jacket, sampled_body}
 use hakuro::clear::fists_off_mask
 use hakuro::fingers::{FIST_CURL, curled}
 use hakuro::hakuro::{
-    ARM_CHARTS, CHARTS, COVERED, Cloth, WIDE_CHARTS, body_paint, chart_cut, chart_paint, charts,
-    coat, head, hero, jacket_paint, wide_charts,
+    ARM_CHARTS, CHARTS, COVERED, Cloth, SHADED_DETAIL, WIDE_CHARTS, body_paint, chart_cut,
+    chart_paint, charts, coat, head, hero, jacket_paint, wide_charts,
 }
 use hakuro::reference_rig::HAKURO_BONE
 use engine::character::skin_matrix
@@ -50,13 +50,14 @@ pub struct Fighters {
     body: Mesh,
     head: Mesh,
     coat: Mesh,
-    arms: [Mesh; 6],
+    /// His sampled meshes: his body, his jacket and his hands.
+    sampled: [Mesh; 4],
     palettes: GpuBuffer<mat4>,
     drape: Drape,
     /// Each fighter's charted parts (`hakuro::charts`: his limbs and his head; then
-    /// `hakuro::wide_charts`: his trunk and his jacket) as his bones pose them this frame
-    /// (`CHARTED`: drawn along their charts, in place of their sampled meshes), and the grids
-    /// charted forms are drawn on.
+    /// `hakuro::wide_charts`: his trunk and his jacket) as his bones pose them this frame, and
+    /// the grids charted forms are drawn on. His arms are drawn along their charts always; the
+    /// rest of him as `CHARTED` says, in place of his sampled body and jacket.
     charted: [[Charted; CHARTS]; FIGHTERS],
     wide: [[Limb<24, 21>; WIDE_CHARTS]; FIGHTERS],
     grids: Grids,
@@ -73,14 +74,10 @@ fn charted_now(part: u32) -> bool {
     CHARTED >= (if part < ARM_CHARTS { 1 } else { 2 })
 }
 
-/// How fine the detail round a charted part's path its shading keeps (harmonics): its light's
-/// bands are read off its form without the ripples finer than this (`Radial::softened`).
-const SHADED_DETAIL: f32 = 3.5
-
-/// Whether sampled mesh `k` (`Fighters::arms`: his arms, his body, his jacket, his hands) has
-/// charted parts drawn in its place.
+/// Whether sampled mesh `k` (`Fighters::sampled`: his body, his jacket, his hands) has charted
+/// parts drawn in its place.
 fn in_place_of(k: u32) -> bool {
-    (k < 2 && CHARTED >= 1) || (k < 4 && CHARTED >= 2)
+    k < 2 && CHARTED >= 2
 }
 
 /// His charted parts at rest.
@@ -107,7 +104,7 @@ pub fn fighters() -> Fighters {
         body: realize_once(hero(), HOW_BODY),
         head: realize_once(head(), HOW_HEAD),
         coat: follow_legs(realize_once(coat(), HOW_COAT)),
-        arms: [arm(0), arm(1), sampled_body(), jacket(), hand(0), hand(1)],
+        sampled: [sampled_body(), jacket(), hand(0), hand(1)],
         palettes: buffer(2 * FIGHTERS * MAX_BONES),
         drape: drape_room(FIGHTERS),
         charted: [charts_at_rest(); FIGHTERS],
@@ -231,11 +228,11 @@ impl Fighters {
                     chart_shadow(p, self.grids, self.wide[who][k], wide[k].band, shot)
                 }
             }
-            for k in 0..6 {
+            for k in 0..4 {
                 if in_place_of(k) {
                     continue
                 }
-                shadow_of(p, self.arms[k], self.palettes, first, shot)
+                shadow_of(p, self.sampled[k], self.palettes, first, shot)
             }
             draw(
                 p,
@@ -337,21 +334,21 @@ impl Fighters {
                     )
                 }
             }
-            for k in 0..6 {
+            for k in 0..4 {
                 if in_place_of(k) {
                     continue
                 }
                 draw(
                     p,
                     fighter_vertex.bind(
-                        verts: self.arms[k].verts.items(),
+                        verts: self.sampled[k].verts.items(),
                         palettes: self.palettes.items(),
                         first: who * MAX_BONES,
                         shot: shot,
                     ),
-                    sampled_pixel.bind(shot: shot, who: who, jacket: if k == 3 { 1 } else { 0 }),
-                    indices: self.arms[k].quads.items(),
-                    indirect: self.arms[k].draw.items(),
+                    sampled_pixel.bind(shot: shot, who: who, jacket: if k == 1 { 1 } else { 0 }),
+                    indices: self.sampled[k].quads.items(),
+                    indirect: self.sampled[k].draw.items(),
                     cull: Cull::Back,
                     depth: engine::view::NEAREST,
                 )
@@ -583,7 +580,7 @@ pub fn fighter_pixel<F: Parts<Cloth>>(
     painted(shot, v.world, n, c, who, own)
 }
 
-/// His pixel where his mesh was sampled from the reference (his body, arms, hands and jacket):
+/// His pixel where his mesh was sampled from the reference (his body, hands and jacket):
 /// its own normal, and his paint where it is on him at rest.
 @fragment
 pub fn sampled_pixel(

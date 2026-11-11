@@ -2,7 +2,7 @@
 
 How to author a part of a creature as a charted form: a limb, a trunk, a sleeve. A charted form is drawn from its function at the creature's posed bones, with no mesh and no skin weights. You write its structure; a tool solves its numbers.
 
-The code is `engine/chart.wrela` (the form and how it's posed and drawn), `studio/forms` (the tool that solves the numbers), `content/figure` (the human species' forms) and `content/hakuro` (what the hero is over them).
+The code is `engine/chart.wrela` (the form and how it's posed and drawn), `studio/forms` (the tool that solves the numbers), `content/figure` (the human species' forms) and `content/hakuro` (what the hero is over them). `studio/judge` puts two builds before critics blind.
 
 ## The idea
 
@@ -11,6 +11,7 @@ The code is `engine/chart.wrela` (the form and how it's posed and drawn), `studi
 - **The radius** at a place is a sum of splines along the path times a Fourier series round it (`Radial<A, R>`: `A` control values along, `R` terms round, `R` odd). It is linear in its numbers, so fitting it to a reference is one exact solve (`chart::fit`): no starting guess, the same answer every run.
 - **Posed**, the path is laid where the bones are (`Chain::posed`) and each vertex is worked out from its number (`place_of`, `Limb::side`). A bone's turn about its own length is spread along it (`Chain::spread`).
 - **A character** is the species' numbers plus a difference (`Radial::plus`). A right limb is the left's, mirrored (`Radial::mirrored`, `Chain::mirrored`).
+- **Drawn**, a program binds the engine's vertex (`chart::vertex`, over whatever it sees with: `chart::Seen`) and its own pixel, which reads its normal from the form (`chart::Vertex::normal_from`) and paints it.
 
 ## Authoring a part
 
@@ -42,8 +43,9 @@ A form made again along its posed path already bends. How the path takes a bent 
 
 Three things are added on top, all zero at rest:
 
-- **A joint's change** (`chart::Change`, `Radial::bent`): two forms written for a bend toward angle 0, one times the bend's angle and one times its square, turned to where the bend is. The tool solves them against the reference body posed by its own skin weights, over poses of captured motion (`studio/forms/joints.wrela`). A change holds at the deepest bend it was solved over (`upto`), since its square would carry it past anything it was solved against.
-- **Named changes** (`content/figure/flex.wrela`): what a muscle does, as a bump on the chart in the bend's own frame. These are an author's estimates; say so where you write one.
+- **A joint's change** (`chart::Change`, `Radial::bent`): two forms written for a bend toward angle 0, one times the bend's angle and one times its square, turned to where the bend is. The tool solves them against the reference body posed by its own skin weights, over poses of captured motion (`studio/forms/joints.wrela`). A change holds at the deepest bend it was solved over (`upto`), since its square would carry it past anything it was solved against. Each joint's change is kept to its own stretch of the path, as far as halfway to the joints either side: left free, the solve trades one joint's change against the next's where the poses bend both, and a straight arm hanging at the side had its forearm thinned 14 mm by its shoulder's change.
+- **A solved change is only as good as the reference's skin weights.** At a shoulder they collapse the cap, so the arm takes half of what was solved there (`figure::limbs::SHOULDER_TAKEN`). Judge a change in the poses the solve saw least: a limb hanging straight, a limb raised.
+- **Named changes** (`content/figure/flex.wrela`): what a muscle does, as a bump on the chart in the bend's own frame, and the point of an elbow on the outside of its bend (the path cuts a bent joint's corner, so without it a slight bend reads as a hose's). These are an author's estimates; say so where you write one, and keep them small: a bump twice as high read as a lump, a point twice as high as a kink.
 - **A fold** (`chart::Fold`): inside a hinge's bend, the radius is limited to the room to the plane that halves the bend, so the limb's two lengths meet at a crease. Name the hinge in the part's `folds`.
 
 ## Shading
@@ -52,16 +54,25 @@ A pixel reads its normal from the chart itself (`chart::normal_at`): its place o
 
 ## Garments
 
-- **A tight garment** is a difference over the body's form on the same chain (`fitted_over`). One with an edge that shows (a wrap round a forearm, a gauntlet) is a second part on the arm's chain and bones, its form the arm's plus a few millimetres, drawn over its own band: its edge is then a real step, and the ink draws it as one line.
+- **A tight garment** is a difference over the body's form on the same chain (`fitted_over`). One with an edge of its own (a wrap round a forearm, a gauntlet) is a second part on the arm's chain and bones, its form the arm's plus a little, drawn over its own band. Stiff leather stands 3.5 mm off, and the ink draws its edge as one line. Wound cloth sits 1.5 mm off, under what the ink takes for an edge: at 2.5 mm the ink broke its edge into dashes, and at 3.5 mm it read as a boxy cuff.
 - **A loose garment about the same bones** is its own form on the body's chain (the jacket on the trunk's), so it goes where the body goes.
 - **Openings** are a `chart::Cover`: a bit a place, set where the garment is, written by the tool from where rays met the reference. The pixel is discarded where `covered` is under a half.
 - **Paint** is by place on the chart, or by where the place is on the creature at rest.
+
+## When a species' limb changes
+
+A character's limb is the species' plus a difference, so fitting the species' limb again would move the character's. The tool keeps the character's limb where it is (`kept_over`): forms about one path add, so the new difference is the old one plus the old species' limb less the new, and no reference is read. Hakuro's arms are kept so; the sampled grids they were first fitted to are gone, and `studio/forms/measured.wrela` holds 416 of each grid's radii to measure the arms against.
+
+## Judging a change
+
+`wrela tool judge -- build/judge/<name> --against <revision>` renders the workspace and another revision on a list of shots and writes each critic a directory of pairs, marked A and B, with a brief; `--tally` reads their answers through the sealed key. Use a panel of ten or more: five critics gave the same pictures 30 of 30 and then 20 of 30. Each shot is shown each way round to half the panel, because critics lean toward a letter. Read what critics say of each side as well as how they vote: the descriptions repeat from panel to panel when the votes don't.
 
 ## What a chart is poor at
 
 - Surfaces square to the path: a shoulder's top, a collar, an end cap. The radius must change steeply there, and the splines round it off. Hakuro's jacket misses most at its collar and shoulders.
 - Anything not star-shaped about its path: fingers held together, an ear. Those stay implicit fields.
 - A pose far past what the joints' changes were solved over: the changes hold there, and nothing says the held shape is right.
+- Where a charted limb leaves a garment that isn't charted with it. The limb's root is drawn under the garment (`Part::sunk`), and from behind a raised arm the garment's armhole stands off the arm as a thin line.
 
 ## Numbers so far
 
@@ -69,7 +80,7 @@ A pixel reads its normal from the chart itself (`chart::normal_at`): its place o
 |---|---|---|
 | The species' arm, from the CC0 body's triangles | 16 by 13 | 1.03 mm; 4.6 mm |
 | The species' leg | 16 by 13 | 1.08 mm; 9.4 mm |
-| Hakuro's arms, over the species' | 16 by 13 | 1.09 and 1.00 mm; 4.1 mm |
+| Hakuro's arms, over the species' (against 416 radii kept of each sampled arm) | 16 by 13 | 1.06 and 0.99 mm; 3.6 mm |
 | Hakuro's trouser leg, over the species' | 16 by 13 | 1.06 mm; 15.0 mm |
 | Hakuro's trunk | 24 by 21 | 1.47 mm; 10.5 mm |
 | Hakuro's jacket | 24 by 21 | 2.25 mm; 19.3 mm |

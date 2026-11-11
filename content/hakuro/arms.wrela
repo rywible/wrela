@@ -1,13 +1,10 @@
 // Hakuro's sampled pieces, made as the idol's parts are: the reference body's own surface sampled
-// into distance grids (his arms, hands, body and jacket: `*_grid`, engine::sampled), so the
-// elbow, the shoulder, the fingers and the muscle between are the sculpt's, not pieces fitted
-// to it. Each is realized from its samples, then skinned by the reference rig's own weights
-// round it (`*_weights`, `skinning`), every finger joint, so he bends where and as it does.
+// into distance grids (his hands, body and jacket: `*_grid`, engine::sampled), so the fingers
+// and the muscle between are the sculpt's, not pieces fitted to it. Each is realized from its
+// samples, then skinned by the reference rig's own weights round it (`*_weights`, `skinning`),
+// every finger joint, so he bends where and as it does. His arms aren't among them: they're
+// drawn along their charts (`hakuro::arm_charts`).
 
-use arm_left_grid
-use arm_left_weights
-use arm_right_grid
-use arm_right_weights
 use body_grid
 use body_weights
 use hand_left_grid
@@ -54,32 +51,13 @@ fn sampled_at(l: Lattice, slots: [u32], words: [u32], p: vec3) -> f32 {
     )
 }
 
-/// Which of him a program draws along charts (`hakuro::charts`, `engine::chart`: forms made
+/// How much of him a program draws along charts (`hakuro::charts`, `engine::chart`: forms made
 /// again where his bones are each frame, with no mesh and no weights), in place of the sampled
-/// meshes here: 0 none, 1 his arms, 2 his arms, legs, trunk, head and jacket (his hands stay
-/// sampled). The combat lab's fighters read it. A switch while the charted forms are judged
-/// against the sampled ones: set here (`--set` reaches only a program's own constants).
+/// meshes here: 1 his arms, as every program draws them; 2 his legs, trunk, head and jacket
+/// too (his hands stay sampled). The combat lab's fighters read it. A switch while the rest of
+/// him is judged against his sampled body: set here (`--set` reaches only a program's own
+/// constants).
 pub const CHARTED: u32 = 1
-
-/// His arm on `side` (0 left, 1 right) realized from its samples and skinned by the reference's
-/// own weights round it.
-pub fn arm(side: u32) -> Mesh {
-    if side == 0 {
-        weighted(
-            arm_left_grid::samples(B_UPPER),
-            arm_left_weights::weights(),
-            reach: 1.5,
-            pull: 0.0,
-        )
-    } else {
-        weighted(
-            arm_right_grid::samples(B_UPPER + 1),
-            arm_right_weights::weights(),
-            reach: 1.5,
-            pull: 0.0,
-        )
-    }
-}
 
 /// His hand on `side`, from inside the forearm's wrap to the fingertips: sampled finer, each
 /// finger's joints weighted as the reference's are.
