@@ -1,0 +1,55 @@
+// The beat's player, for the audio tool (`wrela tool audio -- content/beat wav <out.wav>`): take
+// 0 is "Slack Water" whole; take n plays its nth track alone (1 the kick, in `song::build`'s
+// order), through the same master, so each can be judged by itself.
+
+use engine::session::{Session, play_session}
+use song::{BARS, TITLE, build}
+use std::audio::play
+use std::collections::Vec
+
+pub struct Piece {
+    which: u32,
+    started: bool,
+}
+
+pub fn init() -> Piece {
+    Piece { which: 0, started: false }
+}
+
+pub fn choose(p: mut Piece, which: u32) {
+    assert(!p.started, "a take is chosen before the piece starts")
+    p.which = which
+}
+
+/// The session of take `which`: the whole, or one track alone.
+fn chosen(which: u32) -> Session {
+    var s = build()
+    if which > 0 {
+        let names = s.names()
+        assert(which <= names.len(), f"the beat has takes 0 to {names.len()}")
+        s.solo(names[which - 1])
+    }
+    s
+}
+
+@audio
+fn render(s: mut Session, left: mut [f32], right: mut [f32]) {
+    play_session(mut s, mut left, mut right)
+}
+
+pub fn frame(p: mut Piece, time: f32, width: u32, height: u32) {
+    if !p.started {
+        p.started = true
+        play(chosen(p.which), render)
+    }
+}
+
+pub fn seconds(p: Piece) -> f32 {
+    f32(chosen(p.which).seconds)
+}
+
+pub fn describe(p: Piece) {
+    let s = chosen(p.which)
+    let name = if p.which == 0 { "whole" } else { s.names()[p.which - 1] }
+    s.describe(TITLE, name, BARS)
+}

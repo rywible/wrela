@@ -1,0 +1,500 @@
+// Drums: a drum machine's voices, each made as its circuit makes it.
+//
+// A drum is a few numbers (`Drum`) and five parts, any of them silent:
+// - a tone: a resonator a trigger's pulse sets ringing, which starts high and settles as the
+//   pulse dies (a bass drum's boom, a snare's shell), and a second tone beside it;
+// - a thump: the trigger's pulse itself, a half sine a millisecond or two long, which is what
+//   a bass drum's attack is (not a click of noise);
+// - noise through a band, above a low cut and under a top: a snare's wires, and a clap's hands,
+//   which are that noise in a few quick bursts and then a tail. A snare's wires lie on its
+//   skin, so they rattle with it: their noise swells and thins with the tone's own wave;
+// - metal: six square waves at ratios no chord has, through the same band and cut: a cymbal;
+// - a click: a stick's tip, a few milliseconds of noise.
+//
+// The parts and their tunings follow the Roland TR-808's circuits: its bass drum is a damped
+// resonator pinged by a pulse, whose pitch sags as the pulse ends (Werner, Abel and Smith, "A
+// physically-informed, circuit-bendable, digital model of the Roland TR-808 bass drum circuit",
+// DAFx-14, 2014), and its cymbals are six free-running square waves through two band-passes
+// (Werner, Abel and Smith, "The TR-808 cymbal: a physically-informed, circuit-bendable, digital
+// model", ICMC 2014). A snare's two tones are two of a skin's modes, 1 and 2.14 times its lowest
+// (an ideal membrane's are at 1, 1.59, 2.14, 2.30...: Fletcher and Rossing, The Physics of
+// Musical Instruments, 2nd ed., 1998, ch. 3).
+//
+// The squares and the noise run on whether or not the drum sounds, as the machine's do, so each
+// hit catches them somewhere else and no two hits are the same samples. Everything is f32
+// arithmetic in a fixed order, and the noise is seeded, so both hosts give the same samples.
+//
+// No patch is fitted to a recording yet: an ear's notes on the first set (a snare that was "a
+// sine and a spray of noise", a clap of three identical bursts, a bass drum whose attack was a
+// tick) are what this set answers.
+
+use std::audio::SAMPLE_RATE
+use std::math::{PI, TAU}
+use tone::{Band, Noise, Svf, band, decay, gain_of, one_pole, pulse, seeded, warm}
+
+/// The audio thread's rate.
+const RATE: f32 = f32(SAMPLE_RATE)
+
+/// The squares' frequencies (Hz): those commonly given for the six oscillators of the TR-808's
+/// cymbal and hi-hat circuit. They aren't checked against a machine.
+const METAL_HZ: [f32; 6] = [205.3, 304.4, 369.6, 522.7, 540.0, 800.0]
+
+/// What makes a drum's sound. A level of 0 leaves a part out.
+pub struct Drum: Copy {
+    /// The tone: where it settles (Hz), its level, its seconds to fall 60 dB, how many times
+    /// its pitch it starts above it (1: an octave above), and the seconds that takes to come
+    /// most of the way down.
+    pub tone_hz: f32 = 55.0,
+    pub tone: f32 = 0.0,
+    pub tone_t60: f32 = 0.5,
+    pub sweep: f32 = 0.0,
+    pub sweep_time: f32 = 0.02,
+    /// A second tone: its pitch, its level and its seconds to fall 60 dB. It sweeps as the
+    /// first does.
+    pub second_hz: f32 = 330.0,
+    pub second: f32 = 0.0,
+    pub second_t60: f32 = 0.1,
+    /// How hard the tones are driven into soft clipping (0: not at all): a boom a small
+    /// speaker can play.
+    pub drive: f32 = 0.0,
+    /// The thump: the trigger's pulse, its level and its length (ms).
+    pub thump: f32 = 0.0,
+    pub thump_ms: f32 = 1.5,
+    /// The noise: its level, its band's centre (Hz) and sharpness, the corners below and above
+    /// which it is cut (Hz), and its seconds to fall 60 dB.
+    pub noise: f32 = 0.0,
+    pub band_hz: f32 = 5000.0,
+    pub band_q: f32 = 0.7,
+    pub cut_hz: f32 = 200.0,
+    pub top_hz: f32 = 20000.0,
+    pub noise_t60: f32 = 0.2,
+    /// How far the noise rattles with the tones' wave: 0 steady, 1 swelling to twice and
+    /// thinning to nothing with each turn of it.
+    pub rattle: f32 = 0.0,
+    /// A clap's hands: how many bursts come before the tail, the seconds between them, how far
+    /// that varies (a share of it, either way), each burst's seconds to fall 60 dB, and each
+    /// burst's level beside the one before.
+    pub bursts: u32 = 0,
+    pub burst_gap: f32 = 0.011,
+    pub burst_sway: f32 = 0.0,
+    pub burst_t60: f32 = 0.03,
+    pub burst_fall: f32 = 1.0,
+    /// The metal's level, through the noise's band and cut, and how much higher than the
+    /// machine's the squares are tuned (1: as they were).
+    pub metal: f32 = 0.0,
+    pub metal_tune: f32 = 1.0,
+    /// The click's level.
+    pub click: f32 = 0.0,
+    /// The decibels between the softest hit and the hardest; how much duller the softest
+    /// hit's noise and metal are (the corner, Hz, they're cut above at a velocity of 0; at 1,
+    /// nothing is cut); and how much shorter its noise rings (0: as long; 0.5: half as long,
+    /// and the hardest half as long again).
+    pub range_db: f32 = 26.0,
+    pub soft_hz: f32 = 5000.0,
+    pub ring_touch: f32 = 0.0,
+    /// The level of the whole drum.
+    pub level: f32 = 1.0,
+}
+
+/// One hit ringing.
+struct Hit: Copy {
+    on: bool = false,
+    /// Its level, as its velocity set it.
+    level: f32 = 0.0,
+    /// The tones' phases (0 to 1), their levels and decays, and how far above their pitch they
+    /// still are and that's decay.
+    phase: f32 = 0.0,
+    phase2: f32 = 0.0,
+    tone: f32 = 0.0,
+    tone_fall: f32 = 0.0,
+    second: f32 = 0.0,
+    second_fall: f32 = 0.0,
+    sweep: f32 = 0.0,
+    sweep_fall: f32 = 0.0,
+    /// The thump: its samples in all, and those still to come.
+    thump_all: u32 = 0,
+    thump_left: u32 = 0,
+    /// The noise's and the metal's level and decay; the bursts still to come, the samples to
+    /// the next, the level the next starts at, and the tail's decay.
+    hiss: f32 = 0.0,
+    hiss_fall: f32 = 0.0,
+    bursts: u32 = 0,
+    burst_in: u32 = 0,
+    burst_level: f32 = 0.0,
+    tail_fall: f32 = 0.0,
+    click: f32 = 0.0,
+    /// Its share of full while it's choked: 1 until then.
+    fade: f32 = 1.0,
+    fade_fall: f32 = 1.0,
+}
+
+/// A drum being played: what the audio thread owns of it.
+pub struct Drummer {
+    patch: Drum,
+    /// Two hits ring at once: a hit struck over another lets the first die away fast.
+    hits: [Hit; 2],
+    next: u32,
+    noise: Noise,
+    metal: [f32; 6],
+    band: Band,
+    band_svf: Svf,
+    cut: Band,
+    cut_svf: Svf,
+    top: Band,
+    top_svf: Svf,
+    /// The dulling of soft hits: a one-pole's share and its state.
+    soft: f32,
+    soft_held: f32,
+    click_held: f32,
+}
+
+/// A drummer for `patch`. `seed` sets its noise.
+pub fn drummer(patch: Drum, seed: u32 = 1) -> Drummer {
+    var metal = [0.0; 6]
+    for i in 0..6 {
+        // Each square starts somewhere of its own.
+        metal[i] = fract(0.137 * f32(i + 1) + 0.61 * f32(seed % 7))
+    }
+    Drummer {
+        patch,
+        hits: [Hit {}; 2],
+        next: 0,
+        noise: seeded(seed),
+        metal,
+        band: band(patch.band_hz, patch.band_q),
+        band_svf: Svf {},
+        cut: band(hz: patch.cut_hz, q: 0.7),
+        cut_svf: Svf {},
+        top: band(hz: patch.top_hz, q: 0.7),
+        top_svf: Svf {},
+        soft: 1.0,
+        soft_held: 0.0,
+        click_held: 0.0,
+    }
+}
+
+/// How fast a hit that another is struck over dies away, and a choked one: seconds to fall
+/// 60 dB.
+const OVERTAKEN: f32 = 0.02
+const CHOKED: f32 = 0.04
+
+impl Drummer {
+    /// The samples to a clap's next burst: the gap, a little more or less each time.
+    @audio
+    fn gap(mut self) -> u32 {
+        let p = self.patch
+        max(u32(p.burst_gap * (1.0 + p.burst_sway * self.noise.next()) * RATE), 1)
+    }
+
+    /// Strikes the drum `velocity` hard (0 to 1).
+    @audio
+    pub fn hit(mut self, velocity: f32) {
+        let p = self.patch
+        let v = clamp(velocity, 0.0, 1.0)
+        let level = p.level * gain_of(-p.range_db * (1.0 - v))
+        // The hit before dies away under this one.
+        let last = self.hits[1 - self.next]
+        if last.on {
+            self.hits[1 - self.next].fade_fall = min(last.fade_fall, decay(OVERTAKEN))
+        }
+        // A harder hit's noise rings longer.
+        let rings = p.noise_t60 * (1.0 - p.ring_touch + 2.0 * p.ring_touch * v)
+        let burst_level = level * (p.noise + p.metal)
+        let thump = if p.thump > 0.0 { max(u32(p.thump_ms * 0.001 * RATE), 2) } else { 0 }
+        let first_gap = self.gap()
+        self.hits[self.next] = Hit {
+            on: true,
+            level,
+            phase: 0.0,
+            phase2: 0.0,
+            tone: level * p.tone,
+            tone_fall: decay(p.tone_t60),
+            second: level * p.second,
+            second_fall: decay(p.second_t60),
+            sweep: p.sweep,
+            sweep_fall: exp(-1.0 / (max(p.sweep_time, 0.0005) * RATE)),
+            thump_all: thump,
+            thump_left: thump,
+            hiss: burst_level,
+            hiss_fall: if p.bursts > 0 { decay(p.burst_t60) } else { decay(rings) },
+            bursts: p.bursts,
+            burst_in: first_gap,
+            burst_level: burst_level * p.burst_fall,
+            tail_fall: decay(rings),
+            click: level * p.click,
+            fade: 1.0,
+            fade_fall: 1.0,
+        }
+        self.next = 1 - self.next
+        self.soft = one_pole(p.soft_hz + v * v * (20000.0 - p.soft_hz))
+    }
+
+    /// Stops what rings, over a few milliseconds: a hand on a cymbal, or a closed hi-hat on an
+    /// open one.
+    @audio
+    pub fn choke(mut self) {
+        for i in 0..2 {
+            self.hits[i].fade_fall = min(self.hits[i].fade_fall, decay(CHOKED))
+        }
+    }
+
+    /// Whether nothing of it sounds.
+    @audio
+    pub fn silent(self) -> bool {
+        !self.hits[0].on && !self.hits[1].on
+    }
+
+    /// Adds its sound to samples `from` to `to` of `left` and `right`.
+    @audio
+    pub fn sound(mut self, left: mut [f32], right: mut [f32], from: u32, to: u32) {
+        if self.silent() {
+            return
+        }
+        let p = self.patch
+        let hissing = p.noise > 0.0 || p.metal > 0.0
+        let shell = max(p.tone + p.second, 1e-6)
+        for n in from..to {
+            // The noise and the metal, before any hit shapes them.
+            var source = 0.0
+            if hissing {
+                source = p.noise * self.noise.next()
+                if p.metal > 0.0 {
+                    var squares = 0.0
+                    for i in 0..6 {
+                        let dt = METAL_HZ[i] * p.metal_tune / RATE
+                        squares += pulse(self.metal[i], dt, width: 0.5)
+                        self.metal[i] = fract(self.metal[i] + dt)
+                    }
+                    source += p.metal * squares / 6.0
+                }
+                let banded = self.band_svf.pass(self.band, source)
+                source = self.top_svf.low(self.top, self.cut_svf.high(self.cut, banded))
+                self.soft_held += self.soft * (source - self.soft_held)
+                source = self.soft_held
+            }
+            let raw = self.noise.next()
+            self.click_held += 0.33 * (raw - self.click_held)
+            var y = 0.0
+            for h in 0..2 {
+                if !self.hits[h].on {
+                    continue
+                }
+                var hit = self.hits[h]
+                // The tones: each a little above its pitch while the trigger's pulse lasts.
+                var tones = 0.0
+                // How far the skin is out, from -1 to 1: what the wires rattle with.
+                var out = 0.0
+                if hit.tone > 0.0 || hit.second > 0.0 {
+                    let above = 1.0 + hit.sweep
+                    tones = hit.tone * sin(TAU * hit.phase) + hit.second * sin(TAU * hit.phase2)
+                    out = clamp(tones / (hit.level * shell), -1.0, 1.0)
+                    hit.phase = fract(hit.phase + p.tone_hz * above / RATE)
+                    hit.phase2 = fract(hit.phase2 + p.second_hz * above / RATE)
+                    hit.tone *= hit.tone_fall
+                    hit.second *= hit.second_fall
+                    hit.sweep *= hit.sweep_fall
+                }
+                // The thump: a half sine, with the tones, into the drive.
+                if hit.thump_left > 0 {
+                    let through = f32(hit.thump_all - hit.thump_left) / f32(hit.thump_all)
+                    tones += hit.level * p.thump * sin(PI * through)
+                    hit.thump_left -= 1
+                }
+                if p.drive > 0.0 {
+                    tones = warm(tones, p.drive)
+                }
+                // A clap's bursts: the noise starts again a few times, each a little under the
+                // last, then its tail.
+                if hit.bursts > 0 {
+                    hit.burst_in -= 1
+                    if hit.burst_in == 0 {
+                        hit.hiss = hit.burst_level
+                        hit.burst_level *= p.burst_fall
+                        hit.bursts -= 1
+                        hit.burst_in = self.gap()
+                        if hit.bursts == 0 {
+                            hit.hiss_fall = hit.tail_fall
+                        }
+                    }
+                }
+                let wires = hit.hiss * (1.0 + p.rattle * out)
+                y += hit.fade * (tones + wires * source + hit.click * self.click_held)
+                hit.hiss *= hit.hiss_fall
+                // The click: gone in 5 ms.
+                hit.click *= 0.9716
+                hit.fade *= hit.fade_fall
+                // Under -100 dB it's over.
+                if (hit.tone + hit.second + hit.hiss + hit.click) * hit.fade < 1e-5 &&
+                    hit.bursts == 0 &&
+                    hit.thump_left == 0 {
+                    hit.on = false
+                }
+                self.hits[h] = hit
+            }
+            left[n] += y
+            right[n] += y
+        }
+    }
+}
+
+// ---- the kit --------------------------------------------------------------------------------
+
+/// A bass drum: a boom at 52 Hz that starts two octaves up and is down in a few milliseconds,
+/// set off by a 2 ms pulse and driven a little, so a small speaker plays its attack and its
+/// harmonics.
+pub const KICK: Drum = Drum {
+    tone_hz: 52.0,
+    tone: 1.0,
+    tone_t60: 0.42,
+    sweep: 3.0,
+    sweep_time: 0.014,
+    drive: 2.4,
+    thump: 0.9,
+    thump_ms: 2.0,
+    click: 0.1,
+    range_db: 14.0,
+    level: 1.7,
+}
+
+/// A snare: a skin at 185 and 396 Hz, and its wires rattling with it, in a band round 1.5 kHz
+/// that the top is taken from.
+pub const SNARE: Drum = Drum {
+    tone_hz: 185.0,
+    tone: 0.8,
+    tone_t60: 0.17,
+    sweep: 0.35,
+    sweep_time: 0.012,
+    second_hz: 396.0,
+    second: 0.5,
+    second_t60: 0.1,
+    drive: 1.0,
+    noise: 1.3,
+    band_hz: 1500.0,
+    band_q: 0.55,
+    cut_hz: 250.0,
+    top_hz: 7000.0,
+    noise_t60: 0.22,
+    rattle: 0.7,
+    click: 0.15,
+    range_db: 22.0,
+    soft_hz: 3500.0,
+    ring_touch: 0.25,
+}
+
+/// A clap: noise round 1.1 kHz, three bursts 8 to 13 ms apart, each under the last, and a tail.
+pub const CLAP: Drum = Drum {
+    noise: 1.0,
+    band_hz: 1150.0,
+    band_q: 1.6,
+    cut_hz: 500.0,
+    top_hz: 8000.0,
+    noise_t60: 0.28,
+    bursts: 3,
+    burst_gap: 0.0105,
+    burst_sway: 0.25,
+    burst_t60: 0.035,
+    burst_fall: 0.8,
+    range_db: 20.0,
+}
+
+/// A closed hi-hat: the six squares and a little noise, high and short; shorter and duller
+/// when it is struck softly.
+pub const HAT: Drum = Drum {
+    metal: 1.0,
+    metal_tune: 1.0,
+    noise: 0.35,
+    band_hz: 8200.0,
+    band_q: 0.9,
+    cut_hz: 6500.0,
+    noise_t60: 0.055,
+    range_db: 24.0,
+    soft_hz: 6000.0,
+    ring_touch: 0.35,
+}
+
+/// An open hi-hat: the closed one, ringing on. A closed hit chokes it.
+pub const OPEN_HAT: Drum = Drum { noise_t60: 0.55, ring_touch: 0.0, ..HAT }
+
+/// A rim shot: a short knock at 430 and 1100 Hz with the stick's click.
+pub const RIM: Drum = Drum {
+    tone_hz: 430.0,
+    tone: 0.7,
+    tone_t60: 0.045,
+    second_hz: 1100.0,
+    second: 0.5,
+    second_t60: 0.03,
+    click: 0.5,
+    range_db: 20.0,
+}
+
+// The tests render on the program's thread, as the audio thread would.
+
+/// The energy of `seconds` of `d` after one hit, and of its sample-to-sample differences (the
+/// highs).
+fn rendered(d: mut Drummer, seconds: f32) -> vec2 {
+    var e = vec2(0.0)
+    var last = 0.0
+    var l = [0.0; 128]
+    var r = [0.0; 128]
+    for _ in 0..u32(seconds * RATE) / 128 {
+        for i in 0..128 {
+            l[i] = 0.0
+            r[i] = 0.0
+        }
+        d.sound(mut l, mut r, from: 0, to: 128)
+        for i in 0..128 {
+            e += vec2(l[i] * l[i], (l[i] - last) * (l[i] - last))
+            last = l[i]
+        }
+    }
+    e
+}
+
+@test
+fn a_kick_is_low_a_hat_is_high_and_both_die_away() {
+    var kick = drummer(KICK)
+    kick.hit(1.0)
+    let k = rendered(mut kick, seconds: 0.25)
+    var hat = drummer(HAT)
+    hat.hit(1.0)
+    let h = rendered(mut hat, seconds: 0.25)
+    // The highs' share of each: a kick's sample-to-sample differences are tiny beside it, a
+    // hat's larger than it.
+    assert(k.x > 1.0 && k.y / k.x < 0.01, f"a kick's highs are {k.y / k.x} of it")
+    assert(h.x > 1e-3 && h.y / h.x > 1.0, f"a hat's highs are {h.y / h.x} of it")
+    let _ = rendered(mut kick, seconds: 1.5)
+    let _ = rendered(mut hat, seconds: 0.5)
+    assert(kick.silent() && hat.silent())
+}
+
+@test
+fn a_soft_hit_is_quieter_and_a_choke_stops_an_open_hat() {
+    var loud = drummer(SNARE)
+    loud.hit(1.0)
+    var soft = drummer(SNARE)
+    soft.hit(0.3)
+    let ratio = rendered(mut loud, seconds: 0.3).x / rendered(mut soft, seconds: 0.3).x
+    assert(ratio > 10.0, f"a hard snare has {ratio} times a soft one's energy")
+    var open = drummer(OPEN_HAT)
+    open.hit(1.0)
+    let _ = rendered(mut open, seconds: 0.05)
+    open.choke()
+    let _ = rendered(mut open, seconds: 0.2)
+    assert(open.silent(), "a choked hat rang on")
+}
+
+@test
+fn a_snares_wires_rattle_with_its_skin() {
+    // The same snare with the rattle and without, over the 40 ms its skin rings loudest: with
+    // it, the noise's level moves with the skin, so the two differ.
+    var with = drummer(SNARE, seed: 3)
+    with.hit(1.0)
+    var without = drummer(Drum { rattle: 0.0, ..SNARE }, seed: 3)
+    without.hit(1.0)
+    let a = rendered(mut with, seconds: 0.04)
+    let b = rendered(mut without, seconds: 0.04)
+    assert(
+        abs(a.y - b.y) > 0.02 * b.y,
+        f"the rattle changed the snare's highs by {abs(a.y - b.y) / b.y}",
+    )
+}

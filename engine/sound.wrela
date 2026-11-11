@@ -21,8 +21,9 @@
 // so both hosts give the same samples. Gains move across a quantum, never in a step, so a cue
 // that moves a source doesn't click.
 
-use std::audio::{QUANTUM, RingReader, RingWriter, SAMPLE_RATE, decay_rate, ring}
-use std::math::{PI, TAU, cos, exp, sin, tan}
+use std::audio::{QUANTUM, RingReader, RingWriter, SAMPLE_RATE, ring}
+use std::math::{PI, TAU, cos, exp, sin}
+use tone::{Band, Noise, Svf, band, decay, one_pole, seeded}
 
 /// The audio thread's rate.
 const RATE: f32 = f32(SAMPLE_RATE)
@@ -135,72 +136,6 @@ struct Ears: Copy {
     right: vec2,
 }
 
-/// Seeded white noise: xorshift, one `u32` of state.
-struct Noise: Copy {
-    s: u32,
-}
-
-/// Noise seeded with `seed`: the seed scattered (so near seeds start far apart), and never 0,
-/// xorshift's one fixed point.
-@audio
-fn seeded(seed: u32) -> Noise {
-    Noise { s: max(seed.wrapping_mul(2654435761).wrapping_add(12345), 1) }
-}
-
-impl Noise {
-    @audio
-    fn next(mut self) -> f32 {
-        var x = self.s
-        x = x ^ (x << 13)
-        x = x ^ (x >> 17)
-        x = x ^ (x << 5)
-        self.s = x
-        f32(x >> 8) * (2.0 / 16777216.0) - 1.0
-    }
-}
-
-/// A state-variable filter (trapezoidal integration): its coefficients, for a centre and a Q.
-struct Band: Copy {
-    a1: f32 = 0.0,
-    a2: f32 = 0.0,
-    a3: f32 = 0.0,
-    k: f32 = 0.0,
-}
-
-@audio
-fn band(hz: f32, q: f32) -> Band {
-    let g = tan(PI * min(hz, 0.45 * RATE) / RATE)
-    let k = 1.0 / max(q, 0.05)
-    let a1 = 1.0 / (1.0 + g * (g + k))
-    Band { a1, a2: g * a1, a3: g * g * a1, k }
-}
-
-/// A state-variable filter's state.
-struct Svf: Copy {
-    ic1: f32 = 0.0,
-    ic2: f32 = 0.0,
-}
-
-impl Svf {
-    /// `x` through the band: the band-pass output, at unit gain at the centre.
-    @audio
-    fn pass(mut self, b: Band, x: f32) -> f32 {
-        self.both(b, x).1
-    }
-
-    /// `x` through the band: the low-pass output and the band-pass output (unit gain at the
-    /// centre).
-    @audio
-    fn both(mut self, b: Band, x: f32) -> (f32, f32) {
-        let v3 = x - self.ic2
-        let v1 = b.a1 * self.ic1 + b.a2 * v3
-        let v2 = self.ic2 + b.a2 * self.ic1 + b.a3 * v3
-        self.ic1 = 2.0 * v1 - self.ic1
-        self.ic2 = 2.0 * v2 - self.ic2
-        (v2, b.k * v1)
-    }
-}
-
 /// A place a sound comes from, as the ears hear it: its gains in each channel (now, and as the
 /// quantum began, which they move from), and the air's low-pass between.
 struct Placed: Copy {
@@ -256,12 +191,6 @@ impl Placed {
         left[i] += self.held * (self.was_left + t * (self.left - self.was_left))
         right[i] += self.held * (self.was_right + t * (self.right - self.was_right))
     }
-}
-
-/// The decay per sample of a sound that falls 60 dB in `t60` seconds.
-@audio
-fn decay(t60: f32) -> f32 {
-    exp(-decay_rate(max(t60, 1e-3)))
 }
 
 /// A step ringing: its knock (a tone, turned a sample at a time) and its grit (noise through a
@@ -490,11 +419,6 @@ fn blowing(seed: u32) -> Blowing {
         gains: vec4(0.0),
         was: vec4(0.0),
     }
-}
-
-/// A one-pole low-pass's coefficient for a corner at `hz`.
-fn one_pole(hz: f32) -> f32 {
-    1.0 - exp(-TAU * hz / RATE)
 }
 
 impl Blowing {

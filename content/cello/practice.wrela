@@ -1,0 +1,19 @@
+// What the player learned by playing the passage against the recording: the decibels added to
+// each note's bow so that the note comes out as loud as the recording's cellist played it. The
+// passage is rendered and each note measured (the audio tool's `follow`), in the render and in
+// the recording alike, by the harmonics that are the note's own (those no string still ringing
+// shares); a note with fewer than three of those is judged by everything sounding while it
+// lasts. Each note's bow is then moved by half of what it was off, a few times over, and never
+// more than 8 dB from the passage's level. A bowed string doesn't give every pitch the same
+// loudness for the same bow, and a cellist doesn't give every note the same weight: both are in
+// these numbers. The recording's source and licence are in docs/citations.md.
+
+/// The decibels added to each note of the Prelude's opening, in order; the last is the held
+/// note's, which the recording doesn't have: the bass notes' mean.
+pub const TRIM: [f32; 65] = [
+    6.46, -5.34, -5.25, -2.10, -5.24, -5.94, -4.24, 3.61, -0.44, -8.00, 0.65, 2.05, 3.86, 1.61,
+    -5.69, 4.91, -1.09, -2.64, 2.45, 0.40, 8.00, -2.54, -4.69, -5.09, -1.84, -8.00, 3.51, 2.35,
+    8.00, -0.49, -2.79, -2.59, -2.64, -2.99, 5.61, 3.25, 8.00, 1.66, 1.26, 0.11, 2.26, -3.69, 0.76,
+    1.50, 7.96, 3.46, 1.01, 2.41, 1.61, -8.00, -5.45, 4.01, 2.81, 0.66, -4.39, -1.54, 1.51, 1.00,
+    -4.89, 5.46, 5.06, -1.49, -3.54, 4.71, 0.73,
+]

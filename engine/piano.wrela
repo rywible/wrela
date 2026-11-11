@@ -41,10 +41,8 @@
 // smooth pulse through resonators, never noise, so it adds no click (the audio tool's
 // `clicks`).
 //
-// The room is 16 delay lines, mixed by a Hadamard matrix (orthogonal, so it loses only what each
-// line's filter takes) and fed from each channel with signs that make the two channels' tails
-// differ. Each line's filter makes every mode fall 60 dB in `Model::room_time`, and the highs
-// faster. Each line's length sways slowly, by 6 samples, so no mode of the room rings on.
+// The room is engine::room's: 16 delay lines, mixed so the room loses only what each line's
+// filter takes. Every mode falls 60 dB in `Model::room_time`, and the highs faster.
 //
 // The model's numbers are measured (engine::piano_grand: a recorded piano, fitted by `wrela
 // audio model`). Notes recorded one at a time, without the pedal, cannot show the dampers, the
@@ -70,9 +68,11 @@
 // same samples.
 
 use perform::{PedalPoint, Performance}
+use room::{Room, room}
 use std::audio::{FALL_60_DB, SAMPLE_RATE, decay_rate}
 use std::collections::Vec
 use std::math::{PI, TAU}
+use tone::scatter
 
 /// The audio thread's rate.
 const RATE: f32 = f32(SAMPLE_RATE)
@@ -150,7 +150,8 @@ pub struct Model: Copy {
     pub sympathy: f32 = 0.02,
     /// How far apart the channels put the low and the high strings (0: none, 1: fully).
     pub width: f32 = 0.5,
-    /// The soundboard's share of the sound (its resonances' and its knock's), and the room's.
+    /// The soundboard's share of the sound (its resonances' and its knock's), and the room's:
+    /// at 0.18, the room is 12 dB under the strings over the Gymnopédie.
     pub board: f32 = 0.1,
     pub room: f32 = 0.18,
     /// Seconds the room takes to fall 60 dB.
@@ -409,16 +410,6 @@ pub fn fundamental(m: Model, key: u32) -> f32 {
     440.0 * pow(2.0, (f32(key) - 69.0 + cents / 100.0) / 12.0)
 }
 
-/// A number in [0, 1) that depends only on its three arguments: the seed of a partial's
-/// differences from the model.
-fn scatter(a: u32, b: u32, c: u32) -> f32 {
-    var h = a.wrapping_mul(0x9e3779b1) ^ b.wrapping_mul(0x85ebca77) ^ c.wrapping_mul(0xc2b2ae3d)
-    h = (h ^ (h >> 15)).wrapping_mul(0x2c1b3c6d)
-    h = (h ^ (h >> 12)).wrapping_mul(0x297a2d39)
-    h = h ^ (h >> 15)
-    f32(h >> 8) / 16777216.0
-}
-
 /// How far the sustain pedal at `depth` lifts the dampers: not at all below a quarter of its
 /// travel, fully from 60% of it, and in between, a half pedal.
 fn lift(depth: f32) -> f32 {
@@ -447,35 +438,6 @@ struct Resonance: Copy {
     y1: f32,
     y2: f32,
 }
-
-/// The room: 16 delay lines (four vec4s of four), each `ROOM_SPAN` samples of memory, their
-/// longest lengths in samples (primes, 4.8 to 42 ms), and how far each length sways either way
-/// round its mean, `ROOM_SWAY` under its longest.
-const ROOM_GROUPS: u32 = 4
-const ROOM_SPAN: u32 = 2048
-const ROOM_LENGTHS: [f32; 16] = [
-    229.0, 337.0, 449.0, 571.0, 683.0, 797.0, 919.0, 1031.0, 1153.0, 1279.0, 1399.0, 1523.0, 1657.0,
-    1777.0, 1879.0, 1997.0,
-]
-const ROOM_SWAY: f32 = 6.0
-/// Which way round each line takes its channel's sound (the even lines the left's, the odd the
-/// right's), and gives its sound to each channel: the two channels' patterns are orthogonal, so
-/// their tails differ.
-const ROOM_IN: [f32; 16] = [
-    1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0,
-]
-const ROOM_LEFT: [f32; 16] = [
-    1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
-]
-const ROOM_RIGHT: [f32; 16] = [
-    1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0,
-]
-/// The room's highs: at the top of hearing they fall 60 dB in this share of `Model::room_time`.
-const ROOM_HIGHS: f32 = 0.25
-/// How much of its channel's sound each line takes, and how much of each line the channels
-/// hear: with `Model::room` at 0.18, the room is 12 dB under the strings over the Gymnopédie.
-const ROOM_FEED: f32 = 0.35
-const ROOM_OUT: f32 = 0.44
 
 /// The board's knock: 32 modes (eight vec4s), from 40 Hz to 2.5 kHz evenly in log frequency, and
 /// the ring of force pulses that drives them (by sample, a power of two).
@@ -583,18 +545,8 @@ pub struct Piano {
     blows: [f32; 4096],
     /// Each key's last blow's velocity.
     struck: [f32; 88],
-    // The room: its lines (line i's samples from `i * ROOM_SPAN`), the sample being written,
-    // each line's darkened output and its filter (low = a y + b low), and each line's length
-    // (samples) at this quantum's start, its change per sample, and the phase of its sway.
-    room: [f32; 32768],
-    room_at: u32,
-    room_low: [vec4; 4],
-    room_a: [vec4; 4],
-    room_b: [vec4; 4],
-    room_delay: [f32; 16],
-    room_step: [f32; 16],
-    room_phase: [f32; 16],
-    room_rate: [f32; 16],
+    /// The room the piano is heard in.
+    room: Room,
 }
 
 /// A piano with `model`, to play `performance`. Builds its tables, so call it on the program's
@@ -661,15 +613,7 @@ pub fn piano(model: Model, performance: Performance) -> Piano {
         knock_right: [vec4(0.0); 8],
         blows: [0.0; 4096],
         struck: [0.0; 88],
-        room: [0.0; 32768],
-        room_at: 0,
-        room_low: [vec4(0.0); 4],
-        room_a: [vec4(0.0); 4],
-        room_b: [vec4(0.0); 4],
-        room_delay: [0.0; 16],
-        room_step: [0.0; 16],
-        room_phase: [0.0; 16],
-        room_rate: [0.0; 16],
+        room: room(model.room_time),
     }
     for k in 0..KEYS {
         p.build_key(k)
@@ -705,22 +649,6 @@ pub fn piano(model: Model, performance: Performance) -> Piano {
         p.knock_left[g][lane] = 1.0 + side
         p.knock_right[g][lane] = 1.0 - side
     }
-    for i in 0..4 * ROOM_GROUPS {
-        let (g, lane) = (i / 4, i % 4)
-        // Each line's filter falls 60 dB in `room_time` at the lowest frequencies and in
-        // `ROOM_HIGHS` of it at the highest, over its mean length: low = a y + b low, its gain
-        // g₀ at 0 Hz and gπ at the top.
-        let length = ROOM_LENGTHS[i] - ROOM_SWAY
-        let g0 = pow(10.0, -3.0 * length / RATE / model.room_time)
-        let gp = pow(10.0, -3.0 * length / RATE / (model.room_time * ROOM_HIGHS))
-        let b = (g0 - gp) / (g0 + gp)
-        p.room_a[g][lane] = g0 * (1.0 - b)
-        p.room_b[g][lane] = b
-        // Each line's length sways slowly (0.15 to 0.6 Hz), so no mode of the room rings on.
-        p.room_rate[i] = TAU * (0.15 + 0.45 * scatter(i, b: 0, c: 10)) * 128.0 / RATE
-        p.room_phase[i] = TAU * scatter(i, b: 0, c: 11)
-    }
-    p.sway()
     p
 }
 
@@ -1326,78 +1254,12 @@ impl Piano {
             let kr = (knock_r.x + knock_r.y) + (knock_r.z + knock_r.w)
             let l = left[s] + 0.5 * ringing + board_share * (board + kl)
             let rr = right[s] + 0.5 * ringing + board_share * (board + kr)
-            let wet = self.reverberate(s, l, rr)
+            let wet = self.room.hear(s, l, rr)
             left[s] = gain * (l + room * wet.x)
             right[s] = gain * (rr + room * wet.y)
             self.strings[s] = 0.0
         }
-        self.sway()
-    }
-
-    /// Each room line's length over the next quantum: it sways `ROOM_SWAY` samples either way
-    /// round its mean (`ROOM_SWAY` under its `ROOM_LENGTHS`), and moves evenly from sample to
-    /// sample.
-    @audio
-    fn sway(mut self) {
-        for i in 0..4 * ROOM_GROUPS {
-            let now = ROOM_LENGTHS[i] - ROOM_SWAY * (1.0 + sin(self.room_phase[i]))
-            var phase = self.room_phase[i] + self.room_rate[i]
-            if phase > TAU {
-                phase -= TAU
-            }
-            self.room_phase[i] = phase
-            let next = ROOM_LENGTHS[i] - ROOM_SWAY * (1.0 + sin(phase))
-            self.room_delay[i] = now
-            self.room_step[i] = (next - now) / 128.0
-        }
-    }
-
-    /// The room's sound at sample `s` of this quantum, for the two channels' sound `l` and `r`:
-    /// 16 delay lines, each darkened, mixed by a Hadamard matrix (orthogonal, so the room loses
-    /// only what the lines' filters take), with the channels' sound fed to each line and each
-    /// line heard in both channels, with signs that make the channels' tails differ.
-    @audio
-    fn reverberate(mut self, s: u32, l: f32, r: f32) -> vec2 {
-        let at = self.room_at
-        var y = [vec4(0.0); 4]
-        for i in 0..4 * ROOM_GROUPS {
-            let d = self.room_delay[i] + self.room_step[i] * f32(s)
-            let whole = u32(d)
-            let part = d - f32(whole)
-            let base = i * ROOM_SPAN
-            let a = self.room[base + ((at + ROOM_SPAN - whole) & (ROOM_SPAN - 1))]
-            let b = self.room[base + ((at + ROOM_SPAN - whole - 1) & (ROOM_SPAN - 1))]
-            y[i / 4][i % 4] = a + (b - a) * part
-        }
-        // Each line darkened; then mixed, four by four within each vec4 and across them.
-        var h = [vec4(0.0); 4]
-        var wet = vec2(0.0)
-        for g in 0..ROOM_GROUPS {
-            let low = self.room_a[g] * y[g] + self.room_b[g] * self.room_low[g]
-            self.room_low[g] = low
-            h[g] = vec4(
-                (low.x + low.y) + (low.z + low.w),
-                (low.x - low.y) + (low.z - low.w),
-                (low.x + low.y) - (low.z + low.w),
-                (low.x - low.y) - (low.z - low.w),
-            )
-            for lane in 0..4 {
-                let i = 4 * g + lane
-                wet += low[lane] * vec2(ROOM_LEFT[i], ROOM_RIGHT[i])
-            }
-        }
-        let mixed = [
-            0.25 * ((h[0] + h[1]) + (h[2] + h[3])),
-            0.25 * ((h[0] - h[1]) + (h[2] - h[3])),
-            0.25 * ((h[0] + h[1]) - (h[2] + h[3])),
-            0.25 * ((h[0] - h[1]) - (h[2] - h[3])),
-        ]
-        for i in 0..4 * ROOM_GROUPS {
-            let input = ROOM_IN[i] * (if i % 2 == 0 { l } else { r })
-            self.room[i * ROOM_SPAN + at] = mixed[i / 4][i % 4] + ROOM_FEED * input
-        }
-        self.room_at = (at + 1) & (ROOM_SPAN - 1)
-        ROOM_OUT * wet
+        self.room.sway()
     }
 }
 
@@ -1667,11 +1529,11 @@ fn the_rooms_tail_is_dense_falls_evenly_and_differs_in_each_channel() {
     for q in 0..450 {
         for s in 0..128 {
             let x = if q == 0 && s == 0 { 1.0 } else { 0.0 }
-            let wet = p.reverberate(s, x, x)
+            let wet = p.room.hear(s, x, x)
             l.push(wet.x)
             r.push(wet.y)
         }
-        p.sway()
+        p.room.sway()
     }
     // Every 0.1 s from 0.2 s falls about as the room's time says (60 dB in 1.6 s: 3.75 dB).
     let window = 4800

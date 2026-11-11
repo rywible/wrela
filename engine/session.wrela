@@ -1,0 +1,882 @@
+// A session: the tracks of a piece of music, mixed on the program's one stereo voice
+// (`std::audio`).
+//
+// A track is an instrument (a drum, a synthesizer, an electric piano), the notes it plays (as
+// engine::perform gives them: each note's key, onset, release and velocity, in seconds), and a
+// strip: its level, its place between the channels, what is cut from it, and how much of it
+// goes to the room and to the echo. The session plays every track on one clock, sums the strips
+// into a bus (the room is entered through a wait and a smear, so a drum's hit comes back as a
+// wash, not a flutter), and the master makes the bus fit a speaker: a compressor that holds the mix
+// together, a soft clip, and a limiter that lets no sample past its ceiling.
+//
+//     program thread                      audio thread
+//     ──────────────                      ────────────
+//     session(tempo, master)              play_session, each quantum:
+//       .drum("kick", KICK, notes, ..)      each track: its notes' events, sample by sample
+//       .synth("bass", SUB, notes, ..)        ─▶ its instrument ─▶ its strip ─┬─▶ bus
+//       .tine("keys", SUITCASE, ..)                                           ├─▶ echo ─▶ bus
+//     std::audio::play(s, play_session)                                       └─▶ room ─▶ bus
+//                                           bus ─▶ glue ─▶ warmth ─▶ limiter ─▶ left, right
+//
+// One track can be the key (`key`): each of its hits pushes down the tracks that ask for it
+// (`Strip::duck`), which come back over a moment. That is how a bass drum makes room for itself
+// in a bass. One drum can choke another (`chokes`): a closed hi-hat stops an open one.
+//
+// Everything on the audio thread is f32 arithmetic in a fixed order, so both hosts give the same
+// samples. A session whose tracks are all given before it starts renders the same every run.
+
+use drum::{Drum, Drummer, drummer}
+use perform::{PedalPoint, Performance, Played}
+use room::{Entry, Room, entry, room}
+use std::audio::SAMPLE_RATE
+use std::collections::Vec
+use std::io::print
+use std::math::PI
+use synth::{Patch, Synth, synth}
+use tine::{Tine, Tines, tines}
+use tone::{Band, Svf, band, gain_of, one_pole, warm}
+
+/// The audio thread's rate.
+const RATE: f32 = f32(SAMPLE_RATE)
+
+const NONE: u32 = 4294967295
+
+/// Seconds a session rings on after its last note is let go: the room's and the echo's tail.
+const TAIL: f64 = 3.0
+
+/// A track's strip: what the mix does with its sound.
+pub struct Strip: Copy {
+    /// Its level (dB), and where it sits (-1 left, 0 the middle, 1 right).
+    pub gain: f32 = 0.0,
+    pub pan: f32 = 0.0,
+    /// The corners (Hz) below and above which it is cut. 0: nothing is.
+    pub low_cut: f32 = 0.0,
+    pub high_cut: f32 = 0.0,
+    /// How hard it is driven into soft clipping (0: not at all).
+    pub drive: f32 = 0.0,
+    /// Its share sent to the room, and to the echo (0: none; 1: as loud as it is).
+    pub room: f32 = 0.0,
+    pub echo: f32 = 0.0,
+    /// The decibels the key track's hits push it down.
+    pub duck: f32 = 0.0,
+}
+
+/// The master: the room and the echo every track shares, and what the bus goes through.
+pub struct Master: Copy {
+    /// The bus's level into the glue (dB).
+    pub gain: f32 = 0.0,
+    /// The glue, a compressor over the whole mix: the level (dB of full scale) over which it
+    /// works, and the share of what is over that it takes away (0: nothing; 0.5 is a ratio of
+    /// 2 to 1).
+    pub glue_db: f32 = -14.0,
+    pub glue: f32 = 0.0,
+    /// The level made up after the glue (dB), into the soft clip and the limiter.
+    pub makeup: f32 = 0.0,
+    /// How hard the mix is driven into soft clipping (0: not at all).
+    pub warmth: f32 = 0.0,
+    /// The level (dB of full scale) no sample goes over.
+    pub ceiling: f32 = -1.0,
+    /// The room: seconds its lows take to fall 60 dB, the share of that its highs take, its
+    /// size (engine::room's), and its level in the mix (dB).
+    pub room_time: f32 = 1.1,
+    pub room_highs: f32 = 0.3,
+    pub room_size: f32 = 1.5,
+    pub room_db: f32 = -6.0,
+    /// The way into the room (engine::room's `Entry`): seconds a sound is held back before
+    /// the room answers, and the corners (Hz) below and above which what is sent is cut.
+    pub room_wait: f32 = 0.014,
+    pub room_low_cut: f32 = 180.0,
+    pub room_high_cut: f32 = 6000.0,
+    /// The echo: its time in quarter notes (0.75 is a dotted eighth), how much of each repeat
+    /// makes the next, the corner (Hz) above which each repeat is duller, and its level (dB).
+    pub echo_beats: f32 = 0.75,
+    pub echo_again: f32 = 0.35,
+    pub echo_hz: f32 = 2400.0,
+    pub echo_db: f32 = -6.0,
+    /// Seconds a ducked track takes to come most of the way back.
+    pub duck_time: f32 = 0.16,
+}
+
+/// What a track's instrument is.
+enum Kind: Copy + Eq {
+    Drum,
+    Synth,
+    Tine,
+}
+
+/// A key pressed or let go, or the sustain pedal moved, at a sample.
+struct Event: Copy {
+    at: u32,
+    key: f32,
+    /// How hard, from 0 to 1; 0 lets the key go. For the pedal, how far down it is.
+    velocity: f32,
+    pedal: bool,
+}
+
+/// A track: its instrument (the `index`th of its kind), its notes as events, and its strip.
+struct Track {
+    name: Text,
+    kind: Kind,
+    index: u32,
+    strip: Strip,
+    events: Vec<Event>,
+    next: u32,
+    /// Its notes as given, for `describe`.
+    notes: Vec<Played>,
+    /// A muted track is played (its hits still duck and choke) but not heard.
+    muted: bool,
+    /// The track its hits choke, if any.
+    chokes: u32,
+    // Its strip's gains for each channel, how far a duck pushes it (a share), its cuts'
+    // coefficients, and their state.
+    left: f32,
+    right: f32,
+    depth: f32,
+    low: Band,
+    high: Band,
+    low_l: Svf,
+    low_r: Svf,
+    high_l: Svf,
+    high_r: Svf,
+    /// What its sound has of a steady offset, each channel's: taken away (a drive that leans
+    /// to one side leaves one, which no speaker plays and which costs headroom).
+    steady_l: f32,
+    steady_r: f32,
+}
+
+/// The share of the way a strip's steady offset is followed each sample: a corner at 20 Hz.
+const STEADY: f32 = 0.0026
+
+/// The echo's memory for each channel (samples, a power of two): 1.36 s.
+const ECHO_SPAN: u32 = 65536
+/// The limiter looks this many samples ahead (5 ms), in a ring of `LOOK_SPAN`.
+const LOOK: u32 = 240
+const LOOK_SPAN: u32 = 256
+
+/// A session playing: what the audio thread owns.
+pub struct Session {
+    tempo: f32,
+    beats: u32,
+    master: Master,
+    tracks: Vec<Track>,
+    drums: Vec<Drummer>,
+    synths: Vec<Synth>,
+    tines: Vec<Tines>,
+    /// The key track, if any; how hard its last hits press (falling), and the duck as the
+    /// tracks feel it (eased in, so it isn't a click).
+    key: u32,
+    pump: f32,
+    pump_fall: f32,
+    ducked: f32,
+    sample: u32,
+    entry: Entry,
+    room: Room,
+    room_level: f32,
+    // The echo: each channel's line (the right's from `ECHO_SPAN`; on the heap, as a room's
+    // lines are), the sample being written,
+    // its length in samples, each channel's dulled repeat, the dulling's share, and its level.
+    echo: Vec<f32>,
+    echo_at: u32,
+    echo_len: u32,
+    echo_low_l: f32,
+    echo_low_r: f32,
+    echo_top: f32,
+    echo_level: f32,
+    echo_used: bool,
+    // The glue: the mix's power as it hears it, the gain it wants and the gain it has, and the
+    // samples to its next look.
+    glue_env: f32,
+    glue_want: f32,
+    glue_gain: f32,
+    glue_in: u32,
+    // The limiter: the mix held back `LOOK` samples, each sample's own gain, the least of the
+    // last `LOOK` of those (and how long ago it was), that least eased back up, and the last
+    // `LOOK` of those with their sum: their mean is the gain.
+    look_l: [f32; 256],
+    look_r: [f32; 256],
+    want: [f32; 256],
+    eased: [f32; 256],
+    look_at: u32,
+    least: f32,
+    least_age: u32,
+    held: f32,
+    sum: f32,
+    /// The whole piece's length in seconds, with its last sound's ring.
+    pub seconds: f64,
+}
+
+/// A session at `tempo` (quarter notes a minute), `beats` quarter notes to a bar, with `master`.
+/// Add its tracks, then start it with `std::audio::play(s, play_session)`.
+pub fn session(tempo: f32, master: Master = Master {}, beats: u32 = 4) -> Session {
+    let echo_len = u32(master.echo_beats * 60.0 / tempo * RATE)
+    assert(echo_len >= 1 && echo_len < ECHO_SPAN, "the echo's time is over 0 and under 1.36 s")
+    Session {
+        tempo,
+        beats,
+        master,
+        tracks: Vec::new(),
+        drums: Vec::new(),
+        synths: Vec::new(),
+        tines: Vec::new(),
+        key: NONE,
+        pump: 0.0,
+        pump_fall: exp(-3.0 / (max(master.duck_time, 0.005) * RATE)),
+        ducked: 0.0,
+        sample: 0,
+        entry: entry(master.room_wait, master.room_low_cut, master.room_high_cut),
+        room: room(master.room_time, master.room_highs, master.room_size),
+        room_level: gain_of(master.room_db),
+        echo: Vec::filled(2 * ECHO_SPAN, value: 0.0),
+        echo_at: 0,
+        echo_len,
+        echo_low_l: 0.0,
+        echo_low_r: 0.0,
+        echo_top: one_pole(master.echo_hz),
+        echo_level: gain_of(master.echo_db),
+        echo_used: false,
+        glue_env: 0.0,
+        glue_want: 1.0,
+        glue_gain: 1.0,
+        glue_in: 0,
+        look_l: [0.0; 256],
+        look_r: [0.0; 256],
+        want: [1.0; 256],
+        eased: [1.0; 256],
+        look_at: 0,
+        least: 1.0,
+        least_age: 0,
+        held: 1.0,
+        sum: f32(LOOK),
+        seconds: TAIL,
+    }
+}
+
+fn samples(seconds: f64) -> u32 {
+    u32(max(seconds, 0.0) * f64(SAMPLE_RATE) + 0.5)
+}
+
+impl Session {
+    /// Adds a drum, `patch`, that plays `notes` (each a hit: its release isn't used).
+    pub fn drum(mut self, name: Text, patch: Drum, notes: Vec<Played>, strip: Strip = Strip {}) {
+        self.drums.push(drummer(patch, seed: self.tracks.len() + 1))
+        self.add(name, Kind::Drum, self.drums.len() - 1, notes, Vec::new(), strip)
+    }
+
+    /// Adds a synthesizer, `patch`, that plays `played`'s notes (it has no pedal).
+    pub fn synth(mut self, name: Text, patch: Patch, played: Performance, strip: Strip = Strip {}) {
+        self.synths.push(synth(patch, seed: self.tracks.len() + 1))
+        self.add(name, Kind::Synth, self.synths.len() - 1, played.notes, Vec::new(), strip)
+    }
+
+    /// Adds an electric piano, `patch`, that plays `played`: its notes and its sustain pedal.
+    pub fn tine(mut self, name: Text, patch: Tine, played: Performance, strip: Strip = Strip {}) {
+        self.tines.push(tines(patch))
+        self.add(name, Kind::Tine, self.tines.len() - 1, played.notes, played.sustain, strip)
+    }
+
+    fn add(
+        mut self,
+        name: Text,
+        kind: Kind,
+        index: u32,
+        notes: Vec<Played>,
+        pedal: Vec<PedalPoint>,
+        strip: Strip,
+    ) {
+        for t in 0..self.tracks.len() {
+            assert(self.tracks[t].name != name, f"the session already has a track `{name}`")
+        }
+        var events: Vec<Event> = Vec::with_capacity(2 * notes.len())
+        for n in notes {
+            events.push(
+                Event {
+                    at: samples(n.onset),
+                    key: f32(n.key),
+                    velocity: max(n.velocity, 0.001),
+                    pedal: false,
+                },
+            )
+            if kind != Kind::Drum {
+                events.push(
+                    Event { at: samples(n.release), key: f32(n.key), velocity: 0.0, pedal: false },
+                )
+            }
+            self.seconds = max(self.seconds, n.release + TAIL)
+        }
+        for p in pedal {
+            events.push(Event { at: samples(p.at), key: 0.0, velocity: p.depth, pedal: true })
+        }
+        // By time; a key let go before a key pressed (or the pedal moved) on the same sample,
+        // so a note repeated back to back starts again.
+        events.sort_by(
+            |a, b| a.at < b.at ||
+                (a.at == b.at && !a.pedal && a.velocity == 0.0 && (b.pedal || b.velocity > 0.0)),
+        )
+        // Equal power across the channels, and √2 so a track in the middle is at its level in
+        // each.
+        let angle = 0.25 * PI * (clamp(strip.pan, -1.0, 1.0) + 1.0)
+        let gain = 1.41421356 * gain_of(strip.gain)
+        if strip.echo > 0.0 {
+            self.echo_used = true
+        }
+        self.tracks.push(
+            Track {
+                name,
+                kind,
+                index,
+                strip,
+                events,
+                next: 0,
+                notes: notes.clone(),
+                muted: false,
+                chokes: NONE,
+                left: gain * cos(angle),
+                right: gain * sin(angle),
+                depth: 1.0 - gain_of(-max(strip.duck, 0.0)),
+                low: band(max(strip.low_cut, 5.0), 0.7),
+                high: band(if strip.high_cut > 0.0 { strip.high_cut } else { 20000.0 }, 0.7),
+                low_l: Svf {},
+                low_r: Svf {},
+                high_l: Svf {},
+                high_r: Svf {},
+                steady_l: 0.0,
+                steady_r: 0.0,
+            },
+        )
+    }
+
+    /// Track `name`'s number. A name the session doesn't have panics.
+    pub fn track_named(self, name: Text) -> u32 {
+        for t in 0..self.tracks.len() {
+            if self.tracks[t].name == name {
+                return t
+            }
+        }
+        panic(f"the session has no track `{name}`")
+    }
+
+    /// Makes track `name` the key: its hits push down every track whose strip has a `duck`.
+    pub fn key(mut self, name: Text) {
+        self.key = self.track_named(name)
+    }
+
+    /// Makes each hit of the drum `name` choke the drum `other`.
+    pub fn chokes(mut self, name: Text, other: Text) {
+        let a = self.track_named(name)
+        let b = self.track_named(other)
+        assert(self.tracks[b].kind == Kind::Drum, f"`{other}` isn't a drum, so nothing chokes it")
+        self.tracks[a].chokes = b
+    }
+
+    /// Mutes track `name`: it is played, so its hits still duck and choke, but not heard.
+    pub fn mute(mut self, name: Text) {
+        let t = self.track_named(name)
+        self.tracks[t].muted = true
+    }
+
+    /// Mutes every track but `name`.
+    pub fn solo(mut self, name: Text) {
+        let only = self.track_named(name)
+        for t in 0..self.tracks.len() {
+            self.tracks[t].muted = t != only
+        }
+    }
+
+    /// The tracks' names, in order.
+    pub fn names(self) -> Vec<Text> {
+        var out: Vec<Text> = Vec::with_capacity(self.tracks.len())
+        for t in 0..self.tracks.len() {
+            out.push(self.tracks[t].name)
+        }
+        out
+    }
+
+    /// Prints the session as the JSON lines the audio tool (studio/audio) reads: the piece
+    /// `title` and its take `which`, `bars` long; each track as a voice; each note of the tracks
+    /// that are heard, with the bar it falls in; and when each beat falls. Every time is when
+    /// it is heard: the limiter holds the mix back 5 ms, so each is that much after its
+    /// written time.
+    pub fn describe(self, title: Text, which: Text, bars: u32) {
+        print(
+            f"{{\"title\":\"{title}\",\"take\":\"{which}\",\"bars\":{bars},\"beats_per_bar\":{self.beats},\"seconds\":{self.seconds}}}",
+        )
+        let beat = 60.0 / f64(self.tempo)
+        let bar = beat * f64(self.beats)
+        let held_back = f64(LOOK - 1) / f64(SAMPLE_RATE)
+        for t in 0..self.tracks.len() {
+            print(f"{{\"voice\":{t},\"name\":\"{self.tracks[t].name}\"}}")
+        }
+        for t in 0..self.tracks.len() {
+            if self.tracks[t].muted {
+                continue
+            }
+            for n in self.tracks[t].notes {
+                // A note pushed a little ahead of its bar line is still that bar's.
+                let in_bar = min(u32((n.onset + 0.04) / bar) + 1, max(bars, 1))
+                print(
+                    f"{{\"key\":{n.key},\"voice\":{t},\"onset\":{n.onset + held_back},\"release\":{n.release + held_back},\"velocity\":{n.velocity},\"bar\":{in_bar}}}",
+                )
+            }
+        }
+        for b in 0..bars * self.beats + 1 {
+            print(f"{{\"beat\":{f64(b) * beat + held_back}}}")
+        }
+    }
+
+    /// Whether the `index`th instrument of `kind` is silent.
+    @audio
+    fn silent(self, kind: Kind, index: u32) -> bool {
+        match kind {
+            Kind::Drum => self.drums[index].silent(),
+            Kind::Synth => self.synths[index].silent(),
+            Kind::Tine => self.tines[index].silent(),
+        }
+    }
+
+    /// Track `t`'s sound for this quantum, into `tl` and `tr`: its events as they fall, and its
+    /// instrument's samples between them. A hit of the key track is marked in `hits`, at its
+    /// sample. False if it made no sound.
+    @audio
+    fn render(mut self, t: u32, tl: mut [f32], tr: mut [f32], hits: mut [f32]) -> bool {
+        for n in 0..128 {
+            tl[n] = 0.0
+            tr[n] = 0.0
+        }
+        let start = self.sample
+        let kind = self.tracks[t].kind
+        let index = self.tracks[t].index
+        var sounded = !self.silent(kind, index)
+        var from = 0
+        loop {
+            var until = 128
+            let next = self.tracks[t].next
+            if next < self.tracks[t].events.len() {
+                let at = self.tracks[t].events[next].at
+                if at < start + 128 {
+                    until = if at > start { at - start } else { 0 }
+                }
+            }
+            if until < from {
+                until = from
+            }
+            match kind {
+                Kind::Drum => self.drums[index].sound(mut tl, mut tr, from, until),
+                Kind::Synth => self.synths[index].sound(mut tl, mut tr, from, until),
+                Kind::Tine => self.tines[index].sound(mut tl, mut tr, from, until),
+            }
+            if until == 128 {
+                break
+            }
+            let e = self.tracks[t].events[next]
+            self.tracks[t].next = next + 1
+            sounded = true
+            if e.pedal {
+                match kind {
+                    Kind::Tine => self.tines[index].hold_pedal(e.velocity),
+                    _ => {},
+                }
+            } else if e.velocity > 0.0 {
+                match kind {
+                    Kind::Drum => self.drums[index].hit(e.velocity),
+                    Kind::Synth => self.synths[index].press(e.key, e.velocity),
+                    Kind::Tine => self.tines[index].press(e.key, e.velocity),
+                }
+                let chokes = self.tracks[t].chokes
+                if chokes != NONE {
+                    self.drums[self.tracks[chokes].index].choke()
+                }
+                if t == self.key {
+                    hits[until] = max(hits[until], e.velocity)
+                }
+            } else {
+                match kind {
+                    Kind::Drum => {},
+                    Kind::Synth => self.synths[index].lift(e.key),
+                    Kind::Tine => self.tines[index].lift(e.key),
+                }
+            }
+            from = until
+        }
+        sounded
+    }
+
+    /// Track `t`'s quantum (`tl`, `tr`) through its strip: cut, driven, ducked by `duck`, and
+    /// placed, into the bus and the sends.
+    @audio
+    fn strip(
+        mut self,
+        t: u32,
+        tl: [f32],
+        tr: [f32],
+        duck: [f32],
+        bus_l: mut [f32],
+        bus_r: mut [f32],
+        room_l: mut [f32],
+        room_r: mut [f32],
+        echo_l: mut [f32],
+        echo_r: mut [f32],
+    ) {
+        let s = self.tracks[t].strip
+        let (gl, gr, depth) = (self.tracks[t].left, self.tracks[t].right, self.tracks[t].depth)
+        let (low, high) = (self.tracks[t].low, self.tracks[t].high)
+        var low_l = self.tracks[t].low_l
+        var low_r = self.tracks[t].low_r
+        var high_l = self.tracks[t].high_l
+        var high_r = self.tracks[t].high_r
+        var steady_l = self.tracks[t].steady_l
+        var steady_r = self.tracks[t].steady_r
+        for n in 0..128 {
+            var l = tl[n]
+            var r = tr[n]
+            if s.low_cut > 0.0 {
+                l = low_l.high(low, l)
+                r = low_r.high(low, r)
+            }
+            if s.high_cut > 0.0 {
+                l = high_l.low(high, l)
+                r = high_r.low(high, r)
+            }
+            if s.drive > 0.0 {
+                l = warm(l, s.drive)
+                r = warm(r, s.drive)
+            }
+            // Its steady offset, followed slowly (a corner at 20 Hz) and taken away.
+            steady_l += STEADY * (l - steady_l)
+            steady_r += STEADY * (r - steady_r)
+            l -= steady_l
+            r -= steady_r
+            let g = 1.0 - depth * duck[n]
+            l *= gl * g
+            r *= gr * g
+            bus_l[n] += l
+            bus_r[n] += r
+            room_l[n] += s.room * l
+            room_r[n] += s.room * r
+            echo_l[n] += s.echo * l
+            echo_r[n] += s.echo * r
+        }
+        self.tracks[t].low_l = low_l
+        self.tracks[t].low_r = low_r
+        self.tracks[t].high_l = high_l
+        self.tracks[t].high_r = high_r
+        self.tracks[t].steady_l = steady_l
+        self.tracks[t].steady_r = steady_r
+    }
+
+    /// The least of the last `LOOK` samples' own gains, after sample `at`'s is written.
+    @audio
+    fn least_wanted(mut self, at: u32, wanted: f32) -> f32 {
+        if wanted <= self.least {
+            self.least = wanted
+            self.least_age = 0
+        } else {
+            self.least_age += 1
+            if self.least_age >= LOOK {
+                // The least has left the window: find the least still in it, and how old.
+                self.least = 1.0
+                self.least_age = 0
+                for back in 0..LOOK {
+                    let w = self.want[(at + LOOK_SPAN - back) & (LOOK_SPAN - 1)]
+                    if w < self.least {
+                        self.least = w
+                        self.least_age = back
+                    }
+                }
+            }
+        }
+        self.least
+    }
+
+    /// The echo, the room and the master: the bus and the sends' quantum, into the channels.
+    @audio
+    fn finish(
+        mut self,
+        bus_l: [f32],
+        bus_r: [f32],
+        room_l: [f32],
+        room_r: [f32],
+        echo_l: [f32],
+        echo_r: [f32],
+        left: mut [f32],
+        right: mut [f32],
+    ) {
+        let m = self.master
+        let gain = gain_of(m.gain)
+        let makeup = gain_of(m.makeup)
+        let ceiling = gain_of(m.ceiling)
+        // The glue hears the mix's power rise in 10 ms and fall in 150 ms.
+        let rise = 1.0 - exp(-1.0 / (0.01 * RATE))
+        let fall = 1.0 - exp(-1.0 / (0.15 * RATE))
+        // The limiter's gain comes back up over 80 ms.
+        let back = 1.0 - exp(-1.0 / (0.08 * RATE))
+        for n in 0..128 {
+            var l = bus_l[n]
+            var r = bus_r[n]
+            var to_room_l = room_l[n]
+            var to_room_r = room_r[n]
+            if self.echo_used {
+                // Each channel's repeat, dulled, feeds the other's line: the echo crosses over.
+                let at = self.echo_at
+                let from = (at + ECHO_SPAN - self.echo_len) & (ECHO_SPAN - 1)
+                self.echo_low_l += self.echo_top * (self.echo[from] - self.echo_low_l)
+                self.echo_low_r += self.echo_top * (self.echo[ECHO_SPAN + from] - self.echo_low_r)
+                self.echo[at] = echo_l[n] + m.echo_again * self.echo_low_r
+                self.echo[ECHO_SPAN + at] = echo_r[n] + m.echo_again * self.echo_low_l
+                self.echo_at = (at + 1) & (ECHO_SPAN - 1)
+                let el = self.echo_level * self.echo_low_l
+                let er = self.echo_level * self.echo_low_r
+                l += el
+                r += er
+                // The repeats are in the room too, a little.
+                to_room_l += 0.3 * el
+                to_room_r += 0.3 * er
+            }
+            let sent = self.entry.pass(to_room_l, to_room_r)
+            let wet = self.room.hear(n, sent.x, sent.y)
+            l = gain * (l + self.room_level * wet.x)
+            r = gain * (r + self.room_level * wet.y)
+            // The glue.
+            if m.glue > 0.0 {
+                let power = max(l * l, r * r)
+                self.glue_env += (if power > self.glue_env { rise } else {
+                    fall
+                }) * (power - self.glue_env)
+                if self.glue_in == 0 {
+                    self.glue_in = 16
+                    let over = 4.3429448 * log(self.glue_env + 1e-12) - m.glue_db
+                    self.glue_want = if over > 0.0 { gain_of(-over * m.glue) } else { 1.0 }
+                }
+                self.glue_in -= 1
+                self.glue_gain += 0.003 * (self.glue_want - self.glue_gain)
+                l *= self.glue_gain
+                r *= self.glue_gain
+            }
+            l *= makeup
+            r *= makeup
+            if m.warmth > 0.0 {
+                l = warm(l, m.warmth)
+                r = warm(r, m.warmth)
+            }
+            // The limiter. Each sample's own gain is what brings it to the ceiling. The gain
+            // used is the least of the last `LOOK` of those, eased back up after a peak, and
+            // averaged over `LOOK` samples, on the mix `LOOK - 1` samples ago: so the gain
+            // moves smoothly, and is down in time for every peak.
+            let at = self.look_at
+            let peak = max(abs(l), abs(r))
+            let wanted = if peak > ceiling { ceiling / peak } else { 1.0 }
+            self.look_l[at] = l
+            self.look_r[at] = r
+            self.want[at] = wanted
+            let least = self.least_wanted(at, wanted)
+            self.held = min(least, self.held + back * (1.0 - self.held))
+            let leaving = (at + LOOK_SPAN - LOOK) & (LOOK_SPAN - 1)
+            self.sum += self.held - self.eased[leaving]
+            self.eased[at] = self.held
+            let g = min(self.sum / f32(LOOK), 1.0)
+            let out = (at + LOOK_SPAN - (LOOK - 1)) & (LOOK_SPAN - 1)
+            // (The clamp takes only what rounding the mean leaves over: a hundred-thousandth.)
+            left[n] = clamp(g * self.look_l[out], -ceiling, ceiling)
+            right[n] = clamp(g * self.look_r[out], -ceiling, ceiling)
+            self.look_at = (at + 1) & (LOOK_SPAN - 1)
+        }
+        self.room.sway()
+        // The running sum, summed afresh each quantum, so its rounding doesn't build up.
+        var sum = 0.0
+        for back_by in 1..LOOK + 1 {
+            sum += self.eased[(self.look_at + LOOK_SPAN - back_by) & (LOOK_SPAN - 1)]
+        }
+        self.sum = sum
+    }
+}
+
+/// The session's voice: one quantum of every track, mixed, into the channels.
+@audio
+pub fn play_session(s: mut Session, left: mut [f32], right: mut [f32]) {
+    var bus_l = [0.0; 128]
+    var bus_r = [0.0; 128]
+    var room_l = [0.0; 128]
+    var room_r = [0.0; 128]
+    var echo_l = [0.0; 128]
+    var echo_r = [0.0; 128]
+    var duck = [0.0; 128]
+    var tl = [0.0; 128]
+    var tr = [0.0; 128]
+    // The key track first, so its hits are known; then how far they press each sample; then the
+    // other tracks, which that ducks.
+    let count = s.tracks.len()
+    let key = s.key
+    var key_sounded = false
+    if key != NONE {
+        key_sounded = s.render(key, mut tl, mut tr, mut duck)
+    }
+    for n in 0..128 {
+        if duck[n] > 0.0 {
+            s.pump = max(s.pump, min(1.25 * duck[n], 1.0))
+        }
+        // Down over 3 ms, so the duck is no click; back up as the press falls.
+        s.ducked += (if s.pump > s.ducked { 0.007 } else { 1.0 }) * (s.pump - s.ducked)
+        duck[n] = s.ducked
+        s.pump *= s.pump_fall
+    }
+    if key != NONE && key_sounded && !s.tracks[key].muted {
+        s.strip(
+            key,
+            tl,
+            tr,
+            duck,
+            mut bus_l,
+            mut bus_r,
+            mut room_l,
+            mut room_r,
+            mut echo_l,
+            mut echo_r,
+        )
+    }
+    var unused = [0.0; 128]
+    for t in 0..count {
+        if t == key {
+            continue
+        }
+        let sounded = s.render(t, mut tl, mut tr, mut unused)
+        if sounded && !s.tracks[t].muted {
+            s.strip(
+                t,
+                tl,
+                tr,
+                duck,
+                mut bus_l,
+                mut bus_r,
+                mut room_l,
+                mut room_r,
+                mut echo_l,
+                mut echo_r,
+            )
+        }
+    }
+    s.finish(bus_l, bus_r, room_l, room_r, echo_l, echo_r, mut left, mut right)
+    s.sample += 128
+}
+
+// The tests render quanta of a session directly, on the program's thread, as the audio thread
+// would.
+
+/// A note of `key` from `onset` to `release` (seconds), `velocity` hard.
+fn note(key: u32, onset: f64, release: f64, velocity: f32) -> Played {
+    Played { key, voice: 0, onset, release, velocity, note: 0 }
+}
+
+/// `quanta` quanta of `s`: each channel's energy, and the largest sample.
+fn rendered(s: mut Session, quanta: u32) -> vec3 {
+    var l = [0.0; 128]
+    var r = [0.0; 128]
+    var e = vec3(0.0)
+    for _ in 0..quanta {
+        play_session(mut s, mut l, mut r)
+        for i in 0..128 {
+            e = vec3(e.x + l[i] * l[i], e.y + r[i] * r[i], max(e.z, max(abs(l[i]), abs(r[i]))))
+        }
+    }
+    e
+}
+
+@test
+fn a_track_sits_where_its_strip_puts_it() {
+    var s = session(tempo: 120.0)
+    var notes: Vec<Played> = Vec::new()
+    notes.push(note(60, onset: 0.0, release: 0.5, velocity: 0.8))
+    s.synth("lead", synth::PLUCK, perform::of_notes(take notes), Strip { pan: -1.0 })
+    let e = rendered(mut s, quanta: 200)
+    assert(e.x > 1e-3 && e.y < 1e-6 * e.x, f"a track panned left: {e.x} left, {e.y} right")
+}
+
+@test
+fn the_limiter_lets_nothing_past_its_ceiling() {
+    // Six bass drums at once, 20 dB hot: far over full scale without the limiter.
+    var s = session(tempo: 120.0, master: Master { gain: 20.0, ceiling: -1.0 })
+    for i in 0..6 {
+        var notes: Vec<Played> = Vec::new()
+        notes.push(note(36, onset: 0.01, release: 0.1, velocity: 1.0))
+        notes.push(note(36, onset: 0.3, release: 0.4, velocity: 1.0))
+        s.drum(["a", "b", "c", "d", "e", "f"][i], drum::KICK, notes)
+    }
+    let e = rendered(mut s, quanta: 300)
+    let ceiling = gain_of(-1.0)
+    assert(e.z <= ceiling, f"a sample reached {e.z}, over the ceiling {ceiling}")
+    assert(e.z > 0.5 * ceiling, f"the limiter left the mix at {e.z}")
+}
+
+@test
+fn the_key_track_ducks_a_track_that_asks_and_a_muted_key_still_does() {
+    // A held bass note, and a bass drum a quarter of a second in: the bass over the 50 ms after
+    // the hit, with the duck and without. The duck is deepest a few milliseconds in and half
+    // gone by the end, so over the 50 ms it takes about half its decibels.
+    let after = |duck: f32, muted: bool| -> f32 {
+        var s = session(tempo: 120.0)
+        var kick: Vec<Played> = Vec::new()
+        kick.push(note(36, onset: 0.25, release: 0.3, velocity: 1.0))
+        s.drum("kick", drum::KICK, kick)
+        var bass: Vec<Played> = Vec::new()
+        bass.push(note(45, onset: 0.0, release: 1.0, velocity: 0.8))
+        s.synth(
+            "bass",
+            synth::Patch { amp: tone::Shape { sustain: 1.0 }, ..synth::SUB },
+            perform::of_notes(take bass),
+            Strip { duck: duck },
+        )
+        s.key("kick")
+        if muted {
+            s.mute("kick")
+        } else {
+            s.solo("bass")
+        }
+        // To just past the hit (the limiter holds the mix back 5 ms), then 50 ms.
+        let _ = rendered(mut s, quanta: 97)
+        rendered(mut s, quanta: 19).x
+    }
+    let free = after(0.0, false)
+    let ducked = after(12.0, false)
+    let ratio = 4.3429448 * log(free / ducked)
+    assert(
+        ratio > 4.0 && ratio < 12.5,
+        f"a 12 dB duck took {ratio} dB off the bass just after the hit",
+    )
+    assert(abs(after(12.0, true) - ducked) < 1e-3 * ducked, "a muted key track ducked differently")
+}
+
+@test
+fn the_same_session_gives_the_same_samples() {
+    let run = || -> vec3 {
+        var s = session(tempo: 100.0, master: Master { glue: 0.5, warmth: 0.8 })
+        var hits: Vec<Played> = Vec::new()
+        var keys: Vec<Played> = Vec::new()
+        for i in 0..8 {
+            hits.push(note(42, onset: 0.15 * f64(i), release: 0.0, velocity: 0.7))
+            keys.push(note(57 + i, onset: 0.2 * f64(i), release: 0.2 * f64(i) + 0.3, velocity: 0.6))
+        }
+        s.drum("hat", drum::HAT, hits, Strip { pan: 0.3, room: 0.2 })
+        s.tine("keys", tine::SUITCASE, perform::of_notes(take keys), Strip { room: 0.3, echo: 0.3 })
+        rendered(mut s, quanta: 400)
+    }
+    assert(run() == run())
+}
+
+@test
+fn the_pedal_reaches_an_electric_piano_through_the_session() {
+    // A note let go after a tenth of a second: half a second on, it is silent without the
+    // pedal, and still ringing with the pedal held down from the start.
+    let later = |held: bool| -> f32 {
+        var s = session(tempo: 120.0)
+        var notes: Vec<Played> = Vec::new()
+        notes.push(note(57, onset: 0.0, release: 0.1, velocity: 0.8))
+        var played = perform::of_notes(take notes)
+        if held {
+            played.sustain = Vec::from([PedalPoint { at: 0.0, depth: 1.0 }])
+        }
+        s.tine("keys", tine::SUITCASE, played)
+        let _ = rendered(mut s, quanta: 225)
+        rendered(mut s, quanta: 38).x
+    }
+    let dry = later(false)
+    let wet = later(true)
+    assert(wet > 100.0 * dry && wet > 1e-4, f"with the pedal {wet}, without {dry}")
+}

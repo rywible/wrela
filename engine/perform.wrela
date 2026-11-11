@@ -121,6 +121,9 @@ pub struct Taste: Copy {
     /// The soft pedal's depth where the music is at `soft_below` or softer (0: never used).
     pub soft: f32 = 0.0,
     pub soft_below: f32 = 0.3,
+    /// Seconds a chord's notes are struck across, the lowest first: a hand's small roll, on
+    /// every chord (a `Mark::Roll` rolls one chord further).
+    pub roll: f32 = 0.0,
     /// Small random differences, as a hand makes: the spread of onsets in seconds, and of
     /// velocities as a fraction. `seed` chooses them, so the same taste plays the same way.
     pub jitter_time: f32 = 0.0,
@@ -224,6 +227,12 @@ pub fn perform(score: Score, taste: Taste, marks: [Mark]) -> Performance {
                 _ => {},
             }
         }
+        if taste.roll > 0.0 {
+            let (rank, count) = rank_at(score, n.start, n.key)
+            if count > 1 {
+                onset += f64(taste.roll) * f64(rank) / f64(count - 1)
+            }
+        }
         onset += f64(taste.jitter_time) * gaussian(mut rng)
 
         // How long: to the next note of a slur, or the written end less a détaché.
@@ -290,6 +299,16 @@ pub fn perform(score: Score, taste: Taste, marks: [Mark]) -> Performance {
         t += score.meter.beat()
     }
     Performance { notes, sustain, soft, beats, length }
+}
+
+/// A performance that is only `notes` (by onset): no pedal, and no beats.
+pub fn of_notes(notes: take Vec<Played>) -> Performance {
+    var last = 0.0
+    for n in notes {
+        last = max(last, n.release)
+    }
+    let up = Vec::from([PedalPoint { at: 0.0, depth: 0.0 }])
+    Performance { notes, sustain: up.clone(), soft: up, beats: Vec::new(), length: last }
 }
 
 /// The score played exactly at `tempo`: no taste, no marks.
@@ -663,4 +682,16 @@ fn ease(u: f32) -> f32 {
 /// A draw near 0 with a spread of about 1: the sum of three uniform draws, centred.
 fn gaussian(rng: mut Rng) -> f64 {
     2.0 * (rng.next() + rng.next() + rng.next() - 1.5)
+}
+
+@test
+fn a_roll_strikes_a_chord_from_the_lowest_note_up() {
+    let s = score::score("chord", score::meter(beats: 4, unit: 4)).voice("keys", ["<g4 c4 e4>/1 |"])
+    let p = perform(s, Taste { tempo: 60.0, roll: 0.03 }, [Mark::Hold { at: bar(1), by: 1.0 }; 0])
+    // By onset: C, E, G, across 30 ms.
+    assert(
+        p.notes.len() == 3 && p.notes[0].key == 60 && p.notes[1].key == 64 && p.notes[2].key == 67,
+    )
+    assert(abs(p.notes[0].onset) < 1e-9 && abs(p.notes[1].onset - 0.015) < 1e-6)
+    assert(abs(p.notes[2].onset - 0.03) < 1e-6)
 }

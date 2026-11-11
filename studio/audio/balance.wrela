@@ -1,0 +1,333 @@
+// `balance <file.wav> [--against <reference.wav>]`: how a recording is balanced, for an agent that
+// can't hear it. It says:
+// - how loud it is: its integrated loudness (LUFS, as ITU-R BS.1770-4 measures it: each channel
+//   through the K weighting, its power over 400 ms blocks a tenth of a second apart, the blocks
+//   under -70 LUFS and those 10 LU under the rest's mean left out), its peak, its RMS, and its
+//   crest (the peak over the RMS);
+// - where its power is: the level of each octave from 31.5 Hz to 16 kHz, and its tilt (the
+//   decibels its octaves fall, one to the next, from 63 Hz to 8 kHz: the line that fits them
+//   best). Pink noise, level in every octave, tilts 0; most mixed music falls a few decibels an
+//   octave;
+// - how wide it is: how alike its two channels are (1: the same; 0: unrelated), and its sides'
+//   level beside its middle's.
+// With `--against`, the same of a reference, and each octave's level over the reference's, with
+// both brought to the same loudness: what to turn up or down to sit as the reference does.
+//
+// The octaves are from spectra of 16384 samples, half a window apart, averaged.
+
+use dsp::{Plan, db, round}
+use json::{Value, nums, obj, text}
+use main::{Args, failed, in_root}
+use std::collections::Vec
+use std::io::print
+use std::math
+use std::tool::ToolError
+use toolkit::whole::read_file
+use wav::Wav
+
+/// The octaves' centres (Hz).
+pub const OCTAVES: [f64; 10] = [
+    31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+]
+
+/// A recording's balance.
+pub struct Balance: Clone {
+    pub seconds: f64,
+    pub lufs: f64,
+    pub peak_db: f64,
+    pub rms_db: f64,
+    /// Each octave's level, in dB of full scale (a sine at full scale is -3).
+    pub octaves: Vec<f64>,
+    pub tilt: f64,
+    pub alike: f64,
+    pub side_db: f64,
+}
+
+/// A two-pole filter's coefficients (its a0 is 1) and state.
+struct Biquad: Copy {
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a1: f64,
+    a2: f64,
+    x1: f64 = 0.0,
+    x2: f64 = 0.0,
+    y1: f64 = 0.0,
+    y2: f64 = 0.0,
+}
+
+impl Biquad {
+    fn next(mut self, x: f64) -> f64 {
+        let y = self.b0 * x +
+            self.b1 * self.x1 +
+            self.b2 * self.x2 -
+            self.a1 * self.y1 -
+            self.a2 * self.y2
+        self.x2 = self.x1
+        self.x1 = x
+        self.y2 = self.y1
+        self.y1 = y
+        y
+    }
+}
+
+fn tan_f64(x: f64) -> f64 {
+    math::sin_f64(x) / math::cos_f64(x)
+}
+
+/// The K weighting's two filters at `rate`: a shelf that lifts the highs 4 dB (a head's effect)
+/// and a high-pass near 38 Hz. BS.1770 gives their coefficients at 48 kHz; these are the same
+/// filters at any rate (the analogue filters they come from, as libebur128 derives them).
+fn weighting(rate: f64) -> (Biquad, Biquad) {
+    let k = tan_f64(math::PI_F64 * 1681.974450955533 / rate)
+    let q = 0.7071752369554196
+    let vh = math::pow_f64(10.0, 3.999843853973347 / 20.0)
+    let vb = math::pow_f64(vh, 0.4996667741545416)
+    let a0 = 1.0 + k / q + k * k
+    let shelf = Biquad {
+        b0: (vh + vb * k / q + k * k) / a0,
+        b1: 2.0 * (k * k - vh) / a0,
+        b2: (vh - vb * k / q + k * k) / a0,
+        a1: 2.0 * (k * k - 1.0) / a0,
+        a2: (1.0 - k / q + k * k) / a0,
+    }
+    let k2 = tan_f64(math::PI_F64 * 38.13547087602444 / rate)
+    let q2 = 0.5003270373238773
+    let c0 = 1.0 + k2 / q2 + k2 * k2
+    let high = Biquad {
+        b0: 1.0,
+        b1: -2.0,
+        b2: 1.0,
+        a1: 2.0 * (k2 * k2 - 1.0) / c0,
+        a2: (1.0 - k2 / q2 + k2 * k2) / c0,
+    }
+    (shelf, high)
+}
+
+/// The integrated loudness (LUFS) of `w`: -200 if it is too short for a block, or all its
+/// blocks are under the gates.
+pub fn loudness(w: Wav) -> f64 {
+    let c = w.channels
+    let frames = w.samples.len() / c
+    let block = u32(0.4 * w.rate)
+    let step = u32(0.1 * w.rate)
+    if frames < block || step == 0 {
+        return -200.0
+    }
+    // Each channel weighted, then its power summed up to each sample, so a block's is a
+    // difference.
+    let count = (frames - block) / step + 1
+    var powers: Vec<f64> = Vec::filled(count, value: 0.0)
+    for ch in 0..c {
+        let (shelf, high) = weighting(w.rate)
+        var s = shelf
+        var h = high
+        var running: Vec<f64> = Vec::with_capacity(frames + 1)
+        running.push(0.0)
+        var sum = 0.0
+        for i in 0..frames {
+            let y = h.next(s.next(f64(w.samples[i * c + ch])))
+            sum += y * y
+            running.push(sum)
+        }
+        for j in 0..count {
+            powers[j] += (running[j * step + block] - running[j * step]) / f64(block)
+        }
+    }
+    let lufs = |p: f64| -0.691 + 10.0 * math::log10_f64(if p > 1e-30 { p } else { 1e-30 })
+    // The blocks over -70 LUFS; then those within 10 LU under their mean.
+    var sum = 0.0
+    var n = 0
+    for p in powers {
+        if lufs(p) > -70.0 {
+            sum += p
+            n += 1
+        }
+    }
+    if n == 0 {
+        return -200.0
+    }
+    let gate = lufs(sum / f64(n)) - 10.0
+    var gated = 0.0
+    var m = 0
+    for p in powers {
+        if lufs(p) > -70.0 && lufs(p) > gate {
+            gated += p
+            m += 1
+        }
+    }
+    if m == 0 {
+        return -200.0
+    }
+    lufs(gated / f64(m))
+}
+
+/// The balance of `w`.
+pub fn measure(w: Wav) -> Balance {
+    let c = w.channels
+    let frames = w.samples.len() / c
+    let mono = w.mono()
+    // The peak over every channel, the RMS of them all, and the channels' likeness and sides
+    // (the first two channels').
+    var peak = 0.0
+    var squares = 0.0
+    var ll = 0.0
+    var rr = 0.0
+    var lr = 0.0
+    var mid = 0.0
+    var side = 0.0
+    for i in 0..frames {
+        for ch in 0..c {
+            let x = f64(w.samples[i * c + ch])
+            squares += x * x
+            if abs(x) > peak {
+                peak = abs(x)
+            }
+        }
+        if c >= 2 {
+            let l = f64(w.samples[i * c])
+            let r = f64(w.samples[i * c + 1])
+            ll += l * l
+            rr += r * r
+            lr += l * r
+            mid += 0.25 * (l + r) * (l + r)
+            side += 0.25 * (l - r) * (l - r)
+        }
+    }
+    let rms = if frames > 0 { sqrt(squares / f64(frames * c)) } else { 0.0 }
+    let alike = if c >= 2 && ll > 0.0 && rr > 0.0 { lr / sqrt(ll * rr) } else { 1.0 }
+    let side_db = if c >= 2 && mid > 0.0 { db(sqrt(side / mid)) } else { -240.0 }
+    // The octaves: every spectrum's power between an octave's edges, averaged. A Hann window
+    // spreads a sine of amplitude 1 over bins whose squares sum to 1.5, and its power is a
+    // half: so a band's power is its squares' sum over 3.
+    let n = 16384
+    let plan = Plan::new(n)
+    var scratch = plan.scratch()
+    var sums = [0.0; 10]
+    var spectra = 0
+    var at = 0
+    while at + n / 2 <= mono.len() || spectra == 0 {
+        plan.transform(mono, at, mut scratch)
+        for o in 0..10 {
+            let lo = OCTAVES[o] / 1.4142135623730951
+            let hi = OCTAVES[o] * 1.4142135623730951
+            let from = max(u32(lo * f64(n) / w.rate + 0.5), 1)
+            let to = min(u32(hi * f64(n) / w.rate + 0.5), n / 2)
+            for k in from..to {
+                sums[o] += scratch.mag[k] * scratch.mag[k] / 3.0
+            }
+        }
+        spectra += 1
+        at += n / 2
+    }
+    var octaves: Vec<f64> = Vec::with_capacity(10)
+    for o in 0..10 {
+        octaves.push(db(sqrt(sums[o] / f64(spectra))))
+    }
+    // The tilt: the slope of the line through the octaves from 63 Hz to 8 kHz, by least squares.
+    var sx = 0.0
+    var sy = 0.0
+    var sxx = 0.0
+    var sxy = 0.0
+    for o in 1..9 {
+        let x = f64(o)
+        sx += x
+        sy += octaves[o]
+        sxx += x * x
+        sxy += x * octaves[o]
+    }
+    let tilt = (8.0 * sxy - sx * sy) / (8.0 * sxx - sx * sx)
+    Balance {
+        seconds: f64(frames) / w.rate,
+        lufs: loudness(w),
+        peak_db: db(peak),
+        rms_db: db(rms),
+        octaves,
+        tilt,
+        alike,
+        side_db,
+    }
+}
+
+fn rounded(xs: [f64]) -> Value {
+    var out: Vec<f64> = Vec::with_capacity(xs.len())
+    for x in xs {
+        out.push(round(x, places: 1))
+    }
+    nums(out)
+}
+
+fn said(file: str, b: Balance) -> Value {
+    obj()
+        .with("file", text(file))
+        .with("seconds", Value::Num(round(b.seconds, places: 2)))
+        .with("lufs", Value::Num(round(b.lufs, places: 1)))
+        .with("peak_db", Value::Num(round(b.peak_db, places: 1)))
+        .with("rms_db", Value::Num(round(b.rms_db, places: 1)))
+        .with("crest_db", Value::Num(round(b.peak_db - b.rms_db, places: 1)))
+        .with("octaves_hz", nums(OCTAVES))
+        .with("octaves_db", rounded(b.octaves))
+        .with("tilt_db_per_octave", Value::Num(round(b.tilt, places: 2)))
+        .with("channels_alike", Value::Num(round(b.alike, places: 3)))
+        .with("sides_db", Value::Num(round(b.side_db, places: 1)))
+}
+
+fn balance_of(a: Args, shown: str) -> Result<Balance, ToolError> {
+    let path = in_root(a.root.as_str(), shown)?
+    let w = wav::read(read_file(path.as_str(), shown)?, shown).map_err(failed)?
+    Ok(measure(w))
+}
+
+/// `balance`'s answer.
+pub fn balance_report(a: Args) -> Result<(), ToolError> {
+    let shown = a.rest[0].as_str()
+    let b = balance_of(a, shown)?
+    var answer = said(shown, b)
+    if let Some(reference) = a.against.clone() {
+        let r = balance_of(a, reference.as_str())?
+        // Each octave over the reference's, with both at the same loudness.
+        var over: Vec<f64> = Vec::with_capacity(10)
+        for o in 0..10 {
+            over.push((b.octaves[o] - b.lufs) - (r.octaves[o] - r.lufs))
+        }
+        answer = take answer.with("against", said(reference.as_str(), r))
+        answer = take answer.with("octaves_over_reference_db", rounded(over))
+    }
+    print(answer.pretty().as_str())
+    Ok(())
+}
+
+/// A stereo recording of `seconds` at 48 kHz: a sine at `hz`, `left` and `right` its amplitude
+/// in each channel.
+fn sine(hz: f64, left: f64, right: f64, seconds: f64) -> Wav {
+    let frames = u32(seconds * 48000.0)
+    var samples: Vec<f32> = Vec::with_capacity(2 * frames)
+    for i in 0..frames {
+        let x = math::sin_f64(math::TAU_F64 * hz * f64(i) / 48000.0)
+        samples.push(f32(left * x))
+        samples.push(f32(right * x))
+    }
+    Wav { samples, channels: 2, rate: 48000.0 }
+}
+
+/// BS.1770's own check: a 997 Hz sine at full scale in one channel reads -3.01 LUFS, so one at
+/// a tenth of full scale in both reads -20.
+@test
+fn a_sine_is_as_loud_as_the_standard_says_and_in_its_octave() {
+    let b = measure(sine(997.0, left: 0.1, right: 0.1, seconds: 5.0))
+    assert(
+        abs(b.lufs + 20.0) < 0.1,
+        f"a 997 Hz sine at -20 dB in both channels reads {b.lufs} LUFS",
+    )
+    let one = measure(sine(997.0, left: 1.0, right: 0.0, seconds: 5.0))
+    assert(
+        abs(one.lufs + 3.01) < 0.1,
+        f"a full-scale 997 Hz sine in one channel reads {one.lufs} LUFS",
+    )
+    // Its power is in the 1 kHz octave: -23 dB of full scale (its RMS), 40 dB over the next.
+    assert(abs(b.octaves[5] + 23.0) < 0.3, f"the 1 kHz octave holds {b.octaves[5]} dB")
+    assert(b.octaves[5] - b.octaves[4] > 40.0 && b.octaves[5] - b.octaves[6] > 40.0)
+    assert(abs(b.alike - 1.0) < 1e-6 && b.side_db < -100.0)
+    // One channel only: the sides are as loud as the middle.
+    assert(abs(one.side_db) < 0.01)
+}

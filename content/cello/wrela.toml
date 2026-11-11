@@ -1,0 +1,8 @@
+# A bowed string made three ways, each playing a line tracked from a recording, for the audio
+# tool to render and set beside the recording (`wrela tool audio -- content/cello wav <out.wav>
+# --take n`).
+[package]
+name = "cello"
+
+[dependencies]
+engine = { workspace = true }

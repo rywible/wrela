@@ -1,0 +1,661 @@
+// `track <file.wav> [--from s] [--seconds s] [--fine n] [--out <file.wrela>]`: how a recorded line of one
+// instrument was played, and what the instrument made of it, for an agent that can't hear it.
+//
+// Every 5 ms it measures:
+// - the pitch (Hz), by YIN (de Cheveigné and Kawahara, "YIN, a fundamental frequency estimator
+//   for speech and music", JASA 111(4), 2002): the lag at which the sound, less itself that much
+//   later, is least, among lags from 58 Hz to 1100 Hz, on the sound brought down to about
+//   12 kHz; and how sure that is (1: the sound repeats exactly);
+// - the level (dB of full scale, the RMS over 20 ms);
+// - where the pitch is sure, each harmonic's level: the sound's projection on a sine at each
+//   multiple of the pitch, over four periods (or 20 ms, if that's longer).
+// The pitch and the level are the player's part: what a bow did. The harmonics are the
+// instrument's answer to it.
+//
+// Then it fits the instrument as a source and a body (a string's motion, shaped by the wood it
+// drives): each harmonic's level beside the whole's is the body's response at the harmonic's
+// frequency (`BANDS` values, a sixth of an octave apart from 55 Hz, linear between), less a
+// slope by the harmonic's number (dB an octave: a bowed string's harmonics fall as their number
+// grows) that changes with the level (a harder bow is brighter). The pitch moves each harmonic
+// across the body, which is what tells the two apart. It is least squares, with the body kept
+// smooth where few harmonics fell (`--fine n` fits `n` bands to an octave instead of 6, for a
+// recording long enough to show a body's separate resonances); `fit_error_db` says how far the
+// recording's harmonics are
+// from the fit, and `noise_db` how much of the sound isn't harmonics (bow noise, the room).
+// `sixths_db` is the level of each band over the whole part, whatever its pitch: what a render
+// of the same line is set beside.
+//
+// `--out` writes the pitch, the level and the fit as Wrela constants, for an instrument to play.
+
+use dsp::{Plan, db, median, round}
+use json::{Value, nums, obj, text}
+use main::{Args, failed, in_root}
+use std::collections::Vec
+use std::io::print
+use std::math
+use std::string::String
+use std::tool::ToolError
+use std::tool::toolchain
+use toolkit::whole::{read_file, write_file}
+
+/// Seconds between measurements.
+pub const STEP: f64 = 0.005
+/// The body's bands, a sixth of an octave apart from `LOWEST` Hz (to 12.5 kHz), and the most
+/// harmonics measured.
+pub const BANDS: u32 = 48
+pub const LOWEST: f64 = 55.0
+pub const HARMONICS: u32 = 40
+/// A harmonic that wasn't measured (past 10 kHz, or the pitch unsure).
+const ABSENT: f64 = -200.0
+
+/// Band `j`'s frequency (Hz).
+pub fn band_hz(j: u32) -> f64 {
+    LOWEST * math::pow_f64(2.0, f64(j) / 6.0)
+}
+
+/// A recording, tracked: every `STEP` seconds its pitch (Hz; 0 where none is sure), how sure,
+/// its level (dB), and its harmonics' levels (dB; `HARMONICS` a step, `ABSENT` where unmeasured).
+pub struct Tracked: Clone {
+    pub rate: f64,
+    pub pitch: Vec<f64>,
+    pub sure: Vec<f64>,
+    pub level: Vec<f64>,
+    pub partials: Vec<f64>,
+}
+
+/// The fit of a source and a body to a tracked recording.
+pub struct Fit: Clone {
+    /// The body's response at each band (dB, beside the whole sound's level), and the bands
+    /// to an octave: band `j` is at `LOWEST` times 2 to the `j / per`.
+    pub body: Vec<f64>,
+    pub per: u32,
+    /// The harmonics' fall (dB an octave of harmonic number) at the middle level, and how much
+    /// less they fall for each 10 dB louder.
+    pub slope: f64,
+    pub slope_by_level: f64,
+    /// The middle level (dB): the median of the steps fitted.
+    pub level_mid: f64,
+    /// How far the recording's harmonics are from the fit (dB, RMS), over how many of them.
+    pub error: f64,
+    pub count: u32,
+    /// The share of the sound that isn't its harmonics (dB under the whole): the median.
+    pub noise_db: f64,
+}
+
+/// `x` low-passed and every `by`th sample kept: a windowed sinc of `16 by + 1` taps, its corner
+/// at 0.4 of the new rate.
+fn decimated(x: [f32], by: u32) -> Vec<f64> {
+    let half = 8 * by
+    let corner = 0.4 / f64(by)
+    var taps: Vec<f64> = Vec::with_capacity(2 * half + 1)
+    var sum = 0.0
+    for n in 0..2 * half + 1 {
+        let m = f64(n) - f64(half)
+        let sinc = if n == half { 2.0 * corner } else {
+            math::sin_f64(math::TAU_F64 * corner * m) / (math::PI_F64 * m)
+        }
+        let hann = 0.5 - 0.5 * math::cos_f64(math::TAU_F64 * f64(n) / f64(2 * half))
+        taps.push(sinc * hann)
+        sum += sinc * hann
+    }
+    let count = x.len() / by
+    var out: Vec<f64> = Vec::with_capacity(count)
+    for i in 0..count {
+        let centre = i * by
+        var s = 0.0
+        for n in 0..2 * half + 1 {
+            let k = centre + n
+            if k >= half && k - half < x.len() {
+                s += taps[n] * f64(x[k - half])
+            }
+        }
+        out.push(s / sum)
+    }
+    out
+}
+
+/// The pitch (Hz) of `y` (at `rate`) over the `w` samples from `start`, among lags `lo` to `hi`,
+/// and how sure (1 less YIN's normalized difference there).
+fn yin(y: [f64], rate: f64, start: u32, w: u32, lo: u32, hi: u32) -> (f64, f64) {
+    // The difference at each lag, then each over the mean of those up to it.
+    var norm: Vec<f64> = Vec::filled(hi + 2, value: 1.0)
+    var run = 0.0
+    for tau in 1..hi + 2 {
+        var s = 0.0
+        for j in 0..w {
+            let e = y[start + j] - y[start + j + tau]
+            s += e * e
+        }
+        run += s
+        norm[tau] = if run > 0.0 { s * f64(tau) / run } else { 1.0 }
+    }
+    // The first dip under 0.15, at its bottom; else the least of all.
+    var best = lo
+    var found = false
+    var tau = lo
+    while tau <= hi {
+        if norm[tau] < 0.15 {
+            while tau < hi && norm[tau + 1] < norm[tau] {
+                tau += 1
+            }
+            best = tau
+            found = true
+            break
+        }
+        tau += 1
+    }
+    if !found {
+        for t in lo..hi + 1 {
+            if norm[t] < norm[best] {
+                best = t
+            }
+        }
+    }
+    // The dip's bottom between lags: a parabola through it and its neighbours.
+    let (a, b, c) = (norm[best - 1], norm[best], norm[best + 1])
+    let bend = a - 2.0 * b + c
+    var shift = if bend > 0.000000000001 { 0.5 * (a - c) / bend } else { 0.0 }
+    if shift > 0.5 {
+        shift = 0.5
+    }
+    if shift < -0.5 {
+        shift = -0.5
+    }
+    (rate / (f64(best) + shift), 1.0 - b)
+}
+
+/// The level (dB) of the harmonic at `hz` in the `2 half` samples of `x` round `centre`: its
+/// projection on a sine there, under a Hann window. `centre` is at least `half` in, and
+/// `centre + half` within `x`.
+pub fn harmonic(x: [f32], rate: f64, centre: u32, hz: f64, half: u32) -> f64 {
+    let w = math::TAU_F64 * hz / rate
+    let (turn_c, turn_s) = (math::cos_f64(w), math::sin_f64(w))
+    let step = math::TAU_F64 / f64(2 * half)
+    let (win_c, win_s) = (math::cos_f64(step), math::sin_f64(step))
+    // Two phasors, turned a sample at a time: the sine's, and the window's.
+    var c = 1.0
+    var s = 0.0
+    var wc = 1.0
+    var ws = 0.0
+    var re = 0.0
+    var im = 0.0
+    var sum = 0.0
+    for n in 0..2 * half {
+        let window = 0.5 - 0.5 * wc
+        let v = f64(x[centre - half + n]) * window
+        re += v * c
+        im -= v * s
+        sum += window
+        let next = c * turn_c - s * turn_s
+        s = c * turn_s + s * turn_c
+        c = next
+        let wnext = wc * win_c - ws * win_s
+        ws = wc * win_s + ws * win_c
+        wc = wnext
+    }
+    db(2.0 * sqrt(re * re + im * im) / sum)
+}
+
+/// `mono` (at `rate`), tracked.
+pub fn track(mono: [f32], rate: f64) -> Tracked {
+    let by = max(u32(rate / 12000.0 + 0.5), 1)
+    let y = decimated(mono, by)
+    let low_rate = rate / f64(by)
+    let hop = max(u32(rate * STEP + 0.5), 1)
+    let w = u32(low_rate * 0.035)
+    let lo = max(u32(low_rate / 1100.0), 2)
+    let hi = u32(low_rate / 58.0)
+    let frames = mono.len() / hop
+    let around = u32(rate * 0.01)
+    var pitch: Vec<f64> = Vec::with_capacity(frames)
+    var sure: Vec<f64> = Vec::with_capacity(frames)
+    var level: Vec<f64> = Vec::with_capacity(frames)
+    for i in 0..frames {
+        let centre = i * hop
+        let from = if centre > around { centre - around } else { 0 }
+        let to = min(centre + around, mono.len())
+        var squares = 0.0
+        for k in from..to {
+            squares += f64(mono[k]) * f64(mono[k])
+        }
+        let l = db(sqrt(squares / f64(max(to - from, 1))))
+        level.push(l)
+        let c = centre / by
+        if c >= w / 2 && c - w / 2 + w + hi + 2 < y.len() && l > -60.0 {
+            let (hz, how) = yin(y, low_rate, c - w / 2, w, lo, hi)
+            sure.push(how)
+            pitch.push(if how > 0.8 { hz } else { 0.0 })
+        } else {
+            sure.push(0.0)
+            pitch.push(0.0)
+        }
+    }
+    // A step whose pitch is far from both its neighbours' (an octave slip) takes their middle.
+    for i in 1..frames - 1 {
+        let (a, b, c) = (pitch[i - 1], pitch[i], pitch[i + 1])
+        if a > 0.0 && b > 0.0 && c > 0.0 {
+            let near = |p: f64, q: f64| p / q < 1.2 && q / p < 1.2
+            if near(a, c) && !near(a, b) {
+                pitch[i] = 0.5 * (a + c)
+            }
+        }
+    }
+    // The harmonics, where the pitch is sure.
+    var partials: Vec<f64> = Vec::filled(frames * HARMONICS, value: ABSENT)
+    for i in 0..frames {
+        let hz = pitch[i]
+        if hz <= 0.0 {
+            continue
+        }
+        let centre = i * hop
+        let half = max(u32(2.0 * rate / hz), around)
+        if centre < half || centre + half > mono.len() {
+            continue
+        }
+        for k in 1..HARMONICS + 1 {
+            let at = hz * f64(k)
+            if at > 10000.0 || at > 0.45 * rate {
+                break
+            }
+            partials[i * HARMONICS + k - 1] = harmonic(mono, rate, centre, at, half)
+        }
+    }
+    Tracked { rate, pitch, sure, level, partials }
+}
+
+/// The level (dB of full scale) of each of the `BANDS` sixth-octave bands of `mono`, over all
+/// of it: spectra of 16384 samples, half a window apart, averaged (a Hann window spreads a
+/// sine's power over bins whose squares sum to 1.5 times its amplitude's, so a band's power is
+/// its squares' sum over 3).
+pub fn sixths(mono: [f32], rate: f64) -> Vec<f64> {
+    let n = 16384
+    let plan = Plan::new(n)
+    var scratch = plan.scratch()
+    var sums: Vec<f64> = Vec::filled(BANDS, value: 0.0)
+    var spectra = 0
+    var at = 0
+    while at + n / 2 <= mono.len() || spectra == 0 {
+        plan.transform(mono, at, mut scratch)
+        for j in 0..BANDS {
+            let centre = band_hz(j)
+            let from = max(u32(centre / 1.0594630943592953 * f64(n) / rate + 0.5), 1)
+            let to = min(u32(centre * 1.0594630943592953 * f64(n) / rate + 0.5), n / 2)
+            for k in from..max(to, from + 1) {
+                sums[j] += scratch.mag[k] * scratch.mag[k] / 3.0
+            }
+        }
+        spectra += 1
+        at += n / 2
+    }
+    var out: Vec<f64> = Vec::with_capacity(BANDS)
+    for j in 0..BANDS {
+        out.push(db(sqrt(sums[j] / f64(spectra))))
+    }
+    out
+}
+
+/// `a x = b` solved in place by elimination with pivoting (`a` is `n` by `n`, by rows): `x`.
+fn solved(a: mut Vec<f64>, b: mut Vec<f64>, n: u32) -> Vec<f64> {
+    for col in 0..n {
+        var pivot = col
+        for r in col + 1..n {
+            if abs(a[r * n + col]) > abs(a[pivot * n + col]) {
+                pivot = r
+            }
+        }
+        if pivot != col {
+            for k in 0..n {
+                let t = a[col * n + k]
+                a[col * n + k] = a[pivot * n + k]
+                a[pivot * n + k] = t
+            }
+            let t = b[col]
+            b[col] = b[pivot]
+            b[pivot] = t
+        }
+        let d = a[col * n + col]
+        if abs(d) < 0.000000000001 {
+            continue
+        }
+        for r in col + 1..n {
+            let f = a[r * n + col] / d
+            if f != 0.0 {
+                for k in col..n {
+                    a[r * n + k] -= f * a[col * n + k]
+                }
+                b[r] -= f * b[col]
+            }
+        }
+    }
+    var x: Vec<f64> = Vec::filled(n, value: 0.0)
+    var row = n
+    while row > 0 {
+        row -= 1
+        var s = b[row]
+        for k in row + 1..n {
+            s -= a[row * n + k] * x[k]
+        }
+        let d = a[row * n + row]
+        x[row] = if abs(d) < 0.000000000001 { 0.0 } else { s / d }
+    }
+    x
+}
+
+/// One harmonic's row of the fit: its band and how far to the next (its weights on two of the
+/// body's values), and the octaves of its number.
+fn placed(hz: f64, k: u32, per: u32) -> (u32, f64, f64) {
+    let bands = 8 * per
+    var p = f64(per) * math::log2_f64(hz / LOWEST)
+    if p < 0.0 {
+        p = 0.0
+    }
+    if p > f64(bands - 1) {
+        p = f64(bands - 1)
+    }
+    let j = min(u32(p), bands - 2)
+    (j, p - f64(j), math::log2_f64(f64(k)))
+}
+
+/// The source and the body that fit `t`'s harmonics best, the body in `per` bands an octave over
+/// eight octaves from `LOWEST` (6: the sixths the rest of the tool speaks in; more: its finer
+/// resonances, where the recording has enough harmonics to tell them).
+pub fn fitted(t: Tracked, per: u32) -> Fit {
+    let bands = 8 * per
+    let frames = t.pitch.len()
+    // The steps fitted: a sure pitch, and loud enough that its harmonics are over the noise.
+    var levels: Vec<f64> = Vec::new()
+    for i in 0..frames {
+        if t.pitch[i] > 0.0 && t.partials[i * HARMONICS] > ABSENT {
+            levels.push(t.level[i])
+        }
+    }
+    let level_mid = median(take levels).unwrap_or(-30.0)
+    // The unknowns: the body's bands, the slope, and the slope's change for 10 dB.
+    let n = bands + 2
+    var a: Vec<f64> = Vec::filled(n * n, value: 0.0)
+    var b: Vec<f64> = Vec::filled(n, value: 0.0)
+    var count = 0
+    var shares: Vec<f64> = Vec::new()
+    for i in 0..frames {
+        let hz = t.pitch[i]
+        if hz <= 0.0 || t.partials[i * HARMONICS] <= ABSENT {
+            continue
+        }
+        let louder = (t.level[i] - level_mid) / 10.0
+        var power = 0.0
+        for k in 1..HARMONICS + 1 {
+            let got = t.partials[i * HARMONICS + k - 1]
+            if got <= ABSENT {
+                break
+            }
+            power += 0.5 * math::pow_f64(10.0, got / 10.0)
+            // A harmonic 55 dB under the whole is the noise's, not the string's.
+            let y = got - t.level[i]
+            if y < -55.0 {
+                continue
+            }
+            let (j, u, octaves) = placed(hz * f64(k), k, per)
+            // The row: (1 - u) body[j] + u body[j + 1] - octaves slope - octaves louder change.
+            let cols = [j, j + 1, bands, bands + 1]
+            let vals = [1.0 - u, u, -octaves, -octaves * louder]
+            for p in 0..4 {
+                for q in 0..4 {
+                    a[cols[p] * n + cols[q]] += vals[p] * vals[q]
+                }
+                b[cols[p]] += vals[p] * y
+            }
+            count += 1
+        }
+        let whole = math::pow_f64(10.0, t.level[i] / 10.0)
+        if whole > 0.0 {
+            let rest = if whole > power { (whole - power) / whole } else { 0.000001 }
+            shares.push(10.0 * math::log10_f64(if rest > 0.000001 { rest } else { 0.000001 }))
+        }
+    }
+    // The body kept smooth: each band near the middle of its neighbours, as strongly as a
+    // twentieth of the harmonics a band would have if they fell evenly; and every unknown held
+    // a little toward 0, so a band no harmonic reached is still decided.
+    let smooth = 0.05 * f64(count) / f64(bands) + 0.001
+    for j in 1..bands - 1 {
+        let cols = [j - 1, j, j + 1]
+        let vals = [1.0, -2.0, 1.0]
+        for p in 0..3 {
+            for q in 0..3 {
+                a[cols[p] * n + cols[q]] += smooth * vals[p] * vals[q]
+            }
+        }
+    }
+    for k in 0..n {
+        a[k * n + k] += 0.000001 * f64(count + 1)
+    }
+    let x = solved(mut a, mut b, n)
+    // How far the harmonics are from it.
+    var squares = 0.0
+    for i in 0..frames {
+        let hz = t.pitch[i]
+        if hz <= 0.0 || t.partials[i * HARMONICS] <= ABSENT {
+            continue
+        }
+        let louder = (t.level[i] - level_mid) / 10.0
+        for k in 1..HARMONICS + 1 {
+            let got = t.partials[i * HARMONICS + k - 1]
+            if got <= ABSENT {
+                break
+            }
+            let y = got - t.level[i]
+            if y < -55.0 {
+                continue
+            }
+            let (j, u, octaves) = placed(hz * f64(k), k, per)
+            let model = (1.0 - u) * x[j] +
+                u * x[j + 1] -
+                octaves * (x[bands] + louder * x[bands + 1])
+            squares += (y - model) * (y - model)
+        }
+    }
+    var body: Vec<f64> = Vec::with_capacity(bands)
+    for j in 0..bands {
+        body.push(x[j])
+    }
+    Fit {
+        body,
+        per,
+        slope: x[bands],
+        slope_by_level: -x[bands + 1],
+        level_mid,
+        error: if count > 0 { sqrt(squares / f64(count)) } else { 0.0 },
+        count,
+        noise_db: median(take shares).unwrap_or(-60.0),
+    }
+}
+
+/// `xs`, each with `digits` decimals, ten to a row.
+fn listed(xs: [f64], digits: u32) -> String {
+    var out = String::new()
+    for i in 0..xs.len() {
+        if i > 0 {
+            out.push_str(if i % 10 == 0 { ",\n    " } else { ", " })
+        }
+        out.push_str(if digits == 1 { f"{xs[i]:.1}" } else { f"{xs[i]:.2}" })
+    }
+    out
+}
+
+/// The tracked line and its fit as Wrela constants.
+fn source(t: Tracked, f: Fit, shown: str, from: f64, seconds: f64) -> String {
+    let n = t.pitch.len()
+    var s = String::new()
+    s.push_str(
+        f"// A line as it was played, and the instrument that played it, measured by `wrela tool audio --\n",
+    )
+    s.push_str(
+        f"// track {shown} --from {from} --seconds {seconds}`. The recording's source and licence are in\n",
+    )
+    s.push_str("// docs/citations.md. Only these measurements are here: no sound of it.\n\n")
+    s.push_str("/// Seconds between the line's values.\n")
+    s.push_str(f"pub const STEP: f32 = {STEP}\n\n")
+    s.push_str("/// The pitch (Hz) at each step: 0 where no note sounded.\n")
+    s.push_str(f"pub const PITCH: [f32; {n}] = [\n    {listed(t.pitch, 2)},\n]\n\n")
+    s.push_str("/// The level (dB of full scale) at each step.\n")
+    s.push_str(f"pub const LEVEL: [f32; {n}] = [\n    {listed(t.level, 1)},\n]\n\n")
+    s.push_str(
+        f"/// The body's response (dB beside the whole sound's level) at {f.body.len()} frequencies, {f.per} to\n",
+    )
+    s.push_str(f"/// an octave from {LOWEST} Hz.\n")
+    s.push_str(f"pub const BODY_PER_OCTAVE: u32 = {f.per}\n")
+    s.push_str(f"pub const BODY: [f32; {f.body.len()}] = [\n    {listed(f.body, 2)},\n]\n\n")
+    s.push_str(
+        "/// The harmonics' fall (dB for each octave of their number) at `LEVEL_MID`, how much less they\n",
+    )
+    s.push_str(
+        "/// fall for each 10 dB louder, and the share of the sound that isn't harmonics (dB under it).\n",
+    )
+    s.push_str(f"pub const SLOPE: f32 = {f.slope:.3}\n")
+    s.push_str(f"pub const SLOPE_BY_LEVEL: f32 = {f.slope_by_level:.3}\n")
+    s.push_str(f"pub const LEVEL_MID: f32 = {f.level_mid:.2}\n")
+    s.push_str(f"pub const NOISE_DB: f32 = {f.noise_db:.2}\n")
+    s
+}
+
+/// `track`'s answer.
+pub fn track_report(a: Args) -> Result<(), ToolError> {
+    let shown = a.rest[0].as_str()
+    let path = in_root(a.root.as_str(), shown)?
+    let w = wav::read(read_file(path.as_str(), shown)?, shown).map_err(failed)?
+    let all = w.mono()
+    // The part asked for.
+    let first = min(u32(a.from * w.rate), all.len())
+    let seconds = a.seconds.unwrap_or(f64(all.len() - first) / w.rate)
+    let last = min(first + u32(seconds * w.rate), all.len())
+    var part: Vec<f32> = Vec::with_capacity(last - first)
+    for i in first..last {
+        part.push(all[i])
+    }
+    let t = track(part, w.rate)
+    let f = fitted(t, per: a.fine.unwrap_or(6))
+    // The pitch's range and middle, where it is sure.
+    var sure: Vec<f64> = Vec::new()
+    var lowest = 0.0
+    var highest = 0.0
+    for p in t.pitch {
+        if p > 0.0 {
+            if sure.is_empty() || p < lowest {
+                lowest = p
+            }
+            if p > highest {
+                highest = p
+            }
+            sure.push(p)
+        }
+    }
+    let pitched = sure.len()
+    let middle = median(take sure).unwrap_or(0.0)
+    var rounded_body: Vec<f64> = Vec::with_capacity(f.body.len())
+    for v in f.body {
+        rounded_body.push(round(v, places: 1))
+    }
+    var hz: Vec<f64> = Vec::with_capacity(f.body.len())
+    for j in 0..f.body.len() {
+        hz.push(round(LOWEST * math::pow_f64(2.0, f64(j) / f64(f.per)), places: 0))
+    }
+    var rounded_sixths: Vec<f64> = Vec::with_capacity(BANDS)
+    for v in sixths(part, w.rate) {
+        rounded_sixths.push(round(v, places: 1))
+    }
+    let answer = obj()
+        .with("file", text(shown))
+        .with("from", Value::Num(a.from))
+        .with("seconds", Value::Num(round(f64(part.len()) / w.rate, places: 2)))
+        .with("steps", Value::Int(i64(t.pitch.len())))
+        .with(
+            "pitched_share",
+            Value::Num(round(f64(pitched) / f64(max(t.pitch.len(), 1)), places: 3)),
+        )
+        .with("pitch_lowest_hz", Value::Num(round(lowest, places: 1)))
+        .with("pitch_middle_hz", Value::Num(round(middle, places: 1)))
+        .with("pitch_highest_hz", Value::Num(round(highest, places: 1)))
+        .with("level_mid_db", Value::Num(round(f.level_mid, places: 1)))
+        .with("slope_db_per_octave", Value::Num(round(f.slope, places: 2)))
+        .with("slope_less_per_10_db", Value::Num(round(f.slope_by_level, places: 2)))
+        .with("fit_error_db", Value::Num(round(f.error, places: 2)))
+        .with("harmonics_fitted", Value::Int(i64(f.count)))
+        .with("noise_db", Value::Num(round(f.noise_db, places: 1)))
+        .with("body_hz", nums(hz))
+        .with("body_db", nums(rounded_body))
+        .with("sixths_db", nums(rounded_sixths))
+    if let Some(out_shown) = a.out.clone() {
+        let out = in_root(a.root.as_str(), out_shown.as_str())?
+        let written = source(t, f, shown, a.from, f64(part.len()) / w.rate)
+        write_file(out.as_str(), Vec::from([Vec::from(written.as_bytes())])).map_err(
+            |e| ToolError::new(f"can't write {out_shown}: {e.message()}"),
+        )?
+        // As `wrela fmt` leaves it, so the file is formatted as every other is.
+        if !toolchain::fmt(Vec::from([out.clone()]), check: false).wait()?.failed.is_empty() {
+            return Err(ToolError::new("the tracked line's source doesn't parse"))
+        }
+    }
+    print(answer.pretty().as_str())
+    Ok(())
+}
+
+/// Two seconds at 48 kHz of a tone whose kth harmonic is 1/k as strong, at `hz`, swaying
+/// `cents` either way five times a second, its peak about `level`.
+fn swaying(hz: f64, cents: f64, level: f64) -> Vec<f32> {
+    var out: Vec<f32> = Vec::with_capacity(96000)
+    var phase = 0.0
+    for i in 0..96000 {
+        let sway = cents / 1200.0 * math::sin_f64(math::TAU_F64 * 5.0 * f64(i) / 48000.0)
+        phase += hz * math::pow_f64(2.0, sway) / 48000.0
+        var x = 0.0
+        for k in 1..9 {
+            x += math::sin_f64(math::TAU_F64 * phase * f64(k)) / f64(k)
+        }
+        out.push(f32(level * x))
+    }
+    out
+}
+
+@test
+fn a_swaying_tone_is_tracked_to_a_few_cents_and_its_harmonics_measured() {
+    let t = track(swaying(220.0, cents: 25.0, level: 0.1), rate: 48000.0)
+    // The middle second: every step pitched, within 4 cents of the tone as it sways.
+    var worst = 0.0
+    for i in 100..300 {
+        assert(t.pitch[i] > 0.0, f"step {i} has no pitch (sure: {t.sure[i]})")
+        let sway = 25.0 * math::sin_f64(math::TAU_F64 * 5.0 * f64(i) * STEP)
+        let off = abs(1200.0 * math::log2_f64(t.pitch[i] / 220.0) - sway)
+        if off > worst {
+            worst = off
+        }
+    }
+    assert(worst < 4.0, f"the pitch is {worst} cents off at worst")
+    // The first harmonic at the tone's level (0.1: -20 dB), the fourth a quarter of it.
+    let first = t.partials[200 * HARMONICS]
+    let fourth = t.partials[200 * HARMONICS + 3]
+    assert(abs(first + 20.0) < 0.5, f"the first harmonic is at {first} dB")
+    assert(
+        abs(first - fourth - 12.04) < 0.7,
+        f"the fourth harmonic is {first - fourth} dB under the first",
+    )
+}
+
+@test
+fn the_fit_finds_a_slope_and_a_flat_body_in_tones_made_with_them() {
+    // Two tones a fifth apart, their harmonics falling 6 dB an octave, no body: the fit's slope
+    // is 6, and its body level across the bands the harmonics reached.
+    var both = swaying(110.0, cents: 30.0, level: 0.1)
+    for x in swaying(165.0, cents: 30.0, level: 0.1) {
+        both.push(x)
+    }
+    let f = fitted(track(both, rate: 48000.0), per: 6)
+    assert(abs(f.slope - 6.02) < 0.5, f"the slope is {f.slope} dB an octave")
+    // Bands 6 to 24 are 110 Hz to 880 Hz, where the eight harmonics fell.
+    var lo = f.body[6]
+    var hi = f.body[6]
+    for j in 6..25 {
+        lo = if f.body[j] < lo { f.body[j] } else { lo }
+        hi = if f.body[j] > hi { f.body[j] } else { hi }
+    }
+    assert(hi - lo < 1.5, f"a flat body was fitted {hi - lo} dB from flat")
+    assert(f.error < 1.0, f"the fit is {f.error} dB from the tones")
+}

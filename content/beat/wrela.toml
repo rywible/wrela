@@ -1,0 +1,7 @@
+# "Slack Water": a beat played by engine::session, for the audio tool to render
+# (`wrela tool audio -- content/beat wav <out.wav>`).
+[package]
+name = "beat"
+
+[dependencies]
+engine = { workspace = true }

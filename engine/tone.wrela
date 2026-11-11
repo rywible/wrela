@@ -1,0 +1,399 @@
+// Tones: the parts every instrument's sound is built from, for code on the audio thread.
+//
+// An instrument is an exciter (a hammer, a stick, a trigger's pulse), a resonator (a string, a
+// bar, a skin, a circuit's filter) and a body, heard in a room and driven by a player (McIntyre,
+// Schumacher and Woodhouse, "On the oscillations of musical instruments", JASA 74(5), 1983). The
+// instruments (engine::drum, engine::synth, engine::tine) are these parts with their numbers:
+// - `Mode`: a resonance ringing freely, as a struck bar or skin does: a tone that dies away;
+// - `saw`, `pulse` and `triangle`: an oscillator's waves, as a circuit makes them, their steps
+//   smoothed so they alias little (PolyBLEP: Välimäki and Huovilainen, "Antialiasing oscillators
+//   in subtractive synthesis", IEEE Signal Processing Magazine 24(2), 2007);
+// - `Band` and `Svf`: a filter with a corner and a sharpness, whose low, band and high outputs
+//   come from one state (a state-variable filter by trapezoidal integration, in the form A.
+//   Simper gives it: Cytomic, "SvfLinearTrapOptimised2", 2013);
+// - `Noise`: seeded white noise;
+// - `Env`: how a note's level moves while its key is down and after;
+// - `warm`: a valve's or a tape's soft clipping.
+//
+// Everything is f32 arithmetic in a fixed order, and the noise is seeded, so both hosts give the
+// same samples.
+//
+// The smoothed sawtooth was measured against the compiler's `std::derive::filtered` (a wave
+// averaged over one sample's footprint) at 3527 Hz: a plain sawtooth's aliases were 9.9 dB under
+// its harmonics, the averaged one's 19.2 dB, and this one's 24.5 dB.
+
+use std::audio::{SAMPLE_RATE, decay_rate}
+use std::math::{PI, TAU}
+
+/// The audio thread's rate.
+const RATE: f32 = f32(SAMPLE_RATE)
+
+/// The frequency (Hz) of key `key`, in MIDI's numbering (69 is A4, at 440 Hz). A fraction of a
+/// key is a fraction of a semitone.
+@audio
+pub fn key_hz(key: f32) -> f32 {
+    440.0 * exp2((key - 69.0) / 12.0)
+}
+
+/// A level in decibels as a gain: 0 dB is 1, -6 dB about a half.
+@audio
+pub fn gain_of(db: f32) -> f32 {
+    exp(db * 0.115129255)
+}
+
+/// The decay per sample of a sound that falls 60 dB in `t60` seconds.
+@audio
+pub fn decay(t60: f32) -> f32 {
+    exp(-decay_rate(max(t60, 1e-3)))
+}
+
+/// A one-pole low-pass's coefficient for a corner at `hz`.
+@audio
+pub fn one_pole(hz: f32) -> f32 {
+    1.0 - exp(-TAU * hz / RATE)
+}
+
+/// A number in [0, 1) that depends only on its three arguments: what makes two things that
+/// should differ a little (two partials, two lines of a room) differ the same way every run.
+pub fn scatter(a: u32, b: u32, c: u32) -> f32 {
+    var h = a.wrapping_mul(0x9e3779b1) ^ b.wrapping_mul(0x85ebca77) ^ c.wrapping_mul(0xc2b2ae3d)
+    h = (h ^ (h >> 15)).wrapping_mul(0x2c1b3c6d)
+    h = (h ^ (h >> 12)).wrapping_mul(0x297a2d39)
+    h = h ^ (h >> 15)
+    f32(h >> 8) / 16777216.0
+}
+
+/// Seeded white noise: xorshift, one `u32` of state.
+pub struct Noise: Copy {
+    s: u32,
+}
+
+/// Noise seeded with `seed`: the seed scattered (so near seeds start far apart), and never 0,
+/// xorshift's one fixed point.
+@audio
+pub fn seeded(seed: u32) -> Noise {
+    Noise { s: max(seed.wrapping_mul(2654435761).wrapping_add(12345), 1) }
+}
+
+impl Noise {
+    /// The next sample, from -1 to 1.
+    @audio
+    pub fn next(mut self) -> f32 {
+        var x = self.s
+        x = x ^ (x << 13)
+        x = x ^ (x >> 17)
+        x = x ^ (x << 5)
+        self.s = x
+        f32(x >> 8) * (2.0 / 16777216.0) - 1.0
+    }
+}
+
+/// A state-variable filter (trapezoidal integration): its coefficients, for a centre and a Q.
+pub struct Band: Copy {
+    a1: f32 = 0.0,
+    a2: f32 = 0.0,
+    a3: f32 = 0.0,
+    k: f32 = 0.0,
+}
+
+/// A filter's coefficients for a corner (or a band's centre) at `hz`, `q` sharp: 0.7 is a
+/// corner with no peak, and the peak grows with it.
+@audio
+pub fn band(hz: f32, q: f32) -> Band {
+    let g = tan(PI * clamp(hz, 5.0, 0.45 * RATE) / RATE)
+    let k = 1.0 / max(q, 0.05)
+    let a1 = 1.0 / (1.0 + g * (g + k))
+    Band { a1, a2: g * a1, a3: g * g * a1, k }
+}
+
+/// A state-variable filter's state.
+pub struct Svf: Copy {
+    ic1: f32 = 0.0,
+    ic2: f32 = 0.0,
+}
+
+impl Svf {
+    /// `x` through the band: the band-pass output, at unit gain at the centre.
+    @audio
+    pub fn pass(mut self, b: Band, x: f32) -> f32 {
+        self.both(b, x).1
+    }
+
+    /// `x` through the band: the low-pass output and the band-pass output (unit gain at the
+    /// centre).
+    @audio
+    pub fn both(mut self, b: Band, x: f32) -> (f32, f32) {
+        let v3 = x - self.ic2
+        let v1 = b.a1 * self.ic1 + b.a2 * v3
+        let v2 = self.ic2 + b.a2 * self.ic1 + b.a3 * v3
+        self.ic1 = 2.0 * v1 - self.ic1
+        self.ic2 = 2.0 * v2 - self.ic2
+        (v2, b.k * v1)
+    }
+
+    /// `x` below the corner: the low-pass output.
+    @audio
+    pub fn low(mut self, b: Band, x: f32) -> f32 {
+        self.both(b, x).0
+    }
+
+    /// `x` above the corner: the high-pass output.
+    @audio
+    pub fn high(mut self, b: Band, x: f32) -> f32 {
+        let (low, mid) = self.both(b, x)
+        x - mid - low
+    }
+}
+
+/// What a naive sawtooth's step leaves too sharp, at phase `t` (0 to 1) moving `dt` a sample:
+/// the step smoothed over a sample either side (PolyBLEP).
+@audio
+fn blep(t: f32, dt: f32) -> f32 {
+    if t < dt {
+        let x = t / dt
+        return x + x - x * x - 1.0
+    }
+    if t > 1.0 - dt {
+        let x = (t - 1.0) / dt
+        return x * x + x + x + 1.0
+    }
+    0.0
+}
+
+/// A sawtooth, from -1 up to 1, at phase `t` (0 to 1) moving `dt` a sample.
+@audio
+pub fn saw(t: f32, dt: f32) -> f32 {
+    2.0 * t - 1.0 - blep(t, dt)
+}
+
+/// A pulse wave, low for `width` of its period and high for the rest, with no mean: a sawtooth
+/// less itself `width` of a period later. At a width of a half it's a square wave.
+@audio
+pub fn pulse(t: f32, dt: f32, width: f32) -> f32 {
+    saw(t, dt) - saw(fract(t + 1.0 - width), dt)
+}
+
+/// A triangle wave, from -1 to 1. Its harmonics fall fast enough that it needs no smoothing.
+@audio
+pub fn triangle(t: f32) -> f32 {
+    4.0 * abs(t - 0.5) - 1.0
+}
+
+/// A resonance ringing freely, as a struck bar, skin or tine does: a tone that turns a little
+/// each sample and dies away. Many of them are an instrument's modes.
+pub struct Mode: Copy {
+    re: f32 = 0.0,
+    im: f32 = 0.0,
+    /// One sample's turn, with its decay in it.
+    c: f32 = 1.0,
+    s: f32 = 0.0,
+}
+
+impl Mode {
+    /// Tunes it to `hz`, falling 60 dB in `t60` seconds. What already rings keeps ringing, at
+    /// the new pitch.
+    @audio
+    pub fn tune(mut self, hz: f32, t60: f32) {
+        let w = TAU * min(hz, 0.45 * RATE) / RATE
+        let r = decay(t60)
+        self.c = r * cos(w)
+        self.s = r * sin(w)
+    }
+
+    /// Strikes it `level` hard. It sounds from zero, as a sine does, so the strike itself is no
+    /// click, whatever was ringing.
+    @audio
+    pub fn strike(mut self, level: f32) {
+        self.re += level
+    }
+
+    /// Stops it at once.
+    @audio
+    pub fn still(mut self) {
+        self.re = 0.0
+        self.im = 0.0
+    }
+
+    /// The next sample.
+    @audio
+    pub fn next(mut self) -> f32 {
+        let re = self.re * self.c - self.im * self.s
+        let im = self.re * self.s + self.im * self.c
+        self.re = re
+        self.im = im
+        im
+    }
+
+    /// About how loud it rings now: its amplitude, to within √2.
+    @audio
+    pub fn level(self) -> f32 {
+        abs(self.re) + abs(self.im)
+    }
+}
+
+/// How a note's level (or a filter's opening) moves: seconds to come in, seconds to settle to
+/// `sustain` (a share of full) while the key is down, and seconds to die away once it's up.
+pub struct Shape: Copy {
+    pub attack: f32 = 0.003,
+    pub decay: f32 = 0.3,
+    pub sustain: f32 = 0.7,
+    pub release: f32 = 0.15,
+}
+
+/// A `Shape` being played: its level now, where it is, and each part's share per sample.
+pub struct Env: Copy {
+    level: f32 = 0.0,
+    /// 0 silent, 1 coming in, 2 settling or held, 3 dying away.
+    stage: u32 = 0,
+    rise: f32 = 1.0,
+    settle: f32 = 1.0,
+    sustain: f32 = 0.0,
+    die: f32 = 1.0,
+}
+
+/// How far past full an attack aims, as a capacitor charging toward a rail above its stop does:
+/// so it arrives in a finite time, still rising.
+const OVER: f32 = 1.3
+
+impl Env {
+    /// The key goes down: the level comes in from where it is (so a note struck again doesn't
+    /// click), as `shape` says.
+    @audio
+    pub fn on(mut self, shape: Shape) {
+        // The rise reaches 1 of `OVER` in `attack`; the settle and the fall are within 5% of
+        // their ends in their times.
+        self.rise = 1.0 - exp(-1.4663 / (max(shape.attack, 0.0002) * RATE))
+        self.settle = 1.0 - exp(-3.0 / (max(shape.decay, 0.001) * RATE))
+        self.die = 1.0 - exp(-3.0 / (max(shape.release, 0.001) * RATE))
+        self.sustain = shape.sustain
+        self.stage = 1
+    }
+
+    /// The key comes up.
+    @audio
+    pub fn off(mut self) {
+        if self.stage != 0 {
+            self.stage = 3
+        }
+    }
+
+    /// The next sample's level, from 0 to 1.
+    @audio
+    pub fn next(mut self) -> f32 {
+        if self.stage == 1 {
+            self.level += self.rise * (OVER - self.level)
+            if self.level >= 1.0 {
+                self.level = 1.0
+                self.stage = 2
+            }
+        } else if self.stage == 2 {
+            self.level += self.settle * (self.sustain - self.level)
+        } else if self.stage == 3 {
+            self.level -= self.die * self.level
+            if self.level < 1e-5 {
+                self.level = 0.0
+                self.stage = 0
+            }
+        }
+        self.level
+    }
+
+    /// Whether it has died away (or never sounded).
+    @audio
+    pub fn silent(self) -> bool {
+        self.stage == 0
+    }
+
+    /// Whether its key is down.
+    @audio
+    pub fn held(self) -> bool {
+        self.stage == 1 || self.stage == 2
+    }
+}
+
+/// `x` clipped softly, as a valve or a tape does it: even at a `drive` near 0, and rounding
+/// toward ±1 as `drive` grows, a small sound as loud as it went in. `lean` (0: none) pushes one
+/// side harder than the other, which adds the even harmonics a single valve does.
+@audio
+pub fn warm(x: f32, drive: f32, lean: f32 = 0.0) -> f32 {
+    let d = max(drive, 0.01)
+    (tanh(d * x + lean) - tanh(lean)) / d
+}
+
+// The tests render on the program's thread, as the audio thread would.
+
+fn db(x: f32) -> f32 {
+    10.0 * log(max(x, 1e-30)) / log(10.0)
+}
+
+@test
+fn a_mode_falls_as_its_time_says_and_starts_from_zero() {
+    var m = Mode {}
+    m.tune(hz: 440.0, t60: 0.5)
+    m.strike(1.0)
+    let first = m.next()
+    assert(abs(first) < 0.06, f"a struck mode's first sample is {first}")
+    // Its energy over 10 ms at the start, and half a second on: 60 dB less.
+    var early = first * first
+    for _ in 1..480 {
+        let y = m.next()
+        early += y * y
+    }
+    for _ in 0..u32(RATE * 0.5) - 480 {
+        let _ = m.next()
+    }
+    var late = 0.0
+    for _ in 0..480 {
+        let y = m.next()
+        late += y * y
+    }
+    let fell = db(early) - db(late)
+    assert(fell > 58.0 && fell < 62.0, f"a mode with half a second to fall 60 dB fell {fell} dB")
+}
+
+@test
+fn a_pulse_has_no_mean_and_a_square_is_even() {
+    let dt = 0.01
+    for width in [0.5, 0.25, 0.1] {
+        var sum = 0.0
+        var t = 0.0
+        for _ in 0..100 {
+            sum += pulse(t, dt, width)
+            t = fract(t + dt)
+        }
+        assert(abs(sum) < 0.05, f"a pulse {width} wide has a mean of {sum / 100.0}")
+    }
+    assert(
+        abs(pulse(0.25, dt, width: 0.5) + 1.0) < 1e-4 &&
+            abs(pulse(0.75, dt, width: 0.5) - 1.0) < 1e-4,
+    )
+}
+
+@test
+fn an_envelope_comes_in_settles_and_dies_away() {
+    var e = Env {}
+    assert(e.silent())
+    e.on(Shape { attack: 0.01, decay: 0.1, sustain: 0.5, release: 0.05 })
+    var top = 0.0
+    for _ in 0..u32(RATE * 0.012) {
+        top = max(top, e.next())
+    }
+    assert(top == 1.0, f"after its attack the envelope reached {top}")
+    for _ in 0..u32(RATE * 0.3) {
+        let _ = e.next()
+    }
+    assert(abs(e.next() - 0.5) < 0.01 && e.held())
+    e.off()
+    for _ in 0..u32(RATE * 0.3) {
+        let _ = e.next()
+    }
+    assert(e.silent() && e.next() == 0.0)
+}
+
+@test
+fn warmth_leaves_small_sounds_alone_and_bounds_loud_ones() {
+    assert(abs(warm(0.01, drive: 2.0) - 0.01) < 1e-4)
+    assert(warm(10.0, drive: 2.0) < 0.5 + 1e-4 && warm(-10.0, drive: 2.0) > -0.5 - 1e-4)
+    // A lean adds a mean a sine didn't have: the even harmonics' sign.
+    assert(abs(warm(0.5, drive: 2.0, lean: 0.5) + warm(-0.5, drive: 2.0, lean: 0.5)) > 0.01)
+}

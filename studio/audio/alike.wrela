@@ -1,0 +1,209 @@
+// `alike <file.wav> --against <reference.wav>`: how like a reference a recording of the same line
+// is, for an agent that can't hear either. The two must be the same music at the same times (a
+// render of a line tracked from the reference, say). It says:
+// - `bands_error_db`: how far apart their sixth-octave bands' levels are over the whole (RMS,
+//   from 65 Hz to 8 kHz), with both at the same overall level: the instrument's colour; and
+//   `bands_error_all_db`, the same over every band (55 Hz to 12.5 kHz), so a fizz at the top
+//   that the first leaves out still shows;
+// - `frames_error_db`: the same over each 85 ms, a 21 ms step at a time, in third-octave bands,
+//   each frame's bands beside that frame's own level, where the reference sounds (over -45 dB):
+//   how the colour moves as the line is played;
+// - `level_error_db`: how far apart their levels are, step by step (RMS): whether it is as loud
+//   where the reference is;
+// - `pitch_off_cents` and `pitch_far_share`: both tracked (`track`), where each has a sure
+//   pitch: the middle of how far the recording's pitch is from the reference's (cents), and the
+//   share of those steps where it is over 50 cents away (a wrong note, or a harmonic of the
+//   right one): whether it plays the line in tune;
+// - `over_reference_db`: each sixth-octave band's level over the reference's, to set a body by.
+
+use dsp::{Plan, db, median, round}
+use json::{Value, nums, obj, text}
+use main::{Args, failed, in_root}
+use std::collections::Vec
+use std::io::print
+use std::tool::ToolError
+use toolkit::whole::read_file
+use track::{BANDS, band_hz, sixths, track}
+use wav::Wav
+
+/// Third-octave bands: pairs of the tracker's sixths.
+const THIRDS: u32 = 24
+
+/// Each 4096-sample frame's third-octave levels (dB), a quarter of a frame apart: `THIRDS` a
+/// frame.
+fn frames(mono: [f32], rate: f64) -> Vec<f64> {
+    let n = 4096
+    let plan = Plan::new(n)
+    var scratch = plan.scratch()
+    var out: Vec<f64> = Vec::new()
+    var at = 0
+    while at + n <= mono.len() {
+        plan.transform(mono, at, mut scratch)
+        for b in 0..THIRDS {
+            let lo = band_hz(2 * b) / 1.0594630943592953
+            let hi = band_hz(2 * b + 1) * 1.0594630943592953
+            let from = max(u32(lo * f64(n) / rate + 0.5), 1)
+            let to = min(u32(hi * f64(n) / rate + 0.5), n / 2)
+            var sum = 0.0
+            for k in from..max(to, from + 1) {
+                sum += scratch.mag[k] * scratch.mag[k] / 3.0
+            }
+            out.push(db(sqrt(sum)))
+        }
+        at += n / 4
+    }
+    out
+}
+
+/// How alike `a` and its reference `r` are: the bands' error, the frames' error, the levels'
+/// error (each dB, RMS), and each band of `a` over `r`'s.
+pub fn alike(a: Wav, r: Wav) -> (f64, f64, f64, Vec<f64>) {
+    let (bands, moving, level, over, _) = alike_all(a, r)
+    (bands, moving, level, over)
+}
+
+/// `alike`, and the bands' error over every band.
+pub fn alike_all(a: Wav, r: Wav) -> (f64, f64, f64, Vec<f64>, f64) {
+    let am = a.mono()
+    let rm = r.mono()
+    let sa = sixths(am, a.rate)
+    let sr = sixths(rm, r.rate)
+    // Both at the same overall level: the bands from 65 Hz to 8 kHz (3 to 43) summed.
+    var pa = 0.0
+    var pr = 0.0
+    for j in 3..44 {
+        pa += std::math::pow_f64(10.0, sa[j] / 10.0)
+        pr += std::math::pow_f64(10.0, sr[j] / 10.0)
+    }
+    let offset = 10.0 * std::math::log10_f64(pr / pa)
+    var over: Vec<f64> = Vec::with_capacity(BANDS)
+    var squares = 0.0
+    var every = 0.0
+    for j in 0..BANDS {
+        let d = sa[j] + offset - sr[j]
+        over.push(d)
+        every += d * d
+        if j >= 3 && j < 44 {
+            squares += d * d
+        }
+    }
+    let bands_error = sqrt(squares / 41.0)
+    let bands_error_all = sqrt(every / f64(BANDS))
+    // The frames: each one's bands beside its own level, where the reference sounds.
+    let fa = frames(am, a.rate)
+    let fr = frames(rm, r.rate)
+    let count = min(fa.len(), fr.len()) / THIRDS
+    var frame_squares = 0.0
+    var frame_terms = 0
+    var level_squares = 0.0
+    var level_terms = 0
+    for i in 0..count {
+        var la = 0.0
+        var lr = 0.0
+        for b in 1..22 {
+            la += std::math::pow_f64(10.0, fa[i * THIRDS + b] / 10.0)
+            lr += std::math::pow_f64(10.0, fr[i * THIRDS + b] / 10.0)
+        }
+        let level_a = 10.0 * std::math::log10_f64(if la > 1e-30 { la } else { 1e-30 })
+        let level_r = 10.0 * std::math::log10_f64(if lr > 1e-30 { lr } else { 1e-30 })
+        if level_r < -45.0 {
+            continue
+        }
+        let d = level_a + offset - level_r
+        level_squares += d * d
+        level_terms += 1
+        for b in 1..22 {
+            // A band 50 dB under its frame is below what either can be told by.
+            let ra = fa[i * THIRDS + b] - level_a
+            let rr = fr[i * THIRDS + b] - level_r
+            let e = (if ra > -50.0 { ra } else { -50.0 }) - (if rr > -50.0 { rr } else { -50.0 })
+            frame_squares += e * e
+            frame_terms += 1
+        }
+    }
+    let frames_error = if frame_terms > 0 { sqrt(frame_squares / f64(frame_terms)) } else { 0.0 }
+    let level_error = if level_terms > 0 { sqrt(level_squares / f64(level_terms)) } else { 0.0 }
+    (bands_error, frames_error, level_error, over, bands_error_all)
+}
+
+/// How far `a`'s pitch is from `r`'s where both are sure: the middle of it (cents), and the share
+/// of those steps where it is over 50 cents away.
+pub fn in_tune(a: Wav, r: Wav) -> (f64, f64) {
+    let ta = track(a.mono(), a.rate)
+    let tr = track(r.mono(), r.rate)
+    var off: Vec<f64> = Vec::new()
+    var far = 0
+    for i in 0..min(ta.pitch.len(), tr.pitch.len()) {
+        if ta.pitch[i] > 0.0 && tr.pitch[i] > 0.0 {
+            let cents = 1200.0 * std::math::log2_f64(ta.pitch[i] / tr.pitch[i])
+            if abs(cents) > 50.0 {
+                far += 1
+            }
+            off.push(cents)
+        }
+    }
+    let count = off.len()
+    if count == 0 {
+        return (0.0, 1.0)
+    }
+    (median(take off).unwrap_or(0.0), f64(far) / f64(count))
+}
+
+/// `alike`'s answer.
+pub fn alike_report(a: Args) -> Result<(), ToolError> {
+    let shown = a.rest[0].as_str()
+    let Some(reference) = a.against.clone() else {
+        return Err(ToolError::new("alike needs --against <reference.wav>"))
+    }
+    let path = in_root(a.root.as_str(), shown)?
+    let w = wav::read(read_file(path.as_str(), shown)?, shown).map_err(failed)?
+    let ref_path = in_root(a.root.as_str(), reference.as_str())?
+    let r = wav::read(read_file(ref_path.as_str(), reference.as_str())?, reference.as_str())
+        .map_err(failed)?
+    let (cents, far) = in_tune(w, r)
+    let (bands, moving, level, over, every) = alike_all(w, r)
+    var rounded: Vec<f64> = Vec::with_capacity(BANDS)
+    for v in over {
+        rounded.push(round(v, places: 1))
+    }
+    let answer = obj()
+        .with("file", text(shown))
+        .with("against", text(reference.as_str()))
+        .with("bands_error_db", Value::Num(round(bands, places: 2)))
+        .with("bands_error_all_db", Value::Num(round(every, places: 2)))
+        .with("frames_error_db", Value::Num(round(moving, places: 2)))
+        .with("level_error_db", Value::Num(round(level, places: 2)))
+        .with("pitch_off_cents", Value::Num(round(cents, places: 1)))
+        .with("pitch_far_share", Value::Num(round(far, places: 3)))
+        .with("over_reference_db", nums(rounded))
+    print(answer.pretty().as_str())
+    Ok(())
+}
+
+/// A second at 48 kHz of two sines, `low` and `high` their amplitudes at 220 Hz and 1760 Hz.
+fn pair(low: f64, high: f64) -> Wav {
+    var samples: Vec<f32> = Vec::with_capacity(48000)
+    for i in 0..48000 {
+        let t = std::math::TAU_F64 * f64(i) / 48000.0
+        samples.push(
+            f32(low * std::math::sin_f64(220.0 * t) + high * std::math::sin_f64(1760.0 * t)),
+        )
+    }
+    Wav { samples, channels: 1, rate: 48000.0 }
+}
+
+@test
+fn a_sound_is_like_itself_at_any_level_and_unlike_a_brighter_one() {
+    let (same, moving, level, _) = alike(pair(low: 0.05, high: 0.005), pair(low: 0.1, high: 0.01))
+    assert(
+        same < 0.01 && moving < 0.01 && level < 0.01,
+        f"the same sound, quieter: {same}, {moving}, {level} dB off",
+    )
+    // Its high sine 20 dB louder: the band at 1760 Hz (band 30) is over the reference's.
+    let (bands, _, _, over) = alike(pair(low: 0.1, high: 0.1), pair(low: 0.1, high: 0.01))
+    assert(bands > 1.0, f"a brighter sound's bands are {bands} dB off")
+    assert(
+        over[30] - over[12] > 19.0 && over[30] - over[12] < 21.0,
+        f"its high band is {over[30] - over[12]} dB over",
+    )
+}

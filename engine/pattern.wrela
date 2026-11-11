@@ -1,0 +1,312 @@
+// Patterns: a drum's part as a grid of steps, and the feel any part is played with.
+//
+// A drum's part is text, read by `pattern` in a constant or as the program loads: one mark a
+// step, sixteen steps to a bar of 4/4 unless it says otherwise.
+//
+//   x... ..x. .x.. .... | x... ...x .x.. ..x.
+//
+//   x        a hit
+//   X        an accented hit
+//   o        a soft hit (a ghost note)
+//   . or -   a rest
+//   [xxx]    one step shared evenly by the marks in the brackets: a roll
+//   |        a bar line. Every bar must hold its steps.
+// Spaces are read past. A mistake panics, which a constant reports as a build error, with the
+// part, the bar and the step.
+//
+// A pattern says what is hit; a `Feel` says how it sits in time: how far the off sixteenths
+// swing, how late a part is laid behind the beat (or pushed ahead of it), and how unevenly a
+// hand plays. The same feel moves a score's notes (`swung`), so the drums and the parts written
+// in engine::score's notation lock together.
+
+use perform::{PedalPoint, Performance, Played}
+use rng::{Rng, seed}
+use score::{Meter, TICKS}
+use std::collections::Vec
+use std::string::String
+
+/// How hard each mark is struck, from 0 to 1.
+pub const ACCENT: f32 = 1.0
+pub const PLAIN: f32 = 0.72
+pub const GHOST: f32 = 0.3
+
+/// A hit as written: when (ticks from the pattern's start, `score::TICKS` to a quarter note)
+/// and how hard.
+pub struct Hit: Copy {
+    pub start: u32,
+    pub velocity: f32,
+}
+
+/// A drum's part: its hits by time, over a whole number of bars.
+pub struct Pattern: Clone {
+    pub meter: Meter,
+    pub bars: u32,
+    pub hits: Vec<Hit>,
+}
+
+/// How hard mark `c` is struck: none for a rest, and for anything that isn't a mark.
+fn mark(c: u8) -> Option<f32> {
+    if c == 88 {
+        Some(ACCENT)
+    } else if c == 120 {
+        Some(PLAIN)
+    } else if c == 111 {
+        Some(GHOST)
+    } else if c == 46 || c == 45 {
+        Some(0.0)
+    } else {
+        None
+    }
+}
+
+/// The part `lines` write (read one after another, as one text) for the drum `name`, in `meter`,
+/// with `steps` steps to a bar.
+pub fn pattern(name: Text, meter: Meter, lines: [Text], steps: u32 = 16) -> Pattern {
+    let bar = meter.bar()
+    assert(
+        steps > 0 && bar % steps == 0,
+        f"{name}: a bar of {bar} ticks doesn't divide into {steps} steps",
+    )
+    let step = bar / steps
+    var text = String::new()
+    for line in lines {
+        text.push_str(line)
+        text.push_str(" ")
+    }
+    var hits: Vec<Hit> = Vec::new()
+    var bars = 0
+    var cells = 0
+    var at = 0
+    while at < text.len() {
+        let c = text.byte(at)
+        at += 1
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            continue
+        }
+        if c == 124 {
+            // `|`
+            if cells != steps {
+                panic(f"{name}: bar {bars + 1} holds {cells} steps, but a bar has {steps}")
+            }
+            bars += 1
+            cells = 0
+            continue
+        }
+        if cells >= steps {
+            panic(f"{name}: bar {bars + 1} holds more than {steps} steps")
+        }
+        let start = bars * bar + cells * step
+        if c == 91 {
+            // `[`: the marks to `]` share this step.
+            var shared: Vec<f32> = Vec::new()
+            loop {
+                if at >= text.len() {
+                    panic(f"{name}: bar {bars + 1}, step {cells + 1}: a roll has no `]`")
+                }
+                let r = text.byte(at)
+                at += 1
+                if r == 93 {
+                    break
+                }
+                let Some(v) = mark(r) else {
+                    panic(
+                        f"{name}: bar {bars + 1}, step {cells + 1}: a roll holds only x, X, o and rests",
+                    )
+                }
+                shared.push(v)
+            }
+            if shared.is_empty() {
+                panic(f"{name}: bar {bars + 1}, step {cells + 1}: a roll holds no marks")
+            }
+            for i in 0..shared.len() {
+                if shared[i] > 0.0 {
+                    hits.push(Hit { start: start + i * step / shared.len(), velocity: shared[i] })
+                }
+            }
+        } else {
+            let Some(v) = mark(c) else {
+                panic(
+                    f"{name}: bar {bars + 1}, step {cells + 1}: this isn't x, X, o, a rest, a roll or a bar line",
+                )
+            }
+            if v > 0.0 {
+                hits.push(Hit { start, velocity: v })
+            }
+        }
+        cells += 1
+    }
+    if cells > 0 {
+        if cells != steps {
+            panic(f"{name}: bar {bars + 1} holds {cells} steps, but a bar has {steps}")
+        }
+        bars += 1
+    }
+    Pattern { meter, bars, hits }
+}
+
+/// `bars` bars of `meter` in which nothing is hit.
+pub fn tacet(meter: Meter, bars: u32) -> Pattern {
+    Pattern { meter, bars, hits: Vec::new() }
+}
+
+impl Pattern {
+    /// Ticks from its start to its end.
+    pub fn length(self) -> u32 {
+        self.bars * self.meter.bar()
+    }
+
+    /// This pattern, then `next` after it: the form, written as code.
+    pub fn then(take self, next: Pattern) -> Pattern {
+        var p = take self
+        assert(p.meter == next.meter, "a pattern joins one in its own meter")
+        let offset = p.length()
+        for h in next.hits {
+            p.hits.push(Hit { start: h.start + offset, velocity: h.velocity })
+        }
+        p.bars += next.bars
+        p
+    }
+
+    /// This pattern `n` times over.
+    pub fn times(self, n: u32) -> Pattern {
+        var p = Pattern { meter: self.meter, bars: 0, hits: Vec::new() }
+        for _ in 0..n {
+            p = take p.then(self.clone())
+        }
+        p
+    }
+}
+
+/// How a part sits in time.
+pub struct Feel: Copy {
+    /// Where the sixteenth between two eighths falls, as a share of the way from one to the
+    /// next: 0.5 is straight, 0.667 a triplet's, and a drum machine's swing is between.
+    pub swing: f32 = 0.5,
+    /// Seconds behind the beat every note is (below 0, ahead of it): a snare laid back, a
+    /// hi-hat pushed.
+    pub late: f32 = 0.0,
+    /// A hand's unevenness: the most a note is early or late (seconds), and the most its
+    /// velocity is off (a fraction). `seed` chooses them, so the same feel plays the same way.
+    pub loose: f32 = 0.0,
+    pub uneven: f32 = 0.0,
+    pub seed: u32 = 1,
+}
+
+impl Feel {
+    /// Where a point `p` of the way from an eighth to the next falls, with the swing.
+    fn swung(self, p: f64) -> f64 {
+        let s = f64(clamp(self.swing, 0.5, 0.75))
+        if p < 0.5 { p * s / 0.5 } else { s + (p - 0.5) * (1.0 - s) / 0.5 }
+    }
+
+    /// Where tick `t` falls, in quarter notes from the start, with the swing.
+    pub fn beat(self, t: u32) -> f64 {
+        let eighth = TICKS / 2
+        let p = f64(t % eighth) / f64(eighth)
+        0.5 * (f64(t / eighth) + self.swung(p))
+    }
+}
+
+/// `p` played at `tempo` (quarter notes a minute) with `feel`, each hit a note of `key`.
+pub fn struck(p: Pattern, tempo: f32, feel: Feel, key: u32 = 60) -> Vec<Played> {
+    let quarter = 60.0 / f64(tempo)
+    var rng = Rng::new(seed(feel.seed))
+    var out: Vec<Played> = Vec::with_capacity(p.hits.len())
+    for i in 0..p.hits.len() {
+        let h = p.hits[i]
+        let off = f64(feel.loose) * (2.0 * rng.next() - 1.0)
+        let onset = max(feel.beat(h.start) * quarter + f64(feel.late) + off, 0.0)
+        let velocity = clamp(h.velocity * (1.0 + feel.uneven * (2.0 * rng.unit() - 1.0)), 0.02, 1.0)
+        out.push(Played { key, voice: 0, onset, release: onset + 0.05, velocity, note: i })
+    }
+    out.sort_by(|a, b| a.onset < b.onset)
+    out
+}
+
+/// When time `t` of a performance whose beats (quarter notes) fall at `beats` sounds, with
+/// `feel`'s swing.
+fn placed(beats: Vec<f64>, t: f64, feel: Feel) -> f64 {
+    let n = beats.len()
+    if n < 2 || t <= beats[0] || t >= beats[n - 1] {
+        return t
+    }
+    // The beat `t` is in: the last that starts at or before it.
+    var lo = 0
+    var hi = n - 1
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2
+        if beats[mid] <= t {
+            lo = mid
+        } else {
+            hi = mid
+        }
+    }
+    let span = beats[lo + 1] - beats[lo]
+    let q = 2.0 * (t - beats[lo]) / span
+    let (whole, part) = if q >= 1.0 { (1.0, q - 1.0) } else { (0.0, q) }
+    beats[lo] + 0.5 * (whole + feel.swung(part)) * span
+}
+
+/// A performance with `feel`: its notes moved by the swing, the lateness and the unevenness, and
+/// its pedals moved with them. The beat must be a quarter note (a meter over 4).
+pub fn swung(p: Performance, feel: Feel) -> Performance {
+    var rng = Rng::new(seed(feel.seed))
+    var notes: Vec<Played> = Vec::with_capacity(p.notes.len())
+    for n in p.notes {
+        let off = f64(feel.late) + f64(feel.loose) * (2.0 * rng.next() - 1.0)
+        let onset = max(placed(p.beats, n.onset, feel) + off, 0.0)
+        let release = max(placed(p.beats, n.release, feel) + off, onset + 0.03)
+        let velocity = clamp(n.velocity * (1.0 + feel.uneven * (2.0 * rng.unit() - 1.0)), 0.02, 1.0)
+        notes.push(Played { onset, release, velocity, ..n })
+    }
+    notes.sort_by(|a, b| a.onset < b.onset)
+    let moved = |points: Vec<PedalPoint>| -> Vec<PedalPoint> {
+        var out: Vec<PedalPoint> = Vec::with_capacity(points.len())
+        for s in points {
+            out.push(
+                PedalPoint {
+                    at: max(placed(p.beats, s.at, feel) + f64(feel.late), 0.0),
+                    depth: s.depth,
+                },
+            )
+        }
+        take out
+    }
+    Performance {
+        notes,
+        sustain: moved(p.sustain),
+        soft: moved(p.soft),
+        beats: p.beats.clone(),
+        length: p.length + f64(max(feel.late, 0.0)),
+    }
+}
+
+@test
+fn a_pattern_reads_hits_ghosts_rolls_and_bars() {
+    let m = score::meter(beats: 4, unit: 4)
+    let p = pattern("hat", m, ["x.o. X... [xxx]... ...x | .... .... .... ...."])
+    assert(p.bars == 2 && p.hits.len() == 7)
+    assert(p.hits[0].start == 0 && p.hits[0].velocity == PLAIN)
+    assert(p.hits[1].start == 480 && p.hits[1].velocity == GHOST)
+    assert(p.hits[2].start == 960 && p.hits[2].velocity == ACCENT)
+    // A roll's three share a sixteenth: 80 ticks each.
+    assert(p.hits[3].start == 1920 && p.hits[4].start == 2000 && p.hits[5].start == 2080)
+    assert(p.hits[6].start == 3600)
+    let twice = p.times(2)
+    assert(twice.bars == 4 && twice.hits.len() == 14 && twice.hits[7].start == 2 * m.bar())
+}
+
+@test
+fn swing_moves_the_off_sixteenths_and_nothing_else() {
+    let m = score::meter(beats: 4, unit: 4)
+    let p = pattern("hat", m, ["xxxx xxxx xxxx xxxx"])
+    let straight = struck(p.clone(), tempo: 60.0, feel: Feel {})
+    let swung = struck(p, tempo: 60.0, feel: Feel { swing: 0.6 })
+    for i in 0..16 {
+        // At 60 a quarter is a second: a sixteenth a quarter of one. The eighths stay; each
+        // sixteenth between them is 0.6 of the way to the next, 0.05 s later.
+        let moved = swung[i].onset - straight[i].onset
+        let want = if i % 2 == 1 { 0.05 } else { 0.0 }
+        assert(abs(moved - want) < 1e-6, f"step {i} moved {moved} s")
+    }
+}
