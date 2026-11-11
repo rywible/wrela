@@ -280,22 +280,18 @@ pub fn chart_paint(part: u32, at: vec2, rest: vec3) -> Cloth {
     body_paint(rest)
 }
 
-/// Whether charted part `part` is cut away at a place (`at`: on its chart; `rest`: where that
-/// is on him at rest): his jacket's open front and its armholes, as his sampled jacket has
-/// them (`jacket_cover`), and its front's edge where `body_paint` has his shirt showing, so the
-/// gold along it keeps its width.
-pub fn chart_cut(part: u32, at: vec2, rest: vec3) -> bool {
-    if part != CHARTS + 1 {
-        return false
-    }
-    if jacket_cover::JACKET_COVER.covered(at.x, at.y) < 0.5 {
-        return true
-    }
-    if rest.z > 0.0 && rest.y < 1.52 && rest.y >= 0.97 {
+/// Which charted part has a cover (`jacket_cover::JACKET_COVER`: where it is on its chart): his
+/// jacket, which isn't at its open front and its armholes. A program draws nothing of that
+/// part where its cover says it isn't (`engine::chart::covered`, under a half).
+pub const COVERED: u32 = CHARTS + 1
+
+/// Whether charted part `part` is cut away at a place besides (where it is on him at rest):
+/// his jacket's front's edge where `body_paint` has his shirt showing, so the gold along it
+/// keeps its width.
+pub fn chart_cut(part: u32, rest: vec3) -> bool {
+    if part == COVERED && rest.z > 0.0 && rest.y < 1.52 && rest.y >= 0.97 {
         let t = clamp((1.50 - rest.y) / 0.50, 0.0, 1.0)
-        if abs(rest.x + 0.05 * t) - (0.040 + 0.070 * sqrt(t)) < 0.0 {
-            return true
-        }
+        return abs(rest.x + 0.05 * t) - (0.040 + 0.070 * sqrt(t)) < 0.0
     }
     false
 }

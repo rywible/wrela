@@ -11,8 +11,8 @@ use hakuro::arms::{Drape, CHARTED, arm, drape_room, draped, follow_legs, hand, j
 use hakuro::clear::fists_off_mask
 use hakuro::fingers::{FIST_CURL, curled}
 use hakuro::hakuro::{
-    CHARTS, Cloth, WIDE_CHARTS, body_paint, chart_cut, chart_paint, charts, coat, head, hero,
-    jacket_paint, wide_charts,
+    CHARTS, COVERED, Cloth, WIDE_CHARTS, body_paint, chart_cut, chart_paint, charts, coat, head,
+    hero, jacket_paint, wide_charts,
 }
 use hakuro::reference_rig::HAKURO_BONE
 use engine::character::skin_matrix
@@ -60,6 +60,8 @@ pub struct Fighters {
     charted: [[Charted; CHARTS]; FIGHTERS],
     wide: [[Limb<24, 21>; WIDE_CHARTS]; FIGHTERS],
     grids: Grids,
+    /// Where his jacket is on its chart (`hakuro::jacket_cover`), for its pixels to read.
+    cover: GpuBuffer<u32>,
 }
 
 /// A charted part's form: its radius about the line of its joints.
@@ -106,6 +108,7 @@ pub fn fighters() -> Fighters {
         drape: drape_room(FIGHTERS),
         charted: [charts_at_rest(); FIGHTERS],
         wide: [wide_at_rest(); FIGHTERS],
+        cover: hakuro::jacket_cover::JACKET_COVER.upload(),
         grids: chart::grids(),
     }
 }
@@ -301,6 +304,7 @@ impl Fighters {
                     chart_drawn(
                         p,
                         self.grids,
+                        self.cover,
                         rest[k],
                         c,
                         parts[k].band,
@@ -318,6 +322,7 @@ impl Fighters {
                     chart_drawn(
                         p,
                         self.grids,
+                        self.cover,
                         wide_rest[k],
                         c,
                         wide[k].band,
@@ -397,6 +402,7 @@ pub fn coat_vertex(
 fn chart_drawn<P: RenderPass, const A: u32, const R: u32>(
     p: P,
     grids: Grids,
+    cover: GpuBuffer<u32>,
     rest: Limb<A, R>,
     form: Limb<A, R>,
     band: Band,
@@ -417,7 +423,7 @@ fn chart_drawn<P: RenderPass, const A: u32, const R: u32>(
             level: level,
             shot: shot,
         ),
-        charted_pixel.bind(shot: shot, who: who, part: part),
+        charted_pixel.bind(cover: cover.items(), shot: shot, who: who, part: part),
         indices: grids.indices,
         first_index: span.x,
         index_count: span.y,
@@ -612,15 +618,19 @@ pub fn sampled_pixel(
 
 /// His pixel where his form is drawn along its chart (charted part `part`): its own normal,
 /// and his paint by its place on the chart and where that is on him at rest. Nothing where the
-/// part is cut away (his jacket's front and armholes).
+/// part isn't (`cover`: his jacket's front and armholes) or is cut away.
 @fragment
 pub fn charted_pixel(
     v: FighterVertex,
+    cover: [u32],
     shot: Shot,
     who: u32,
     part: u32,
 ) -> Targets3<vec4, vec4, vec4> {
-    if chart_cut(part, v.tx.xy, v.rest) {
+    if part == COVERED && chart::covered(cover, v.tx.x, v.tx.y) < 0.5 {
+        discard()
+    }
+    if chart_cut(part, v.rest) {
         discard()
     }
     painted(shot, v.world, normalize(v.normal), chart_paint(part, v.tx.xy, v.rest), who, 0)

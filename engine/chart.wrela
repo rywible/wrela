@@ -932,33 +932,45 @@ pub const COVER_WORDS: u32 = 768
 /// Where on its chart a form is: a garment's openings (a jacket's front, its armholes) are
 /// where it isn't. A bit a place, `COVER_ALONG` along the path by `COVER_ROUND` round it from
 /// angle 0, set where the form is; read between places (`covered`), so an opening's edge is
-/// smooth.
-pub struct Cover: Copy + GpuData {
+/// smooth. A pixel reads it from GPU memory (`upload`, then `covered` on the buffer's words):
+/// as a constant in a shader, its table is copied for every pixel.
+pub struct Cover: Copy {
     pub words: [u32; COVER_WORDS],
 }
 
 impl Cover {
-    /// Whether the form is at place (`i` along, `j` round, counted round the whole turn).
-    fn mark(self, i: u32, j: u32) -> f32 {
-        let k = min(i, COVER_ALONG - 1) * COVER_ROUND + j % COVER_ROUND
-        f32((self.words[k / 32] >> (k % 32)) & 1)
+    /// How much of the form is at `f` of the way along and angle `theta` (`covered`).
+    pub fn covered(self, f: f32, theta: f32) -> f32 {
+        covered(self.words, f, theta)
     }
 
-    /// How much of the form is at `f` of the way along and angle `theta`: 1 well inside it, 0
-    /// well inside an opening, and a half at an opening's edge.
-    pub fn covered(self, f: f32, theta: f32) -> f32 {
-        let x = clamp(f * f32(COVER_ALONG) - 0.5, 0.0, f32(COVER_ALONG - 1))
-        let y = fract(theta / TAU + 1.0) * f32(COVER_ROUND) - 0.5 + f32(COVER_ROUND)
-        let i = u32(x)
-        let j = u32(y)
-        let fx = x - f32(i)
-        let fy = y - f32(j)
-        mix(
-            mix(self.mark(i, j), self.mark(i + 1, j), fx),
-            mix(self.mark(i, j + 1), self.mark(i + 1, j + 1), fx),
-            fy,
-        )
+    /// Its words in GPU memory, for a pixel to read.
+    pub fn upload(self) -> GpuBuffer<u32> {
+        buffer_of(self.words)
     }
+}
+
+/// Whether a cover whose words are `words` has its form at place (`i` along, `j` round, counted
+/// round the whole turn).
+fn mark(words: [u32], i: u32, j: u32) -> f32 {
+    let k = min(i, COVER_ALONG - 1) * COVER_ROUND + j % COVER_ROUND
+    f32((words[k / 32] >> (k % 32)) & 1)
+}
+
+/// How much of a form is at `f` of the way along and angle `theta`, by its cover's words: 1
+/// well inside it, 0 well inside an opening, and a half at an opening's edge.
+pub fn covered(words: [u32], f: f32, theta: f32) -> f32 {
+    let x = clamp(f * f32(COVER_ALONG) - 0.5, 0.0, f32(COVER_ALONG - 1))
+    let y = fract(theta / TAU + 1.0) * f32(COVER_ROUND) - 0.5 + f32(COVER_ROUND)
+    let i = u32(x)
+    let j = u32(y)
+    let fx = x - f32(i)
+    let fy = y - f32(j)
+    mix(
+        mix(mark(words, i, j), mark(words, i + 1, j), fx),
+        mix(mark(words, i, j + 1), mark(words, i + 1, j + 1), fx),
+        fy,
+    )
 }
 
 /// A cover from marks: `marks[i * COVER_ROUND + j]` says whether the form is at place `i`
