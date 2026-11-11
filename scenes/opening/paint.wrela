@@ -959,8 +959,13 @@ fn sea_shade(
     // (Far from the skiff, its distance isn't needed to know it's far: skip the march. This one
     // distance serves the shadow here and the reflection below.)
     let near = if length(p - s.boat - s.boat_y * 2.0) > 9.0 { 9.0 } else { skiff(s, p) }
-    let boat_shadow = if near < 4.0 { skiff_shadow(s, p + vec3(0.0, 0.02, 0.0), l) } else { 1.0 }
-    let sun = cloud_shadow(h.clouds, cloud, smp, p) * boat_shadow
+    // (Where the clouds let no sun through, the skiff's shadow isn't marched: there's nothing for
+    // it to shade.)
+    let clouded = cloud_shadow(h.clouds, cloud, smp, p)
+    let boat_shadow = if near < 4.0 && clouded > 0.0 {
+        skiff_shadow(s, p + vec3(0.0, 0.02, 0.0), l)
+    } else { 1.0 }
+    let sun = clouded * boat_shadow
     // The reflected sky and clouds, Fresnel's share of it (water's F0, 0.02), and the sun's glint.
     var r = d - 2.0 * dot(d, n) * n
     r.y = abs(r.y)
@@ -1655,7 +1660,11 @@ fn sample(
     } else if id == SKIFF {
         n = skiff_normal(s, p)
         let (albedo, rough, seam) = skiff_material(s, p, n)
-        let sun = skiff_shadow(s, p + n * 0.01, light.sun) * cloud_shadow(clouds, cloud, smp, p)
+        // (No march of the skiff's own shadow where the clouds let no sun through.)
+        let clouded = cloud_shadow(clouds, cloud, smp, p)
+        let sun = if clouded > 0.0 { skiff_shadow(s, p + n * 0.01, light.sun) * clouded } else {
+            0.0
+        }
         let ao = skiff_ao(s, p, n)
         c = lit_solid(
             s,
