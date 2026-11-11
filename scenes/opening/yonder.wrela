@@ -11,7 +11,7 @@
 // falls move each drawing, so they're not added up here, which would smear them: the paint draws
 // them fresh, with `falls`.)
 
-use main::{OFF, RELIT, ROCK_SPARSE, SPARSE}
+use main::{OFF, RELIT, ROCK_SPARSE, SLID, SPARSE}
 use look::{GILT, GLASS, ISLE, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
 use isle::{FALLS, SCALE, bounds, isle, isle_ao, isle_material, isle_normal, isle_shadow}
 use far::far_off
@@ -971,6 +971,11 @@ const EDGE_HOLD: f32 = 12.0
 /// in four drawings, so a pixel moving 0.02 px a drawing holds the most, faster ones less.
 const EDGE_REACH: f32 = 0.25
 
+/// How near (the base-2 logarithm of the metres: under 2.9 km) a thing slides against what's
+/// behind it as the skiff sails (`yonder_rebuild`): a sea stack, not the floating rock. (As the
+/// full pass has it.)
+const SLIDES: f32 = 11.5
+
 /// The far things at the drawing's full size from a quarter met afresh (`yonder_low`): the pixel
 /// met this drawing adds it to what the drawings before met there, carried to where the camera
 /// has gone, as the full pass does; the others keep what was carried. They don't move, so it's
@@ -1028,6 +1033,45 @@ pub fn yonder_rebuild(
     let agree = kept || abs(bm.x - lm.x) < 0.25
     let off = ip - q * side - spot(yon.turn + shuffled(q))
     let mine = off.x == 0.0 && off.y == 0.0 && !kept
+    // A near stack slides against what's behind it as the skiff sails, and a pixel is met once
+    // in four drawings: left to its turn, the stack's edge is a drawing or two behind the stack
+    // on the side it's going, and trails it on the side it's left (dots of it, the pixels whose
+    // turn hasn't come, three pixels deep). But the stack doesn't move in the world, so where
+    // it was says where it is: where a pixel beside this one met a near thing this drawing and
+    // this block's own didn't, the point this pixel's ray would meet it at is carried from
+    // where the last drawing saw it. If it stood there, it stands here, and its drawing is
+    // carried with it; if it didn't, and what this block's own depth carried here was the near
+    // thing, it has gone on, and the pixel is what the block met behind it.
+    if SLID && !kept {
+        var near = 1.0e9
+        for j in 0..3 {
+            for i in 0..3 {
+                let at = clamp(q + vec2(f32(i) - 1.0, f32(j) - 1.0), vec2(0.0), lsize - vec2(1.0))
+                let nm = low_marks.load(u32(at.x), u32(at.y))
+                if nm.y != KEEP && nm.y != SKY && nm.x < SLIDES {
+                    near = min(near, nm.x)
+                }
+            }
+        }
+        let own = lm.y != SKY && abs(lm.x - near) < 0.25
+        if near < 1.0e8 && !own {
+            let stood = was_at(yon, s.eye + ray(s, ip + vec2(0.5)) * exp2(near))
+            if stood.z > 0.0 {
+                let carried = sharp(past_colour, smp, stood.xy, yon.resolution)
+                let sq = clamp(floor(stood.xy), vec2(0.0), yon.resolution - vec2(1.0))
+                let sm = past_marks.load(u32(sq.x), u32(sq.y))
+                // (An edge's pixel, part covered, may be marked sky: it's the stack's all the same.)
+                let there = carried.a > 0.02 && (sm.y == SKY || abs(sm.x - near) < 0.35)
+                if there && !mine {
+                    let sn = past_normal.sample_level(smp, stood.xy / yon.resolution)
+                    return Targets3 { first: carried, second: sm, third: sn }
+                }
+                if !there && !agree && bm.y != SKY && bm.x < SLIDES {
+                    return Targets3 { first: lc, second: lm, third: ln }
+                }
+            }
+        }
+    }
     var now = before
     var marks = bm
     var third = bn

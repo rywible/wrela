@@ -159,6 +159,11 @@ pub fn sailing() -> Shot {
                     about: "the rock and the cathedral met in the screen's pixels a few at a time, not in their own picture",
                 },
                 Switch {
+                    name: "SLID=false",
+                    sets: Vec::from([set("SLID", "false")]),
+                    about: "a near stack's edge a mean with what was carried there, not met afresh",
+                },
+                Switch {
                     name: "HALF_PAINT=false",
                     sets: Vec::from([set("HALF_PAINT", "false")]),
                     about: "every column painted, none filled from its neighbours",

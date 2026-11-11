@@ -108,6 +108,13 @@ pub const RELIT: u32 = 32
 /// (`yonder::yonder_low`, `yonder::yonder_rebuild`): a quarter of the far pass's cost.
 pub const QUARTER: bool = true
 
+/// Whether a near sea stack's edge is carried with the stack between a pixel's meetings a
+/// quarter at a time (`QUARTER`, `yonder::yonder_rebuild`): a pixel beside one that met the
+/// stack this drawing is the stack's if the stack stood where its point was a drawing ago.
+/// Off (`--set SLID=false`), each pixel waits its turn: the stack's edge lags the stack and
+/// trails dots behind it as the skiff sails.
+pub const SLID: bool = true
+
 /// The side of the blocks the far things are met sparsely in (`QUARTER`): one pixel of each
 /// block a drawing, at 1 / `SPARSE` the size each way: 2, or 4 (a quarter the cost again, but
 /// the stacks stay grainy for seconds after the camera starts).
