@@ -33,6 +33,21 @@ pub const HERO: Humanoid = humanoid::import(
     fallback: SKIN,
 )
 
+/// Quaternius's mannequin, the Universal Animation Library's own body
+/// (assets/ual1.glb.LICENSE.txt): a second body on the same bones, of other proportions. Held
+/// as a reference only (studio/forms measures a body authored from outlines against it): no
+/// game draws it.
+@fuel(2 ** 40)
+pub const MANNEQUIN: Humanoid = humanoid::import(
+    embed("assets/ual1.glb"),
+    UNREAL,
+    NO_PAINTS,
+    fallback: SKIN,
+)
+
+/// No materials' colours.
+const NO_PAINTS: [Paint; 0] = []
+
 /// Its bind pose: a T-pose.
 pub const T_POSE: Clip = humanoid::rest_clip(HERO.rig.clone())
 
