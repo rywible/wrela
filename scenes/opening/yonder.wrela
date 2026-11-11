@@ -18,12 +18,15 @@ use far::far_off
 use rock::{baked_at, march_from}
 use stacks::{march_stacks, stacks_albedo, stacks_ao, stacks_normal, stacks_shadow}
 use paint::{Heaven, aired, hazed_far, heaven, lit_solid, overhead, sphere}
-use engine::far::foot
+use engine::far::{
+    KEPT, Vista, foot, gathered, stratum, turn_index, turn_of, turn_texel, turn_texels, vista_at,
+    vista_ray,
+}
 use engine::light::{Light, sky as clear_sky}
 use engine::sky::{Clouds, cloud_shadow}
 use std::gpu::{
-    FragCoord, GlobalId, R32Float, Rg32Float, Rgba16Float, Rgba8, Sampler, Targets3, Texels3d,
-    Texture, Texture3d,
+    FragCoord, GlobalId, R32Float, Rg32Float, Rgba16Float, Rgba8, Sampler, Slots, Targets3, Texels,
+    Texels3d, Texture, Texture3d,
 }
 
 /// What the drawings before left, and where from: the camera of the last drawing (its eye, its
@@ -46,6 +49,10 @@ pub struct Yon: Copy + GpuData {
     /// and the cathedral this drawing, when they're met more sparsely than the stacks
     /// (`main::ROCK_SPARSE`).
     pub rock_turn: u32,
+    /// Whether the rock and the cathedral are the vista's (`main::VISTA`, `vista_look`): 1 once
+    /// it's laid in whole, 0 before (on a first load, or while it fades in or out), when they're
+    /// met here as ever.
+    pub vista: u32,
 }
 
 /// The side of the blocks the rock is met in by turns (`Yon::rock_turn`), in the half-size
@@ -89,6 +96,21 @@ fn sharp(t: Texture<Rgba16Float>, smp: Sampler, at: vec2, size: vec2) -> vec4 {
     r += t.sample_level(smp, vec2(p12.x, p3.y)) * (w12.x * w3.y)
     let wsum = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y
     max(r / wsum, vec4(0.0))
+}
+
+/// `sharp`, held within the four texels round `at`: the filter's lobes overshoot a hard edge,
+/// and carried from aim to aim an overshoot would grow (a stone's edge brighter than the stone,
+/// more than all of a texel covered).
+fn sharp_within(t: Texture<Rgba16Float>, smp: Sampler, at: vec2, size: vec2) -> vec4 {
+    let base = clamp(floor(at - vec2(0.5)), vec2(0.0), size - vec2(2.0))
+    var lo = vec4(1.0e9)
+    var hi = vec4(-1.0e9)
+    for k in 0..4 {
+        let texel = t.load(u32(base.x) + (k & 1), u32(base.y) + (k >> 1))
+        lo = min(lo, texel)
+        hi = max(hi, texel)
+    }
+    clamp(sharp(t, smp, at, size), lo, hi)
 }
 
 /// Where from the world point `w` the camera of `y` saw (px), and whether it saw it at all.
@@ -234,10 +256,12 @@ fn isle_shade(
     // (Its shadows likewise: none from a recess too small for a pixel to hold.)
     // (Cooked onto the rock's meshes, where they have it (`rock::Shade`): read, not marched.)
     let lift = max(2.0, t * 0.0012)
-    let shadow = if baked.x >= 0.0 { baked.x } else {
+    // (And not marched where the clouds let no sun through: there's nothing for it to shade.)
+    let clouded = mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, light.storm))
+    let shadow = if baked.x >= 0.0 { baked.x } else if clouded > 0.0 {
         isle_shadow(p + n * lift, light.sun, lift, hash2(px * 1.37))
-    }
-    let sun = shadow * mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, light.storm))
+    } else { 0.0 }
+    let sun = shadow * clouded
     let ao = if baked.y >= 0.0 { baked.y } else { isle_ao(p, n) }
     // The rock and the cathedral on it in the same air: all the air their 8 km holds, and a
     // little past it toward the sky's own colour, as a painter pushes back what's far; so the
@@ -375,8 +399,11 @@ fn stacks_shade(
     let n = stacks_normal(p, max(0.04, px * 0.6), px)
     let albedo = stacks_albedo(p, n, px)
     let lift = max(0.1, px)
-    let sun = stacks_shadow(p + n * lift, h.light.sun, px) *
-        mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, h.light.storm))
+    // (No march of the stacks' shadow where the clouds let no sun through.)
+    let clouded = mix(1.0, cloud_shadow(clouds, cloud, smp, p), mix(0.35, 1.0, h.light.storm))
+    let sun = if clouded > 0.0 { stacks_shadow(p + n * lift, h.light.sun, px) * clouded } else {
+        0.0
+    }
     let ao = stacks_ao(p, n, px)
     // (All the air between, and the farther a little past it toward the deck's own colour, as
     // the rock is pushed back: so a stack two kilometres off stands paler than one at three
@@ -438,7 +465,7 @@ pub fn yonder(
     // (By blocks of pixels (`main::RELIT`), not single pixels: a GPU runs neighbouring pixels together, and
     // a block where any one pixel meets the rock afresh waits on it.)
     let mine = (u32(px.x) / RELIT % 2) + 2 * (u32(px.y) / RELIT % 2)
-    if yon.held > 0.0 && mine != yon.turn && is.x < is.y && (OFF & 4096) == 0 {
+    if yon.held > 0.0 && mine != yon.turn && is.x < is.y && (OFF & 4096) == 0 && yon.vista == 0 {
         let was0 = was_at(yon, o + ray(s, px) * length(ISLE - o))
         if was0.z > 0.0 {
             let q0 = clamp(floor(was0.xy), vec2(0.0), yon.resolution - vec2(1.0))
@@ -452,7 +479,7 @@ pub fn yonder(
         }
     }
     let from = if yon.meshed == 1 { march_from(reach, px, s.resolution, is.x, is.y) } else { is.x }
-    if from < is.y && (OFF & 1) == 0 && !rest {
+    if from < is.y && (OFF & 1) == 0 && !rest && yon.vista == 0 {
         let ti = march_isle(field, o, d, from, is.y)
         if ti < is.y {
             t = ti
@@ -619,6 +646,7 @@ fn meet(
     field: Texture3d<R32Float>,
     reach: Texture<Rg32Float>,
     meshed: u32,
+    vista: u32,
     skip_rock: bool,
     pf: vec2,
 ) -> (vec4, vec4, vec4) {
@@ -628,7 +656,12 @@ fn meet(
     var t = far
     var id = SKY
     let is = sphere(o, d, bounds(), far)
-    let from = if meshed == 1 { march_from(reach, pf, s.resolution, is.x, is.y) } else { is.x }
+    // (Once the vista holds the rock and the cathedral (`Yon::vista`), drawn into their own
+    // picture pinned to the world (`vista_look`) and laid in after (`far_merge`): only the
+    // stacks and the far islands are met here.)
+    let from = if vista == 1 { is.y } else if meshed == 1 {
+        march_from(reach, pf, s.resolution, is.x, is.y)
+    } else { is.x }
     let k = 2.0 / (s.resolution.y * s.focal)
     // (Skipped only where no stack stands past where the rock begins: there the rock may be the
     // nearer, and it's met. The stacks met to the horizon here are the same as met to the rock.)
@@ -802,7 +835,7 @@ pub fn yonder_low(
     let block = (u32(q.x) / ROCK_BLOCK % 2) + 2 * (u32(q.y) / ROCK_BLOCK % 2)
     // (And only where the last drawing saw it: at the edge a turn brings in there's nothing to keep.)
     let seen = was_at(yon, shot.eye + ray(shot, pf) * length(ISLE - shot.eye)).z > 0.0
-    let skip = ROCK_SPARSE && yon.held > 0.0 && block != yon.rock_turn && seen
+    let skip = ROCK_SPARSE && yon.vista == 0 && yon.held > 0.0 && block != yon.rock_turn && seen
     let (now, marks, third) = meet(
         shot,
         Heaven { light, clouds, over: overhead(once) },
@@ -815,6 +848,7 @@ pub fn yonder_low(
         field,
         reach,
         yon.meshed,
+        yon.vista,
         skip,
         pf,
     )
@@ -843,7 +877,7 @@ pub fn yonder_low_flat(
     let pf = floor(pixel.position.xy) * f32(SPARSE) + vec2(0.5)
     let d = ray(shot, pf)
     let q = clamp(pf, vec2(0.0), shot.resolution - vec2(1.0))
-    let t = if yon.meshed == 1 {
+    let t = if yon.vista == 1 { 1.0e5 } else if yon.meshed == 1 {
         reach.load(u32(q.x), u32(q.y)).x
     } else { rough_isle(field, shot.eye, d) }
     if t >= 9.0e4 {
@@ -913,6 +947,17 @@ fn cooked_at(field: Texture3d<R32Float>, p: vec3) -> f32 {
 /// part in so many of its own.
 const QUARTER_HOLD: f32 = 4.0
 
+/// The least share of a solid met over what was carried as sky (`yonder_rebuild`): over a half,
+/// so the paint takes it as solid at once (`paint_at`).
+const OVER_SKY: f32 = 0.6
+
+/// The most drawings a pixel holds where what's met there jumps (`yonder_rebuild`).
+const EDGE_HOLD: f32 = 12.0
+
+/// How far (the drawing's pixels) an edge held `EDGE_HOLD` long may move over its hold: a meet
+/// in four drawings, so a pixel moving 0.02 px a drawing holds the most, faster ones less.
+const EDGE_REACH: f32 = 0.25
+
 /// The far things at the drawing's full size from a quarter met afresh (`yonder_low`): the pixel
 /// met this drawing adds it to what the drawings before met there, carried to where the camera
 /// has gone, as the full pass does; the others keep what was carried. They don't move, so it's
@@ -977,11 +1022,36 @@ pub fn yonder_rebuild(
         let had = floor(yon.held / (side * side))
         // (Not as far as what was carried: something else stands here now, and what was carried
         // is dropped, not half kept, which would leave a depth that's neither's.)
-        let k = if agree { 1.0 / min(had + 1.0, QUARTER_HOLD) } else { 1.0 }
+        // (Its colour blended in either way: a spire or a lit window thinner than the pixel is
+        // met on and off it as the offset steps, and taken whole each time it shimmered. A solid
+        // met over what was carried as sky is taken at least half: any less, the rock's edge
+        // coming in over the sky as the camera turns stays see-through, marked solid, till it's
+        // met again.)
+        // (Longer where what's met there jumps from drawing to drawing, a spire's edge or a window's
+        // opening: its share of the pixel is the mean of many; on a face, as long as the face's
+        // own detail stays still. But only as long as what it holds moves less than `EDGE_REACH`
+        // over it, the camera still: turning, an edge held long trails.)
+        let motion = length(was.xy - (ip + vec2(0.5)))
+        let edge_hold = clamp(EDGE_REACH / max(motion, 1.0e-4), QUARTER_HOLD, EDGE_HOLD)
+        // (A pixel part covered is an edge too, whichever it met this time: held alike both ways,
+        // or its share would lean to the one met as agreeing.)
+        let edgy = !agree || (before.a > 0.02 && before.a < 0.98)
+        let held_k = 1.0 / min(had + 1.0, if edgy { edge_hold } else { QUARTER_HOLD })
+        // (And the take over sky only as the camera moves: held still, the rock's own thin
+        // openings and spires are met on and off as the offset steps, their share the blend's.)
+        let over_sky = !agree && bm.y == SKY && lm.y != SKY && edge_hold < EDGE_HOLD
+        let k = if over_sky { max(held_k, OVER_SKY) } else { held_k }
         now = mix(before, lc, k)
-        let what = if lm.y != SKY { lm.y } else if now.a > 0.5 { bm.y } else { SKY }
-        marks = vec4(mix(bm.x, lm.x, k), what, mix(bm.z, lm.z, k), mix(bm.w, lm.w, k))
-        third = mix(bn, ln, k)
+        if agree {
+            let what = if lm.y != SKY { lm.y } else if now.a > 0.5 { bm.y } else { SKY }
+            marks = vec4(mix(bm.x, lm.x, k), what, mix(bm.z, lm.z, k), mix(bm.w, lm.w, k))
+            third = mix(bn, ln, k)
+        } else if lm.x < bm.x {
+            // (Not as far as what was carried: the nearer one's marks whole, not a depth that's
+            // neither's.)
+            marks = lm
+            third = ln
+        }
     } else if !agree {
         // What was carried, held to what this drawing met round it.
         var lo = vec4(1.0e9)
@@ -1112,4 +1182,382 @@ pub(package) fn falls(
         }
     }
     (acc, first)
+}
+
+// ---- the vista: the rock and the cathedral pinned to the world (`engine::far::Vista`) ---------
+//
+// Met a few looks a drawing into the screen's own pixels, a spire or a window finer than a pixel
+// flickered: each pixel was met afresh only every four to sixteen drawings, all or nothing, and
+// what was carried between had to follow every bob of the camera and couldn't be held long.
+// Here they're drawn into a picture of their own from a fixed eye, finer than the screen's
+// pixels, a band of its rows a drawing (`vista_look`), each texel the mean of its looks; and
+// each drawing reads it through its own rays (`far_merge`).
+
+/// The vista's view as a shot of the drawing's: its eye, axes and size, the drawing's light.
+pub fn vista_shot(v: Vista, shot: Shot) -> Shot {
+    Shot {
+        eye: v.eye,
+        forward: v.forward,
+        right: v.right,
+        up: v.up,
+        focal: v.focal,
+        resolution: vec2(v.size),
+        ..shot,
+    }
+}
+
+/// What the ray through `pf` (texels of the vista's shot `s`) meets of the rock and the
+/// cathedral: their light in their air and how much they cover (0 or 1); the marks (log2
+/// distance, what, line, weight), all but what premultiplied by the cover; the normal, likewise.
+fn isle_look(
+    s: Shot,
+    h: Heaven,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    field: Texture3d<R32Float>,
+    reach: Texture<Rg32Float>,
+    meshed: u32,
+    pf: vec2,
+) -> (vec4, vec4, vec4) {
+    let o = s.eye
+    let d = ray(s, pf)
+    let none = (vec4(0.0), vec4(0.0, SKY, 0.0, 0.0), vec4(0.0))
+    let is = sphere(o, d, bounds(), 1.0e5)
+    if is.x >= is.y || (OFF & 1) != 0 {
+        return none
+    }
+    let from = if meshed == 1 { march_from(reach, pf, s.resolution, is.x, is.y) } else { is.x }
+    if from >= is.y {
+        return none
+    }
+    let t = march_isle(field, o, d, from, is.y)
+    if t >= is.y {
+        return none
+    }
+    let id = isle(o + d * t).y
+    let (c, l, w, n) = isle_shade(
+        s,
+        h,
+        clouds,
+        view,
+        aerial,
+        dome,
+        cloud,
+        smp,
+        o + d * t,
+        d,
+        t,
+        id,
+        pf,
+        if meshed == 1 { baked_at(reach, pf, s.resolution, t) } else { vec2(-1.0) },
+    )
+    (vec4(c, 1.0), vec4(log2(t), id, l, w), vec4(n, 1.0))
+}
+
+/// The vista's texels whose turn of `period` this drawing's is (`engine::far::turn_texel`, the
+/// `id`th of them) looked at once more: each one's next look, at its own place in it (`stratum`,
+/// by how many times the vista has been looked at whole, `seq`: not by its count, which stops at
+/// `KEPT` and would put every look after on one spot), added to the mean of those before
+/// (`held_*`, the count in the normal's w), into slots of their own (`vista_lay` lays them in).
+/// A kernel over those texels alone: drawn as a pass, a pixel's work runs in fours, and each
+/// texel's three neighbours, not their turn, would be shaded with it.
+@compute(64)
+pub fn vista_look(
+    shot: Shot,
+    light: Light,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    field: Texture3d<R32Float>,
+    reach: Texture<Rg32Float>,
+    meshed: u32,
+    held_colour: Texture<Rgba16Float>,
+    held_marks: Texture<Rgba16Float>,
+    held_normal: Texture<Rgba16Float>,
+    seq: u32,
+    side: u32,
+    turn: u32,
+    period: u32,
+    kept: f32,
+    once: [vec4],
+    colour: mut Slots<vec4>,
+    marks: mut Slots<vec4>,
+    normal: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= turn_texels(side, period) {
+        return
+    }
+    let q = turn_texel(id.x, side, turn, period)
+    let (x, y) = (u32(q.x), u32(q.y))
+    let oc = held_colour.load(x, y)
+    let om = held_marks.load(x, y)
+    let on = held_normal.load(x, y)
+    // (Held as at most `kept` looks: fewer while the light is changing, so the new light comes
+    // in within a few sweeps, not the half minute all `KEPT` would take.)
+    let n = min(on.w, kept - 1.0)
+    let (c, m, nn) = isle_look(
+        shot,
+        Heaven { light, clouds, over: overhead(once) },
+        clouds,
+        view,
+        aerial,
+        dome,
+        cloud,
+        smp,
+        field,
+        reach,
+        meshed,
+        stratum(f32(seq), q),
+    )
+    let k = 1.0 / min(n + 1.0, KEPT)
+    let what = if n > 0.0 && om.y > SKY + 0.5 { om.y } else { m.y }
+    colour[id] = gathered(oc, c, n)
+    marks[id] = vec4(mix(om.x, m.x, k), what, mix(om.z, m.z, k), mix(om.w, m.w, k))
+    normal[id] = vec4(mix(on.xyz, nn.xyz, k), min(n + 1.0, KEPT))
+}
+
+/// The looks `vista_look` took this drawing laid into the vista, each at its texel: a kernel
+/// over the whole vista, the texels not of this turn left as they are.
+@compute(8, 8)
+pub fn vista_lay(
+    colour: [vec4],
+    marks: [vec4],
+    normal: [vec4],
+    side: u32,
+    turn: u32,
+    period: u32,
+    out_colour: mut Texels<Rgba16Float>,
+    out_marks: mut Texels<Rgba16Float>,
+    out_normal: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
+    let q = vec2(f32(id.x), f32(id.y))
+    if id.x >= side || id.y >= side || turn_of(q, period) != turn {
+        return
+    }
+    let i = turn_index(q, side, turn, period)
+    out_colour.store(id, colour[i])
+    out_marks.store(id, marks[i])
+    out_normal.store(id, normal[i])
+}
+
+/// How many looks a texel carried to a vista aimed afresh counts as (`vista_carry`): enough
+/// that the next looks don't jump it, few enough that they soon outweigh it. What's carried is
+/// read between the old texels, a little softer each time, and where the depth read through
+/// was off, a little wrong; held as all `KEPT`, a re-aim every ten seconds or so at a run
+/// would carry that on and on.
+const CARRIED: f32 = 8.0
+
+/// The vista aimed afresh from the eye's new place (`now`), each texel what the old one (`was`)
+/// held where the ray meets the thing (through the depth it held), so it doesn't start empty.
+@fragment
+pub fn vista_carry(
+    pixel: FragCoord,
+    now: Vista,
+    was: Vista,
+    smp: Sampler,
+    colour: Texture<Rgba16Float>,
+    marks: Texture<Rgba16Float>,
+    normal: Texture<Rgba16Float>,
+) -> Targets3<vec4, vec4, vec4> {
+    let d = vista_ray(now, floor(pixel.position.xy) + vec2(0.5))
+    let (at, _) = vista_where(was, colour, marks, smp, now.eye, d)
+    if at.z < 0.5 {
+        return Targets3 { first: vec4(0.0), second: vec4(0.0, SKY, 0.0, 0.0), third: vec4(0.0) }
+    }
+    // (Carried to a coarser vista: read over the new texel's footprint, as a pixel reads it, so
+    // the texels between its reads aren't skipped.)
+    if now.size < was.size {
+        let px = floor(pixel.position.xy) + vec2(0.5)
+        let dx = vista_ray(now, px + vec2(0.25, 0.0)) - d
+        let dy = vista_ray(now, px + vec2(0.0, 0.25)) - d
+        let (c, m, n, _) = vista_read(was, colour, marks, normal, smp, now.eye, d, dx, dy)
+        return Targets3 {
+            first: c,
+            second: m,
+            third: vec4(n.xyz, min(n.w, CARRIED)),
+        }
+    }
+    // (Else through a Catmull-Rom filter, not bilinear: a bilinear read halfway between texels
+    // blurs them, and each re-aim would blur the vista more.)
+    let size = vec2(was.size)
+    let c = sharp_within(colour, smp, at.xy, size)
+    let m = sharp_within(marks, smp, at.xy, size)
+    let n = sharp_within(normal, smp, at.xy, size)
+    Targets3 {
+        first: c,
+        second: vec4(m.x, vista_what(was, colour, marks, at.xy), m.z, m.w),
+        third: vec4(n.xyz, min(n.w, CARRIED)),
+    }
+}
+
+/// Where in vista `v` the ray from `o` along `d` meets its thing (texels; z, whether it's in
+/// the vista), and how far: where the thing's middle would be, then again where the depth the
+/// vista holds there puts it.
+fn vista_where(
+    v: Vista,
+    colour: Texture<Rgba16Float>,
+    marks: Texture<Rgba16Float>,
+    smp: Sampler,
+    o: vec3,
+    d: vec3,
+) -> (vec3, f32) {
+    var depth = v.depth
+    var at = vista_at(v, o + d * depth)
+    if at.z < 0.5 {
+        return (at, depth)
+    }
+    let c0 = colour.sample_level(smp, at.xy / v.size)
+    if c0.a > 0.004 {
+        let m0 = marks.sample_level(smp, at.xy / v.size)
+        let held = exp2(m0.x / c0.a)
+        let again = vista_at(v, o + d * held)
+        if again.z > 0.5 {
+            at = again
+            depth = held
+        }
+    }
+    (at, depth)
+}
+
+/// What the most covered of the four texels round `at` (texels) is, `SKY` where none is
+/// covered; of two as covered, the nearer `at`: by the order they're read, the id at a stone's
+/// edge would jump a texel as the camera bobs.
+fn vista_what(
+    v: Vista,
+    colour: Texture<Rgba16Float>,
+    marks: Texture<Rgba16Float>,
+    at: vec2,
+) -> f32 {
+    let base = clamp(floor(at - vec2(0.5)), vec2(0.0), vec2(v.size - 2.0))
+    let f = clamp(at - vec2(0.5) - base, vec2(0.0), vec2(1.0))
+    var what = SKY
+    var most = 0.0
+    for k in 0..4 {
+        let (x, y) = (u32(base.x) + (k & 1), u32(base.y) + (k >> 1))
+        let a = colour.load(x, y).a
+        let w = (if (k & 1) == 1 { f.x } else { 1.0 - f.x }) * (if (k >> 1) == 1 { f.y } else {
+            1.0 - f.y
+        })
+        let score = a + 0.01 * w
+        if a > 0.004 && score > most {
+            most = score
+            what = marks.load(x, y).y
+        }
+    }
+    what
+}
+
+/// What vista `v` holds where the ray from `o` along `d` meets its thing: read where the depth
+/// it holds there puts it (premultiplied colour and cover, marks, normal and count), and what
+/// it is (`SKY` where nothing). Read over the pixel, not at a point: four bilinear reads a
+/// quarter of a pixel each way of the ray (`dx`, `dy`: the rays that far off it, less `d`; 0
+/// for one read). One bilinear read at the pixel's middle sharpens and softens the thing as the
+/// pixel's middle crosses the texels, and the eye sees that pulse as a shimmer.
+fn vista_read(
+    v: Vista,
+    colour: Texture<Rgba16Float>,
+    marks: Texture<Rgba16Float>,
+    normal: Texture<Rgba16Float>,
+    smp: Sampler,
+    o: vec3,
+    d: vec3,
+    dx: vec3,
+    dy: vec3,
+) -> (vec4, vec4, vec4, f32) {
+    let (at, depth) = vista_where(v, colour, marks, smp, o, d)
+    if at.z < 0.5 {
+        return (vec4(0.0), vec4(0.0, SKY, 0.0, 0.0), vec4(0.0), SKY)
+    }
+    let ax = vista_at(v, o + (d + dx) * depth).xy - at.xy
+    let ay = vista_at(v, o + (d + dy) * depth).xy - at.xy
+    var c = vec4(0.0)
+    var m = vec4(0.0)
+    var n = vec4(0.0)
+    for k in 0..4 {
+        let sx = f32(k & 1) * 2.0 - 1.0
+        let sy = f32(k >> 1) * 2.0 - 1.0
+        let uv = (at.xy + ax * sx + ay * sy) / v.size
+        c += colour.sample_level(smp, uv) * 0.25
+        m += marks.sample_level(smp, uv) * 0.25
+        n += normal.sample_level(smp, uv) * 0.25
+    }
+    let what = vista_what(v, colour, marks, at.xy)
+    (c, vec4(m.x, what, m.z, m.w), n, what)
+}
+
+/// How near (m) what the far pass meets must be to stand in front of the vista while it fades.
+const NEARER: f32 = 2500.0
+
+/// The far layer the paint reads: the stacks and the far islands as this pass met them
+/// (`yon_*`), and the rock and the cathedral as the vista holds them, the nearer over the
+/// farther. The marks and normal are the one that covers more of the pixel's. (`shot` the
+/// jittered one: the vista is read where this drawing's ray goes.)
+@fragment
+pub fn far_merge(
+    pixel: FragCoord,
+    shot: Shot,
+    vista: Vista,
+    shown: f32,
+    smp: Sampler,
+    yon_colour: Texture<Rgba16Float>,
+    yon_marks: Texture<Rgba16Float>,
+    yon_normal: Texture<Rgba8>,
+    vista_colour: Texture<Rgba16Float>,
+    vista_marks: Texture<Rgba16Float>,
+    vista_normal: Texture<Rgba16Float>,
+) -> Targets3<vec4, vec4, vec4> {
+    let (x, y) = (u32(pixel.position.x), u32(pixel.position.y))
+    let fc = yon_colour.load(x, y)
+    let fm = yon_marks.load(x, y)
+    let fnn = yon_normal.load(x, y)
+    let d = ray(shot, pixel.position.xy)
+    let (vc, vm, vn, _) = vista_read(
+        vista,
+        vista_colour,
+        vista_marks,
+        vista_normal,
+        smp,
+        shot.eye,
+        d,
+        ray(shot, pixel.position.xy + vec2(0.25, 0.0)) - d,
+        ray(shot, pixel.position.xy + vec2(0.0, 0.25)) - d,
+    )
+    // (As much of it as is shown: faded in over what the far pass meets as it's laid in, and out
+    // as it's put by, not swapped in a drawing.)
+    let vc = vc * shown
+    let vm = vec4(vm.x * shown, vm.y, vm.z * shown, vm.w * shown)
+    if vc.a <= 0.004 {
+        return Targets3 { first: fc, second: fm, third: fnn }
+    }
+    let a = vc.a
+    let vmarks = vec4(vm.x / a, vm.y, vm.z / a, vm.w / a)
+    // (While it fades in or out the far pass still meets the rock too: two of the same surface,
+    // and whichever came out a little nearer would win, the vista not fading in there but
+    // popping at the end. So till it's all in, only what's well nearer than the rock (a stack)
+    // is in front of it.)
+    let near = fc.a > 0.0 && fm.x < vmarks.x && (shown >= 1.0 || exp2(fm.x) < NEARER)
+    let c = if near { fc + vc * (1.0 - fc.a) } else { vc + fc * (1.0 - a) }
+    let mine = if near { a * (1.0 - fc.a) } else { a }
+    let theirs = if near { fc.a } else { fc.a * (1.0 - a) }
+    // (The normal's w, how much of what's laid in is the vista's: read through the jittered ray,
+    // unlike the far pass's, which its own drawings settle at the pixel's middle. The paint passes
+    // it on to the upscaler (`engine::upscale`), whose jitter gathers the vista's edges over the
+    // frames as it does the sea's.)
+    let jittered = mine / max(mine + theirs, 1.0e-4)
+    if mine >= theirs {
+        Targets3 {
+            first: c,
+            second: vmarks,
+            third: vec4(normalize(vn.xyz + vec3(0.0, 1.0e-6, 0.0)) * 0.5 + 0.5, jittered),
+        }
+    } else { Targets3 { first: c, second: fm, third: vec4(fnn.xyz, jittered) } }
 }

@@ -5,7 +5,7 @@
 // (`engine::light::hazed`). Beside the colour it writes what the ink reads: how far, what it is,
 // a line field, the line's weight, the normal and the moment's energy.
 
-use main::{FREEBOARD, HERO, LOOK, LOW_CLOUD, MIRROR_TABLE, OFF}
+use main::{FREEBOARD, HERO, LOOK, LOW_CLOUD, OFF}
 use look::{
     STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot,
     band, cells, hash2, luma, fbm, noise, ray,
@@ -21,9 +21,9 @@ use engine::far::foot
 use engine::light::{Light, Lit, gloss, hazed, matte, sun_disc, world}
 use engine::air::aerial_uvw
 use engine::light::sky as clear_sky
-use engine::sky::{Clouds, SKY_H, SKY_W, cloud_shadow, sky_dir, sky_uv, stormy_air}
+use engine::sky::{Clouds, cloud_shadow, sky_uv, stormy_air}
 use std::gpu::{
-    FragCoord, GlobalId, Rgba16Float, Rgba8, Sampler, Slots, Targets3, Texels, Texture, Texture3d,
+    FragCoord, GlobalId, Rgba16Float, Rgba8, Sampler, Slots, Targets3, Texture, Texture3d,
 }
 use weather::horizon_air
 use std::math::PI
@@ -299,41 +299,6 @@ fn mirrored_sky(
         under_the_far_deck(view, light, d, dome, smp, over)
     }
     into_the_air(vec4(mix(clear, cloudy, lost), 1.0), view, light, d, dome, smp, over).rgb
-}
-
-/// The sky as the water mirrors it (`mirrored_sky`'s) along every direction over the horizon,
-/// worked out once a drawing into a table laid out as the dome is (`sky_uv`), not again for each
-/// of a sea pixel's facets: `wrela pipelines` lists `mirrored_sky` among the calls a table could
-/// answer (four a sea pixel, each a function of its direction alone). A quarter of the dome's
-/// size each way: the facets' spread blurs the mirror more than that.
-pub const MIRROR_W: u32 = SKY_W / 4
-pub const MIRROR_H: u32 = SKY_H / 4
-
-/// The mirror table's texels (`MIRROR_W` by `MIRROR_H`) in rows `row0` to `row0 + rows`:
-/// `mirrored_sky` along each one's direction (`sky_dir`), under the drawing's `light` and its
-/// sky's colours (`once`).
-@compute(8, 8)
-pub fn cook_mirror(
-    view: Texture<Rgba16Float>,
-    light: Light,
-    dome: Texture<Rgba16Float>,
-    smp: Sampler,
-    once: [vec4],
-    row0: u32,
-    rows: u32,
-    out: mut Texels<Rgba16Float>,
-    id: GlobalId,
-) {
-    if id.x >= MIRROR_W || id.y < row0 || id.y >= min(row0 + rows, MIRROR_H) {
-        return
-    }
-    let uv = (vec2(f32(id.x), f32(id.y)) + 0.5) / vec2(f32(MIRROR_W), f32(MIRROR_H))
-    out.store(id, vec4(mirrored_sky(view, light, sky_dir(uv), dome, smp, overhead(once)), 1.0))
-}
-
-/// The sky the water mirrors along `d` (over the horizon), from the table (`cook_mirror`).
-fn mirror_along(table: Texture<Rgba16Float>, smp: Sampler, d: vec3) -> vec3 {
-    table.sample_level(smp, sky_uv(d)).rgb
 }
 
 /// Where the ray from `o` along `d` meets the sea (`d` going down), or `far`. Near, found on the
@@ -913,7 +878,6 @@ fn sea_shade(
     view: Texture<Rgba16Float>,
     aerial: Texture3d<Rgba16Float>,
     dome: Texture<Rgba16Float>,
-    mirror: Texture<Rgba16Float>,
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     waves: Waves,
@@ -957,8 +921,13 @@ fn sea_shade(
     // (Far from the skiff, its distance isn't needed to know it's far: skip the march. This one
     // distance serves the shadow here and the reflection below.)
     let near = if length(p - s.boat - s.boat_y * 2.0) > 9.0 { 9.0 } else { skiff(s, p) }
-    let boat_shadow = if near < 4.0 { skiff_shadow(s, p + vec3(0.0, 0.02, 0.0), l) } else { 1.0 }
-    let sun = cloud_shadow(h.clouds, cloud, smp, p) * boat_shadow
+    // (Where the clouds let no sun through, the skiff's shadow isn't marched: there's nothing for
+    // it to shade.)
+    let clouded = cloud_shadow(h.clouds, cloud, smp, p)
+    let boat_shadow = if near < 4.0 && clouded > 0.0 {
+        skiff_shadow(s, p + vec3(0.0, 0.02, 0.0), l)
+    } else { 1.0 }
+    let sun = clouded * boat_shadow
     // The reflected sky and clouds, Fresnel's share of it (water's F0, 0.02), and the sun's glint.
     var r = d - 2.0 * dot(d, n) * n
     r.y = abs(r.y)
@@ -995,10 +964,7 @@ fn sea_shade(
         let rk = vec3(ak.x * cos(e), sin(e), ak.y * cos(e))
         let facing = sqrt(max((1.0 + dot(-d, rk)) * 0.5, 0.0))
         let f = 0.02 + 0.98 * pow(1.0 - facing, 5.0)
-        let sky_k = if MIRROR_TABLE { mirror_along(mirror, smp, rk) } else {
-            mirrored_sky(view, h.light, rk, dome, smp, h.over)
-        }
-        mirrored += sky_k * w * f
+        mirrored += mirrored_sky(view, h.light, rk, dome, smp, h.over) * w * f
         fresnel += w * f
         seen += w
     }
@@ -1050,12 +1016,14 @@ fn sea_shade(
         // stands on the sea, so it sits in it rather than over it.)
         mirrored *= mix(0.45, 1.0, smoothstep(0.02, 0.4, near_hull))
     }
-    // (Over `LOST_HIGH` and `STORM_LOW` as it is, the mirror's sky is the sky's own: the table's.)
-    let spread = if MIRROR_TABLE {
-        mirror_along(mirror, smp, normalize(r + vec3(0.0, 0.5, 0.0)))
-    } else {
-        storm_sky(view, h.light, normalize(r + vec3(0.0, 0.5, 0.0)), dome, smp, disc: false).rgb
-    }
+    let spread = storm_sky(
+        view,
+        h.light,
+        normalize(r + vec3(0.0, 0.5, 0.0)),
+        dome,
+        smp,
+        disc: false,
+    ).rgb
     let reflected = mix(
         mirrored,
         spread,
@@ -1522,7 +1490,6 @@ fn sample(
     view: Texture<Rgba16Float>,
     aerial: Texture3d<Rgba16Float>,
     dome: Texture<Rgba16Float>,
-    mirror: Texture<Rgba16Float>,
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     waves: Waves,
@@ -1530,7 +1497,7 @@ fn sample(
     yon_marks: Texture<Rgba16Float>,
     yon_normal: Texture<Rgba8>,
     px: vec2,
-) -> (vec3, vec4, vec4) {
+) -> (vec4, vec4, vec4) {
     let h = Heaven { light, clouds, over }
     let d = ray(s, px)
     let o = s.eye
@@ -1577,7 +1544,6 @@ fn sample(
             view,
             aerial,
             dome,
-            mirror,
             cloud,
             smp,
             waves,
@@ -1595,7 +1561,11 @@ fn sample(
     } else if id == SKIFF {
         n = skiff_normal(s, p)
         let (albedo, rough, seam) = skiff_material(s, p, n)
-        let sun = skiff_shadow(s, p + n * 0.01, light.sun) * cloud_shadow(clouds, cloud, smp, p)
+        // (No march of the skiff's own shadow where the clouds let no sun through.)
+        let clouded = cloud_shadow(clouds, cloud, smp, p)
+        let sun = if clouded > 0.0 { skiff_shadow(s, p + n * 0.01, light.sun) * clouded } else {
+            0.0
+        }
         let ao = skiff_ao(s, p, n)
         c = lit_solid(
             s,
@@ -1651,18 +1621,27 @@ fn sample(
     }
     // The rock, the cathedral and their falls, met in a pass of their own (`yonder`), over what
     // this ray met behind them: unless what it met is nearer.
+    // (How much of the pixel is the far pass's own, which its drawings settled at the pixel's
+    // middle, not met through this drawing's jittered ray (the vista's is: the far layer's
+    // normal's w): for the upscaler, in the colour's alpha. And how much of the sky is still
+    // open behind it, for the cathedral's shine.)
+    var settled = 0.0
+    var open = if id == SKY { 1.0 } else { 0.0 }
     let q = clamp(floor(px), vec2(0.0), s.resolution - vec2(1.0))
     let fc = yon_colour.load(u32(q.x), u32(q.y))
     if fc.a > 0.0 {
         let fm = yon_marks.load(u32(q.x), u32(q.y))
         if id == SKY || exp2(fm.x) < t {
             c = c * (1.0 - fc.a) + fc.rgb
+            let fn_ = yon_normal.load(u32(q.x), u32(q.y))
+            settled = fc.a * (1.0 - fn_.w)
+            open *= 1.0 - fc.a
             if fc.a > 0.5 {
                 t = exp2(fm.x)
                 id = fm.y
                 line = fm.z
                 weight = fm.w
-                n = yon_normal.load(u32(q.x), u32(q.y)).xyz * 2.0 - 1.0
+                n = fn_.xyz * 2.0 - 1.0
             }
         }
     }
@@ -1671,15 +1650,18 @@ fn sample(
         (vec4(0.0), t)
     }
     c = c * (1.0 - fall.a) + fall.rgb
+    settled *= 1.0 - fall.a
     // (Its drops lit by the deck's light from above, and the sun through them toward it.)
     let toward = pow(max(dot(d, light.sun), 0.0), 6.0)
     let drops_lit = light.sun_colour * (0.9 + 9.0 * toward) +
         vec3(0.22, 0.25, 0.29) * mix(1.0, 1.6, light.storm)
     let thrown = if (OFF & 128) == 0 { spray(s, drops_lit, o, d, t) } else { vec4(0.0) }
     c = c * (1.0 - thrown.a) + thrown.rgb
+    settled *= 1.0 - thrown.a
     if s.lantern > 0.5 {
         let beam = beams(s, h, aerial, smp, o, d, t)
         c = c * (1.0 - beam.a) + beam.rgb
+        settled *= 1.0 - beam.a
     }
     let gull = birds(s, px)
     if gull.y < t {
@@ -1690,12 +1672,18 @@ fn sample(
     // Behind the spires it's strongest: they stand dark-edged and gilt against it.
     if id != SKIFF && t > 400.0 {
         let k = max(dot(d, s.glow), 0.0)
-        let over = if id == SKY { 1.0 } else { 0.0 }
+        // (As much as the sky's still open behind the far layer: all or nothing, the shine would
+        // blink on and off along the spires' edges as they cross half a pixel.)
+        let over = open
         c += light.sun_colour * vec3(1.0, 0.8, 0.5) * (0.05 * pow(k, 250.0) + (if LOOK > 2.5 {
             0.0
         } else { 0.85 }) * pow(k, 1400.0)) * over
     }
-    (c, vec4(log2(max(t, 0.01)), id, line, weight), vec4(n * 0.5 + 0.5, clamp(energy, 0.0, 1.0)))
+    (
+        vec4(c, 1.0 - settled),
+        vec4(log2(max(t, 0.01)), id, line, weight),
+        vec4(n * 0.5 + 0.5, clamp(energy, 0.0, 1.0)),
+    )
 }
 
 /// Four places in a pixel, on a turned grid: each its own row and column.
@@ -1711,7 +1699,6 @@ fn paint_at(
     view: Texture<Rgba16Float>,
     aerial: Texture3d<Rgba16Float>,
     dome: Texture<Rgba16Float>,
-    mirror: Texture<Rgba16Float>,
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     waves: Waves,
@@ -1733,10 +1720,10 @@ fn paint_at(
     let boat_k = if dot(to_boat, d) > 0.0 { smoothstep(3.8, 2.9, pass) } else { 0.0 }
     // (One call of `sample` in one loop, met once or four times: written twice, the shader
     // would be over what a browser compiles as it loads.)
-    var c = vec3(0.0)
+    var c = vec4(0.0)
     var marks = vec4(0.0)
     var third = vec4(0.0)
-    var sum = vec3(0.0)
+    var sum = vec4(0.0)
     var weight = 0.0
     var count = 1
     var i = 0
@@ -1752,7 +1739,6 @@ fn paint_at(
             view,
             aerial,
             dome,
-            mirror,
             cloud,
             smp,
             waves,
@@ -1769,7 +1755,7 @@ fn paint_at(
                 count = 4
             }
         }
-        let wk = 1.0 / (1.0 + luma(ck) * light.exposure)
+        let wk = 1.0 / (1.0 + luma(ck.rgb) * light.exposure)
         sum += ck * wk
         weight += wk
         i += 1
@@ -1777,7 +1763,7 @@ fn paint_at(
     if count > 1 {
         c = mix(c, sum / weight, boat_k)
     }
-    (vec4(c, 1.0), marks, third)
+    (c, marks, third)
 }
 
 @fragment
@@ -1789,7 +1775,6 @@ pub fn paint(
     view: Texture<Rgba16Float>,
     aerial: Texture3d<Rgba16Float>,
     dome: Texture<Rgba16Float>,
-    mirror: Texture<Rgba16Float>,
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     waves: Waves,
@@ -1806,7 +1791,6 @@ pub fn paint(
         view,
         aerial,
         dome,
-        mirror,
         cloud,
         smp,
         waves,
@@ -1823,7 +1807,8 @@ pub fn paint(
 /// other column: the sea's glints and foam lie along the rows, drawn out by the low eye, and the
 /// fill between left and right keeps them whole (a checkerboard broke them into dots). Round the
 /// skiff, a checkerboard: its mast, rigging and rider stand across the rows, and a column left
-/// out would lose a rope a pixel wide. `paint_fill` fills the others.
+/// out would lose a rope a pixel wide; and so over the rock and the cathedral, for their spires.
+/// `paint_fill` fills the others.
 @fragment
 pub fn paint_half(
     pixel: FragCoord,
@@ -1833,7 +1818,6 @@ pub fn paint_half(
     view: Texture<Rgba16Float>,
     aerial: Texture3d<Rgba16Float>,
     dome: Texture<Rgba16Float>,
-    mirror: Texture<Rgba16Float>,
     cloud: Texture<Rgba16Float>,
     smp: Sampler,
     waves: Waves,
@@ -1852,7 +1836,6 @@ pub fn paint_half(
         view,
         aerial,
         dome,
-        mirror,
         cloud,
         smp,
         waves,
@@ -1874,7 +1857,14 @@ fn shift(s: Shot, slot: u32, y: u32) -> u32 {
     let along = dot(to_boat, d)
     let near = length(to_boat) < NEAR_SKIFF ||
         (along > 0.0 && length(to_boat - d * along) < NEAR_SKIFF)
-    if near { y % 2 } else { 0 }
+    // (And over the rock and the cathedral: a spire a pixel wide crossing the columns as the
+    // camera turns would be met in one and filled between two in the next, and shimmer; in a
+    // checkerboard the fill has the rows above and below it. Only where the ray is still above
+    // the sea where it leaves the rock's sphere: the sphere reaches below the sea, and the sea's
+    // glints under the rock would break into dots.)
+    let isle = sphere(s.eye, d, bounds(), 1.0e5)
+    let over = isle.x < isle.y && s.eye.y + d.y * isle.y > 0.0
+    if near || over { y % 2 } else { 0 }
 }
 
 /// How near the skiff a block's middle ray passes (m, from its middle) to be painted as a
@@ -1933,6 +1923,9 @@ pub fn paint_fill(
     half_colour: Texture<Rgba16Float>,
     half_marks: Texture<Rgba16Float>,
     half_normal: Texture<Rgba8>,
+    yon_colour: Texture<Rgba16Float>,
+    yon_marks: Texture<Rgba16Float>,
+    yon_normal: Texture<Rgba8>,
 ) -> Targets3<vec4, vec4, vec4> {
     let ip = floor(pixel.position.xy)
     let n = round_of(shot, u32(ip.x), u32(ip.y), size)
@@ -1965,5 +1958,110 @@ pub fn paint_fill(
         at = n.r
     }
     // (The ink's reading is no mean: a line or a depth halfway between two isn't either's.)
-    Targets3 { first: c, second: half_marks.load(at.x, at.y), third: half_normal.load(at.x, at.y) }
+    let m = half_marks.load(at.x, at.y)
+    let nm = half_normal.load(at.x, at.y)
+    let (x, y) = (u32(ip.x), u32(ip.y))
+    let f = yon_colour.load(x, y)
+    // (How much of the far layer here is the vista's (`far_merge`): none where it's the far
+    // pass's own, the stacks, and everything before the vista's laid in.)
+    let fnn = yon_normal.load(x, y)
+    if f.a <= 0.004 || fnn.w <= 0.004 {
+        return Targets3 { first: c, second: m, third: nm }
+    }
+    // Where the vista lies over this pixel, it's laid in as the paint lays it, this pixel's own,
+    // and only what's behind it and in front of it is taken from the neighbours: a spire's edge
+    // filled from the pixels either side of it moved a pixel at a time as the camera moved, and
+    // crawled. (Not the far pass's own: its edges are only as fine as its own few looks, a
+    // stack's stair-stepped and the first drawings' a pattern of the pixels met so far, and the
+    // fill between neighbours softens them, as it always has.)
+    let (laid, ok) = laid_far(f, x, y, size, n, half_colour, half_marks, yon_colour, yon_marks)
+    if !ok {
+        return Targets3 { first: c, second: m, third: nm }
+    }
+    let laid = mix(c.rgb, laid, fnn.w)
+    // (Its share met through the jittered ray (`sample`): all but the far pass's own. And, as
+    // the colour, the fill's as much as the vista's isn't: else where a sliver of the vista
+    // lies over a stack, or it fades in, what the ink reads would flip in a drawing.)
+    let jittered = mix(c.a, 1.0 - f.a * (1.0 - fnn.w), fnn.w)
+    if f.a > 0.5 && fnn.w > 0.5 {
+        return Targets3 {
+            first: vec4(laid, jittered),
+            second: yon_marks.load(x, y),
+            third: vec4(fnn.xyz, nm.w),
+        }
+    }
+    Targets3 { first: vec4(laid, jittered), second: m, third: nm }
+}
+
+/// The colour of drawing pixel (`x`, `y`), which the half didn't paint (`paint_fill`), with
+/// the far layer `f` (premultiplied) laid in over what's behind it: what's behind, and what's
+/// in front, from its painted neighbours (`n`), each unmixed from the far layer the paint laid
+/// over it. Whether it can be: not where a neighbour met something nearer than the far layer
+/// (the skiff), nor where the neighbours show too little of what's behind for how little of
+/// this pixel the far layer covers.
+fn laid_far(
+    f: vec4,
+    x: u32,
+    y: u32,
+    size: vec2,
+    n: Round,
+    half_colour: Texture<Rgba16Float>,
+    half_marks: Texture<Rgba16Float>,
+    yon_colour: Texture<Rgba16Float>,
+    yon_marks: Texture<Rgba16Float>,
+) -> (vec3, bool) {
+    var behind = vec3(0.0)
+    var behind_w = 0.0
+    var front = vec3(0.0)
+    var front_shows = 0.0
+    var front_n = 0.0
+    var behind_n = 0.0
+    for k in 0..4 {
+        let has = if k == 0 { n.left } else if k == 1 { n.right } else if k == 2 { n.above } else {
+            n.below
+        }
+        let (px, py) = if !has { (x, y) } else if k == 0 { (x - 1, y) } else if k == 1 {
+            (x + 1, y)
+        } else if k == 2 { (x, y - 1) } else { (x, y + 1) }
+        // (Not past the drawing's right edge, where an odd width's last half pixel painted one
+        // that isn't there.)
+        if has && f32(px) < size.x && f32(py) < size.y {
+            let hq = if k == 0 { n.l } else if k == 1 { n.r } else if k == 2 { n.u } else { n.d }
+            let ck = half_colour.load(hq.x, hq.y).rgb
+            let mk = half_marks.load(hq.x, hq.y)
+            let fk = yon_colour.load(px, py)
+            let fmk = yon_marks.load(px, py)
+            // (Whether the paint laid the far layer in there: what it met is the far layer's,
+            // the sky, or farther than the far layer.)
+            let over = mk.y >= ROCK || mk.y == SKY || fmk.x < mk.x
+            if !over && (fk.a > 0.004 || mk.y == SKIFF) {
+                return (vec3(0.0), false)
+            }
+            let a = if over { fk.a } else { 0.0 }
+            let rest = ck - (if over { fk.rgb } else { vec3(0.0) })
+            // (What's behind, unmixed: `rest / (1 - a)`, weighed by `1 - a`, how much of it shows,
+            // from all but the neighbours it hardly shows in: an edge pixel's neighbours are mostly
+            // part covered, and taking fewer of them left it to one or two, so it crawled. What
+            // the paint laid in front (a fall, spray) is left in `rest` too, and where little shows
+            // the unmixing blows it up: hence the fallback below where they show on average less
+            // than half of what's behind this pixel shows (a one-pixel gap among part-covered
+            // neighbours, a fall over it, would have it at several times). In the rest, what's in front: `rest` less what
+            // still shows of what's behind, `b * (1 - a)`, taken off once `b` is known below.)
+            if a < 0.95 {
+                behind += rest
+                behind_w += 1.0 - a
+                behind_n += 1.0
+            } else {
+                front += rest
+                front_shows += 1.0 - a
+                front_n += 1.0
+            }
+        }
+    }
+    if behind_w < 0.5 * (1.0 - f.a) * behind_n || (behind_w <= 0.0 && front_n <= 0.0) {
+        return (vec3(0.0), false)
+    }
+    let b = if behind_w > 0.0 { behind / behind_w } else { vec3(0.0) }
+    let fr = if front_n > 0.0 { (front - b * front_shows) / front_n } else { vec3(0.0) }
+    (max(f.rgb + b * (1.0 - f.a) + fr * f.a, vec3(0.0)), true)
 }
