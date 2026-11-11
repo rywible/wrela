@@ -1,0 +1,17 @@
+// The tool test: a program on the engine (the sampled shapes' test, whose kernels bind the most
+// buffers) built with its literals lifted into `scratch/lifted`.
+
+use std::tool::toolchain
+
+/// A program on the engine builds lifted: every engine kernel has room for the table of literals.
+@test(tool, read: [("repo", "../../..")], budget: 300)
+fn a_program_on_the_engine_builds_lifted() {
+    var how = toolchain::options()
+    how.lift.push("sampled_test".to_string())
+    let built = toolchain::build("repo/engine/tests/sampled", "scratch/lifted", how).wait()
+    let Ok(build) = built else { panic("the build's request") }
+    for d in build.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    assert(build.ok, "the sampled shapes' test builds lifted")
+}

@@ -1,0 +1,302 @@
+// A hound drawn along its charts: a creature that is no humanoid, with no mesh, no reference
+// and no skin weights anywhere. Each of its parts is a radius written as a rule of its place
+// (`chart::of`: how far along its chain, the angle round it) about a chain of joints: a trunk,
+// a neck and head, four legs, a tail. A trot poses its bones; each frame every part is laid
+// where its bones are (`Part::posed`) and drawn from its vertices' numbers on the grid its size
+// on screen calls for (`place_of`, `Limb::side_and_normal`).
+
+use engine::chart
+use engine::chart::{Band, Chain, Grids, JOINTS, Limb, Part, Radial, WHOLE, chain}
+use engine::view::{Camera, NEAREST, first_camera}
+use std::gpu::{
+    ClipPosition, Cull, DepthTexture, FragCoord, Rgba8, Texture, VertexIndex, begin_pass_with_depth,
+    begin_screen_pass, depth_texture, draw, texture,
+}
+use std::math::{PI, TAU}
+use std::transform::identity
+
+const W: u32 = 640
+const H: u32 = 480
+
+/// A part's form: 8 control values along its chain, 3 harmonics round.
+type Form = Radial<8, 7>
+
+/// The hound's parts: its trunk, its neck and head, its tail, then its legs (front left, front
+/// right, hind left, hind right).
+pub const PARTS: u32 = 7
+
+/// Its bones: its hips, its chest, its neck, its tail, then an upper and a lower for each leg.
+const HIPS: u32 = 0
+const CHEST: u32 = 1
+const NECK: u32 = 2
+const TAIL: u32 = 3
+const LEGS: u32 = 4
+
+/// A trunk deeper than it is wide, its chest deeper than its loins (angle 0 is its back).
+fn trunk_rule(f: f32, theta: f32) -> f32 {
+    let deep = mix(0.11, 0.15, smoothstep(0.2, 0.9, f))
+    let wide = mix(0.09, 0.11, smoothstep(0.2, 0.9, f))
+    let c = cos(theta)
+    let s = sin(theta)
+    // (An oval's radius, a little fuller under it than over.)
+    deep * wide / sqrt(deep * deep * s * s + wide * wide * c * c) - 0.012 * c
+}
+
+/// A neck narrowing to a muzzle, with the bulge of a skull two thirds of the way along.
+fn neck_rule(f: f32, _theta: f32) -> f32 {
+    mix(0.085, 0.03, f) + 0.03 * exp(-(f - 0.62) * (f - 0.62) / 0.012)
+}
+
+/// A tail tapering to its tip.
+fn tail_rule(f: f32, _theta: f32) -> f32 {
+    mix(0.03, 0.008, f)
+}
+
+/// A leg: a thigh's muscle behind its upper bone, a narrow shin, a paw at its end.
+fn leg_rule(f: f32, theta: f32) -> f32 {
+    let bone = mix(0.05, 0.02, smoothstep(0.0, 0.7, f))
+    let thigh = 0.025 * exp(-(f - 0.2) * (f - 0.2) / 0.03) * (0.5 + 0.5 * cos(theta - PI))
+    let paw = 0.012 * smoothstep(0.85, 1.0, f)
+    bone + thigh + paw
+}
+
+@fuel(2 ** 36)
+const TRUNK_FORM: Form = chart::of(trunk_rule)
+@fuel(2 ** 36)
+const NECK_FORM: Form = chart::of(neck_rule)
+@fuel(2 ** 36)
+const TAIL_FORM: Form = chart::of(tail_rule)
+@fuel(2 ** 36)
+const LEG_FORM: Form = chart::of(leg_rule)
+
+/// Where leg `k` hangs from: its hip or its shoulder.
+fn leg_root(k: u32) -> vec3 {
+    let side = if k % 2 == 0 { 0.09 } else { -0.09 }
+    vec3(side, 0.5, if k < 2 { 0.27 } else { -0.27 })
+}
+
+/// Leg `k`'s knee and paw at rest.
+fn leg_knee(k: u32) -> vec3 {
+    leg_root(k) + vec3(0.0, -0.22, if k < 2 { 0.02 } else { -0.05 })
+}
+
+fn leg_paw(k: u32) -> vec3 {
+    leg_knee(k) + vec3(0.0, -0.25, if k < 2 { -0.02 } else { 0.06 })
+}
+
+/// A part on `c` whose bones are `bones`, hanging from `root`, folding at joint `fold` (0: at
+/// none).
+fn part(c: Chain, bones: [u32; 2], root: u32, form: Form, fold: u32) -> Part<8, 7> {
+    Part {
+        chain: c,
+        bones: [bones[0], bones[1], 0, 0, 0, 0, 0, 0],
+        root,
+        form,
+        changes: [chart::unchanged(); JOINTS],
+        band: WHOLE,
+        sunk: vec2(0.0, 0.1),
+        folds: [fold, 0],
+    }
+}
+
+/// The hound's parts.
+fn hound() -> [Part<8, 7>; PARTS] {
+    let back = vec3(y: 1.0)
+    let trunk = chain(
+        [vec3(0.0, 0.56, -0.32), vec3(0.0, 0.58, 0.0), vec3(0.0, 0.57, 0.32)],
+        back,
+        before: 0.04,
+        after: 0.04,
+        round: 0.0,
+    )
+    let neck = chain(
+        [vec3(0.0, 0.6, 0.27), vec3(0.0, 0.8, 0.42), vec3(0.0, 0.78, 0.66)],
+        back,
+        round: 0.06,
+    )
+    let tail = chain(
+        [vec3(0.0, 0.62, -0.33), vec3(0.0, 0.66, -0.5), vec3(0.0, 0.56, -0.72)],
+        back,
+        round: 0.05,
+    )
+    var out = [part(trunk, [HIPS, CHEST], HIPS, TRUNK_FORM, 0); PARTS]
+    out[1] = part(neck, [CHEST, NECK], CHEST, NECK_FORM, 0)
+    out[2] = part(tail, [HIPS, TAIL], HIPS, TAIL_FORM, 0)
+    for k in 0..4 {
+        let legs = chain([leg_root(k), leg_knee(k), leg_paw(k)], vec3(z: 1.0), before: 0.05)
+        out[3 + k] = part(
+            legs,
+            [LEGS + 2 * k, LEGS + 2 * k + 1],
+            if k < 2 { CHEST } else { HIPS },
+            LEG_FORM,
+            1,
+        )
+    }
+    out
+}
+
+/// A turn of `angle` about the axis through `at` along unit `axis`.
+fn turn_about(axis: vec3, angle: f32, at: vec3) -> mat4 {
+    let c = cos(angle)
+    let s = sin(angle)
+    let k = axis
+    let x = vec3(1.0, 0.0, 0.0) * c + cross(k, vec3(1.0, 0.0, 0.0)) * s + k * (k.x * (1.0 - c))
+    let y = vec3(0.0, 1.0, 0.0) * c + cross(k, vec3(0.0, 1.0, 0.0)) * s + k * (k.y * (1.0 - c))
+    let z = vec3(0.0, 0.0, 1.0) * c + cross(k, vec3(0.0, 0.0, 1.0)) * s + k * (k.z * (1.0 - c))
+    let moved = at - (x * at.x + y * at.y + z * at.z)
+    mat4(vec4(x, 0.0), vec4(y, 0.0), vec4(z, 0.0), vec4(moved, 1.0))
+}
+
+/// The hound's bones at `time` (s) of a trot: its legs swing in diagonal pairs, each knee
+/// bending as its leg comes forward; its neck nods and its tail swings.
+fn trot(time: f32) -> [mat4; 64] {
+    var m = [identity(); 64]
+    let beat = TAU * 1.6 * time
+    let across = vec3(x: 1.0)
+    m[NECK] = turn_about(across, 0.12 * sin(2.0 * beat), vec3(0.0, 0.8, 0.42))
+    m[TAIL] = turn_about(vec3(y: 1.0), 0.4 * sin(beat), vec3(0.0, 0.66, -0.5))
+    for k in 0..4 {
+        // (The front left and the hind right together, then the other two.)
+        let phase = beat + (if k == 0 || k == 3 { 0.0 } else { PI })
+        let upper = turn_about(across, 0.45 * sin(phase), leg_root(k))
+        let bend = 0.5 + 0.5 * sin(phase + 1.3)
+        // (A hind leg's hock bends the other way from a front leg's knee.)
+        let way = if k < 2 { 1.0 } else { -1.0 }
+        m[LEGS + 2 * k] = upper
+        m[LEGS + 2 * k + 1] = upper * turn_about(across, way * 0.9 * bend, leg_knee(k))
+    }
+    m
+}
+
+pub struct State {
+    grids: Grids,
+    colour: Texture<Rgba8>,
+    depth: DepthTexture,
+}
+
+pub fn init() -> State {
+    State {
+        grids: chart::grids(),
+        colour: texture(width: W, height: H),
+        depth: depth_texture(width: W, height: H),
+    }
+}
+
+fn eye() -> Camera {
+    first_camera(vec3(1.5, 0.9, 1.3), vec3(0.0, 0.45, 0.0), 0.75, width: W, height: H)
+        .unjittered()
+}
+
+/// What a vertex of a part passes on: where it is, and its side's normal.
+pub struct HoundVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+}
+
+/// A part's vertex: its place on the chart from its number, the point of the posed form's
+/// side there, and the side's normal.
+@vertex
+pub fn hound_vertex(
+    v: VertexIndex,
+    form: Limb<8, 7>,
+    band: Band,
+    level: u32,
+    cam: Camera,
+) -> HoundVertex {
+    let at = chart::place_of(v.index, level, band)
+    let (world, normal) = form.side_and_normal(f: at.x, theta: at.y)
+    HoundVertex { clip: ClipPosition { position: cam.clip(world) }, world, normal }
+}
+
+/// A part's pixel: its colour lit from above and one side, in three flat steps.
+@fragment
+pub fn hound_pixel(v: HoundVertex, tint: vec3) -> vec4 {
+    let lit = dot(normalize(v.normal), normalize(vec3(0.4, 0.8, 0.45)))
+    let step = if lit > 0.45 { 1.0 } else if lit > 0.0 { 0.72 } else { 0.45 }
+    vec4(tint * step, 1.0)
+}
+
+/// The screen's corner of a triangle over all of it.
+@vertex
+pub fn over_screen(vertex: VertexIndex) -> ClipPosition {
+    let x = f32(vertex.index % 2) * 4.0 - 1.0
+    let y = f32(vertex.index / 2) * 4.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.5, 1.0) }
+}
+
+/// The picture's texel at a pixel.
+@fragment
+pub fn shown(pixel: FragCoord, picture: Texture<Rgba8>) -> vec4 {
+    picture.load(min(u32(pixel.position.x), W - 1), min(u32(pixel.position.y), H - 1))
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let cam = eye()
+    // (A fixed moment of the trot: the picture is the same every frame.)
+    let bones = trot(0.21)
+    let parts = hound()
+    let p = begin_pass_with_depth(
+        mut s.colour,
+        mut s.depth,
+        clear: vec4(0.82, 0.8, 0.76, 1.0),
+        clear_depth: 0.0,
+    )
+    for k in 0..PARTS {
+        let limb = parts[k].posed(bones)
+        let level = limb.level(cam.eye, f32(H), cam.tan_half)
+        let span = chart::level_span(level)
+        let tint = if k < 3 { vec3(0.55, 0.36, 0.2) } else { vec3(0.47, 0.3, 0.17) }
+        draw(
+            p,
+            hound_vertex.bind(form: limb, band: parts[k].band, level: level, cam: cam),
+            hound_pixel.bind(tint: tint),
+            indices: s.grids.indices,
+            first_index: span.x,
+            index_count: span.y,
+            cull: Cull::Back,
+            depth: NEAREST,
+        )
+    }
+    p.end()
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(screen, over_screen, shown.bind(picture: s.colour), vertices: 3)
+    screen.present()
+}
+
+/// The hound mid-trot, drawn along its charts.
+@test(frames: 4, gpu: true, golden: "goldens/hound.png", within: 1.0)
+fn a_hound_is_drawn_along_its_charts(s: State) {}
+
+@test
+fn a_trotting_hounds_legs_reach_its_paws() {
+    // Through a whole beat of the trot, each leg's path ends where its lower bone carries its
+    // paw, keeps its length within a centimetre, and its side there is a paw's width from it.
+    let parts = hound()
+    for step in 0..16 {
+        let bones = trot(f32(step) / 25.0)
+        for k in 0..4 {
+            let limb = parts[3 + k].posed(bones)
+            let paw = (bones[LEGS + 2 * k + 1] * vec4(leg_paw(k), 1.0)).xyz
+            let last = limb.path.at[limb.path.vertices - 1]
+            assert(length(last - paw) < 0.00001, "a leg's path ends at its paw")
+            assert(abs(limb.path.length() - parts[3 + k].rest().path.length()) < 0.01)
+            let side = limb.side(f: 1.0, theta: 0.0)
+            assert(abs(length(side - paw) - 0.032) < 0.004, f"{length(side - paw)}")
+        }
+    }
+}
+
+@test
+fn a_rule_written_as_a_form_is_the_rule() {
+    // The trunk's and the leg's forms are their rules within 3 mm: 3 harmonics round an oval
+    // 15 cm deep.
+    for i in 0..20 {
+        for j in 0..24 {
+            let f = f32(i) / 19.0
+            let theta = TAU * f32(j) / 24.0
+            assert(abs(TRUNK_FORM.radius(f, theta) - trunk_rule(f, theta)) < 0.003)
+            assert(abs(LEG_FORM.radius(f, theta) - leg_rule(f, theta)) < 0.003)
+        }
+    }
+}

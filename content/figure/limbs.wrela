@@ -1,0 +1,90 @@
+// The figure's limbs as a pose has them: each a form about its chain (`chains`), changed where
+// its joints bend by what the forms tool solved for them (`arm_joints`) and by what its muscles
+// do there (`flex`).
+
+use engine::chart
+use engine::chart::{Band, Change, JOINTS, Part, Radial}
+use std::math::TAU
+
+/// A limb's form: 16 control values along its path, each a Fourier series of 6 harmonics.
+pub type Form = Radial<16, 13>
+
+/// His shoulder's change with its bend, the size of his arm's form.
+@fuel(2 ** 36)
+pub const SHOULDER: Change<16, 13> = Change {
+    by_angle: arm_joints::SHOULDER_BY_ANGLE.resized(),
+    by_square: arm_joints::SHOULDER_BY_SQUARE.resized(),
+    upto: arm_joints::SHOULDER_UPTO,
+}
+
+/// His elbow's change with its bend, the size of his arm's form.
+@fuel(2 ** 36)
+pub const ELBOW: Change<16, 13> = Change {
+    by_angle: arm_joints::ELBOW_BY_ANGLE.resized(),
+    by_square: arm_joints::ELBOW_BY_SQUARE.resized(),
+    upto: arm_joints::ELBOW_UPTO,
+}
+
+/// An arm as a charted part of a creature: on `side` (0 left, 1 right), `rest` its form about
+/// that side's chain, its bones the creature's `bones` (its collarbone, which carries its root
+/// and which it hangs from, its upper arm, its forearm), drawn as far as `to` of the way along
+/// its path (where a hand takes over), its root `under` what's worn over its shoulder (m) until
+/// it has left it, a quarter of the way along. Its shoulder and its elbow change as the forms
+/// tool solved for them, and its elbow as its muscles do (`flex`); a right arm's are the
+/// left's, mirrored. It folds at its elbow.
+pub fn arm(rest: Form, side: u32, bones: [u32; 3], to: f32, under: f32) -> Part<16, 13> {
+    let left = side == 0
+    var changes: [Change<16, 13>; JOINTS] = [chart::unchanged(); JOINTS]
+    let elbow = ELBOW.plus(flex::ELBOW_FLEX)
+    changes[1] = if left { SHOULDER } else { SHOULDER.mirrored() }
+    changes[2] = if left { elbow } else { elbow.mirrored() }
+    Part {
+        chain: if left { chains::arm_left() } else { chains::arm_right() },
+        bones: [bones[0], bones[1], bones[2], 0, 0, 0, 0, 0],
+        root: bones[0],
+        form: rest,
+        changes,
+        band: Band { f: vec2(0.0, to), theta: vec2(0.0, TAU) },
+        sunk: vec2(under, 0.24),
+        folds: [2, 0],
+    }
+}
+
+/// His hip's change with its bend, the size of his leg's form.
+@fuel(2 ** 36)
+pub const HIP: Change<16, 13> = Change {
+    by_angle: leg_joints::HIP_BY_ANGLE.resized(),
+    by_square: leg_joints::HIP_BY_SQUARE.resized(),
+    upto: leg_joints::HIP_UPTO,
+}
+
+/// His knee's change with its bend, the size of his leg's form.
+@fuel(2 ** 36)
+pub const KNEE: Change<16, 13> = Change {
+    by_angle: leg_joints::KNEE_BY_ANGLE.resized(),
+    by_square: leg_joints::KNEE_BY_SQUARE.resized(),
+    upto: leg_joints::KNEE_UPTO,
+}
+
+/// A leg as a charted part of a creature: on `side` (0 left, 1 right), `rest` its form about
+/// that side's chain, its bones the creature's `bones` (its pelvis, which carries its root and
+/// which it hangs from, its thigh, its calf), drawn as far as `to` of the way along its path
+/// (where a boot or a foot takes over), its root `under` what's worn over its hip (m) until a
+/// fifth of the way along. Its hip and its knee change as the forms tool solved for them; a
+/// right leg's are the left's, mirrored. It folds at its knee.
+pub fn leg(rest: Form, side: u32, bones: [u32; 3], to: f32, under: f32) -> Part<16, 13> {
+    let left = side == 0
+    var changes: [Change<16, 13>; JOINTS] = [chart::unchanged(); JOINTS]
+    changes[1] = if left { HIP } else { HIP.mirrored() }
+    changes[2] = if left { KNEE } else { KNEE.mirrored() }
+    Part {
+        chain: if left { chains::leg_left() } else { chains::leg_right() },
+        bones: [bones[0], bones[1], bones[2], 0, 0, 0, 0, 0],
+        root: bones[0],
+        form: rest,
+        changes,
+        band: Band { f: vec2(0.0, to), theta: vec2(0.0, TAU) },
+        sunk: vec2(under, 0.2),
+        folds: [2, 0],
+    }
+}

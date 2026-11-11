@@ -5,10 +5,15 @@
 // values, a rim, his cloth's edges as the ink's seams. The one he strikes is his double, his
 // values turned over (pale where he's black), so the two part on the page as ink and paper do.
 
-use hakuro::arms::{Drape, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body}
+use engine::chart
+use engine::chart::{Band, Grids, Limb, Part, Radial}
+use hakuro::arms::{Drape, CHARTED, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body}
 use hakuro::clear::fists_off_mask
 use hakuro::fingers::{FIST_CURL, curled}
-use hakuro::hakuro::{Cloth, body_paint, coat, head, hero, jacket_paint}
+use hakuro::hakuro::{
+    ARM_CHARTS, CHARTS, COVERED, Cloth, WIDE_CHARTS, body_paint, chart_cut, chart_paint, charts,
+    coat, head, hero, jacket_paint, wide_charts,
+}
 use hakuro::reference_rig::HAKURO_BONE
 use engine::character::skin_matrix
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
@@ -18,8 +23,10 @@ use engine::realize::{Mesh, SkinVertex, realize_once}
 use look::{BODY, COOL, Shot, WARM, band}
 use paint::cast_shadow
 use std::gpu::{
-    ClipPosition, Cull, Flat, GpuBuffer, RenderPass, Targets3, VertexIndex, buffer, draw, write,
+    ClipPosition, Cull, Flat, GpuBuffer, RenderPass, Targets3, VertexIndex, buffer, discard, draw,
+    write,
 }
+use std::math::TAU
 use std::transform::translate
 
 /// His body's grid (cells of about 13 mm), his head's (5 mm: the mask's ears and the hair's
@@ -46,6 +53,53 @@ pub struct Fighters {
     arms: [Mesh; 6],
     palettes: GpuBuffer<mat4>,
     drape: Drape,
+    /// Each fighter's charted parts (`hakuro::charts`: his limbs and his head; then
+    /// `hakuro::wide_charts`: his trunk and his jacket) as his bones pose them this frame
+    /// (`CHARTED`: drawn along their charts, in place of their sampled meshes), and the grids
+    /// charted forms are drawn on.
+    charted: [[Charted; CHARTS]; FIGHTERS],
+    wide: [[Limb<24, 21>; WIDE_CHARTS]; FIGHTERS],
+    grids: Grids,
+    /// Where his jacket is on its chart (`hakuro::jacket_cover`), for its pixels to read.
+    cover: GpuBuffer<u32>,
+}
+
+/// A charted part's form: its radius about the line of its joints.
+type Charted = Limb<16, 13>
+
+/// Whether charted part `part` (`hakuro::charts`' order, then `hakuro::wide_charts`') is drawn:
+/// his arms and what's over them from `CHARTED` 1, the rest of him from 2.
+fn charted_now(part: u32) -> bool {
+    CHARTED >= (if part < ARM_CHARTS { 1 } else { 2 })
+}
+
+/// How fine the detail round a charted part's path its shading keeps (harmonics): its light's
+/// bands are read off its form without the ripples finer than this (`Radial::softened`).
+const SHADED_DETAIL: f32 = 3.5
+
+/// Whether sampled mesh `k` (`Fighters::arms`: his arms, his body, his jacket, his hands) has
+/// charted parts drawn in its place.
+fn in_place_of(k: u32) -> bool {
+    (k < 2 && CHARTED >= 1) || (k < 4 && CHARTED >= 2)
+}
+
+/// His charted parts at rest.
+fn charts_at_rest() -> [Charted; CHARTS] {
+    let parts = charts()
+    var out = [parts[0].rest(); CHARTS]
+    for k in 0..CHARTS {
+        out[k] = parts[k].rest()
+    }
+    out
+}
+
+fn wide_at_rest() -> [Limb<24, 21>; WIDE_CHARTS] {
+    let parts = wide_charts()
+    var out = [parts[0].rest(); WIDE_CHARTS]
+    for k in 0..WIDE_CHARTS {
+        out[k] = parts[k].rest()
+    }
+    out
 }
 
 pub fn fighters() -> Fighters {
@@ -56,6 +110,10 @@ pub fn fighters() -> Fighters {
         arms: [arm(0), arm(1), sampled_body(), jacket(), hand(0), hand(1)],
         palettes: buffer(2 * FIGHTERS * MAX_BONES),
         drape: drape_room(FIGHTERS),
+        charted: [charts_at_rest(); FIGHTERS],
+        wide: [wide_at_rest(); FIGHTERS],
+        cover: hakuro::jacket_cover::JACKET_COVER.upload(),
+        grids: chart::grids(),
     }
 }
 
@@ -132,6 +190,18 @@ impl Fighters {
     pub fn pose(mut self, who: u32, m: [mat4; 64]) {
         write(mut self.palettes, who * MAX_BONES, m)
         write(mut self.palettes, (FIGHTERS + who) * MAX_BONES, m)
+        let parts = charts()
+        for k in 0..CHARTS {
+            if charted_now(k) {
+                self.charted[who][k] = parts[k].posed(m)
+            }
+        }
+        let wide = wide_charts()
+        for k in 0..WIDE_CHARTS {
+            if charted_now(CHARTS + k) {
+                self.wide[who][k] = wide[k].posed(m)
+            }
+        }
     }
 
     /// Their coats' tails moved on `dt` seconds (0 through a hit-stop: the cloth holds with them).
@@ -149,7 +219,22 @@ impl Fighters {
             let first = who * MAX_BONES
             shadow_of(p, self.body, self.palettes, first, shot)
             shadow_of(p, self.head, self.palettes, first, shot)
+            let parts = charts()
+            for k in 0..CHARTS {
+                if charted_now(k) {
+                    chart_shadow(p, self.grids, self.charted[who][k], parts[k].band, shot)
+                }
+            }
+            let wide = wide_charts()
+            for k in 0..WIDE_CHARTS {
+                if charted_now(CHARTS + k) {
+                    chart_shadow(p, self.grids, self.wide[who][k], wide[k].band, shot)
+                }
+            }
             for k in 0..6 {
+                if in_place_of(k) {
+                    continue
+                }
                 shadow_of(p, self.arms[k], self.palettes, first, shot)
             }
             draw(
@@ -169,6 +254,8 @@ impl Fighters {
                 depth: engine::view::NEAREST,
             )
         }
+        let parts = charts()
+        let wide = wide_charts()
         for who in 0..FIGHTERS {
             draw(
                 p,
@@ -214,7 +301,46 @@ impl Fighters {
                 cull: Cull::Back,
                 depth: engine::view::NEAREST,
             )
+            let rest = charts_at_rest()
+            for k in 0..CHARTS {
+                if charted_now(k) {
+                    let c = self.charted[who][k]
+                    chart_drawn(
+                        p,
+                        self.grids,
+                        self.cover,
+                        rest[k],
+                        c,
+                        parts[k].band,
+                        parts[k].sunk,
+                        shot,
+                        who,
+                        k,
+                    )
+                }
+            }
+            let wide_rest = wide_at_rest()
+            for k in 0..WIDE_CHARTS {
+                if charted_now(CHARTS + k) {
+                    let c = self.wide[who][k]
+                    chart_drawn(
+                        p,
+                        self.grids,
+                        self.cover,
+                        wide_rest[k],
+                        c,
+                        wide[k].band,
+                        wide[k].sunk,
+                        shot,
+                        who,
+                        CHARTS + k,
+                    )
+                }
+            }
             for k in 0..6 {
+                if in_place_of(k) {
+                    continue
+                }
                 draw(
                     p,
                     fighter_vertex.bind(
@@ -274,6 +400,117 @@ pub fn coat_vertex(
     f.world = draped(f.world, f.rest, mat3(f.tx, f.ty, f.tz), grid, facing, first / MAX_BONES)
     f.clip = ClipPosition { position: shot.cam.clip(f.world) }
     f
+}
+
+/// A charted part drawn into the paint's targets: on the grid its size on screen calls for.
+fn chart_drawn<P: RenderPass, const A: u32, const R: u32>(
+    p: P,
+    grids: Grids,
+    cover: GpuBuffer<u32>,
+    rest: Limb<A, R>,
+    form: Limb<A, R>,
+    band: Band,
+    sunk: vec2,
+    shot: Shot,
+    who: u32,
+    part: u32,
+) {
+    let level = form.level(shot.cam.eye, shot.resolution.y, shot.cam.tan_half)
+    let span = chart::level_span(level)
+    draw(
+        p,
+        charted_vertex.bind(
+            rest: rest,
+            form: form,
+            band: band,
+            sunk: sunk,
+            level: level,
+            shot: shot,
+        ),
+        charted_pixel.bind(
+            shade: form.form.softened(SHADED_DETAIL),
+            length: form.path.length(),
+            cover: cover.items(),
+            shot: shot,
+            who: who,
+            part: part,
+        ),
+        indices: grids.indices,
+        first_index: span.x,
+        index_count: span.y,
+        cull: Cull::Back,
+        depth: engine::view::NEAREST,
+    )
+}
+
+/// A charted part's shadow drawn.
+fn chart_shadow<P: RenderPass, const A: u32, const R: u32>(
+    p: P,
+    grids: Grids,
+    form: Limb<A, R>,
+    band: Band,
+    shot: Shot,
+) {
+    let level = form.level(shot.cam.eye, shot.resolution.y, shot.cam.tan_half)
+    let span = chart::level_span(level)
+    draw(
+        p,
+        charted_shadow_vertex.bind(form: form, band: band, level: level, shot: shot),
+        shadow_pixel.bind(shot: shot),
+        indices: grids.indices,
+        first_index: span.x,
+        index_count: span.y,
+        cull: Cull::None,
+        depth: engine::view::NEAREST,
+    )
+}
+
+/// A charted part's vertex, in posed space: where its place on the chart (`band`: what of the
+/// chart is drawn) is on the form his bones pose this frame (`form`), the side's normal there
+/// across its neighbouring points, where the same place is on him at rest (`rest`, which his
+/// paint reads), the place itself with whether a folded hinge holds the side in there (`tx`:
+/// how far along, the angle round, and 1 where it's folded), and the section's plane there
+/// (`ty`, angle 0; `tz`, a quarter turn on), from which a pixel reads its own normal
+/// (`charted_pixel`). Its root is drawn under what covers it (`sunk`). No skin weights: the
+/// form is made again where his bones are.
+@vertex
+pub fn charted_vertex<const A: u32, const R: u32>(
+    v: VertexIndex,
+    rest: Limb<A, R>,
+    form: Limb<A, R>,
+    band: Band,
+    sunk: vec2,
+    level: u32,
+    shot: Shot,
+) -> FighterVertex {
+    let at = chart::place_of(v.index, level, band)
+    let (world, normal) = form.side_and_normal(f: at.x, theta: at.y)
+    let under = chart::sunk(world, shot.cam.eye, chart::sunk_by(sunk, at.x))
+    let section = form.path.frame(saturate(at.x) * form.path.length())
+    FighterVertex {
+        clip: ClipPosition { position: shot.cam.clip(under) },
+        world,
+        rest: rest.side(f: at.x, theta: at.y),
+        tx: vec3(at, form.folded(f: at.x, theta: at.y)),
+        ty: section.up,
+        tz: section.left,
+        normal,
+        lo: Flat { value: 0 },
+        hi: Flat { value: 0 },
+    }
+}
+
+/// A charted part's shadow.
+@vertex
+pub fn charted_shadow_vertex<const A: u32, const R: u32>(
+    v: VertexIndex,
+    form: Limb<A, R>,
+    band: Band,
+    level: u32,
+    shot: Shot,
+) -> ShadowVertex {
+    let at = chart::place_of(v.index, level, band)
+    cast(form.side(f: at.x, theta: at.y), shot)
 }
 
 /// Mesh `m`'s shadow drawn, posed by the palette at `first`.
@@ -392,6 +629,33 @@ pub fn sampled_pixel(
 ) -> Targets3<vec4, vec4, vec4> {
     let c = if jacket == 1 { jacket_paint(v.rest) } else { body_paint(v.rest) }
     painted(shot, v.world, normalize(v.normal), c, who, 0)
+}
+
+/// His pixel where his form is drawn along its chart (charted part `part`): his paint by the
+/// part and where the place is on him at rest, and its normal read at the pixel itself from the
+/// form's slopes at its place (`shade`: the posed form, its finest ripples left out; about a
+/// path `length` long), so his light's bands are as clean on a coarse grid as on a fine one.
+/// Where a folded hinge holds the side in, the normal is the side's own. Nothing where the
+/// part isn't (`cover`: his jacket's front and armholes) or is cut away.
+@fragment
+pub fn charted_pixel<const A: u32, const R: u32>(
+    v: FighterVertex,
+    shade: Radial<A, R>,
+    length: f32,
+    cover: [u32],
+    shot: Shot,
+    who: u32,
+    part: u32,
+) -> Targets3<vec4, vec4, vec4> {
+    if part == COVERED && chart::covered(cover, v.tx.x, v.tx.y) < 0.5 {
+        discard()
+    }
+    if chart_cut(part, v.rest) {
+        discard()
+    }
+    let read = chart::normal_at(shade, v.ty, v.tz, length, v.tx.x, v.tx.y)
+    let n = normalize(mix(read, normalize(v.normal), vec3(saturate(v.tx.z))))
+    painted(shot, v.world, n, chart_paint(part, v.rest), who, 0)
 }
 
 /// What his black cloth's lit planes are raised by (linear).

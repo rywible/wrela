@@ -1,0 +1,2035 @@
+// Charts: forms drawn along their own coordinates. A limb, a trunk, a finger, a sleeve: each is
+// a radius about a path. The path is the line through a chain of joints. A place on the form is
+// how far along the path (0 to 1) and at what angle round it. The radius there is a sum of
+// splines along the path times a Fourier series round it (`Radial`), so it is linear in its
+// numbers: fitting it to a target is one exact solve (`fit`), a second body is the first's
+// numbers plus a difference, and a change with the pose is a second set of numbers added in by
+// how far a joint is bent.
+//
+// A form with a chart needs no mesh and no skin weights. Each frame its path is laid where its
+// bones are (`Chain::posed`), and each vertex is worked out from its number alone: its place on
+// the chart, then the point of the form's side there (`Limb::side`). A bone's turn about its own
+// length is spread along it, from the joint before to the joint after, as a forearm's is.
+//
+// The path is cut into short straight pieces. A point's section is in the plane through it that
+// turns from the plane at one end of its piece (which halves the path's turn there) to the plane
+// at the other, so neighbouring pieces meet exactly. Angle 0 is the path's `up`, carried along
+// it without twisting; angles grow toward the left (`up × along`).
+
+use cycle
+use std::collections::Vec
+use std::gpu::{GpuBuffer, buffer_of}
+use std::math::{PI, TAU}
+use std::string::String
+
+// ---- the path -----------------------------------------------------------------------------------
+
+/// The most vertices a path has, once cut into straight pieces.
+pub const VERTICES: u32 = 33
+
+/// A path cut into straight pieces: its vertices (`at`), the plane at each (`normal`, along the
+/// path), angle 0 there (`up`, in the plane), and the path's length to each (`along`).
+pub struct Path: Copy + GpuData {
+    pub at: [vec3; VERTICES],
+    pub normal: [vec3; VERTICES],
+    pub up: [vec3; VERTICES],
+    pub along: [f32; VERTICES],
+    pub vertices: u32,
+}
+
+/// The point at `t` (from `k.y` to `k.z`) on a centripetal Catmull–Rom curve through `p0` to
+/// `p3`, whose knots are `k` (Barry and Goldman's form).
+fn on_curve(p0: vec3, p1: vec3, p2: vec3, p3: vec3, k: vec4, t: f32) -> vec3 {
+    let a1 = mix(p0, p1, (t - k.x) / (k.y - k.x))
+    let a2 = mix(p1, p2, (t - k.y) / (k.z - k.y))
+    let a3 = mix(p2, p3, (t - k.z) / (k.w - k.z))
+    let b1 = mix(a1, a2, (t - k.x) / (k.z - k.x))
+    let b2 = mix(a2, a3, (t - k.y) / (k.w - k.y))
+    mix(b1, b2, (t - k.y) / (k.z - k.y))
+}
+
+/// `v` scaled to length 1, or held at length 10⁻⁹ or more before.
+fn unit(v: vec3) -> vec3 {
+    v / max(length(v), 0.000000001)
+}
+
+/// `u` turned as the turn from unit `from` to unit `to` turns it.
+fn carry(u: vec3, from: vec3, to: vec3) -> vec3 {
+    let axis = cross(from, to)
+    let s = length(axis)
+    let c = dot(from, to)
+    if s < 0.000001 {
+        return u
+    }
+    let k = axis / s
+    u * c + cross(k, u) * s + k * (dot(k, u) * (1.0 - c))
+}
+
+/// `u` (in the plane square to unit `n`) turned by `angle` about `n`, toward the left.
+fn turned(u: vec3, n: vec3, angle: f32) -> vec3 {
+    u * cos(angle) + cross(u, n) * sin(angle)
+}
+
+/// The angle from `u` to `to` about unit `n` (both in its plane, or brought into it), toward
+/// the left.
+fn angle_between(u: vec3, to: vec3, n: vec3) -> f32 {
+    let uu = unit(u - n * dot(u, n))
+    atan2(dot(to, cross(uu, n)), dot(to, uu))
+}
+
+/// A path along a smooth curve through the first `count` of `points` (a straight line for two),
+/// angle 0 toward `up` at its start, and turned about itself by `twist` at each point (radians,
+/// toward the left; changing evenly between points).
+fn laid(points: [vec3; VERTICES], twist: [f32; VERTICES], count: u32, up: vec3) -> Path {
+    assert(count >= 2 && count <= VERTICES, "a path has 2 to 33 points")
+    for i in 1..count {
+        assert(length(points[i] - points[i - 1]) > 0.00001, "a path's points are apart")
+    }
+    // Each span between points in pieces: one for a straight path, else as many as fit.
+    let per = if count == 2 { 1 } else { min(8, (VERTICES - 1) / (count - 1)) }
+    var at = [vec3(); VERTICES]
+    var turn = [0.0; VERTICES]
+    var n = 0
+    for i in 0..count - 1 {
+        let p1 = points[i]
+        let p2 = points[i + 1]
+        let p0 = if i == 0 { 2.0 * p1 - p2 } else { points[i - 1] }
+        let p3 = if i + 2 == count { 2.0 * p2 - p1 } else { points[i + 2] }
+        // Centripetal knots: no loops or cusps where the points' spacing changes.
+        let k0 = 0.0
+        let k1 = k0 + max(sqrt(length(p1 - p0)), 0.0001)
+        let k2 = k1 + max(sqrt(length(p2 - p1)), 0.0001)
+        let k3 = k2 + max(sqrt(length(p3 - p2)), 0.0001)
+        for j in 0..per {
+            let x = f32(j) / f32(per)
+            at[n] = on_curve(p0, p1, p2, p3, vec4(k0, k1, k2, k3), k1 + (k2 - k1) * x)
+            turn[n] = mix(twist[i], twist[i + 1], x)
+            n += 1
+        }
+    }
+    at[n] = points[count - 1]
+    turn[n] = twist[count - 1]
+    n += 1
+    // The planes: square to the path at its ends, halving its turn at each vertex between.
+    var normal = [vec3(); VERTICES]
+    for i in 0..n {
+        let back = if i == 0 { at[1] - at[0] } else { at[i] - at[i - 1] }
+        let ahead = if i + 1 == n { at[i] - at[i - 1] } else { at[i + 1] - at[i] }
+        normal[i] = normalize(normalize(back) + normalize(ahead))
+    }
+    var frame = [vec3(); VERTICES]
+    var along = [0.0; VERTICES]
+    let u0 = up - normal[0] * dot(up, normal[0])
+    assert(length(u0) > 0.000001, "a path's up is along its start")
+    frame[0] = normalize(u0)
+    for i in 1..n {
+        let u = carry(frame[i - 1], normal[i - 1], normal[i])
+        frame[i] = normalize(u - normal[i] * dot(u, normal[i]))
+        along[i] = along[i - 1] + length(at[i] - at[i - 1])
+    }
+    for i in 0..n {
+        frame[i] = turned(frame[i], normal[i], turn[i])
+    }
+    Path { at, normal, up: frame, along, vertices: n }
+}
+
+/// A path along a smooth curve through `points` (a straight line for two), angle 0 toward `up`
+/// at its start and carried along it without twisting.
+pub fn path<const P: u32>(points: [vec3; P], up: vec3) -> Path {
+    assert(P >= 2 && P <= VERTICES, "a path has 2 to 33 points")
+    var all = [vec3(); VERTICES]
+    for i in 0..P {
+        all[i] = points[i]
+    }
+    laid(all, [0.0; VERTICES], P, up)
+}
+
+/// Where a point is about a path: how far along it (less than 0 before its start, more than its
+/// length past its end, by the distance past), how far from it, and at what angle (from up,
+/// toward the left).
+pub struct Place: Copy {
+    pub along: f32,
+    pub rho: f32,
+    pub theta: f32,
+}
+
+/// Where a point is about a piece of a path, but its angle (`Path::about`): its place (its
+/// `theta` 0), how far it's outside the piece's span, and what its angle needs: where it is in
+/// the piece's plane from the path (`q`), the plane (`n`, its normal), and how far the plane is
+/// from the piece's start to its end (`lam`).
+struct About: Copy {
+    place: Place,
+    outside: f32,
+    q: vec3,
+    n: vec3,
+    lam: f32,
+}
+
+/// How `nearest` ranks a piece: one whose span holds the point (`outside` 0) by its distance
+/// from the path in its plane, before any that doesn't; those by that and how far outside.
+fn rank(pl: Place, outside: f32) -> f32 {
+    select(
+        if_false: pl.rho,
+        if_true: 10000.0 + sqrt(pl.rho * pl.rho + outside * outside),
+        cond: outside > 0.0,
+    )
+}
+
+/// The section's plane at a place on a path: where the path is there, the way it runs, angle 0
+/// and a quarter turn to the left.
+pub struct Frame: Copy {
+    pub at: vec3,
+    pub along: vec3,
+    pub up: vec3,
+    pub left: vec3,
+}
+
+impl Path {
+    /// The path's length.
+    pub fn length(self) -> f32 {
+        self.along[self.vertices - 1]
+    }
+
+    /// How far `p` is past the plane at piece `i`'s start (toward its end) and before the plane
+    /// at its end, and how far outside the piece's span that puts it (but before the path's
+    /// start or past its end, which are the ends' regions).
+    fn span(self, i: u32, p: vec3) -> (f32, f32, f32) {
+        let g0 = dot(self.normal[i], p - self.at[i])
+        let g1 = dot(self.normal[i + 1], self.at[i + 1] - p)
+        let outside = select(if_false: max(-g0, 0.0), if_true: 0.0, cond: i == 0) +
+            select(if_false: max(-g1, 0.0), if_true: 0.0, cond: i + 2 == self.vertices)
+        (g0, g1, outside)
+    }
+
+    /// Where `p` is about piece `i` of the path, but its angle (`angled`): in the plane through
+    /// it of those that turn from the plane at the piece's start to the plane at its end, held
+    /// at the piece's ends; and how far `p` is outside the piece's span (`span`).
+    fn about(self, i: u32, p: vec3) -> About {
+        let a = self.at[i]
+        let b = self.at[i + 1]
+        let n0 = self.normal[i]
+        let n1 = self.normal[i + 1]
+        let (g0, g1, outside) = self.span(i, p)
+        let lam = saturate(g0 / max(g0 + g1, 0.000000001))
+        let w = unit(b - a)
+        let c0 = dot(n0, w)
+        let c1 = dot(n1, w)
+        let len = length(b - a)
+        let t = clamp(lam * len * c1 / max((1.0 - lam) * c0 + lam * c1, 0.000001), 0.0, len)
+        let n = unit(mix(n0, n1, lam))
+        let q = p - (a + w * t)
+        let q_in = q - n * dot(q, n)
+        // Before the path's start, or past its end: by how far.
+        let before = select(if_false: 0.0, if_true: min(g0, 0.0), cond: i == 0)
+        let past = select(if_false: 0.0, if_true: max(-g1, 0.0), cond: i + 2 == self.vertices)
+        let along = self.along[i] + t + before + past
+        About { place: Place { along, rho: length(q_in), theta: 0.0 }, outside, q: q_in, n, lam }
+    }
+
+    /// `a`'s place about piece `i`, with its angle: from up there, toward the left.
+    fn angled(self, i: u32, a: About) -> Place {
+        let u = mix(self.up[i], self.up[i + 1], a.lam)
+        let uu = unit(u - a.n * dot(u, a.n))
+        let v = cross(uu, a.n)
+        // On the path the angle is any: 0.
+        let theta = select(
+            if_false: atan2(dot(a.q, v), dot(a.q, uu)),
+            if_true: 0.0,
+            cond: a.place.rho < 0.000001,
+        )
+        Place { theta, ..a.place }
+    }
+
+    /// Where `p` is about the path (`Place`): about the piece whose span holds it. That piece is
+    /// the nearest by its distance from the path in its plane and how far it is outside the
+    /// piece's span (0 for that one); where two hold it, inside a sharp turn, the nearer.
+    pub fn place(self, p: vec3) -> Place {
+        var best = self.about(0, p)
+        var which = 0
+        var key = rank(best.place, best.outside)
+        for i in 1..self.vertices - 1 {
+            let a = self.about(i, p)
+            let k = rank(a.place, a.outside)
+            if k < key {
+                best = a
+                which = i
+                key = k
+            }
+        }
+        self.angled(which, best)
+    }
+
+    /// The section's plane `s` metres along the path (held at its ends).
+    pub fn frame(self, s: f32) -> Frame {
+        // The piece of path that holds `s`.
+        var i = 0
+        for k in 1..self.vertices - 1 {
+            if self.along[k] <= s {
+                i = k
+            }
+        }
+        let a = self.at[i]
+        let b = self.at[i + 1]
+        let seg = length(b - a)
+        let w = (b - a) / max(seg, 0.000000001)
+        let t = clamp(s - self.along[i], 0.0, seg)
+        let n0 = self.normal[i]
+        let n1 = self.normal[i + 1]
+        let c0 = dot(n0, w)
+        let c1 = dot(n1, w)
+        // How far the section's plane has turned from the piece's first to its last (`about`
+        // finds `t` from it; this is that, the other way).
+        let lam = saturate(t * c0 / max(seg * c1 + t * (c0 - c1), 0.000001))
+        let n = unit(mix(n0, n1, lam))
+        let u = mix(self.up[i], self.up[i + 1], lam)
+        let uu = unit(u - n * dot(u, n))
+        Frame { at: a + w * t, along: n, up: uu, left: cross(uu, n) }
+    }
+}
+
+// ---- a chain of joints --------------------------------------------------------------------------
+
+/// The most joints a chain has.
+pub const JOINTS: u32 = 8
+
+/// A chain of joints a path runs along, at rest: its joints from its root's end to its tip
+/// (`count` of them), how far the path runs on before the first and after the last (straight
+/// on), how far either side of a joint between them its bend is rounded (0 for a path that is
+/// a smooth curve through its joints, as a spine is), angle 0 at its start,
+/// and for each bone (bone `i` runs from joint `i` to joint `i + 1`) how far along it its own
+/// turn about its length is reached (`spread`: 1 for a forearm, whose two bones cross all the
+/// way from elbow to wrist; a third for an upper arm or a thigh, whose skin turns with the bone
+/// past the muscle that caps the joint). And how far its path cuts the corner at a bent joint
+/// (`cut`, 0 to 1): at 0 the path goes through the joint itself however far it's bent; at 1 it
+/// follows the arc that leaves one bone's line where the rounding starts and meets the other's
+/// where it ends, so a deep bend is one smooth curve and the limb's two lengths don't cross
+/// inside it.
+pub struct Chain: Copy {
+    pub joints: [vec3; JOINTS],
+    pub count: u32,
+    pub before: f32,
+    pub after: f32,
+    pub round: f32,
+    pub up: vec3,
+    pub spread: [f32; JOINTS],
+    pub cut: f32,
+}
+
+/// A chain through `joints`.
+pub fn chain<const J: u32>(
+    joints: [vec3; J],
+    up: vec3,
+    before: f32 = 0.0,
+    after: f32 = 0.0,
+    round: f32 = 0.05,
+    spread: [f32; JOINTS] = [1.0; JOINTS],
+    cut: f32 = 0.0,
+) -> Chain {
+    assert(J >= 2 && J <= JOINTS, "a chain has 2 to 8 joints")
+    var all = [vec3(); JOINTS]
+    for i in 0..J {
+        all[i] = joints[i]
+    }
+    Chain { joints: all, count: J, before, after, round, up, spread, cut }
+}
+
+/// `p` as matrix `m` carries it.
+fn carried(m: mat4, p: vec3) -> vec3 {
+    (m * vec4(p, 1.0)).xyz
+}
+
+/// Direction `d` as matrix `m` turns it.
+fn turned_by(m: mat4, d: vec3) -> vec3 {
+    unit((m * vec4(d, 0.0)).xyz)
+}
+
+/// A chain's path's points: where each is at rest, which bone of the chain carries it and the
+/// bone that shares it (a joint's own point is halfway between where each of its two bones has
+/// it), how much of its bone's own turn about its length it has (`reach`: 0 where the bone
+/// starts, 1 from where its turn is reached on), and how many there are.
+struct Points: Copy {
+    at: [vec3; VERTICES],
+    bone: [u32; VERTICES],
+    other: [u32; VERTICES],
+    reach: [f32; VERTICES],
+    count: u32,
+}
+
+impl Chain {
+    /// How far either side of joint `i` (one between two bones) the bend is rounded: `round`,
+    /// or two fifths of the shorter bone there.
+    fn rounded(self, i: u32) -> f32 {
+        let a = length(self.joints[i] - self.joints[i - 1])
+        let b = length(self.joints[i + 1] - self.joints[i])
+        min(self.round, 0.4 * min(a, b))
+    }
+
+    /// Its path's points: its start; for each bone, where its turn is reached (if before its
+    /// end); three about each joint between two bones (before it, on it, after it); and its end.
+    fn points(self) -> Points {
+        var at = [vec3(); VERTICES]
+        var bone = [0; VERTICES]
+        var other = [0; VERTICES]
+        var reach = [0.0; VERTICES]
+        let j = self.joints
+        let last = self.count - 1
+        var n = 0
+        at[n] = j[0] - unit(j[1] - j[0]) * self.before
+        n += 1
+        for i in 0..last {
+            // Where bone `i` starts and ends on the path: past the rounding of the joints at
+            // its ends.
+            let from = if i == 0 { j[0] } else { j[i] + unit(j[i + 1] - j[i]) * self.rounded(i) }
+            let to = if i + 1 == last { j[last] } else {
+                j[i + 1] - unit(j[i + 1] - j[i]) * self.rounded(i + 1)
+            }
+            if self.spread[i] < 0.999 {
+                at[n] = mix(from, to, max(self.spread[i], 0.05))
+                bone[n] = i
+                other[n] = i
+                reach[n] = 1.0
+                n += 1
+            }
+            if i + 1 == last {
+                at[n] = j[last] + unit(j[last] - j[last - 1]) * self.after
+                bone[n] = i
+                other[n] = i
+                reach[n] = 1.0
+                n += 1
+            } else if self.rounded(i + 1) <= 0.0 {
+                // (No rounding: the joint's own point alone, and the path a smooth curve
+                // through the joints, its bends spread along it. A spine's.)
+                at[n] = j[i + 1]
+                bone[n] = i
+                other[n] = i + 1
+                reach[n] = 1.0
+                n += 1
+            } else {
+                at[n] = to
+                bone[n] = i
+                other[n] = i
+                reach[n] = 1.0
+                at[n + 1] = j[i + 1]
+                bone[n + 1] = i
+                other[n + 1] = i + 1
+                reach[n + 1] = 1.0
+                at[n + 2] = j[i + 1] + unit(j[i + 2] - j[i + 1]) * self.rounded(i + 1)
+                bone[n + 2] = i + 1
+                other[n + 2] = i + 1
+                n += 3
+            }
+        }
+        Points { at, bone, other, reach, count: n }
+    }
+
+    /// Its path's points with each bent joint's own point moved in across its corner (`cut`):
+    /// toward the middle of the arc from the point before it, where the bend's rounding starts,
+    /// to the point after it, where it ends. Where the joint is straight it stays.
+    fn corners_cut(self, p: Points, at: [vec3; VERTICES]) -> [vec3; VERTICES] {
+        var out = at
+        if self.cut <= 0.0 {
+            return out
+        }
+        for i in 1..p.count - 1 {
+            // (A joint's own point is the one two bones share, with a rounding point of each
+            // either side of it.)
+            let shared = p.other[i] != p.bone[i]
+            if !shared || p.other[i - 1] != p.bone[i - 1] || p.other[i + 1] != p.bone[i + 1] {
+                continue
+            }
+            let before = at[i] - at[i - 1]
+            let after = at[i + 1] - at[i]
+            let lean = unit(after) - unit(before)
+            let bent = acos(clamp(dot(unit(before), unit(after)), -1.0, 1.0))
+            if length(lean) < 0.000001 {
+                continue
+            }
+            // The arc's middle is the rounding's length times tan(a quarter of the bend) in
+            // from the corner.
+            let t = 0.5 * (length(before) + length(after))
+            out[i] = at[i] + unit(lean) * (self.cut * t * tan(0.25 * min(bent, 3.0)))
+        }
+        out
+    }
+
+    /// Its mirror image in the plane x = 0: a right limb's chain from its left's. Angles on
+    /// its chart then run the other way round the body, so a form about it is the left's
+    /// mirrored (`Radial::mirrored`).
+    pub fn mirrored(self) -> Chain {
+        var joints = self.joints
+        for i in 0..JOINTS {
+            joints[i] = vec3(-joints[i].x, joints[i].y, joints[i].z)
+        }
+        Chain { joints, up: vec3(-self.up.x, self.up.y, self.up.z), ..self }
+    }
+
+    /// Its path at rest.
+    pub fn rest(self) -> Path {
+        let p = self.points()
+        laid(self.corners_cut(p, p.at), [0.0; VERTICES], p.count, self.up)
+    }
+
+    /// Its path as its bones pose it. `root` is the matrix of what the chain hangs from (a
+    /// chest for an arm), and `bones[i]` the matrix of the bone from joint `i` to joint `i + 1`;
+    /// each carries a point of the body at rest to where the pose has it. Each of the path's
+    /// points goes with its bone. Angle 0 at the start is the root's, swung to the way the first
+    /// bone points. Each bone's own turn about its length starts from the bone before's at the
+    /// joint between them and is reached `spread` of the way along it: a forearm's turn from the
+    /// elbow to the wrist, an upper arm's within its first third.
+    pub fn posed(self, root: mat4, bones: [mat4; JOINTS]) -> Path {
+        let p = self.points()
+        let rest = laid(self.corners_cut(p, p.at), [0.0; VERTICES], p.count, self.up)
+        var carried_to = [vec3(); VERTICES]
+        for i in 0..p.count {
+            carried_to[i] = 0.5 *
+                (carried(bones[p.bone[i]], p.at[i]) + carried(bones[p.other[i]], p.at[i]))
+        }
+        let at = self.corners_cut(p, carried_to)
+        // Angle 0 at the start: the root's, swung from where the root has the path's start
+        // pointing to where the first bone has it.
+        let ahead = unit(at[1] - at[0])
+        let up0 = carry(turned_by(root, rest.up[0]), turned_by(root, rest.normal[0]), ahead)
+        let flat = laid(at, [0.0; VERTICES], p.count, up0)
+        // Each bone's turn about its length, read at the last point it alone carries: from the
+        // untwisted frame there to where the bone has the rest frame's angle 0. The nearest
+        // turn to the bone before's: never the long way round.
+        let per = (flat.vertices - 1) / (p.count - 1)
+        var turn = [0.0; JOINTS]
+        var so_far = 0.0
+        for i in 1..p.count {
+            let ends_bone = i + 1 == p.count ||
+                p.other[i + 1] != p.bone[i] ||
+                p.bone[i + 1] != p.bone[i]
+            if ends_bone && p.other[i] == p.bone[i] {
+                let v = i * per
+                let want = turned_by(bones[p.bone[i]], rest.up[v])
+                so_far += wrapped(angle_between(flat.up[v], want, flat.normal[v]) - so_far)
+                turn[p.bone[i]] = so_far
+            }
+        }
+        var twist = [0.0; VERTICES]
+        for i in 0..p.count {
+            let b = p.bone[i]
+            let before = if b == 0 { 0.0 } else { turn[b - 1] }
+            twist[i] = mix(before, turn[b], p.reach[i])
+        }
+        laid(at, twist, p.count, up0)
+    }
+
+    /// How each joint between two of its bones is bent in a pose (`Bend`; `bones` as `posed`
+    /// takes them): joint `i`'s is `[i]`, and the first and last joints' are no bend.
+    pub fn bends(self, bones: [mat4; JOINTS]) -> [Bend; JOINTS] {
+        let rest = self.rest()
+        let len = rest.length()
+        var out = [Bend { at: 0.0, angle: 0.0, toward: 0.0, after: 0.0, reached: 0.0 }; JOINTS]
+        for i in 1..self.count - 1 {
+            let j = self.joints[i]
+            let ahead = unit(self.joints[i + 1] - j)
+            let at = rest.place(j).along
+            let fr = rest.frame(at)
+            // The way the bone after points, as the bone before sees it: both bones' turns
+            // taken off, so it's a way in the body at rest. It leans toward the bend's inside.
+            let seen = seen_from(bones[i - 1], turned_by(bones[i], ahead))
+            let angle = acos(clamp(dot(seen, ahead), -1.0, 1.0))
+            let lean = seen - ahead * dot(seen, ahead)
+            // And the way the bone before points, as the bone after sees it: it leans away
+            // from the bend's inside, as the bone after has it (which has turned about its own
+            // length too).
+            let back = seen_from(bones[i], turned_by(bones[i - 1], ahead))
+            let away = back - ahead * dot(back, ahead)
+            let bent = length(lean) > 0.000001 && length(away) > 0.000001
+            let toward = if bent { atan2(dot(lean, fr.left), dot(lean, fr.up)) } else { 0.0 }
+            let after = if bent { atan2(-dot(away, fr.left), -dot(away, fr.up)) } else { 0.0 }
+            // Where the bone after's own turn is reached: `spread` of the way along it, from
+            // past the joint's rounding.
+            let last = self.count - 1
+            let from = j + ahead * self.rounded(i)
+            let to = if i + 1 == last { self.joints[last] } else {
+                self.joints[i + 1] - ahead * self.rounded(i + 1)
+            }
+            let reached = rest.place(mix(from, to, clamp(self.spread[i], 0.05, 1.0))).along
+            out[i] = Bend { at: at / len, angle, toward, after, reached: reached / len }
+        }
+        out
+    }
+
+    /// `bends`, with the chain's bones given as they are (`B` of them, one fewer than its
+    /// joints).
+    pub fn bends_by<const B: u32>(self, bones: [mat4; B]) -> [Bend; JOINTS] {
+        assert(B + 1 == self.count, "a chain has a bone fewer than its joints")
+        var all = [bones[0]; JOINTS]
+        for i in 0..B {
+            all[i] = bones[i]
+        }
+        self.bends(all)
+    }
+
+    /// `posed`, with the chain's bones given as they are (`B` of them, one fewer than its
+    /// joints).
+    pub fn posed_by<const B: u32>(self, root: mat4, bones: [mat4; B]) -> Path {
+        assert(B + 1 == self.count, "a chain has a bone fewer than its joints")
+        var all = [root; JOINTS]
+        for i in 0..B {
+            all[i] = bones[i]
+        }
+        self.posed(root, all)
+    }
+}
+
+/// Direction `d` (in the world) as the body at rest has it, by the bone whose matrix is `m`:
+/// the bone's turn taken off.
+fn seen_from(m: mat4, d: vec3) -> vec3 {
+    unit(vec3(dot(d, m[0].xyz), dot(d, m[1].xyz), dot(d, m[2].xyz)))
+}
+
+/// How a joint between two bones of a chain is bent in a pose: where the joint is on the
+/// chain's chart (`at`, of the way along its path); by how much the bone after it leans from
+/// the bone before's line (`angle`, radians; 0 straight); and toward which angle of the chart
+/// the inside of the bend is (its outside is half a turn on): `toward` as the bone before has
+/// it, up to the joint, and `after` as the bone after has it, from where that bone's own turn
+/// about its length is reached (`reached`, of the way along the path) on. Between, the chart
+/// turns from one to the other (`lean_at`).
+pub struct Bend: Copy {
+    pub at: f32,
+    pub angle: f32,
+    pub toward: f32,
+    pub after: f32,
+    pub reached: f32,
+}
+
+impl Bend {
+    /// The angle of the chart the inside of the bend is at, `f` of the way along the path.
+    pub fn lean_at(self, f: f32) -> f32 {
+        let x = saturate((f - self.at) / max(self.reached - self.at, 0.000001))
+        self.toward + wrapped(self.after - self.toward) * x
+    }
+}
+
+/// How a form changes where a joint of its chain bends: what flesh does there, which a form
+/// made again along its posed path lacks (the outside of an elbow comes to a point, the cap of
+/// a shoulder thins as the arm comes down). Two forms written for a bend toward angle 0:
+/// `by_angle` is added times the bend's angle (radians), `by_square` times its square, each
+/// turned to where the bend leans (`Radial::bent`). A bend past `upto` (radians) changes the
+/// form as one of `upto` does: a change solved over poses holds at the deepest bend among them,
+/// since its square would carry it on past anything it was solved against.
+pub struct Change<const A: u32, const R: u32>: Copy {
+    pub by_angle: Radial<A, R>,
+    pub by_square: Radial<A, R>,
+    pub upto: f32 = 3.2,
+}
+
+impl<const A: u32, const R: u32> Change<A, R> {
+    /// Its mirror image: a right limb's joint's change from its left's.
+    pub fn mirrored(self) -> Change<A, R> {
+        Change {
+            by_angle: self.by_angle.mirrored(),
+            by_square: self.by_square.mirrored(),
+            upto: self.upto,
+        }
+    }
+
+    /// It with `other` added: a named change (a muscle's) over a solved one. The two hold at
+    /// the lesser of their deepest bends.
+    pub fn plus(self, other: Change<A, R>) -> Change<A, R> {
+        Change {
+            by_angle: self.by_angle.plus(other.by_angle),
+            by_square: self.by_square.plus(other.by_square),
+            upto: min(self.upto, other.upto),
+        }
+    }
+}
+
+/// An angle brought into −π to π.
+pub fn wrapped(a: f32) -> f32 {
+    a - TAU * floor(a / TAU + 0.5)
+}
+
+// ---- the radius ---------------------------------------------------------------------------------
+
+/// A radius over a chart, linear in its numbers: `A` control values along the path (uniform
+/// cubic B-splines over the span from `from` to `to` of the path's length; held beyond it),
+/// each a Fourier series round it of `R` terms (1, then a cosine and a sine a harmonic, so `R`
+/// is odd).
+pub struct Radial<const A: u32, const R: u32>: Copy + GpuData {
+    pub from: f32,
+    pub to: f32,
+    pub coef: [[f32; R]; A],
+}
+
+/// The four spline weights at `u` (0 to 1) of the way through a segment, and their slopes.
+fn spline(u: f32) -> (vec4, vec4) {
+    let u2 = u * u
+    let u3 = u2 * u
+    (
+        vec4(
+            (1.0 - 3.0 * u + 3.0 * u2 - u3) / 6.0,
+            (3.0 * u3 - 6.0 * u2 + 4.0) / 6.0,
+            (-3.0 * u3 + 3.0 * u2 + 3.0 * u + 1.0) / 6.0,
+            u3 / 6.0,
+        ),
+        vec4(
+            (-1.0 + 2.0 * u - u2) / 2.0,
+            (3.0 * u2 - 4.0 * u) / 2.0,
+            (-3.0 * u2 + 2.0 * u + 1.0) / 2.0,
+            u2 / 2.0,
+        ),
+    )
+}
+
+/// A round form: radius `r` everywhere.
+pub fn round<const A: u32, const R: u32>(r: f32) -> Radial<A, R> {
+    var coef = [[0.0; R]; A]
+    for i in 0..A {
+        coef[i][0] = r
+    }
+    Radial { from: 0.0, to: 1.0, coef }
+}
+
+impl<const A: u32, const R: u32> Radial<A, R> {
+    /// The first control value that weighs at `f` of the way along, how far through its segment
+    /// `f` is, and how many segments one of path's length is.
+    fn segment(self, f: f32) -> (u32, f32, f32) {
+        let segs = A - 3
+        let per = f32(segs) / max(self.to - self.from, 0.000001)
+        let x = clamp((f - self.from) * per, 0.0, f32(segs))
+        let i = min(u32(x), segs - 1)
+        (i, x - f32(i), per)
+    }
+
+    /// The four control values along the path that weigh at `f` of the way along: the first
+    /// of them, and each one's weight (a fit's own sums are made from these).
+    pub fn along_weights(self, f: f32) -> (u32, [f64; 4]) {
+        let (i, u, _) = self.segment(f)
+        let (w, _) = spline(u)
+        (i, [f64(w.x), f64(w.y), f64(w.z), f64(w.w)])
+    }
+
+    /// Its radius at `f` of the way along and angle `theta` (m), how fast it changes with `f`
+    /// (per whole length), and with `theta` (per radian).
+    pub fn radius_and_slopes(self, f: f32, theta: f32) -> vec3 {
+        let (i, u, per) = self.segment(f)
+        let (w, dw) = spline(u)
+        // (Held past its span: no slope along.)
+        let inside = if f > self.from && f < self.to { per } else { 0.0 }
+        let c = cos(theta)
+        let s = sin(theta)
+        var ch = 1.0
+        var sh = 0.0
+        var out = vec3()
+        for j in 0..R {
+            // Term `j` round the path: 1, then cos and sin of each harmonic, and its slope.
+            let h = (j + 1) / 2
+            var term = 1.0
+            var slope = 0.0
+            if j % 2 == 1 {
+                // (On to the next harmonic.)
+                let next = vec2(ch * c - sh * s, sh * c + ch * s)
+                ch = next.x
+                sh = next.y
+                term = ch
+                slope = -f32(h) * sh
+            } else if j > 0 {
+                term = sh
+                slope = f32(h) * ch
+            }
+            let k = w.x * self.coef[i][j] +
+                w.y * self.coef[i + 1][j] +
+                w.z * self.coef[i + 2][j] +
+                w.w * self.coef[i + 3][j]
+            let dk = dw.x * self.coef[i][j] +
+                dw.y * self.coef[i + 1][j] +
+                dw.z * self.coef[i + 2][j] +
+                dw.w * self.coef[i + 3][j]
+            out += vec3(k * term, dk * term * inside, k * slope)
+        }
+        out
+    }
+
+    /// Its radius at `f` of the way along and angle `theta` (m).
+    pub fn radius(self, f: f32, theta: f32) -> f32 {
+        self.radius_and_slopes(f, theta).x
+    }
+
+    /// It with `by` times `other` added: a change with the pose, a garment's thickness, the
+    /// difference between two bodies.
+    pub fn plus(self, other: Radial<A, R>, by: f32 = 1.0) -> Radial<A, R> {
+        assert(
+            abs(self.from - other.from) < 0.00001 && abs(self.to - other.to) < 0.00001,
+            "forms that are added cover the same span of their path",
+        )
+        var coef = self.coef
+        for i in 0..A {
+            for j in 0..R {
+                coef[i][j] += by * other.coef[i][j]
+            }
+        }
+        Radial { coef, ..self }
+    }
+
+    /// It turned about its path by `angle` (toward the left): its radius at an angle is what
+    /// it was `angle` before. A change with a joint's bend is written for a bend toward angle
+    /// 0 and turned to where the bend is.
+    pub fn turned(self, angle: f32) -> Radial<A, R> {
+        var coef = self.coef
+        for j in 0..(R - 1) / 2 {
+            let k = f32(j + 1)
+            let c = cos(k * angle)
+            let s = sin(k * angle)
+            for i in 0..A {
+                let a = self.coef[i][2 * j + 1]
+                let b = self.coef[i][2 * j + 2]
+                coef[i][2 * j + 1] = a * c - b * s
+                coef[i][2 * j + 2] = a * s + b * c
+            }
+        }
+        Radial { coef, ..self }
+    }
+
+    /// Its mirror image: its radius at an angle is what it was at the angle's negative. A
+    /// right limb's form is its left's, mirrored, about the left's chain mirrored.
+    pub fn mirrored(self) -> Radial<A, R> {
+        var coef = self.coef
+        for j in 0..(R - 1) / 2 {
+            for i in 0..A {
+                coef[i][2 * j + 2] = -self.coef[i][2 * j + 2]
+            }
+        }
+        Radial { coef, ..self }
+    }
+
+    /// It turned about its path, each control value along it by its own angle (`angles`, toward
+    /// the left): a turn that changes along the path.
+    pub fn turned_along(self, angles: [f32; A]) -> Radial<A, R> {
+        var coef = self.coef
+        for i in 0..A {
+            for j in 0..(R - 1) / 2 {
+                let k = f32(j + 1)
+                let c = cos(k * angles[i])
+                let s = sin(k * angles[i])
+                let a = self.coef[i][2 * j + 1]
+                let b = self.coef[i][2 * j + 2]
+                coef[i][2 * j + 1] = a * c - b * s
+                coef[i][2 * j + 2] = a * s + b * c
+            }
+        }
+        Radial { coef, ..self }
+    }
+
+    /// Where control value `i` along the path weighs most (of the way along).
+    pub fn place_of_control(self, i: u32) -> f32 {
+        self.from + (self.to - self.from) * (f32(i) - 1.0) / f32(A - 3)
+    }
+
+    /// It as a joint's bend changes it: with `change`'s two forms added, each turned to where
+    /// the bend's inside is along the path (`Bend::lean_at`), one times the bend's angle and
+    /// one times its square.
+    pub fn bent(self, change: Change<A, R>, bend: Bend) -> Radial<A, R> {
+        if bend.angle <= 0.0 {
+            return self
+        }
+        var angles = [0.0; A]
+        for i in 0..A {
+            angles[i] = bend.lean_at(change.by_angle.place_of_control(i))
+        }
+        let by = min(bend.angle, change.upto)
+        self
+            .plus(change.by_angle.turned_along(angles), by: by)
+            .plus(change.by_square.turned_along(angles), by: by * by)
+    }
+
+    /// It in `A2` control values along and `R2` terms round: the form of that size nearest it
+    /// (the same form, where `R2` is at least `R` and `A2` is `A`). A change solved small is
+    /// made the size of the form it changes.
+    pub fn resized<const A2: u32, const R2: u32>(self) -> Radial<A2, R2> {
+        var samples: Vec<Sample> = Vec::new()
+        let along = 4 * max(A, A2)
+        let about = 4 * max(R, R2)
+        for i in 0..along + 1 {
+            for j in 0..about {
+                let f = mix(self.from, self.to, f32(i) / f32(along))
+                let theta = TAU * f32(j) / f32(about)
+                samples.push(Sample { f, theta, r: self.radius(f, theta) })
+            }
+        }
+        fit(samples, from: self.from, to: self.to, smooth: 0.0)
+    }
+
+    /// It with its finer detail round the path damped: each harmonic kept by
+    /// 1 / (1 + (h / `detail`)⁸), so those under `detail` stay and those over it go.
+    /// A form's shading reads its normal from this (`normal_at`): the small ripples a fit
+    /// leaves are a fraction of a millimetre on the silhouette, but they tilt the surface
+    /// enough to fray a cel's bands of light.
+    pub fn softened(self, detail: f32) -> Radial<A, R> {
+        var coef = self.coef
+        for j in 0..(R - 1) / 2 {
+            let x = f32(j + 1) / max(detail, 0.001)
+            let x4 = x * x * x * x
+            let keep = 1.0 / (1.0 + x4 * x4)
+            for i in 0..A {
+                coef[i][2 * j + 1] = keep * self.coef[i][2 * j + 1]
+                coef[i][2 * j + 2] = keep * self.coef[i][2 * j + 2]
+            }
+        }
+        Radial { coef, ..self }
+    }
+
+    /// How many numbers it holds.
+    pub fn numbers(self) -> u32 {
+        A * R
+    }
+}
+
+// ---- a limb -------------------------------------------------------------------------------------
+
+/// The least a limb's side is from its path (m). A joint's change that follows a reference
+/// into the press of a limb against a body can take a radius to nothing or past it; a side on
+/// the wrong side of its path would be drawn inside out.
+pub const LEAST: f32 = 0.003
+
+/// The most hinges a limb folds at.
+pub const FOLDS: u32 = 2
+
+/// How far a limb's two sides of a folded hinge press into each other (m): flesh gives, so
+/// the crease lies this far in from the hinge's own line and the limb's sides aren't pinched
+/// beside it.
+pub const GIVE: f32 = 0.012
+
+/// A hinge a limb is folded at in a pose (an elbow, a knee): inside the bend, the limb's two
+/// lengths meet at the plane that halves it, and neither passes through the other. Where the
+/// hinge is on the chart (`at`, of the way along the path), the cotangent of half the bend's
+/// angle (`slope`: how fast the room to that plane grows along the path; below 0 for no fold),
+/// where the inside of the bend is on the chart (`toward`, `after`, `reached`: as `Bend`'s),
+/// and the path's length (m).
+pub struct Fold: Copy + GpuData {
+    pub at: f32,
+    pub slope: f32,
+    pub toward: f32,
+    pub after: f32,
+    pub reached: f32,
+    pub length: f32,
+}
+
+/// No fold.
+pub const NO_FOLD: Fold = Fold {
+    at: 0.0,
+    slope: -1.0,
+    toward: 0.0,
+    after: 0.0,
+    reached: 0.0,
+    length: 1.0,
+}
+
+impl Fold {
+    /// The most a limb's radius is at `f` of the way along and angle `theta`, so its side
+    /// stays its own side of the plane that halves the bend (and `GIVE` past it): within a
+    /// quarter turn of the bend's inside, the room to that plane along that angle; no limit
+    /// elsewhere.
+    pub fn most(self, f: f32, theta: f32) -> f32 {
+        let x = saturate((f - self.at) / max(self.reached - self.at, 0.000001))
+        let lean = self.toward + wrapped(self.after - self.toward) * x
+        let facing = cos(theta - lean)
+        let room = abs(f - self.at) * self.length * self.slope + GIVE
+        select(
+            if_false: room / max(facing, 0.05),
+            if_true: 1000.0,
+            cond: self.slope < 0.0 || facing <= 0.05,
+        )
+    }
+}
+
+/// A form about a path: its radius at each place on the path's chart, less where a folded
+/// hinge leaves it no room (`folds`).
+pub struct Limb<const A: u32, const R: u32>: Copy + GpuData {
+    pub path: Path,
+    pub form: Radial<A, R>,
+    pub folds: [Fold; FOLDS] = [NO_FOLD; FOLDS],
+}
+
+impl<const A: u32, const R: u32> Limb<A, R> {
+    /// The point of its side at a place on its chart: `f` of the way along its path, at angle
+    /// `theta` (from up, toward the left). Where the form doesn't fold over itself this is the
+    /// point `Path::place` puts at (`f` of its length, the radius there, `theta`): a point for
+    /// each place, with no grid searched for its surface.
+    pub fn side(self, f: f32, theta: f32) -> vec3 {
+        let x = saturate(f)
+        let fr = self.path.frame(x * self.path.length())
+        var r = max(self.form.radius(x, theta), LEAST)
+        for k in 0..FOLDS {
+            // (The lesser of the two, eased over 4 mm: a crease, not a tear.)
+            let most = self.folds[k].most(x, theta)
+            let h = saturate(0.5 + 0.5 * (most - r) / 0.004)
+            r = mix(most, r, h) - 0.004 * h * (1.0 - h)
+        }
+        fr.at + (fr.up * cos(theta) + fr.left * sin(theta)) * r
+    }
+
+    /// Whether a folded hinge holds its side in at a place on its chart (1 where its radius is
+    /// the fold's, 0 where it is its form's own): where it does, the side's normal is the
+    /// fold's, not what the form's slopes say (`normal_at`).
+    pub fn folded(self, f: f32, theta: f32) -> f32 {
+        let x = saturate(f)
+        let r = self.form.radius(x, theta)
+        var held = 0.0
+        for k in 0..FOLDS {
+            held = max(held, saturate(0.5 - 0.5 * (self.folds[k].most(x, theta) - r) / 0.004))
+        }
+        held
+    }
+
+    /// A point of its side (`side`) and the side's outward normal (unit) there: across the
+    /// side's points a little further along and a little further round. The three points are
+    /// worked out in one loop, so a shader holds the side's code once.
+    pub fn side_and_normal(self, f: f32, theta: f32) -> (vec3, vec3) {
+        let df = 0.002
+        let dt = 0.01
+        let f0 = min(f, 1.0 - df)
+        var p = [vec3(); 3]
+        for k in 0..3 {
+            let further = if k == 1 { df } else { 0.0 }
+            let round = if k == 2 { dt } else { 0.0 }
+            p[k] = self.side(f0 + further, theta + round)
+        }
+        (p[0], unit(cross(p[1] - p[0], p[2] - p[0])))
+    }
+
+    /// About how far `p` is from its side (negative inside), near it: how far `p` is past the
+    /// radius at its place, over how steep the side is there (√(1 + r_s² + (r_θ / ρ)²), ρ held
+    /// at least half the radius).
+    pub fn near(self, p: vec3) -> f32 {
+        let len = self.path.length()
+        let pl = self.path.place(p)
+        let k = self.form.radius_and_slopes(pl.along / len, pl.theta)
+        let around = k.z / max(max(pl.rho, 0.5 * k.x), 0.001)
+        let along = k.y / len
+        (pl.rho - k.x) / sqrt(1.0 + along * along + around * around)
+    }
+}
+
+/// The outward normal (unit) of a form's side at a place on its chart, from its radius's slopes
+/// there: for a pixel, which knows its place (`f` of the way along, the angle `theta`) and the
+/// section's plane there (`up`, angle 0, and `left`, a quarter turn on, as its vertices passed
+/// them down), about a path `length` long. Exact at every pixel however coarse the grid the
+/// form was drawn on, where the path is straight; where it bends, off by the little the
+/// section's plane turns across the radius's change along it.
+pub fn normal_at<const A: u32, const R: u32>(
+    form: Radial<A, R>,
+    up: vec3,
+    left: vec3,
+    length: f32,
+    f: f32,
+    theta: f32,
+) -> vec3 {
+    let u = unit(up)
+    let l = unit(left - u * dot(left, u))
+    let along = cross(l, u)
+    let k = form.radius_and_slopes(saturate(f), theta)
+    let out = u * cos(theta) + l * sin(theta)
+    let round = l * cos(theta) - u * sin(theta)
+    unit(out - round * (k.z / max(k.x, 0.001)) - along * (k.y / max(length, 0.001)))
+}
+
+// ---- where a form is ----------------------------------------------------------------------------
+
+/// How many places along a path, and round it, a cover marks.
+pub const COVER_ALONG: u32 = 96
+pub const COVER_ROUND: u32 = 256
+
+/// The words a cover's marks take: a bit a place.
+pub const COVER_WORDS: u32 = 768
+
+/// Where on its chart a form is: a garment's openings (a jacket's front, its armholes) are
+/// where it isn't. A bit a place, `COVER_ALONG` along the path by `COVER_ROUND` round it from
+/// angle 0, set where the form is; read between places (`covered`), so an opening's edge is
+/// smooth. A pixel reads it from GPU memory (`upload`, then `covered` on the buffer's words):
+/// as a constant in a shader, its table is copied for every pixel.
+pub struct Cover: Copy {
+    pub words: [u32; COVER_WORDS],
+}
+
+impl Cover {
+    /// How much of the form is at `f` of the way along and angle `theta` (`covered`).
+    pub fn covered(self, f: f32, theta: f32) -> f32 {
+        covered(self.words, f, theta)
+    }
+
+    /// Its words in GPU memory, for a pixel to read.
+    pub fn upload(self) -> GpuBuffer<u32> {
+        buffer_of(self.words)
+    }
+}
+
+/// Whether a cover whose words are `words` has its form at place (`i` along, `j` round, counted
+/// round the whole turn).
+fn mark(words: [u32], i: u32, j: u32) -> f32 {
+    let k = min(i, COVER_ALONG - 1) * COVER_ROUND + j % COVER_ROUND
+    f32((words[k / 32] >> (k % 32)) & 1)
+}
+
+/// How much of a form is at `f` of the way along and angle `theta`, by its cover's words: 1
+/// well inside it, 0 well inside an opening, and a half at an opening's edge.
+pub fn covered(words: [u32], f: f32, theta: f32) -> f32 {
+    let x = clamp(f * f32(COVER_ALONG) - 0.5, 0.0, f32(COVER_ALONG - 1))
+    let y = fract(theta / TAU + 1.0) * f32(COVER_ROUND) - 0.5 + f32(COVER_ROUND)
+    let i = u32(x)
+    let j = u32(y)
+    let fx = x - f32(i)
+    let fy = y - f32(j)
+    mix(
+        mix(mark(words, i, j), mark(words, i + 1, j), fx),
+        mix(mark(words, i, j + 1), mark(words, i + 1, j + 1), fx),
+        fy,
+    )
+}
+
+/// A cover from marks: `marks[i * COVER_ROUND + j]` says whether the form is at place `i`
+/// along, `j` round.
+pub fn cover_of(marks: [bool]) -> Cover {
+    assert(marks.len() == COVER_ALONG * COVER_ROUND, "a cover has a mark a place")
+    var words = [0; COVER_WORDS]
+    for k in 0..marks.len() {
+        if marks[k] {
+            words[k / 32] = words[k / 32] | (1 << (k % 32))
+        }
+    }
+    Cover { words }
+}
+
+/// `cover` as a Wrela constant named `name`, after `doc` (its doc comment's lines, without
+/// `///`): its words in hexadecimal, seven a line.
+pub fn cover_source(cover: Cover, name: str, doc: [String]) -> String {
+    var out = String::new()
+    for line in doc {
+        out.push_str(f"/// {line}\n")
+    }
+    out.push_str(f"pub const {name}: Cover = Cover {{\n    words: [\n")
+    var k = 0
+    while k < COVER_WORDS {
+        out.push_str("       ")
+        for _ in 0..7 {
+            if k < COVER_WORDS {
+                out.push_str(f" 0x{cover.words[k]:08x},")
+                k += 1
+            }
+        }
+        out.push_str("\n")
+    }
+    out.push_str("    ],\n}\n")
+    out
+}
+
+// ---- a part of a creature -----------------------------------------------------------------------
+
+/// A charted part of a creature: the chain it's charted about; which of the creature's bones
+/// the chain's bones are, in the chain's order, and the bone the chain hangs from (`root`: a
+/// chest for an arm); its form at rest; how its form changes where each of its joints bends
+/// (`changes[i]` is joint `i`'s; no change where it's nothing); the band of its chart it's
+/// drawn over; and how its root is drawn under what covers it (`sunk`: by how far at its path's
+/// start, m, and from how far along it not at all; `chart::sunk`).
+pub struct Part<const A: u32, const R: u32>: Copy {
+    pub chain: Chain,
+    pub bones: [u32; JOINTS],
+    pub root: u32,
+    pub form: Radial<A, R>,
+    pub changes: [Change<A, R>; JOINTS],
+    pub band: Band,
+    pub sunk: vec2,
+    /// Which of its joints are hinges it folds at (`Fold`: an elbow, a knee), by their place in
+    /// its chain; 0 for none.
+    pub folds: [u32; FOLDS] = [0; FOLDS],
+}
+
+/// No change at a joint.
+pub fn unchanged<const A: u32, const R: u32>() -> Change<A, R> {
+    Change { by_angle: round(0.0), by_square: round(0.0) }
+}
+
+impl<const A: u32, const R: u32> Part<A, R> {
+    /// It at rest.
+    pub fn rest(self) -> Limb<A, R> {
+        Limb { path: self.chain.rest(), form: self.form }
+    }
+
+    /// It as a pose has it (`palette`: each of the creature's bones' matrices, from the body at
+    /// rest to where the pose has it): its path where its bones are, its form changed where
+    /// its joints bend.
+    pub fn posed(self, palette: [mat4; 64]) -> Limb<A, R> {
+        var bones = [palette[self.root]; JOINTS]
+        for i in 0..self.chain.count - 1 {
+            bones[i] = palette[self.bones[i]]
+        }
+        let bends = self.chain.bends(bones)
+        var form = self.form
+        for i in 1..self.chain.count - 1 {
+            form = form.bent(self.changes[i], bends[i])
+        }
+        let path = self.chain.posed(palette[self.root], bones)
+        var folds = [NO_FOLD; FOLDS]
+        for k in 0..FOLDS {
+            let b = bends[self.folds[k]]
+            // (A hinge bent less than a sixth of a turn has room for both its sides.)
+            if self.folds[k] > 0 && b.angle > 1.0 {
+                folds[k] = Fold {
+                    at: b.at,
+                    slope: 1.0 / tan(0.5 * min(b.angle, 3.0)),
+                    toward: b.toward,
+                    after: b.after,
+                    reached: b.reached,
+                    length: path.length(),
+                }
+            }
+        }
+        Limb { path, form, folds }
+    }
+
+    /// How far under what covers it its side is drawn, `f` of the way along its path (m).
+    pub fn sunk_at(self, f: f32) -> f32 {
+        sunk_by(self.sunk, f)
+    }
+}
+
+/// How far under what covers it a part's side is drawn `f` of the way along its path (m), for
+/// the part's `sunk`: all of it over the first two fifths of the way to where it's none.
+pub fn sunk_by(sunk: vec2, f: f32) -> f32 {
+    sunk.x * (1.0 - smoothstep(0.4 * sunk.y, sunk.y, f))
+}
+
+impl<const A: u32, const R: u32> Limb<A, R> {
+    /// The level it's drawn at, seen from `eye` by a camera whose picture is `pixels` high over
+    /// `tan_half` (`level_for`, by its length and its radius halfway along).
+    pub fn level(self, eye: vec3, pixels: f32, tan_half: f32) -> u32 {
+        let len = self.path.length()
+        level_for(
+            length: len,
+            radius: self.form.radius(f: 0.5, theta: 0.0),
+            distance: length(self.path.frame(0.5 * len).at - eye),
+            pixels: pixels,
+            tan_half: tan_half,
+        )
+    }
+}
+
+// ---- fitting ------------------------------------------------------------------------------------
+
+/// A radius read off a target: at `f` of the way along a path and angle `theta` round it, the
+/// target's side is `r` from the path.
+pub struct Sample: Copy {
+    pub f: f32,
+    pub theta: f32,
+    pub r: f32,
+}
+
+/// The term round the path each of `R` numbers weighs at angle `theta`.
+pub fn terms<const R: u32>(theta: f32) -> [f64; R] {
+    var out = [0.0; R]
+    out[0] = 1.0
+    for j in 1..R {
+        let h = f32((j + 1) / 2)
+        out[j] = f64(if j % 2 == 1 { cos(h * theta) } else { sin(h * theta) })
+    }
+    out
+}
+
+/// The radial form over the span from `from` to `to` nearest `samples`, by least squares: one
+/// exact solve (the normal equations, by their LDLᵀ factors), with no starting guess and no
+/// other minimum to fall into. `smooth` weighs how much a control value may differ from the line
+/// through its neighbours along the path (times the samples' count): a little carries the form
+/// on evenly where no sample reaches.
+pub fn fit<const A: u32, const R: u32>(
+    samples: [Sample],
+    from: f32 = 0.0,
+    to: f32 = 1.0,
+    smooth: f64 = 0.0001,
+) -> Radial<A, R> {
+    assert(A >= 4, "a radial form has four or more control values along its path")
+    assert(R % 2 == 1, "a radial form has a cosine and a sine a harmonic")
+    let n = A * R
+    let shape: Radial<A, R> = Radial { from, to, coef: [[0.0; R]; A] }
+    var m: Vec<f64> = Vec::filled(n * n, value: 0.0)
+    var g: Vec<f64> = Vec::filled(n, value: 0.0)
+    for s in samples {
+        let (i, u, _) = shape.segment(s.f)
+        let (w4, _) = spline(u)
+        let w = [f64(w4.x), f64(w4.y), f64(w4.z), f64(w4.w)]
+        let round: [f64; R] = terms(s.theta)
+        for a1 in 0..4 {
+            for j1 in 0..R {
+                let k1 = (i + a1) * R + j1
+                let v1 = w[a1] * round[j1]
+                g[k1] += v1 * f64(s.r)
+                // (The sums' upper half: the matrix is symmetric, and is filled out after.)
+                for a2 in a1..4 {
+                    let row = k1 * n + (i + a2) * R
+                    let v = v1 * w[a2]
+                    for j2 in (if a2 == a1 { j1 } else { 0 })..R {
+                        m[row + j2] += v * round[j2]
+                    }
+                }
+            }
+        }
+    }
+    for x in 0..n {
+        for y in x + 1..n {
+            m[y * n + x] = m[x * n + y]
+        }
+    }
+    // Each control value near the line through its neighbours along the path.
+    let lam = smooth * f64(max(samples.len(), 1))
+    for i in 1..A - 1 {
+        for j in 0..R {
+            let k = [(i - 1) * R + j, i * R + j, (i + 1) * R + j]
+            let c = [1.0, -2.0, 1.0]
+            for a in 0..3 {
+                for b in 0..3 {
+                    m[k[a] * n + k[b]] += lam * c[a] * c[b]
+                }
+            }
+        }
+    }
+    for k in 0..n {
+        m[k * n + k] += 0.000000001
+    }
+    let solved = solve_symmetric(take m, g, n)
+    var coef = [[0.0; R]; A]
+    for i in 0..A {
+        for j in 0..R {
+            coef[i][j] = f32(solved[i * R + j])
+        }
+    }
+    Radial { from, to, coef }
+}
+
+/// `x` where the symmetric, positive definite `n` by `n` matrix `m` times `x` is `g`: by its
+/// LDLᵀ factors (a unit lower triangle L below the diagonal, D on it).
+pub fn solve_symmetric(m: take Vec<f64>, g: [f64], n: u32) -> Vec<f64> {
+    var a = take m
+    for p in 0..n {
+        var dp = a[p * n + p]
+        for t in 0..p {
+            dp -= a[p * n + t] * a[p * n + t] * a[t * n + t]
+        }
+        assert(dp > 0.0, "a fit's normal equations aren't positive definite")
+        a[p * n + p] = dp
+        for q in p + 1..n {
+            var v = a[q * n + p]
+            for t in 0..p {
+                v -= a[q * n + t] * a[p * n + t] * a[t * n + t]
+            }
+            a[q * n + p] = v / dp
+        }
+    }
+    var y: Vec<f64> = Vec::filled(n, value: 0.0)
+    for p in 0..n {
+        var v = g[p]
+        for t in 0..p {
+            v -= a[p * n + t] * y[t]
+        }
+        y[p] = v
+    }
+    var x: Vec<f64> = Vec::filled(n, value: 0.0)
+    var p = n
+    while p > 0 {
+        p -= 1
+        var v = y[p] / a[p * n + p]
+        for t in p + 1..n {
+            v -= a[t * n + p] * x[t]
+        }
+        x[p] = v
+    }
+    x
+}
+
+/// The radial form nearest a radius written as a function of its place (`f` of the way along,
+/// the angle round): a change with the pose or a garment's thickness written as a rule, put in
+/// the same numbers as the form it changes. Sampled at 4 places a control value by 4 angles a
+/// term.
+pub fn of<const A: u32, const R: u32>(
+    radius: fn(f32, f32) -> f32,
+    from: f32 = 0.0,
+    to: f32 = 1.0,
+) -> Radial<A, R> {
+    var samples: Vec<Sample> = Vec::new()
+    let along = 4 * A
+    let about = 4 * R
+    for i in 0..along + 1 {
+        for j in 0..about {
+            let f = from + (to - from) * f32(i) / f32(along)
+            let theta = TAU * f32(j) / f32(about)
+            samples.push(Sample { f, theta, r: radius(f, theta) })
+        }
+    }
+    fit(samples, from: from, to: to, smooth: 0.0)
+}
+
+// ---- drawing ------------------------------------------------------------------------------------
+
+/// How many grids a charted form is drawn on: finer as it is larger on screen.
+pub const LEVELS: u32 = 4
+
+/// Each level's quads: along the path, and round it.
+pub const QUADS: [vec2u; LEVELS] = [vec2u(96, 48), vec2u(64, 32), vec2u(40, 20), vec2u(24, 12)]
+
+/// The grids' indices, each level's after the last's: two triangles a quad, over vertices
+/// numbered along the path first (`place_of`). One buffer serves every charted form.
+pub struct Grids {
+    pub indices: GpuBuffer<u32>,
+}
+
+/// Where level `level`'s indices start in the grids' buffer, and how many they are.
+pub fn level_span(level: u32) -> vec2u {
+    var first = 0
+    for l in 0..level {
+        first += QUADS[l].x * QUADS[l].y * 6
+    }
+    vec2u(first, QUADS[level].x * QUADS[level].y * 6)
+}
+
+/// Every level's indices.
+fn grid_indices() -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    for l in 0..LEVELS {
+        let q = QUADS[l]
+        for i in 0..q.x {
+            for j in 0..q.y {
+                let a = i * (q.y + 1) + j
+                let b = a + q.y + 1
+                // (Outward faces wind counter-clockwise: along, then round to the left.)
+                out.push(a)
+                out.push(b)
+                out.push(b + 1)
+                out.push(a)
+                out.push(b + 1)
+                out.push(a + 1)
+            }
+        }
+    }
+    out
+}
+
+/// The grids, made once.
+pub fn grids() -> Grids {
+    Grids { indices: buffer_of(grid_indices()) }
+}
+
+/// The band of a chart a grid covers: from `f.x` to `f.y` of the way along, and from angle
+/// `theta.x` to `theta.y` round (0 to τ for a closed form; less for an open sheet).
+pub struct Band: Copy + GpuData {
+    pub f: vec2,
+    pub theta: vec2,
+}
+
+/// The whole chart.
+pub const WHOLE: Band = Band { f: vec2(0.0, 1.0), theta: vec2(0.0, TAU) }
+
+/// Where vertex `v` of level `level`'s grid is on a chart's `band`: how far along the path and
+/// at what angle round it. No vertices are kept: each is worked out from its number.
+pub fn place_of(v: u32, level: u32, band: Band) -> vec2 {
+    let q = QUADS[level]
+    let i = v / (q.y + 1)
+    let j = v % (q.y + 1)
+    vec2(
+        mix(band.f.x, band.f.y, f32(i) / f32(q.x)),
+        mix(band.theta.x, band.theta.y, f32(j) / f32(q.y)),
+    )
+}
+
+/// The level a form `length` long and `radius` thick is drawn at, `distance` from the eye of a
+/// camera whose picture is `pixels` high over `tan_half` (the tangent of half its field of
+/// view): the coarsest whose quads are 6 pixels or less along and round.
+pub fn level_for(length: f32, radius: f32, distance: f32, pixels: f32, tan_half: f32) -> u32 {
+    let scale = pixels / (2.0 * tan_half * max(distance, 0.01))
+    let along = length * scale
+    let about = TAU * radius * scale
+    var level = 0
+    for l in 1..LEVELS {
+        if along <= 6.0 * f32(QUADS[l].x) && about <= 6.0 * f32(QUADS[l].y) {
+            level = l
+        }
+    }
+    level
+}
+
+/// `world` as it's drawn `by` metres under what covers it, seen from `eye`: moved that far
+/// from the eye along its own line of sight, so it's the same place on the screen and only
+/// further off. A form's root under a garment it leaves through an opening (an arm's, in an
+/// armhole) is drawn so: the garment's edge then lies over it however the two were posed.
+pub fn sunk(world: vec3, eye: vec3, by: f32) -> vec3 {
+    world + unit(world - eye) * by
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+/// A leg's path: down from a hip, bending back at a knee and forward at an ankle to a paw.
+fn leg_path() -> Path {
+    path(
+        [
+            vec3(0.0, 0.6, 0.0),
+            vec3(0.0, 0.35, 0.05),
+            vec3(0.0, 0.15, -0.04),
+            vec3(0.0, 0.045, 0.0),
+            vec3(0.0, 0.03, 0.1),
+        ],
+        vec3(z: 1.0),
+    )
+}
+
+/// A form whose radius changes along and round its path: a thigh narrowing to a shin, wider
+/// across than deep, a muscle's bump on one side.
+fn leg_form() -> Radial<8, 7> {
+    of(|f: f32, theta: f32| {
+        0.06 - 0.035 * f + 0.008 * cos(2.0 * theta) + 0.006 * (1.0 - f) * cos(theta - 0.6)
+    })
+}
+
+@test
+fn a_paths_frame_is_carried_along_it() {
+    // At the hip, angle 0 is the leg's front (+z); at the paw, which runs forward, its top.
+    let l = leg_path()
+    assert(abs(l.place(vec3(0.0, 0.58, 0.05)).theta) < 0.05)
+    assert(abs(l.place(vec3(0.0, 0.07, 0.05)).theta) < 0.1)
+    // The left is +x: angle π/2 (in the hip's plane, square to the path there).
+    assert(abs(l.place(vec3(0.05, 0.6, 0.0)).theta - 0.5 * PI) < 0.001)
+}
+
+@test
+fn a_radial_form_of_one_radius_is_round() {
+    let r: Radial<6, 5> = round(0.04)
+    for i in 0..20 {
+        let k = r.radius_and_slopes(f32(i) / 19.0, 0.7 * f32(i))
+        assert(abs(k.x - 0.04) < 0.000001 && abs(k.y) < 0.000001 && abs(k.z) < 0.000001)
+    }
+}
+
+@test
+fn a_radial_forms_slopes_are_its_radiuss_change() {
+    let form = leg_form()
+    for i in 0..12 {
+        for j in 0..12 {
+            let f = 0.05 + 0.9 * f32(i) / 11.0
+            let theta = TAU * f32(j) / 12.0
+            let k = form.radius_and_slopes(f, theta)
+            let along = (form.radius(f + 0.001, theta) - form.radius(f - 0.001, theta)) / 0.002
+            let about = (form.radius(f, theta + 0.001) - form.radius(f, theta - 0.001)) / 0.002
+            assert(abs(k.y - along) < 0.001, f"along: {k.y} against {along}")
+            assert(abs(k.z - about) < 0.0005, f"round: {k.z} against {about}")
+        }
+    }
+}
+
+@test
+fn a_fit_finds_the_numbers_a_form_was_made_with() {
+    // A form made from a rule, sampled, and fitted again from its samples alone.
+    let form = leg_form()
+    var samples: Vec<Sample> = Vec::new()
+    for i in 0..400 {
+        let f = fract(0.618034 * f32(i))
+        let theta = TAU * fract(0.754878 * f32(i))
+        samples.push(Sample { f, theta, r: form.radius(f, theta) })
+    }
+    let again: Radial<8, 7> = fit(samples, smooth: 0.0)
+    var worst = 0.0
+    for i in 0..30 {
+        for j in 0..30 {
+            let f = f32(i) / 29.0
+            let theta = TAU * f32(j) / 30.0
+            worst = max(worst, abs(again.radius(f, theta) - form.radius(f, theta)))
+        }
+    }
+    assert(worst < 0.00002, f"a fitted form is {worst} m from the form its samples came from")
+    // And the rule itself: within a tenth of a millimetre of the form made from it.
+    assert(
+        abs(form.radius(f: 0.5, theta: 0.6) - (0.06 - 0.0175 + 0.008 * cos(1.2) + 0.003)) < 0.0001,
+    )
+}
+
+@test
+fn a_limbs_side_is_where_its_place_says() {
+    let l = Limb { path: leg_path(), form: leg_form() }
+    let len = l.path.length()
+    var worst = 0.0
+    var off = 0.0
+    var turned_most = 1.0
+    for i in 0..19 {
+        for j in 0..24 {
+            let f = 0.03 + 0.94 * f32(i) / 18.0
+            let theta = TAU * f32(j) / 24.0
+            let p = l.side(f, theta)
+            let pl = l.path.place(p)
+            worst = max(worst, abs(pl.rho - l.form.radius(f, theta)))
+            off = max(off, abs(pl.along / len - f))
+            assert(abs(l.near(p)) < 0.0002, "a point of a limb's side is on its surface")
+            // Its normal points away from the path.
+            let (at, n) = l.side_and_normal(f, theta)
+            assert(length(at - p) < 0.000001, "a side's point with its normal is the side's point")
+            let fr = l.path.frame(f * len)
+            turned_most = min(turned_most, dot(n, unit(p - fr.at)))
+        }
+    }
+    assert(worst < 0.0002, f"a side's point is {worst} m off its radius")
+    assert(off < 0.002, f"a side's point is {off} of the path's length from its place")
+    assert(turned_most > 0.8, f"a side's normal is {turned_most} of the way outward")
+}
+
+/// A turn of `angle` about the axis through `at` along unit `axis`.
+fn turn_about(axis: vec3, angle: f32, at: vec3) -> mat4 {
+    let c = cos(angle)
+    let s = sin(angle)
+    let k = axis
+    let x = vec3(1.0, 0.0, 0.0) * c + cross(k, vec3(1.0, 0.0, 0.0)) * s + k * (k.x * (1.0 - c))
+    let y = vec3(0.0, 1.0, 0.0) * c + cross(k, vec3(0.0, 1.0, 0.0)) * s + k * (k.y * (1.0 - c))
+    let z = vec3(0.0, 0.0, 1.0) * c + cross(k, vec3(0.0, 0.0, 1.0)) * s + k * (k.z * (1.0 - c))
+    let moved = at - (x * at.x + y * at.y + z * at.z)
+    mat4(vec4(x, 0.0), vec4(y, 0.0), vec4(z, 0.0), vec4(moved, 1.0))
+}
+
+const SAME: mat4 = mat4(
+    vec4(1.0, 0.0, 0.0, 0.0),
+    vec4(0.0, 1.0, 0.0, 0.0),
+    vec4(0.0, 0.0, 1.0, 0.0),
+    vec4(0.0, 0.0, 0.0, 1.0),
+)
+
+/// An arm along +x: a shoulder, an elbow and a wrist.
+fn arm_chain() -> Chain {
+    chain(
+        [vec3(0.2, 1.4, 0.0), vec3(0.45, 1.4, 0.0), vec3(0.7, 1.4, 0.0)],
+        vec3(y: 1.0),
+        before: 0.03,
+    )
+}
+
+@test
+fn a_posed_chain_at_rest_is_its_rest_path() {
+    let c = arm_chain()
+    let rest = c.rest()
+    let posed = c.posed_by(SAME, [SAME, SAME])
+    assert(posed.vertices == rest.vertices)
+    for i in 0..rest.vertices {
+        assert(length(posed.at[i] - rest.at[i]) < 0.000001)
+        assert(length(posed.up[i] - rest.up[i]) < 0.00001)
+    }
+    assert(abs(rest.length() - 0.53) < 0.0001)
+}
+
+@test
+fn a_posed_chains_points_go_with_their_bones() {
+    // The elbow bent a quarter turn forward (about y, through the elbow): the wrist comes to
+    // 25 cm in front of the elbow, the shoulder stays, and the path's length is kept within
+    // half a centimetre (it goes through the joint itself, rounded either side of it).
+    let c = arm_chain()
+    let bend = turn_about(vec3(0.0, 1.0, 0.0), -0.5 * PI, vec3(0.45, 1.4, 0.0))
+    let p = c.posed_by(SAME, [SAME, bend])
+    assert(length(p.at[0] - vec3(0.17, 1.4, 0.0)) < 0.000001)
+    assert(length(p.at[p.vertices - 1] - vec3(0.45, 1.4, 0.25)) < 0.00001)
+    assert(abs(p.length() - 0.53) < 0.005, f"{p.length()}")
+    // Angle 0 is still up all the way: a hinge doesn't turn a bone about its length.
+    for i in 0..p.vertices {
+        assert(p.up[i].y > 0.999, f"{p.up[i].y}")
+    }
+}
+
+@test
+fn a_bones_turn_about_its_length_is_spread_along_it() {
+    // The forearm turned 1 radian about its own length: nothing at the elbow, all of it at
+    // the wrist, half of it halfway.
+    let c = arm_chain()
+    let roll = turn_about(vec3(1.0, 0.0, 0.0), 1.0, vec3(0.45, 1.4, 0.0))
+    let p = c.posed_by(SAME, [SAME, roll])
+    let last = p.vertices - 1
+    let up = vec3(y: 1.0)
+    let x = vec3(x: 1.0)
+    assert(abs(angle_between(up, p.up[0], x)) < 0.001)
+    assert(abs(angle_between(up, p.up[last / 2], x)) < 0.001)
+    let at_wrist = angle_between(up, p.up[last], x)
+    assert(abs(abs(at_wrist) - 1.0) < 0.001, f"{at_wrist}")
+    let halfway = angle_between(up, p.up[(last + last / 2 + 3 * (last / 4) / 3) / 2], x)
+    assert(abs(halfway) > 0.3 && abs(halfway) < 0.8, f"{halfway}")
+    // The whole arm turned about its length at the shoulder: none where it leaves the chest,
+    // all of it from the elbow on.
+    let whole = turn_about(vec3(1.0, 0.0, 0.0), 0.8, vec3(0.2, 1.4, 0.0))
+    let q = c.posed_by(SAME, [whole, whole])
+    assert(abs(angle_between(up, q.up[0], x)) < 0.001)
+    assert(abs(abs(angle_between(up, q.up[last / 2], x)) - 0.8) < 0.001)
+    assert(abs(abs(angle_between(up, q.up[last], x)) - 0.8) < 0.001)
+    // An upper arm whose turn is reached a third of the way along it: all of it by halfway to
+    // the elbow, where an even spread has half.
+    let capped = chain(
+        [vec3(0.2, 1.4, 0.0), vec3(0.45, 1.4, 0.0), vec3(0.7, 1.4, 0.0)],
+        vec3(y: 1.0),
+        spread: [0.33, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    )
+    let r = capped.posed_by(SAME, [whole, whole])
+    let at_half = r.place(vec3(0.325, 1.5, 0.0))
+    assert(abs(at_half.along - 0.125) < 0.001)
+    assert(abs(abs(wrapped(at_half.theta)) - 0.8) < 0.01, f"{at_half.theta}")
+    // (The bone's own span ends where the elbow's rounding starts, 5 cm before it.)
+    let even = q.place(vec3(0.325, 1.5, 0.0))
+    assert(abs(abs(wrapped(even.theta)) - 0.5) < 0.01, f"{even.theta}")
+}
+
+@test
+fn a_radial_form_turns_and_mirrors() {
+    let form = leg_form()
+    let turned = form.turned(0.7)
+    let mirrored = form.mirrored()
+    for i in 0..10 {
+        for j in 0..16 {
+            let f = f32(i) / 9.0
+            let theta = TAU * f32(j) / 16.0
+            assert(abs(turned.radius(f, theta) - form.radius(f, theta - 0.7)) < 0.000001)
+            assert(abs(mirrored.radius(f, theta) - form.radius(f, -theta)) < 0.000001)
+        }
+    }
+}
+
+@test
+fn a_chains_bends_are_where_its_bones_lean() {
+    // The elbow bent a quarter turn forward (+z): a quarter turn's bend, toward the chart's
+    // front (up is angle 0, the back a quarter turn, so the front is three quarters).
+    let c = arm_chain()
+    let bend = turn_about(vec3(0.0, 1.0, 0.0), -0.5 * PI, vec3(0.45, 1.4, 0.0))
+    let b = c.bends([SAME, bend, SAME, SAME, SAME, SAME, SAME, SAME])
+    assert(abs(b[1].angle - 0.5 * PI) < 0.0001, f"{b[1].angle}")
+    assert(abs(wrapped(b[1].toward + 0.5 * PI)) < 0.0001, f"{b[1].toward}")
+    assert(abs(b[1].at - 0.28 / 0.53) < 0.001, f"{b[1].at}")
+    assert(b[0].angle == 0.0 && b[2].angle == 0.0)
+    // The whole arm turned as one bends no joint, and neither does a turn about its length.
+    let whole = turn_about(vec3(0.0, 0.0, 1.0), 0.6, vec3(0.2, 1.4, 0.0))
+    assert(c.bends([whole, whole, SAME, SAME, SAME, SAME, SAME, SAME])[1].angle < 0.0001)
+    let roll = turn_about(vec3(1.0, 0.0, 0.0), 1.0, vec3(0.45, 1.4, 0.0))
+    assert(c.bends([SAME, roll, SAME, SAME, SAME, SAME, SAME, SAME])[1].angle < 0.0001)
+    // Bent, then turned about the forearm's own length by 1 radian: the bend's inside is where
+    // it was as the upper arm has it, and 1 radian back as the forearm has it (its chart has
+    // turned on with it), reached at the wrist.
+    let both = bend * turn_about(vec3(1.0, 0.0, 0.0), 1.0, vec3(0.45, 1.4, 0.0))
+    let t = c.bends([SAME, both, SAME, SAME, SAME, SAME, SAME, SAME])[1]
+    assert(abs(t.angle - 0.5 * PI) < 0.0001)
+    assert(abs(wrapped(t.toward + 0.5 * PI)) < 0.0001, f"{t.toward}")
+    assert(abs(abs(wrapped(t.after - t.toward)) - 1.0) < 0.0001, f"{t.after}")
+    assert(abs(t.reached - 1.0) < 0.001, f"{t.reached}")
+    assert(abs(t.lean_at(0.2) - t.toward) < 0.0001 && abs(t.lean_at(1.0) - t.after) < 0.0001)
+    // (The chart at the wrist has turned as far as the bend's inside has, the other way: a
+    // place on the forearm's skin keeps its angle from the bend.)
+    let p = c.posed_by(SAME, [SAME, both])
+    let wrist = p.frame(p.length())
+    let inside = wrist.up * cos(t.after) + wrist.left * sin(t.after)
+    assert(dot(inside, vec3(-1.0, 0.0, 0.0)) > 0.99, f"{inside.x} {inside.y} {inside.z}")
+}
+
+@test
+fn a_bent_joint_changes_a_form_toward_its_bend() {
+    // A change that swells the form by 1 cm a radian at angle 0, halfway along: bent half a
+    // radian toward a quarter turn, the form is 5 mm more there, and as it was away from the
+    // bend's place.
+    let swell: Radial<8, 7> = of(|f: f32, theta: f32| {
+        0.01 * exp(-(f - 0.5) * (f - 0.5) / 0.08) * (0.5 + 0.5 * cos(theta))
+    })
+    let none: Radial<8, 7> = round(0.0)
+    let form = leg_form()
+    let bend = Bend { at: 0.5, angle: 0.5, toward: 0.5 * PI, after: 0.5 * PI, reached: 0.6 }
+    let bent = form.bent(Change { by_angle: swell, by_square: none }, bend)
+    assert(abs(bent.radius(0.5, 0.5 * PI) - form.radius(0.5, 0.5 * PI) - 0.005) < 0.0003)
+    // Held at a bend of 0.3 radians, half a radian's bend changes it as 0.3's does.
+    let held = form.bent(Change { by_angle: swell, by_square: none, upto: 0.3 }, bend)
+    assert(abs(held.radius(0.5, 0.5 * PI) - form.radius(0.5, 0.5 * PI) - 0.003) < 0.0003)
+    assert(abs(bent.radius(0.5, -0.5 * PI) - form.radius(0.5, -0.5 * PI)) < 0.0003)
+    assert(bent.radius(0.0, 0.5 * PI) - form.radius(0.0, 0.5 * PI) < 0.001)
+    // Resized, a form is the same form.
+    let wider: Radial<12, 9> = form.resized()
+    for i in 0..20 {
+        let f = f32(i) / 19.0
+        assert(abs(wider.radius(f, 1.3 * f32(i)) - form.radius(f, 1.3 * f32(i))) < 0.0002)
+    }
+}
+
+@test
+fn a_mirrored_chain_carries_a_mirrored_form() {
+    // A point of a form about a chain, mirrored in x = 0, is a point of the mirrored form
+    // about the mirrored chain, at the same place along and the angle's negative.
+    let c = chain(
+        [vec3(0.2, 1.4, 0.0), vec3(0.45, 1.38, 0.03), vec3(0.7, 1.4, 0.0)],
+        vec3(y: 1.0),
+    )
+    let form = leg_form()
+    let left = Limb { path: c.rest(), form }
+    let right = Limb { path: c.mirrored().rest(), form: form.mirrored() }
+    for i in 0..9 {
+        for j in 0..12 {
+            let f = 0.05 + 0.9 * f32(i) / 8.0
+            let theta = TAU * f32(j) / 12.0
+            let p = left.side(f, theta)
+            let q = right.side(f, -theta)
+            assert(length(vec3(-p.x, p.y, p.z) - q) < 0.00001)
+        }
+    }
+}
+
+@test
+fn a_part_posed_is_its_chain_posed_and_its_form_bent() {
+    // An arm whose elbow's change swells its inside by 1 cm a radian: bent a quarter turn
+    // forward by bone 2 of a palette, its path's end is where the bone carries the wrist, and
+    // its form is a quarter turn's swell more on the inside of the bend at the elbow.
+    let swell: Radial<8, 7> = of(|f: f32, theta: f32| {
+        0.01 * exp(-(f - 0.53) * (f - 0.53) / 0.08) * (0.5 + 0.5 * cos(theta))
+    })
+    var changes: [Change<8, 7>; JOINTS] = [unchanged(); JOINTS]
+    changes[1] = Change { by_angle: swell, by_square: round(0.0) }
+    let part = Part {
+        chain: arm_chain(),
+        bones: [1, 2, 0, 0, 0, 0, 0, 0],
+        root: 0,
+        form: leg_form(),
+        changes,
+        band: WHOLE,
+        sunk: vec2(0.04, 0.2),
+    }
+    var palette = [SAME; 64]
+    palette[2] = turn_about(vec3(0.0, 1.0, 0.0), -0.5 * PI, vec3(0.45, 1.4, 0.0))
+    let posed = part.posed(palette)
+    assert(length(posed.path.at[posed.path.vertices - 1] - vec3(0.45, 1.4, 0.25)) < 0.00001)
+    let inside = -0.5 * PI
+    let more = posed.form.radius(0.53, inside) - part.form.radius(0.53, inside)
+    assert(abs(more - 0.01 * 0.5 * PI) < 0.0005, f"{more}")
+    assert(abs(posed.form.radius(0.53, 0.5 * PI) - part.form.radius(0.53, 0.5 * PI)) < 0.0005)
+    // At rest it is its rest form, and its root is drawn under what covers it.
+    assert(
+        abs(part.posed([SAME; 64]).form.radius(0.53, inside) - part.form.radius(0.53, inside)) <
+            0.000001,
+    )
+    assert(part.sunk_at(0.0) == 0.04 && part.sunk_at(0.2) == 0.0 && part.sunk_at(0.9) == 0.0)
+}
+
+@test
+fn a_cover_says_where_a_form_is() {
+    // A form with an opening down its front, a tenth of a turn either side of angle 0: none of
+    // it in the opening, all of it away from it, half at the opening's edge.
+    var marks: Vec<bool> = Vec::new()
+    for _ in 0..COVER_ALONG {
+        for j in 0..COVER_ROUND {
+            let turn = (f32(j) + 0.5) / f32(COVER_ROUND)
+            marks.push(turn > 0.1 && turn < 0.9)
+        }
+    }
+    let c = cover_of(marks)
+    assert(c.covered(0.5, 0.0) == 0.0 && c.covered(0.3, 0.05 * TAU) == 0.0)
+    assert(c.covered(0.5, PI) == 1.0 && c.covered(0.9, 0.3 * TAU) == 1.0)
+    // (The edge is between the last place in the opening and the first out of it: 26 places
+    // round from angle 0.)
+    let edge = TAU * 26.0 / f32(COVER_ROUND)
+    assert(abs(c.covered(0.5, edge) - 0.5) < 0.01, f"{c.covered(0.5, edge)}")
+    assert(abs(c.covered(0.5, -edge) - 0.5) < 0.01, f"{c.covered(0.5, -edge)}")
+}
+
+@test
+fn a_folded_hinge_keeps_a_limbs_sides_apart() {
+    // A round arm 4 cm thick, its elbow folded two thirds of a turn's half (120 degrees)
+    // forward: inside the bend, no point of the upper arm's side is past the plane that halves
+    // the bend by more than the give, where without the fold its side went 2 cm through it;
+    // and its outside is as round as it was.
+    let part = Part {
+        chain: arm_chain(),
+        bones: [1, 2, 0, 0, 0, 0, 0, 0],
+        root: 0,
+        form: round::<8, 7>(0.04),
+        changes: [unchanged(); JOINTS],
+        band: WHOLE,
+        sunk: vec2(0.0, 0.1),
+        folds: [1, 0],
+    }
+    var palette = [SAME; 64]
+    let elbow = vec3(0.45, 1.4, 0.0)
+    palette[2] = turn_about(vec3(0.0, 1.0, 0.0), -2.0944, elbow)
+    let posed = part.posed(palette)
+    let loose = Limb { path: posed.path, form: posed.form }
+    // The plane that halves the bend: through the elbow, its normal from the upper arm's way
+    // (back toward the shoulder) to the forearm's.
+    let fore = unit(posed.path.at[posed.path.vertices - 1] - elbow)
+    let n = unit(fore - vec3(-1.0, 0.0, 0.0))
+    var deepest = 0.0
+    var was = 0.0
+    for i in 0..40 {
+        for j in 0..48 {
+            let f = 0.15 + 0.35 * f32(i) / 39.0
+            let theta = TAU * f32(j) / 48.0
+            deepest = max(deepest, dot(posed.side(f, theta) - elbow, n))
+            was = max(was, dot(loose.side(f, theta) - elbow, n))
+        }
+    }
+    assert(deepest < 2.5 * GIVE, f"the upper arm is {deepest} m through the fold")
+    assert(was > 0.02, f"unfolded, it was only {was} m through")
+    let outside = 0.5 * PI
+    assert(
+        abs(
+            length(posed.side(0.4, outside) - posed.path.frame(0.4 * posed.path.length()).at) -
+                0.04,
+        ) <
+            0.0001,
+    )
+}
+
+@test
+fn a_chain_with_no_rounding_curves_through_its_joints() {
+    // A spine of four joints, each bone leaning a little more: the path goes through each
+    // joint, and turns no more between two pieces than a twentieth of a turn anywhere.
+    let c = chain(
+        [vec3(0.0, 1.0, 0.0), vec3(0.0, 1.1, 0.01), vec3(0.0, 1.2, 0.04), vec3(0.0, 1.3, 0.09)],
+        vec3(z: 1.0),
+        round: 0.0,
+    )
+    let p = c.rest()
+    for k in 0..4 {
+        let pl = p.place(c.joints[k])
+        assert(pl.rho < 0.0005, f"joint {k} is {pl.rho} m off the path")
+    }
+    for i in 1..p.vertices {
+        assert(dot(p.normal[i], p.normal[i - 1]) > cos(0.05 * TAU))
+    }
+    // Posed as it rests, it is its rest path.
+    let posed = c.posed_by(SAME, [SAME, SAME, SAME])
+    for i in 0..p.vertices {
+        assert(length(posed.at[i] - p.at[i]) < 0.000001)
+    }
+}
+
+@test
+fn a_chain_that_cuts_its_corners_follows_the_bends_arc() {
+    // An elbow bent a quarter turn, its rounding 5 cm either side: cutting the corner all the
+    // way, the path's point at the joint is on the circle that meets both bones 5 cm from the
+    // joint (its radius 5 cm, its centre 5 cm in from each bone), and the path is shorter than
+    // through the joint itself. At rest, where the arm is straight, the path is as it was.
+    let joints = [vec3(0.2, 1.4, 0.0), vec3(0.45, 1.4, 0.0), vec3(0.7, 1.4, 0.0)]
+    let through = chain(joints, vec3(y: 1.0))
+    let cutting = chain(joints, vec3(y: 1.0), cut: 1.0)
+    let bend = turn_about(vec3(0.0, 1.0, 0.0), -0.5 * PI, vec3(0.45, 1.4, 0.0))
+    let a = through.posed_by(SAME, [SAME, bend])
+    let b = cutting.posed_by(SAME, [SAME, bend])
+    let centre = vec3(0.4, 1.4, 0.05)
+    var nearest = 1.0
+    for i in 0..b.vertices {
+        nearest = min(nearest, abs(length(b.at[i] - centre) - 0.05))
+    }
+    assert(nearest < 0.0005, f"the cut path is {nearest} m off the arc at its nearest")
+    assert(b.place(vec3(0.45, 1.4, 0.0)).rho > 0.018, "the cut path leaves the joint's corner")
+    assert(a.place(vec3(0.45, 1.4, 0.0)).rho < 0.0005, "the other goes through it")
+    assert(b.length() < a.length() - 0.01)
+    let rest = cutting.rest()
+    let plain = through.rest()
+    for i in 0..rest.vertices {
+        assert(length(rest.at[i] - plain.at[i]) < 0.000001)
+    }
+}
+
+@test
+fn a_forms_normal_at_a_place_is_its_sides_normal() {
+    // On a straight limb, the normal read from the radius's slopes is the normal across the
+    // side's neighbouring points, at every place; and a softened form's is within a few degrees
+    // of it.
+    let l = Limb {
+        path: path([vec3(0.0, 1.0, 0.0), vec3(0.6, 1.0, 0.0)], vec3(y: 1.0)),
+        form: leg_form(),
+    }
+    let len = l.path.length()
+    var worst = 1.0
+    var soft = 1.0
+    for i in 0..15 {
+        for j in 0..24 {
+            let f = 0.05 + 0.9 * f32(i) / 14.0
+            let theta = TAU * f32(j) / 24.0
+            let (_, n) = l.side_and_normal(f, theta)
+            let fr = l.path.frame(f * len)
+            worst = min(worst, dot(n, normal_at(l.form, fr.up, fr.left, len, f, theta)))
+            soft = min(soft, dot(n, normal_at(l.form.softened(3.5), fr.up, fr.left, len, f, theta)))
+        }
+    }
+    assert(worst > 0.9995, f"a form's normal at a place is {worst} of its side's")
+    assert(soft > 0.995, f"a softened form's is {soft} of it")
+    // Softening keeps what's broad (this form's two harmonics move its radius by under half a
+    // millimetre) and drops what's fine: a ripple of 6 to the turn is left a hundredth.
+    assert(abs(l.form.softened(3.5).radius(0.3, 1.0) - l.form.radius(0.3, 1.0)) < 0.0005)
+    var rippled = l.form
+    for i in 0..8 {
+        rippled.coef[i][5] = 0.001
+    }
+    let left_of_it = rippled.softened(1.5).coef[3][5]
+    assert(left_of_it < 0.00002, f"{left_of_it}")
+}
+
+@test
+fn a_grids_vertices_cover_its_band() {
+    for l in 0..LEVELS {
+        let q = QUADS[l]
+        let first = place_of(0, l, WHOLE)
+        let last = place_of((q.x + 1) * (q.y + 1) - 1, l, WHOLE)
+        assert(first.x == 0.0 && first.y == 0.0)
+        assert(abs(last.x - 1.0) < 0.000001 && abs(last.y - TAU) < 0.00001)
+    }
+    assert(level_span(0).x == 0 && level_span(1).x == 96 * 48 * 6)
+    // Large on screen, the finest; small, the coarsest.
+    assert(level_for(length: 0.5, radius: 0.05, distance: 1.0, pixels: 1080.0, tan_half: 0.4) == 0)
+    assert(
+        level_for(length: 0.5, radius: 0.05, distance: 40.0, pixels: 1080.0, tan_half: 0.4) ==
+            LEVELS - 1,
+    )
+}
+
+// ---- as source ----------------------------------------------------------------------------------
+
+/// The decimal places a form's numbers are written to (m): a hundredth of a millimetre.
+pub const PLACES: u32 = 5
+
+/// `form` as it's written: its numbers rounded, so what's measured of it is what's drawn.
+pub fn rounded<const A: u32, const R: u32>(form: Radial<A, R>) -> Radial<A, R> {
+    var coef = form.coef
+    for i in 0..A {
+        for j in 0..R {
+            coef[i][j] = cycle::rounded_to(form.coef[i][j], PLACES)
+        }
+    }
+    Radial { from: cycle::rounded_to(form.from, 4), to: cycle::rounded_to(form.to, 4), coef }
+}
+
+/// `form` (`rounded`) as a Wrela constant named `name`, after `doc` (its doc comment's lines,
+/// without `///`): a row a control value along its path, as the formatter lays it out.
+pub fn source<const A: u32, const R: u32>(form: Radial<A, R>, name: str, doc: [String]) -> String {
+    var out = String::new()
+    for line in doc {
+        if line.is_empty() {
+            out.push_str("///\n")
+        } else {
+            out.push_str(f"/// {line}\n")
+        }
+    }
+    out.push_str(f"pub const {name}: Radial<{A}, {R}> = Radial {{\n")
+    out.push_str(
+        f"    from: {cycle::n(form.from, 4)},\n    to: {cycle::n(form.to, 4)},\n    coef: [\n",
+    )
+    for i in 0..A {
+        // A row on one line where it fits in 100 columns; else its numbers filled into lines.
+        var row = String::new()
+        for j in 0..R {
+            if j > 0 {
+                row.push_str(", ")
+            }
+            row.push_str(cycle::n(form.coef[i][j], PLACES).as_str())
+        }
+        if row.len() + 11 <= 100 {
+            out.push_str(f"        [{row}],\n")
+        } else {
+            out.push_str("        [\n")
+            var line = String::new()
+            for j in 0..R {
+                let word = cycle::n(form.coef[i][j], PLACES)
+                if line.len() > 0 && 12 + line.len() + 2 + word.len() + 1 > 100 {
+                    out.push_str(f"            {line},\n")
+                    line = String::new()
+                }
+                if line.len() > 0 {
+                    line.push_str(", ")
+                }
+                line.push_str(word.as_str())
+            }
+            out.push_str(f"            {line},\n        ],\n")
+        }
+    }
+    out.push_str("    ],\n}\n")
+    out
+}

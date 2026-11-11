@@ -1,0 +1,126 @@
+// The reference body posed: its triangles where a pose's palette has them, by its own skin
+// weights. Read along a posed chain's path (`targets::rays`), it says how the body's form
+// changes with the pose as its sculptor's weights have it: what a charted form's changes with
+// its joints' bends are solved against.
+
+use engine::chart::{Bend, Chain, JOINTS, Path, Radial, Sample}
+use engine::humanoid::{BodyVertex, Clip, Humanoid, palette}
+use figure::chains
+use humanoid::body::HERO
+use targets::{Triangles, rays}
+
+/// Where `v` is as palette `m` poses it: each of its four bones' matrices, by its weights.
+fn skinned(v: BodyVertex, m: [mat4; 64]) -> vec3 {
+    var p = vec3()
+    for k in 0..4 {
+        let w = f32((v.weights >> (8 * k)) & 255) / 255.0
+        if w > 0.0 {
+            p += (m[(v.bones >> (8 * k)) & 255] * vec4(v.pos, 1.0)).xyz * w
+        }
+    }
+    p
+}
+
+/// The triangles of `body` on parts `keep` allows (`targets::triangles_of`), posed by `m`.
+pub fn posed_triangles(body: Humanoid, m: [mat4; 64], keep: [bool; 6]) -> Triangles {
+    var a: Vec<vec3> = Vec::new()
+    var ab: Vec<vec3> = Vec::new()
+    var ac: Vec<vec3> = Vec::new()
+    for t in 0..body.indices.len() / 3 {
+        let v0 = body.verts[body.indices[3 * t]]
+        let v1 = body.verts[body.indices[3 * t + 1]]
+        let v2 = body.verts[body.indices[3 * t + 2]]
+        if !(keep[min(v0.part, 5)] && keep[min(v1.part, 5)] && keep[min(v2.part, 5)]) {
+            continue
+        }
+        let p0 = skinned(v0, m)
+        a.push(p0)
+        ab.push(skinned(v1, m) - p0)
+        ac.push(skinned(v2, m) - p0)
+    }
+    Triangles { a, ab, ac }
+}
+
+/// A limb of the reference body in a pose: the chain's bones (the rig's, in the chain's order,
+/// the first also what it hangs from), and which part of the body its triangles are on.
+pub struct Limb: Copy {
+    pub chain: Chain,
+    pub bones: [u32; 3],
+    pub part: u32,
+}
+
+/// The reference's left arm: its collarbone, upper arm and forearm (the rig's bones 14 to 16).
+pub const ARM_LEFT: Limb = Limb { chain: chains::arm_left(), bones: [14, 15, 16], part: 4 }
+
+/// The reference's left leg: its hips, thigh and calf (the rig's bones 0, 6 and 7).
+pub const LEG_LEFT: Limb = Limb { chain: chains::leg_left(), bones: [0, 6, 7], part: 2 }
+
+/// The chain's bones' matrices in pose `m`, as `Chain::posed` takes them.
+pub fn bones_of(l: Limb, m: [mat4; 64]) -> [mat4; JOINTS] {
+    var out = [m[l.bones[0]]; JOINTS]
+    for i in 0..3 {
+        out[i] = m[l.bones[i]]
+    }
+    out
+}
+
+/// Limb `l`'s chain with each bone's turn about its length reached at once past its joint, as
+/// the reference's skin weights have it (a segment turns as one piece): read against that, a
+/// posed reference differs from a form only where its joints bend, not by where a turn is
+/// spread.
+pub fn as_weighted(c: Chain) -> Chain {
+    Chain { spread: [0.05; JOINTS], ..c }
+}
+
+/// The reference's radius about limb `l`'s chain in pose `m`: read along rays from the posed
+/// path (`targets::rays`), over `span` of its length.
+pub fn posed_rays(
+    l: Limb,
+    m: [mat4; 64],
+    span: vec2,
+    along: u32,
+    about: u32,
+    shift: vec2,
+) -> Vec<Sample> {
+    var keep = [false; 6]
+    keep[l.part] = true
+    let tris = posed_triangles(HERO.clone(), m, keep)
+    let bones = bones_of(l, m)
+    rays(tris, as_weighted(l.chain).posed(bones[0], bones), span, along, about, shift, 0.14)
+}
+
+/// How the reference's radius about limb `l`'s chain differs in pose `m` from the reference
+/// at rest: at each place of the grid whose ray meets the reference both posed and at rest
+/// (`at_rest`: `every_ray` of the reference at rest on the same grid), the posed radius less
+/// the rest one.
+pub fn posed_changes(
+    l: Limb,
+    m: [mat4; 64],
+    at_rest: [Sample],
+    span: vec2,
+    along: u32,
+    about: u32,
+    shift: vec2,
+) -> Vec<Sample> {
+    var keep = [false; 6]
+    keep[l.part] = true
+    let tris = posed_triangles(HERO.clone(), m, keep)
+    let bones = bones_of(l, m)
+    let path = as_weighted(l.chain).posed(bones[0], bones)
+    let posed = targets::every_ray(tris, path, span, along, about, shift, 0.14)
+    var out: Vec<Sample> = Vec::new()
+    for k in 0..posed.len() {
+        if posed[k].r > 0.0 && at_rest[k].r > 0.0 {
+            out.push(Sample { r: posed[k].r - at_rest[k].r, ..posed[k] })
+        }
+    }
+    out
+}
+
+/// The reference at rest about limb `l`'s chain, on the grid `posed_changes` reads.
+pub fn rest_rays(l: Limb, span: vec2, along: u32, about: u32, shift: vec2) -> Vec<Sample> {
+    var keep = [false; 6]
+    keep[l.part] = true
+    let tris = targets::triangles_of(HERO.clone(), keep, vec3(-9.0), vec3(9.0))
+    targets::every_ray(tris, l.chain.rest(), span, along, about, shift, 0.14)
+}
