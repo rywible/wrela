@@ -91,6 +91,13 @@ fn stack(q: vec3, r: f32, tall: f32, seed: f32, px: f32) -> f32 {
     (shell + rough * (1.0 - smoothstep(0.4, 1.6, px)) * smoothstep(8.0, 0.0, abs(shell))) * 0.6
 }
 
+/// The least `stack` can be at `q` for a stack `r` m round: no nearer than its widest girth (its
+/// lobes and ledges `r` by 1.336 at most), leant as far as any leans (0.156 a metre up), and
+/// roughened as far in as its faces go (1.65 m), scaled as it is (0.6).
+fn least_stack(q: vec3, r: f32) -> f32 {
+    (length(vec2(q.x, q.z)) - 0.156 * max(q.y, 0.0) - 1.336 * r - 1.65) * 0.6
+}
+
 /// A skerry: a low hump of broken rock, `r` m round and `tall` high, awash.
 fn skerry(q: vec3, r: f32, tall: f32, seed: f32) -> f32 {
     let v = vec2(q.x, q.z)
@@ -127,7 +134,12 @@ fn in_cluster(cl: vec4, p: vec3, px: f32) -> f32 {
         let k = hash2(vec2(seed, fi + 30.0))
         if k < 0.45 {
             let t2 = tall * (0.25 + 0.5 * k)
-            d = min(d, stack(q - at, 2.5 + t2 * 0.2, t2, seed + fi * 7.0, px))
+            let r = 2.5 + t2 * 0.2
+            // (Only where it could be the nearer: a stack is costly, and most points are nearer
+            // the main one by far. Where its least is no nearer, `d` stands as it would.)
+            if least_stack(q - at, r) < d {
+                d = min(d, stack(q - at, r, t2, seed + fi * 7.0, px))
+            }
         } else {
             d = min(d, skerry(q - at, 4.0 + 7.0 * k, 1.5 + 3.0 * k, seed + fi))
         }
@@ -184,11 +196,52 @@ fn in_cell(c: vec2, p: vec3, px: f32, out: f32) -> f32 {
     min(in_cluster(cl, p, px), out)
 }
 
-/// Where the ray `o` + `d` meets the rocks, from `lo` to `hi` (or `hi`); `k` a pixel's width per
-/// metre out.
+/// Whether any rock could stand within `margin` m of the ground from `lo` to `hi` (x, z): a
+/// cluster's reach round its middle meets it. (True past a few cells across: asked of a wide
+/// stretch, it doesn't count.)
+pub fn stacks_near(lo: vec2, hi: vec2, margin: f32) -> bool {
+    let c0 = floor(lo / CELL)
+    let c1 = floor(hi / CELL)
+    if c1.x - c0.x > 6.0 || c1.y - c0.y > 6.0 {
+        return true
+    }
+    var cy = c0.y
+    while cy <= c1.y {
+        var cx = c0.x
+        while cx <= c1.x {
+            let cl = cluster(vec2(cx, cy))
+            if cl.z > 0.0 {
+                let q = clamp(cl.xy, lo, hi)
+                if length(q - cl.xy) < REACH + margin {
+                    return true
+                }
+            }
+            cx += 1.0
+        }
+        cy += 1.0
+    }
+    false
+}
+
+/// How far out from the world's middle the rocks can stand (m, x and z).
+pub fn stacks_reach() -> f32 {
+    OUT * 1.2
+}
+
+/// Where the ray `o` + `d` meets the rocks, from the eye to `hi` (or `hi`); `k` a pixel's width
+/// per metre out.
 pub fn march_stacks(o: vec3, d: vec3, hi: f32, k: f32) -> f32 {
+    march_stacks_from(o, d, 0.0, hi, k)
+}
+
+/// `march_stacks` from `from` along the ray on (where the stacks' meshes say the nearest could
+/// be: `stacked`), not from the eye.
+pub fn march_stacks_from(o: vec3, d: vec3, from: f32, hi: f32, k: f32) -> f32 {
+    if from >= hi {
+        return hi
+    }
     // (Only where the ray is low enough to meet one, out to where they stop.)
-    var lo = 0.0
+    var lo = from
     var top = hi
     // The clusters occupy a world-space circle, not one round the eye. Once the skiff sailed
     // past it, a fixed distance from the eye hid the stacks when it looked back toward them.

@@ -16,7 +16,7 @@ use look::{GILT, GLASS, ISLE, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, r
 use isle::{FALLS, SCALE, bounds, isle, isle_ao, isle_material, isle_normal, isle_shadow}
 use far::far_off
 use rock::{baked_at, march_from}
-use stacks::{march_stacks, stacks_albedo, stacks_ao, stacks_normal, stacks_shadow}
+use stacks::{march_stacks_from, stacks_albedo, stacks_ao, stacks_normal, stacks_shadow}
 use paint::{Heaven, aired, hazed_far, heaven, lit_solid, overhead, sphere}
 use engine::far::{
     KEPT, Vista, foot, gathered, stratum, turn_index, turn_of, turn_texel, turn_texels, vista_at,
@@ -49,6 +49,9 @@ pub struct Yon: Copy + GpuData {
     /// and the cathedral this drawing, when they're met more sparsely than the stacks
     /// (`main::ROCK_SPARSE`).
     pub rock_turn: u32,
+    /// Whether the stacks' meshes are in `reach` too (`stacked::reach_stacks`), so a pixel no
+    /// stack's mesh is near doesn't march them: 1, or 0.
+    pub stacked: u32,
     /// Whether the rock and the cathedral are the vista's (`main::VISTA`, `vista_look`): 1 once
     /// it's laid in whole, 0 before (on a first load, or while it fades in or out), when they're
     /// met here as ever.
@@ -488,7 +491,8 @@ pub fn yonder(
     }
     // The sea's own stacks, nearer.
     let k = 2.0 / (s.resolution.y * s.focal)
-    let ts = if (OFF & 2) == 0 { march_stacks(o, d, t, k) } else { far }
+    let sf = stacks_from(reach, yon.stacked, px, s.resolution, t)
+    let ts = if (OFF & 2) == 0 { march_stacks_from(o, d, sf, t, k) } else { far }
     var c = vec3(0.0)
     var cover = 0.0
     var marks = vec4(log2(far), SKY, 1.0, 0.0)
@@ -606,8 +610,9 @@ pub fn yonder(
                 var j = 0
                 while j < 2 && same {
                     let side = f32(j) * 2.0 - 1.0
-                    let dj = ray(s, px + vec2(1.0, side) * 1.06)
-                    same = (march_stacks(o, dj, t, k) < t) == (ts < t)
+                    let pj = px + vec2(1.0, side) * 1.06
+                    let fj = stacks_from(reach, yon.stacked, pj, s.resolution, t)
+                    same = (march_stacks_from(o, ray(s, pj), fj, t, k) < t) == (ts < t)
                     j += 1
                 }
                 // (And an edge's mean held short, a few drawings: the stack slides against the
@@ -631,6 +636,12 @@ pub fn yonder(
     Targets3 { first: now, second: marks, third }
 }
 
+/// Where the stacks' march through pixel `pf` starts along the ray: by their meshes in `reach`
+/// where they're there (`stacked`), past `hi` where no mesh is near; else from the eye.
+fn stacks_from(reach: Texture<Rg32Float>, stacked: u32, pf: vec2, size: vec2, hi: f32) -> f32 {
+    if stacked == 1 { march_from(reach, pf, size, 0.0, hi) } else { 0.0 }
+}
+
 /// What the ray through `pf` (px, the full drawing's, offset already) meets of the rock, the
 /// cathedral, the stacks and the far islands: their light in their air, premultiplied by how
 /// much they cover; what the ink reads; the normal. Nothing carried from the drawings before.
@@ -646,6 +657,7 @@ fn meet(
     field: Texture3d<R32Float>,
     reach: Texture<Rg32Float>,
     meshed: u32,
+    stacked: u32,
     vista: u32,
     skip_rock: bool,
     pf: vec2,
@@ -665,9 +677,9 @@ fn meet(
     let k = 2.0 / (s.resolution.y * s.focal)
     // (Skipped only where no stack stands past where the rock begins: there the rock may be the
     // nearer, and it's met. The stacks met to the horizon here are the same as met to the rock.)
-    let s0 = if skip_rock && is.x < is.y && (OFF & 2) == 0 { march_stacks(o, d, far, k) } else {
-        far
-    }
+    let s0 = if skip_rock && is.x < is.y && (OFF & 2) == 0 {
+        march_stacks_from(o, d, stacks_from(reach, stacked, pf, s.resolution, far), far, k)
+    } else { far }
     let skip = skip_rock && (s0 >= far || s0 < is.x)
     if from < is.y && (OFF & 1) == 0 && !skip {
         let ti = march_isle(field, o, d, from, is.y)
@@ -677,7 +689,7 @@ fn meet(
         }
     }
     let ts = if skip_rock && is.x < is.y && (OFF & 2) == 0 { s0 } else if (OFF & 2) == 0 {
-        march_stacks(o, d, t, k)
+        march_stacks_from(o, d, stacks_from(reach, stacked, pf, s.resolution, t), t, k)
     } else { far }
     var c = vec3(0.0)
     var cover = 0.0
@@ -848,6 +860,7 @@ pub fn yonder_low(
         field,
         reach,
         yon.meshed,
+        yon.stacked,
         yon.vista,
         skip,
         pf,
