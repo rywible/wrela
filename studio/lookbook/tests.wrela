@@ -8,8 +8,8 @@ use shots::{
 use main::{holds, measured_in, measures_in, medians, near_bars}
 use quality::{Measured, measured_json}
 use measures::{
-    sharpness, blurred, clipped, edge_width, flicker, luma, mean_of, pop, psnr, quartered, ssim,
-    trail,
+    Crawl, NO_KIND, sharpness, blurred, clipped, edge_width, flicker, halved, luma, mean_of,
+    outlined, pop, psnr, quartered, ssim, trail,
 }
 use std::json::parse
 use std::tool::blob::Data
@@ -387,4 +387,79 @@ fn several_runs_take_each_measures_median() {
     }
     let got = medians(Vec::from([m(68.0e-6, 0.03), m(47.0e-6, 0.01), m(52.0e-6, 0.02)]))
     assert(got.flicker == 52.0e-6 && got.pop == 0.02, f"medians {got.flicker}, {got.pop}")
+}
+
+/// Crawl counts, kind by kind, the pixels that step past its step between frames in a row: a
+/// still picture has none; five of a kind's hundred blinking by 20 levels are 50 in a thousand,
+/// whatever the rest drifts under the step; another kind's pixels and those of no kind aren't
+/// in it; and the heat is on the pixels that blinked, once a frame after the first.
+@test
+fn crawl_counts_a_kinds_pixels_that_step() {
+    let n = 120
+    var kind: Vec<u8> = Vec::new()
+    for i in 0..n {
+        kind.push(if i < 100 { 0 } else if i < 110 { 1 } else { NO_KIND })
+    }
+    let frame = |t: u32| -> Vec<f32> {
+        var l: Vec<f32> = Vec::new()
+        for i in 0..n {
+            // Kind 0's first five blink by 20 levels; its rest drift 5 a frame; kind 1 is still;
+            // the pixels of no kind blink by 100.
+            let level = if i < 5 { if t % 2 == 0 { 100.0 } else { 120.0 } } else if i < 100 {
+                100.0 + 5.0 * f32(t)
+            } else if i < 110 { 60.0 } else if t % 2 == 0 { 20.0 } else { 120.0 }
+            l.push(level / 255.0)
+        }
+        take l
+    }
+    var still = Crawl::new(2, 15.0 / 255.0)
+    var moving = Crawl::new(2, 15.0 / 255.0)
+    for t in 0..9 {
+        still.add(frame(0), kind)
+        moving.add(frame(t), kind)
+    }
+    assert(still.per_thousand(0) == 0.0 && still.per_thousand(1) == 0.0)
+    assert(abs(moving.per_thousand(0) - 50.0) < 1.0e-9, f"{moving.per_thousand(0)}")
+    assert(moving.per_thousand(1) == 0.0, f"{moving.per_thousand(1)}")
+    assert(moving.looked[0] == 800.0 && moving.looked[1] == 80.0)
+    assert(
+        moving.heat[0] == 8 && moving.heat[4] == 8 && moving.heat[5] == 0 && moving.heat[115] == 0,
+    )
+    // A kind it wasn't made for, or one with no pixels, has no crawl.
+    assert(moving.per_thousand(7) == 0.0 && Crawl::new(1, 0.1).per_thousand(0) == 0.0)
+    // A step of exactly the step isn't past it: 15 levels of 255 is steady, 16.5 isn't.
+    var edge = Crawl::new(1, 15.0 / 255.0)
+    edge.add(Vec::from([100.0 / 255.0, 100.0 / 255.0]), [0, 0])
+    edge.add(Vec::from([114.5 / 255.0, 116.5 / 255.0]), [0, 0])
+    assert(abs(edge.per_thousand(0) - 500.0) < 1.0e-9, f"{edge.per_thousand(0)}")
+}
+
+/// A kind's outline is the ground's pixels beside it: a spire one pixel wide on the sky takes
+/// the sky to its left and right (not the corners), the lowest kind where two meet, and the
+/// ground beside the ground stays the ground's.
+@test
+fn a_kinds_outline_is_the_ground_beside_it() {
+    // 0 the sky (ground), 1 the stone, 2 the rock.
+    let kind: [u8; 15] = [0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1, 0, 0, 0]
+    let out = outlined(kind, 5, [true, false, false])
+    let want: [u8; 15] = [0, 1, 0, 2, 0, 1, 1, 1, 2, 2, 1, 1, 1, 2, 0]
+    for i in 0..15 {
+        assert(out[i] == want[i], f"pixel {i}: {out[i]}, not {want[i]}")
+    }
+}
+
+/// A picture halved is each four pixels' mean, rounded.
+@test
+fn a_halved_picture_is_each_fours_mean() {
+    var rgba: Vec<u8> = Vec::new()
+    for v in [0, 10, 200, 100, 20, 30, 50, 150] {
+        for _ in 0..3 {
+            rgba.push(u8(v))
+        }
+        rgba.push(255)
+    }
+    let out = halved(rgba, w: 4, h: 2)
+    assert(out.len() == 8, f"{out.len()} bytes")
+    // (0 + 10 + 20 + 30) / 4 = 15, and (200 + 100 + 50 + 150) / 4 = 125.
+    assert(out[0] == 15 && out[3] == 255 && out[4] == 125 && out[7] == 255, f"{out[0]} {out[4]}")
 }

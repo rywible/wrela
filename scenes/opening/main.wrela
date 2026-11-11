@@ -170,6 +170,26 @@ pub const TIMINGS: bool = false
 /// then held, the clouds' march skipped every drawing after.
 pub const MOVING_CLOUDS: bool = false
 
+/// Whether the screen shows what each pixel's ray met, not the scene (`--set IDS=true`): in
+/// red its number in `look` (`SKY`, `SEA`, ... `TILE`) times `ink::ID_STEP` of the 8 bits, and
+/// in green how far off it met it (the base-2 logarithm of the metres, times `ink::ID_STEP`:
+/// the floating rock, 8 km off, from a sea stack the skiff passes), so a tool can read which
+/// pixels are the rock's or the cathedral's (studio/lookbook's crawl, `wrela tool steady`).
+/// With `RENDER_SCALE=1.0`, so no pixel is a mix of two.
+pub const IDS: bool = false
+
+/// The time (s) the scene is held at once it gets there (`--set HOLD=7`; 0, never): the sea,
+/// the skiff, the camera and the sky all stop, and every frame after is a drawing of the same
+/// moment. What still changes on the screen then is the drawing's own doing, none of it
+/// motion: a held picture must hold (`wrela tool steady -- <dir> --shot held`).
+pub const HOLD: f32 = 0.0
+
+/// Past `HOLD`, how many frames each moment is drawn for before the scene moves on a frame's
+/// time (a sixtieth of a second): 0, it never moves on. Each moment dwelt on long enough for
+/// what's drawn over many frames to come round, the mean of its frames is that moment drawn in
+/// full, however the drawing spreads its work: a moving shot's reference (`wrela tool steady`).
+pub const DWELL: u32 = 0
+
 /// The passes `TIMINGS` prints.
 const TIMED: [Text; 9] = [
     "clouds",
@@ -196,11 +216,26 @@ pub const INKED: f32 = 1.0
 /// 1 for the A/B's B: the hero's rim a narrow bright cool line round his silhouette; 0 as before.
 pub const HERO_POP: f32 = 0.0
 
+/// The scene's time at the frame's time `time`: itself, or past `HOLD` held there, or moved on
+/// a sixtieth of a second each `DWELL` frames.
+fn held_at(time: f32) -> f32 {
+    if HOLD <= 0.0 || time <= HOLD {
+        return time
+    }
+    if DWELL == 0 {
+        return HOLD
+    }
+    // (A hundredth of a frame on: a frame's time that falls on a moment's start, give or take
+    // its rounding, isn't put in the one before.)
+    HOLD + floor((time - HOLD) * 60.0 / f32(DWELL) + 0.01) / 60.0
+}
+
 pub fn init() -> State {
     targets(heavens(SUN, 3.0), 640, 360)
 }
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let time = held_at(time)
     if TIMINGS {
         timings(mut s)
     }
@@ -367,4 +402,3 @@ pub const LOW_CLOUD: f32 = 1.0
 /// 1: the sea painted as what the water the skiff stirs holds (`engine::stir`): its rise red, its
 /// fall blue, its churn green. For looking at its wake's reach.
 pub const WAKE_DEBUG: f32 = 0.0
-

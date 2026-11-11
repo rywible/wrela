@@ -382,3 +382,133 @@ pub fn quartered(rgba: [u8], w: u32, h: u32) -> Vec<u8> {
     }
     out
 }
+
+/// A pixel of no kind: `Crawl` doesn't count it.
+pub const NO_KIND: u8 = 255
+
+/// Crawl: how unsteady a moving picture is, kind by kind (a kind is some of what the pixels
+/// show: the cathedral's, the rock's, the sea's). Of a kind's pixels, how many in a thousand step
+/// by more than `step` of luma from one frame to the next: a spire met on and off, an edge that
+/// moves a pixel at a time. What truly moves steps too, and the sharper it's drawn the more
+/// (a reference of every pixel every frame, drawn larger and brought down, `halved`, steps
+/// more than a softer play). So a play's own unsteadiness is counted in its difference from
+/// the same frames with nothing left to come (each moment dwelt on until the drawing has
+/// settled: `wrela tool steady`): what moves is in both and drops out, and the crawl of the
+/// difference is the drawing's own, whose target is none. Where `Spread`'s flicker needs the
+/// eye held still, this is for an eye that moves. (How rywible/wrela#416 measured the cathedral's flicker in the opening's sailing shot,
+/// its step 15 of the 255 levels.)
+pub struct Crawl {
+    pub step: f32,
+    /// Each kind's pixels looked at (a frame's, after the first), and those that stepped.
+    pub looked: Vec<f64>,
+    pub stepped: Vec<f64>,
+    /// How many times each pixel stepped while it was of a kind: where the crawl is.
+    pub heat: Vec<u32>,
+    /// The last frame added's luma.
+    pub last: Vec<f32>,
+}
+
+impl Crawl {
+    /// For `kinds` kinds, a step counted past `step` of luma (0 to 1).
+    pub fn new(kinds: u32, step: f32) -> Crawl {
+        var looked = Vec::with_capacity(kinds)
+        var stepped = Vec::with_capacity(kinds)
+        for _ in 0..kinds {
+            looked.push(0.0)
+            stepped.push(0.0)
+        }
+        Crawl { step, looked, stepped, heat: Vec::new(), last: Vec::new() }
+    }
+
+    /// The next frame: its luma `l`, and each pixel's kind in it (`NO_KIND`: not counted).
+    pub fn add(mut self, l: take Vec<f32>, kind: [u8]) {
+        if self.heat.is_empty() {
+            for _ in 0..l.len() {
+                self.heat.push(0)
+            }
+        }
+        if !self.last.is_empty() {
+            for i in 0..min(l.len(), min(self.last.len(), kind.len())) {
+                let k = u32(kind[i])
+                if k >= self.looked.len() {
+                    continue
+                }
+                self.looked[k] += 1.0
+                if abs(l[i] - self.last[i]) > self.step {
+                    self.stepped[k] += 1.0
+                    self.heat[i] += 1
+                }
+            }
+        }
+        self.last = take l
+    }
+
+    /// Kind `kind`'s crawl: its pixels that stepped, in a thousand of those looked at.
+    pub fn per_thousand(self, kind: u32) -> f64 {
+        if kind >= self.looked.len() || self.looked[kind] == 0.0 {
+            return 0.0
+        }
+        1000.0 * self.stepped[kind] / self.looked[kind]
+    }
+}
+
+/// Each pixel's kind (`w` to a row) with every kind's outline taken in: a pixel of a kind in
+/// `ground` (the sky, the sea: what the others stand against) that has a neighbour (left,
+/// right, above or below) of a kind that isn't takes that neighbour's kind, the lowest if
+/// several. An edge that crawls shows in the pixels just outside it as much as in those inside,
+/// and a spire thinner than a pixel may be no pixel's kind at all.
+pub fn outlined(kind: [u8], w: u32, ground: [bool]) -> Vec<u8> {
+    let h = kind.len() / max(w, 1)
+    var out = Vec::with_capacity(kind.len())
+    for y in 0..h {
+        for x in 0..w {
+            let own = kind[y * w + x]
+            var best = own
+            if u32(own) < ground.len() && ground[u32(own)] {
+                var least = NO_KIND
+                if x > 0 {
+                    least = min(least, standing(kind[y * w + x - 1], ground))
+                }
+                if x + 1 < w {
+                    least = min(least, standing(kind[y * w + x + 1], ground))
+                }
+                if y > 0 {
+                    least = min(least, standing(kind[(y - 1) * w + x], ground))
+                }
+                if y + 1 < h {
+                    least = min(least, standing(kind[(y + 1) * w + x], ground))
+                }
+                if least != NO_KIND {
+                    best = least
+                }
+            }
+            out.push(best)
+        }
+    }
+    out
+}
+
+/// `k` if it's a kind that stands against the ground (not one of `ground`'s), else `NO_KIND`.
+fn standing(k: u8, ground: [bool]) -> u8 {
+    if u32(k) < ground.len() && !ground[u32(k)] { k } else { NO_KIND }
+}
+
+/// `rgba` (`w` × `h`, both even) at half its size each way, each pixel the mean of the four it
+/// covers: a picture drawn at twice the size brought down, four looks to a pixel.
+pub fn halved(rgba: [u8], w: u32, h: u32) -> Vec<u8> {
+    let (hw, hh) = (w / 2, h / 2)
+    var out = Vec::with_capacity(hw * hh * 4)
+    for y in 0..hh {
+        for x in 0..hw {
+            let at = (2 * y * w + 2 * x) * 4
+            for c in 0..4 {
+                let s = u32(rgba[at + c]) +
+                    u32(rgba[at + 4 + c]) +
+                    u32(rgba[at + w * 4 + c]) +
+                    u32(rgba[at + w * 4 + 4 + c])
+                out.push(u8((s + 2) / 4))
+            }
+        }
+    }
+    out
+}

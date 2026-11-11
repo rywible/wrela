@@ -1,0 +1,9 @@
+# The steady tool (`wrela tool steady`): how unsteady a scene's picture is while its camera moves,
+# kind of pixel by kind, against a reference of the same frames (main.wrela says how). Its
+# measure is the lookdev instrument's (studio/lookbook's `measures::Crawl`).
+[package]
+name = "steady_tool"
+
+[dependencies]
+lookbook_tool = { workspace = true }
+toolkit = { workspace = true }
