@@ -170,6 +170,7 @@ The project's budget is about $20 a month on Workers Paid. Two alarms watch it:
 | -------------------- | --------------------------------------------------------------------------------------------------------- |
 | `lookbook`           | A program's lookbook shots as stills and clips (`--package <pkg>`, `--stills`, `--view clay`)            |
 | `motion`             | A scene in motion: frames, a clip and a contact sheet                                                     |
+| `moves`              | A reference clip written as Wrela motion in content/moves; `--sheet <dir>` a strike's timing sheet and chart |
 | `styles`             | Each look under content/styles built into a scene, and the check that adding one changed nothing in `engine/` |
 | `serve`              | A directory served to a browser                                                                           |
 | `audio`              | A piece's take and measurements                                                                           |
@@ -193,6 +194,7 @@ The project's budget is about $20 a month on Workers Paid. Two alarms watch it:
 
 ## What trips agents up
 
+- **A strike is read, not watched.** Stills lose how far a fist goes each frame, which is what makes a strike land. `wrela tool moves -- --sheet build/sheets [strike]` prints each strike's timing sheet (its wind-up, its spacing, which part of the body goes first, its contact, its weight, and what it lacks) and draws its chart (`<strike>.png`: the body, the fist's path a dot a frame, each part's speed); add a line to `strikes` in studio/moves/main.wrela for a new one, with the captured cross (`cross-take`) beside it as the reference. In a test, `engine::timing::timing(clip, rig, limb, contact).text(name)` is the same sheet, `engine::review::review_as(clip, rig, review::STRIKE)` the review with it, and `engine::keys::misses(rig, keys, fps)` names a fist or foot its keys put out of reach.
 - **`pub fn` in a program's `main.wrela` is an export.** It takes numbers, bools and vectors (and `frame`'s state), and returns those or structs, tuples and arrays of them. Put shared code in another module; a library package has no `main.wrela`.
 - **A dependency's `main.wrela` is an ordinary module** (`pkg::main::x`), but its `pub fn`s are still exports in its own build.
 - **Overlapping `mut` arguments are refused** (E0513). Keep the parts a call changes in sibling fields: `frame.draw(mut s.scene, aim)` beside `s.frame`.

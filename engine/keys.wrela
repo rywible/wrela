@@ -284,6 +284,64 @@ pub fn keyed(rig: Rig, keys: [Key], fps: f32, fist: f32) -> Clip {
     curled_hands(c, rig, fist)
 }
 
+/// How far (m) a fist or a foot may be from the spot its key puts it before it's a miss.
+pub const MISS: f32 = 0.01
+
+/// Where `keys` ask for what the body can't do, at `fps`: each fist and each foot that ends up
+/// more than `MISS` from the spot its key puts it at some frame (a fist past its arm's reach,
+/// a foot its leg can't get to under hips that high or that far off), with the frame it's
+/// furthest off and by how much. Nothing for keys the body reaches: the pose drawn is the pose
+/// written.
+pub fn misses(rig: Rig, keys: [Key], fps: f32) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    let c = keyed(rig, keys, fps, fist: 0.0)
+    let rw = rig.rest_world()
+    let names = ["left fist", "right fist", "left foot", "right foot"]
+    let legs = [leg_of(rig, 1.0), leg_of(rig, -1.0)]
+    let bones = [
+        rig.find("leftHand"),
+        rig.find("rightHand"),
+        if legs[0].toes != NONE { legs[0].toes } else { legs[0].ankle },
+        if legs[1].toes != NONE { legs[1].toes } else { legs[1].ankle },
+    ]
+    for limb in 0..4 {
+        let b = bones[limb]
+        if b == NONE {
+            continue
+        }
+        var worst = 0.0
+        var at = 0.0
+        for f in 0..c.frames {
+            let time = f32(f) / fps
+            let k = key_at(keys, time)
+            let k = shifted(k, -k.travel)
+            let w = humanoid::frame_world(
+                rig,
+                c.turns,
+                f,
+                rig.base.t + rig.base.q.rotate(c.hips[f]),
+            )
+            let want = if limb < 2 {
+                k.fists[limb]
+            } else {
+                let foot = k.feet[limb - 2]
+                vec3(foot.x, rw[b].t.y + k.lifts[limb - 2], foot.y)
+            }
+            let off = length(w[b].t - want)
+            if off > worst {
+                worst = off
+                at = time
+            }
+        }
+        if worst > MISS {
+            out.push(
+                f"the {names[limb]} is {worst * 100.0:.1} cm from its key's spot at {at:.3} s: out of reach",
+            )
+        }
+    }
+    out
+}
+
 /// One arm (`side` 0 the left, 1 the right) of a pose's bones `w` (the body's space) reaching its
 /// wrist to `wrist`, its elbow kept toward the side it bends to now (the pose's own bend, as a
 /// capture has it) and its hand keeping its turn. In place in `w`.

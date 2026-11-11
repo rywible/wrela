@@ -23,24 +23,31 @@
 // `engine::stride`'s sources) and against a clip judged human by eye, the 100STYLE walk made
 // human (`engine::stride`), which passes each with room. So they judge mocap locomotion: a
 // hand-keyed combat move is reviewed with `KEYED`, which leaves out its pops, its time in the air
-// and its gait (`review_as`).
+// and its gait (`review_as`), and a strike with `STRIKE`, which reads its timing besides
+// (`engine::timing`: its wind-up, its chain, its contact, its weight).
 
 use std::collections::Vec
 use humanoid::{Clip, NONE, Rig, Rigid, frame_world}
+use timing::{ANY, timing}
 
 /// Which of the review's judgements apply to a clip: its pops (and jitter), its time in the air
 /// (a hop), and, in a clip that goes somewhere, its gait (the trunk, the arms, the rhythm, a foot
 /// that never comes down). Mocap locomotion takes them all (`Checks {}`); a hand-keyed combat
 /// move none of them (`KEYED`), since a snap, an impact frame, a launch and a slam are exactly
-/// what it's for. Its feet and knees are judged either way.
+/// what it's for. Its feet and knees are judged either way. A strike's timing is judged where
+/// `strike` says so (`STRIKE`): what `engine::timing` flags, its sheet among the numbers.
 pub struct Checks: Copy {
     pub pops: bool = true,
     pub air: bool = true,
     pub gait: bool = true,
+    pub strike: bool = false,
 }
 
 /// A hand-keyed combat move's checks: its feet and knees alone.
 pub const KEYED: Checks = Checks { pops: false, air: false, gait: false }
+
+/// A hand-keyed strike's checks: its feet and knees, and its timing.
+pub const STRIKE: Checks = Checks { pops: false, air: false, gait: false, strike: true }
 
 /// A clip's review: its score (out of 10), what's wrong with it, and every check's number.
 pub struct Review: Clone {
@@ -157,6 +164,7 @@ const KNEE_WEIGHT: f32 = 1.0
 const TRUNK_WEIGHT: f32 = 1.0
 const ARMS_WEIGHT: f32 = 1.5
 const RHYTHM_WEIGHT: f32 = 1.0
+const STRIKE_WEIGHT: f32 = 1.0
 
 /// The joints whose pops are looked for.
 const JOINTS: [Text; 18] = [
@@ -967,6 +975,17 @@ pub fn review_as(clip: Clip, rig: Rig, checks: Checks) -> Review {
                 flags.push(f"the head turns {most:.0}° from side to side as it goes")
                 lost += TRUNK_WEIGHT
             }
+        }
+    }
+    // ---- a strike's timing ----
+    if checks.strike {
+        let t = timing(clip, rig, ANY, -1.0)
+        for flag in t.flags() {
+            flags.push(flag.clone())
+            lost += STRIKE_WEIGHT
+        }
+        for line in t.lines() {
+            numbers.push(line.clone())
         }
     }
     Review { score: max(10.0 - lost, 0.0), flags, numbers }

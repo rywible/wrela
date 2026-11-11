@@ -10,6 +10,16 @@
 //
 // With no move named, it writes them all. For each it prints how closely the written motion
 // follows the clip: the farthest any joint strays (cm), and how many harmonics or keys it took.
+//
+// ```text
+// wrela tool moves -- --sheet <out-dir> [strike ...]
+// ```
+//
+// Writes no move: for each strike (`strikes`; all of them unless some are named) it prints its
+// timing sheet (`engine::timing`: its wind-up, its chain, its spacing, its contact, its weight,
+// and what it lacks) and writes it as `<out-dir>/<strike>.txt`, with its chart beside it
+// (`<out-dir>/<strike>.png`, chart.wrela: the body, the end's path a dot a frame, each part's
+// speed). A strike is read, not watched: stills lose how far it goes each frame.
 
 use engine::cycle
 use engine::cleanup
@@ -17,6 +27,15 @@ use engine::cycle::{Cycle, Fit}
 use engine::humanoid::{Clip, NONE, Rig, Rigid}
 use engine::oneoff
 use engine::oneoff::{Keying, OneOff}
+use engine::timing
+use engine::timing::{ANY, RIGHT_ARM, Timing}
+use chart::chart
+use humanoid::exchange
+use humanoid::fists
+use humanoid::accad_fists
+use humanoid::kimodo
+use std::tool::ToolError
+use toolkit::whole::write_png
 use humanoid::body::{
     ACCAD_M2_RUN, ACCAD_M2_START, ACCAD_M2_STOP, ACCAD_M2_WALK, HERO, IDLE, PUNCH_KEYED, ROLL_RAW,
 }
@@ -25,7 +44,7 @@ use std::tool::args
 use std::tool::files
 use std::tool::files::rooted
 
-pub const USAGE: Text = "usage: wrela tool moves -- [move ...]"
+pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --sheet <out-dir> [strike ...]"
 
 /// A move: its name on the command line, its file in content/moves and its constant there, the
 /// clip it's fitted to (a looped one as a cycle, a one-off as a shot), and what the file says it
@@ -121,6 +140,123 @@ pub fn moves() -> Vec<Move> {
             },
         ],
     )
+}
+
+/// A strike to read: its name on the command line, its clip, the limb that strikes (`ANY` to
+/// find it), its contact (s; negative to find it), and what it is.
+pub struct Strike: Clone {
+    pub name: Text,
+    pub clip: Clip,
+    pub limb: u32,
+    pub contact: f32,
+    pub about: Text,
+}
+
+/// How long before its contact the exchange's cross is read from, and how long after its
+/// hit-stop (s).
+const X_BEFORE: f32 = 0.7
+const X_AFTER: f32 = 0.9
+
+/// The exchange's striker as he's drawn (`exchange::striker_on`, the hit-stop and the
+/// connection in), from `X_BEFORE` before the contact, a pose for each of a game's frames.
+fn exchange_cross(rig: Rig) -> Clip {
+    let from = exchange::hit_at() - X_BEFORE
+    let n = u32((X_BEFORE + exchange::TUNED.hold + X_AFTER) * timing::RATE)
+    var poses: Vec<engine::humanoid::Pose> = Vec::with_capacity(n)
+    for f in 0..n {
+        poses.push(exchange::striker_on(from + f32(f) / timing::RATE, exchange::TUNED))
+    }
+    timing::clip_of(rig, poses, timing::RATE)
+}
+
+/// The strikes: add a line for a new one.
+pub fn strikes(rig: Rig) -> Vec<Strike> {
+    Vec::from(
+        [
+            Strike {
+                name: "exchange",
+                clip: exchange_cross(rig),
+                limb: RIGHT_ARM,
+                contact: X_BEFORE,
+                about: "the combat lab's cross as it's drawn, hit-stop and all (exchange::striker_on)",
+            },
+            Strike {
+                name: "cross",
+                clip: fists::CROSS.clip.clone(),
+                limb: RIGHT_ARM,
+                contact: fists::CROSS_HIT,
+                about: "the hand-keyed cross (fists::CROSS, engine::keys)",
+            },
+            Strike {
+                name: "cross-take",
+                clip: accad_fists::CROSS_TAKE.clone(),
+                limb: ANY,
+                contact: -1.0,
+                about: "a boxer's captured cross (ACCAD, accad_fists::CROSS_TAKE): the reference",
+            },
+            Strike {
+                name: "cross-kimodo",
+                clip: kimodo::TIMED.clone(),
+                limb: ANY,
+                contact: -1.0,
+                about: "Kimodo's cross, timed (kimodo::TIMED)",
+            },
+            Strike {
+                name: "punch",
+                clip: PUNCH_KEYED.clip.clone(),
+                limb: ANY,
+                contact: -1.0,
+                about: "Quaternius's Punch_Cross, held to its feet (body::PUNCH_KEYED)",
+            },
+        ],
+    )
+}
+
+/// `s`'s sheet printed, and written with its chart under `dir` (a root path).
+fn sheet(s: Strike, rig: Rig, dir: str) -> Result<(), ToolError> {
+    let t = timing::timing(s.clip, rig, s.limb, s.contact)
+    let text = f"{t.text(s.name)}\n  ({s.about})\n"
+    print(text.as_str())
+    if files::write(f"{dir}/{s.name}.txt".as_str(), text.as_bytes()).wait().is_err() {
+        return Err(ToolError::new(f"couldn't write {dir}/{s.name}.txt"))
+    }
+    let img = chart(s.clip, rig, t, f"{s.name}: {s.about}".as_str())
+    write_png(img.rgba()?, f"{dir}/{s.name}.png".as_str())
+}
+
+/// The sheets of the strikes `wanted` names (all of them when it names none) into `dir`, a
+/// path in the workspace: the tool's exit code.
+fn sheets(dir: str, wanted: [String], rig: Rig) -> u32 {
+    let Some(out) = rooted("ws", dir) else {
+        print(f"moves: no path for {dir}")
+        return 2
+    }
+    if let Err(e) = files::make_dirs(out.as_str()).wait() {
+        print(f"moves: {e.message()}")
+        return 1
+    }
+    var done = 0
+    for s in strikes(rig) {
+        var chosen = wanted.is_empty()
+        for w in wanted {
+            if w.as_str() == s.name {
+                chosen = true
+            }
+        }
+        if !chosen {
+            continue
+        }
+        if let Err(e) = sheet(s.clone(), rig, out.as_str()) {
+            print(f"moves: {e.message()}")
+            return 1
+        }
+        done += 1
+    }
+    if done == 0 {
+        print(USAGE)
+        return 2
+    }
+    0
 }
 
 /// Each bone of `rig` in the body's space in frame `f` of `c`.
@@ -230,6 +366,17 @@ fn written(m: Move, rig: Rig) -> Result<String, String> {
 pub fn tool() -> u32 {
     let wanted = args()
     let rig = HERO.rig.clone()
+    if wanted.len() >= 1 && wanted[0].as_str() == "--sheet" {
+        if wanted.len() < 2 {
+            print(USAGE)
+            return 2
+        }
+        var names: Vec<String> = Vec::new()
+        for i in 2..wanted.len() {
+            names.push(wanted[i].clone())
+        }
+        return sheets(wanted[1].as_str(), names, rig)
+    }
     var done = 0
     for m in moves() {
         var chosen = wanted.is_empty()
@@ -283,4 +430,27 @@ fn each_written_move_is_the_clip_it_was_fitted_to() {
             }
         }
     }
+}
+
+@test
+fn a_strikes_chart_marks_where_it_sets_off_and_lands() {
+    // The captured cross's chart: the curves' strip has a line where the strike sets off and
+    // one on its contact, each in its colour; a clip nothing moves in gets no chart.
+    let rig = HERO.rig.clone()
+    let clip = accad_fists::CROSS_TAKE.clone()
+    let t = timing::timing(clip, rig, ANY, -1.0)
+    assert(t.found)
+    let img = chart(clip, rig, t, "cross-take")
+    assert(img.w == chart::WIDTH && img.h == chart::HEIGHT)
+    let m = u32(t.length * timing::RATE + 0.5)
+    let at = |time: f32, c: vec3u| -> bool {
+        let x = chart::STRIP_LEFT + u32(time * timing::RATE / f32(m) * f32(chart::STRIP_W))
+        let i = 3 * ((chart::STRIP_TOP - 6) * img.w + x)
+        u32(img.px[i]) == c.x && u32(img.px[i + 1]) == c.y && u32(img.px[i + 2]) == c.z
+    }
+    assert(at(t.sets_off, chart::SET), "a line where it sets off")
+    assert(at(t.contact, chart::HIT), "a line on its contact")
+    assert(!at(0.5 * (t.sets_off + t.contact), chart::SET), "and none between")
+    let still = engine::humanoid::rest_clip(rig)
+    assert(!timing::timing(still, rig, ANY, -1.0).found)
 }
