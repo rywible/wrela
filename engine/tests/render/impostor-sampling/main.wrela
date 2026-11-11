@@ -19,7 +19,7 @@ use std::gpu::{
     Rgba8, Rgba16Float, Texels, Texels3d, Texture, VertexIndex, begin_depth_pass, begin_pass,
     begin_pass_with_depth, begin_screen_pass, buffer_of, comparison_sampler, depth_texture,
     GpuBuffer, Rg16Float, buffer, copy_buffer_to_texture, copy_texture, dispatch, draw, sampler,
-    texture, texture3d, texture_array, writable_texture, Half2,
+    texture, texture3d, texture_array, writable_texture,
 }
 
 const WIDTH: u32 = 192
@@ -146,7 +146,7 @@ fn report(
 }
 
 pub fn frame(time: f32, width: u32, height: u32) {
-    let no_net: GpuBuffer<Half2> = buffer(1)
+    let no_net: GpuBuffer<f32> = buffer(1)
     var colour = writable_texture::<Rgba8>(width: ATLAS, height: ATLAS)
     var normal = writable_texture::<Rgba16Float>(width: ATLAS, height: ATLAS)
     dispatch(atlas.bind(mut colour, mut normal), over: colour)

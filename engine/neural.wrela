@@ -5,7 +5,8 @@
 // A net's weights are one array in a fixed order (`Model`'s offsets): the first layer's weights
 // (`h1` rows of `inputs`, a row an output), its biases, the second's (`h2` rows of `h1`), its
 // biases, the output's (`outputs` rows of `h2`), its biases. Shipped, they're half floats, two a
-// word (`std::gpu::Half2`); trained, `f32`.
+// word (`std::gpu::Half2`); trained, and given to a shader, `f32` (`unhalves`: decoded once as
+// they're loaded, not again by every pixel that reads them, §18.13).
 //
 // The trainer is on the CPU: a hand-written backward pass for this one architecture, Adam
 // (Kingma and Ba, 2015), a mean squared or absolute error. The networks the engine trains are
@@ -250,38 +251,32 @@ pub fn unhalves(h: [Half2], count: u32) -> Vec<f32> {
     out
 }
 
-/// Weight `i` of a net shipped as half floats (`halves`).
-pub fn half_at(w: [Half2], i: u32) -> f32 {
-    let pair = w[i / 2].decode()
-    if i % 2 == 0 { pair.x } else { pair.y }
-}
-
-/// `x` through net `m` in a shader, its weights half floats (`halves`), its arithmetic `f32`
-/// (a device without half floats runs it as one with); at most `MOST_IN` inputs, `MOST_HIDDEN`
-/// a hidden layer and `MOST_OUT` outputs.
-pub fn eval_gpu(m: Model, w: [Half2], x: [f32; 48]) -> [f32; 8] {
+/// `x` through net `m` in a shader, its weights `w` (a net shipped as half floats is given
+/// decoded, `unhalves`); at most `MOST_IN` inputs, `MOST_HIDDEN` a hidden layer and `MOST_OUT`
+/// outputs.
+pub fn eval_gpu(m: Model, w: [f32], x: [f32; 48]) -> [f32; 8] {
     let o = m.offsets()
     var a1 = [0.0; 64]
     for r in 0..m.h1 {
-        var s = half_at(w, o[1] + r)
+        var s = w[o[1] + r]
         for c in 0..m.inputs {
-            s += half_at(w, o[0] + r * m.inputs + c) * x[c]
+            s += w[o[0] + r * m.inputs + c] * x[c]
         }
         a1[r] = max(s, 0.0)
     }
     var a2 = [0.0; 64]
     for r in 0..m.h2 {
-        var s = half_at(w, o[3] + r)
+        var s = w[o[3] + r]
         for c in 0..m.h1 {
-            s += half_at(w, o[2] + r * m.h1 + c) * a1[c]
+            s += w[o[2] + r * m.h1 + c] * a1[c]
         }
         a2[r] = max(s, 0.0)
     }
     var out = [0.0; 8]
     for r in 0..m.outputs {
-        var s = half_at(w, o[5] + r)
+        var s = w[o[5] + r]
         for c in 0..m.h2 {
-            s += half_at(w, o[4] + r * m.h2 + c) * a2[c]
+            s += w[o[4] + r * m.h2 + c] * a2[c]
         }
         out[r] = s
     }
@@ -290,7 +285,7 @@ pub fn eval_gpu(m: Model, w: [Half2], x: [f32; 48]) -> [f32; 8] {
 
 /// Each row of `xs` (`m.inputs` a row) through net `m` on the GPU (`eval_gpu`): `m.outputs` a row.
 @compute(64)
-pub fn eval_rows(m: Model, w: [Half2], xs: [f32], out: mut Slots<f32>, id: GlobalId) {
+pub fn eval_rows(m: Model, w: [f32], xs: [f32], out: mut Slots<f32>, id: GlobalId) {
     let row = id.x / m.outputs
     if row * m.inputs >= xs.len() {
         return

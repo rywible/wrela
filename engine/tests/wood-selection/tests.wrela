@@ -13,7 +13,7 @@ use std::tool::toolchain
 use std::tool::toolchain::Override
 
 /// The engine's modules wood.wrela names by their own paths.
-const MODULES: [Text; 14] = [
+const MODULES: [Text; 15] = [
     "compress",
     "cull",
     "impostor",
@@ -28,6 +28,7 @@ const MODULES: [Text; 14] = [
     "switches",
     "style",
     "growth",
+    "neural",
 ]
 
 /// How many instances each frame selects.

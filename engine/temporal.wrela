@@ -21,7 +21,7 @@
 
 use neural::{Model, eval_gpu}
 use std::gpu::{
-    DepthTexture, FragCoord, GlobalId, Half2, R32Uint, Rgba16Float, Sampler, Slots, Texels, Texture,
+    DepthTexture, FragCoord, GlobalId, R32Uint, Rgba16Float, Sampler, Slots, Texels, Texture,
 }
 use substance
 use view::{Camera, class_of, thin}
@@ -235,7 +235,7 @@ pub fn resolve(
     spreads: Texture<Rgba16Float>,
     tone: Texture<R32Uint>,
     s: Sampler,
-    net: [Half2],
+    net: [f32],
     learned: const bool,
 ) -> vec4 {
     let px = pixel.position.xy
@@ -263,7 +263,7 @@ pub fn resolve_gathered(
     history: Texture<Rgba16Float>,
     tone: Texture<R32Uint>,
     s: Sampler,
-    net: [Half2],
+    net: [f32],
     learned: const bool,
 ) -> vec4 {
     let px = pixel.position.xy
@@ -556,8 +556,8 @@ fn rejector_inputs(f: Found, scene: Texture<Rgba16Float>) -> [f32; 48] {
 }
 
 /// This frame's share as the learned rejector gives it at what `f` found: the sigmoid of its
-/// net's output (`net`, half floats).
-fn learned_share(f: Found, r: Resolve, scene: Texture<Rgba16Float>, net: [Half2]) -> f32 {
+/// net's output (`net`, its weights decoded).
+fn learned_share(f: Found, r: Resolve, scene: Texture<Rgba16Float>, net: [f32]) -> f32 {
     1.0 / (1.0 + exp(-eval_gpu(REJECTOR, net, rejector_inputs(f, scene))[0]))
 }
 
@@ -576,7 +576,7 @@ fn held_flat(f: Found, r: Resolve, tone: Texture<R32Uint>, near: vec2i) -> Found
     Found { clipped: mix(f.clipped, f.current, vec3(r.flat_clip * flat)), ..f }
 }
 
-fn blended(f: Found, r: Resolve, scene: Texture<Rgba16Float>, net: [Half2], learned: bool) -> vec4 {
+fn blended(f: Found, r: Resolve, scene: Texture<Rgba16Float>, net: [f32], learned: bool) -> vec4 {
     let a = if f.forced != 0 { 1.0 } else if learned && r.learned != 0 {
         min(learned_share(f, r, scene, net), f.settle)
     } else { f.a }
@@ -596,7 +596,7 @@ pub fn found_rows(
     last_motion: Texture<Rgba16Float>,
     history: Texture<Rgba16Float>,
     s: Sampler,
-    net: [Half2],
+    net: [f32],
     pixels: [vec2u],
     out: mut Slots<FoundRow>,
     id: GlobalId,
