@@ -232,7 +232,7 @@ pub const WIDE_CHARTS: u32 = 2
 /// of an arm's path's length; and how far each stands off the arm under it (m).
 pub const WRAP_FROM: f32 = 0.75
 pub const GAUNTLET_FROM: f32 = 0.634
-pub const WRAP_OVER: f32 = 0.0025
+pub const WRAP_OVER: f32 = 0.0015
 pub const GAUNTLET_OVER: f32 = 0.0035
 
 /// His charted limbs. His left arm, bare, and his right, in his jacket's sleeve, each drawn to
@@ -243,8 +243,8 @@ pub const GAUNTLET_OVER: f32 = 0.0035
 /// its root under his trousers' seat. And his neck and head, under his mask and his hair, to
 /// his crown.
 pub fn charts() -> [Part<16, 13>; CHARTS] {
-    let left = figure::limbs::arm(ARM_LEFT, 0, [6, 8, 10], to: 0.84, under: 0.04)
-    let right = figure::limbs::arm(ARM_RIGHT, 1, [7, 9, 11], to: 0.84, under: 0.04)
+    let left = figure::limbs::arm(ARM_LEFT, 0, [6, 8, 10], to: 0.84, under: vec2(0.04, 0.24))
+    let right = figure::limbs::arm(ARM_RIGHT, 1, [7, 9, 11], to: 0.84, under: vec2(0.07, 0.34))
     let over = |arm: Part<16, 13>, from: f32, by: f32| Part {
         form: arm.form.plus(chart::round(by)),
         band: Band { f: vec2(from, 0.86), theta: arm.band.theta },

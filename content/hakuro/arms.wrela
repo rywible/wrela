@@ -59,7 +59,7 @@ fn sampled_at(l: Lattice, slots: [u32], words: [u32], p: vec3) -> f32 {
 /// meshes here: 0 none, 1 his arms, 2 his arms, legs, trunk, head and jacket (his hands stay
 /// sampled). The combat lab's fighters read it. A switch while the charted forms are judged
 /// against the sampled ones: set here (`--set` reaches only a program's own constants).
-pub const CHARTED: u32 = 0
+pub const CHARTED: u32 = 1
 
 /// His arm on `side` (0 left, 1 right) realized from its samples and skinned by the reference's
 /// own weights round it.
