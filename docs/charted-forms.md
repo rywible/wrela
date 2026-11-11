@@ -38,15 +38,21 @@ It writes the file and prints the miss: the root mean square, the size half are 
 
 ## What changes with the pose
 
-A form made again along its posed path already bends. Three things are added, all zero at rest:
+A form made again along its posed path already bends. How the path takes a bent joint matters: a limb's chain cuts the joint's corner (`Chain::cut` 1), following the arc that meets both bones where the bend's rounding starts and ends. Read about that path, the reference body posed is nearer itself at rest than about a path through the joint (10.1 mm rms left against 12.1), and a deep fold reads as one arm, not two lobes. A longer rounding than 5 cm fitted worse.
 
-- **A joint's change** (`chart::Change`, `Radial::bent`): two forms written for a bend toward angle 0, one times the bend's angle and one times its square, turned to where the bend is. The tool solves them against the reference body posed by its own skin weights, over poses of captured motion (`studio/forms/joints.wrela`).
+Three things are added on top, all zero at rest:
+
+- **A joint's change** (`chart::Change`, `Radial::bent`): two forms written for a bend toward angle 0, one times the bend's angle and one times its square, turned to where the bend is. The tool solves them against the reference body posed by its own skin weights, over poses of captured motion (`studio/forms/joints.wrela`). A change holds at the deepest bend it was solved over (`upto`), since its square would carry it past anything it was solved against.
 - **Named changes** (`content/figure/flex.wrela`): what a muscle does, as a bump on the chart in the bend's own frame. These are an author's estimates; say so where you write one.
 - **A fold** (`chart::Fold`): inside a hinge's bend, the radius is limited to the room to the plane that halves the bend, so the limb's two lengths meet at a crease. Name the hinge in the part's `folds`.
 
+## Shading
+
+A pixel reads its normal from the chart itself (`chart::normal_at`): its place on the chart and the section's plane come down from the vertices, and the radius's slopes there give the normal. It is as exact on a coarse grid as on a fine one, which a mesh's normals are not. Read it from the posed form with its finest harmonics damped (`Radial::softened`): a fit's ripples are a fraction of a millimetre on the silhouette, but they tilt the surface enough to fray a cel's bands of light. Where a folded hinge holds the side in, use the vertex's normal (`Limb::folded`).
+
 ## Garments
 
-- **A tight garment** is a difference over the body's form on the same chain (`fitted_over`).
+- **A tight garment** is a difference over the body's form on the same chain (`fitted_over`). One with an edge that shows (a wrap round a forearm, a gauntlet) is a second part on the arm's chain and bones, its form the arm's plus a few millimetres, drawn over its own band: its edge is then a real step, and the ink draws it as one line.
 - **A loose garment about the same bones** is its own form on the body's chain (the jacket on the trunk's), so it goes where the body goes.
 - **Openings** are a `chart::Cover`: a bit a place, set where the garment is, written by the tool from where rays met the reference. The pixel is discarded where `covered` is under a half.
 - **Paint** is by place on the chart, or by where the place is on the creature at rest.
@@ -55,7 +61,7 @@ A form made again along its posed path already bends. Three things are added, al
 
 - Surfaces square to the path: a shoulder's top, a collar, an end cap. The radius must change steeply there, and the splines round it off. Hakuro's jacket misses most at its collar and shoulders.
 - Anything not star-shaped about its path: fingers held together, an ear. Those stay implicit fields.
-- A pose far past what the joints' changes were solved over.
+- A pose far past what the joints' changes were solved over: the changes hold there, and nothing says the held shape is right.
 
 ## Numbers so far
 
