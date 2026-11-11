@@ -139,11 +139,13 @@ pub fn bearing(t: f32, at: vec2, steer: f32, swell: Swell) -> vec3 {
     // The sea under it read where it bears on it: bow, stern and either side, as the water
     // there is by the hull (its shorter waves broken in its lee: `MID_CALM`), so it sits in
     // what's drawn.
-    let bow = swell.height(c + along0 * 1.5, t)
-    let stern = swell.height(c - along0 * 1.5, t)
-    let port = swell.height(c - across0 * 0.5, t)
-    let star = swell.height(c + across0 * 0.5, t)
-    let mid = swell.height(c, t)
+    // (The waves turned on to `t` once for the five heights.)
+    let now = swell.moment(t)
+    let bow = swell.height_at(now, c + along0 * 1.5)
+    let stern = swell.height_at(now, c - along0 * 1.5)
+    let port = swell.height_at(now, c - across0 * 0.5)
+    let star = swell.height_at(now, c + across0 * 0.5)
+    let mid = swell.height_at(now, c)
     // (Its deck a hand and a half over the water, its bottom a good way under: set higher, it
     // sat on the sea, not in it, and read as floating. `look::SAT` sets it lower again.)
     let y = (bow + stern + port + star + mid * 2.0) / 6.0 - 0.11
