@@ -1,0 +1,410 @@
+// The arm's radius as a linear form, an experiment: its radius at a place on its chart is a sum of
+// splines along its path times a Fourier series round it, so each number enters once and plainly.
+// Fitting it to the reference is then linear least squares: one solve gives the best numbers there
+// are, with no starting guess and no other minimum to fall into. The arm's own path is kept as
+// its chart.
+//
+// The reference's radius at a place is read off its distance: about a tube whose side slopes
+// little, a point `d` outside the surface is `d` times the side's slope further from the path
+// than the surface is. The first solve takes the slope as 1; a second reads it off the first.
+
+use arm::arm::arm
+use engine::sweep::Sweep
+use probe::near_surface
+use std::field::Surface
+use std::io::print
+use std::math::TAU
+
+/// The span of the path the form covers, as fractions of its length.
+const FA: f64 = 0.12
+const FB: f64 = 1.0
+
+/// The most functions round the path a form has (1, then a cosine and a sine a harmonic).
+const MOST_ROUND: u32 = 33
+
+/// A radius over the chart: `along` control values along the path (cubic B-splines), each a
+/// Fourier series of `harmonics` harmonics round it; `coef` holds them, a control value's series
+/// together.
+pub struct Radial {
+    along: u32,
+    harmonics: u32,
+    coef: Vec<f64>,
+}
+
+/// The four spline weights at `f` of the way along, and the first control value they weigh.
+fn spline(along: u32, f: f32) -> (u32, [f64; 4]) {
+    let segs = along - 3
+    let u = clamp((f64(f) - FA) / (FB - FA), 0.0, 1.0) * f64(segs)
+    let i = min(u32(u), segs - 1)
+    let t = u - f64(i)
+    let t2 = t * t
+    let t3 = t2 * t
+    (
+        i,
+        [
+            (1.0 - 3.0 * t + 3.0 * t2 - t3) / 6.0,
+            (3.0 * t3 - 6.0 * t2 + 4.0) / 6.0,
+            (-3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0) / 6.0,
+            t3 / 6.0,
+        ],
+    )
+}
+
+/// The functions round the path at angle `theta`: 1, then cos and sin of each harmonic.
+fn round_at(harmonics: u32, theta: f32) -> [f64; MOST_ROUND] {
+    var out: [f64; MOST_ROUND] = [0.0; MOST_ROUND]
+    out[0] = 1.0
+    for h in 1..harmonics + 1 {
+        out[2 * h - 1] = f64(cos(f32(h) * theta))
+        out[2 * h] = f64(sin(f32(h) * theta))
+    }
+    out
+}
+
+impl Radial {
+    /// How many numbers it holds.
+    pub fn numbers(self) -> u32 {
+        self.along * (2 * self.harmonics + 1)
+    }
+
+    /// Its radius at `f` of the way along and angle `theta` (m).
+    pub fn radius(self, f: f32, theta: f32) -> f32 {
+        let rr = 2 * self.harmonics + 1
+        let (i, w) = spline(self.along, f)
+        let fr = round_at(self.harmonics, theta)
+        var sum: f64 = 0.0
+        for a in 0..4 {
+            for j in 0..rr {
+                sum += w[a] * fr[j] * self.coef[(i + a) * rr + j]
+            }
+        }
+        f32(sum)
+    }
+
+    /// How steep its side is at a place `rho` from a path `len` long: the length of the
+    /// gradient of (rho less its radius), by central differences.
+    pub fn slope(self, f: f32, theta: f32, rho: f32, len: f32) -> f32 {
+        let df = 0.002
+        let dt = 0.01
+        let along = (self.radius(f + df, theta) - self.radius(f - df, theta)) / (2.0 * df * len)
+        let round = (self.radius(f, theta + dt) - self.radius(f, theta - dt)) / (2.0 * dt)
+        let r = self.radius(f, theta)
+        let about = round / max(max(rho, 0.5 * r), 0.001)
+        sqrt(1.0 + along * along + about * about)
+    }
+}
+
+/// The radial form of `along` by `harmonics` nearest the radii `r` at places (`f`, `theta`), by
+/// least squares: the normal equations (a hair of damping, for a control value no point reaches),
+/// solved by their LDLᵀ factors.
+fn fitted(along: u32, harmonics: u32, f: [f32], theta: [f32], r: [f32]) -> Radial {
+    let rr = 2 * harmonics + 1
+    let n = along * rr
+    var a: Vec<f64> = Vec::filled(n * n, value: 0.0)
+    var g: Vec<f64> = Vec::filled(n, value: 0.0)
+    for p in 0..f.len() {
+        let (i, w) = spline(along, f[p])
+        let fr = round_at(harmonics, theta[p])
+        for a1 in 0..4 {
+            for j1 in 0..rr {
+                let k1 = (i + a1) * rr + j1
+                let v1 = w[a1] * fr[j1]
+                g[k1] += v1 * f64(r[p])
+                for a2 in 0..4 {
+                    for j2 in 0..rr {
+                        a[k1 * n + (i + a2) * rr + j2] += v1 * w[a2] * fr[j2]
+                    }
+                }
+            }
+        }
+    }
+    for k in 0..n {
+        a[k * n + k] += 0.000001
+    }
+    // A unit lower triangle L below the diagonal, and D on it.
+    for p in 0..n {
+        var dp = a[p * n + p]
+        for t in 0..p {
+            dp -= a[p * n + t] * a[p * n + t] * a[t * n + t]
+        }
+        assert(dp > 0.0, "the normal equations aren't positive definite")
+        a[p * n + p] = dp
+        for q in p + 1..n {
+            var v = a[q * n + p]
+            for t in 0..p {
+                v -= a[q * n + t] * a[p * n + t] * a[t * n + t]
+            }
+            a[q * n + p] = v / dp
+        }
+    }
+    var y: Vec<f64> = Vec::filled(n, value: 0.0)
+    for p in 0..n {
+        var v = g[p]
+        for t in 0..p {
+            v -= a[p * n + t] * y[t]
+        }
+        y[p] = v
+    }
+    var coef: Vec<f64> = Vec::filled(n, value: 0.0)
+    var p = n
+    while p > 0 {
+        p -= 1
+        var v = y[p] / a[p * n + p]
+        for t in p + 1..n {
+            v -= a[t * n + p] * coef[t]
+        }
+        coef[p] = v
+    }
+    Radial { along, harmonics, coef }
+}
+
+/// How a set of misses (mm) is spread: their root mean square, the size half are under, the size
+/// 95% are under, and the worst.
+fn spread(e: [f32]) -> vec4 {
+    var sum = 0.0
+    var worst = 0.0
+    var hist = [0; 400]
+    for v in e {
+        sum += v * v
+        worst = max(worst, abs(v))
+        hist[min(u32(abs(v) * 20.0), 399)] += 1
+    }
+    var seen = 0
+    var half = 0.0
+    var most = 0.0
+    for k in 0..400 {
+        seen += hist[k]
+        if half == 0.0 && f32(seen) >= 0.5 * f32(e.len()) {
+            half = 0.05 * f32(k + 1)
+        }
+        if most == 0.0 && f32(seen) >= 0.95 * f32(e.len()) {
+            most = 0.05 * f32(k + 1)
+        }
+    }
+    vec4(sqrt(sum / f32(max(e.len(), 1))), half, most, worst)
+}
+
+/// The linear form fitted to half the reference's points near its surface (every other one), and
+/// how far it is from the other half, which it never saw: beside the arm's own sweep on those
+/// same points.
+@test
+fn a_linear_radius_fitted_by_one_solve() {
+    let a = arm()
+    let len = a.length()
+    let pts = near_surface(1)
+    // Each point within 3 mm of the reference's surface: where it is about the path, and the
+    // reference's distance there.
+    var f: Vec<f32> = Vec::new()
+    var theta: Vec<f32> = Vec::new()
+    var rho: Vec<f32> = Vec::new()
+    var d: Vec<f32> = Vec::new()
+    var sweep_miss: Vec<f32> = Vec::new()
+    var n = 0
+    for t in pts {
+        if abs(t.w) >= 0.003 {
+            continue
+        }
+        let pl = a.place(t.xyz)
+        if n % 2 == 1 {
+            sweep_miss.push((a.near(t.xyz) - t.w) * 1000.0)
+        }
+        f.push(pl.along / len)
+        theta.push(pl.theta)
+        rho.push(pl.rho)
+        d.push(t.w)
+        n += 1
+    }
+    let s = spread(sweep_miss)
+    print(
+        f"{n} points within 3 mm; fitted to the even ones, measured on the {sweep_miss.len()} odd ones",
+    )
+    print(
+        f"the sweep (164 numbers, solved in 34 s): rms {s.x:.2} mm, half under {s.y:.2}, 95% under {s.z:.2}, worst {s.w:.1}",
+    )
+    let shapes = [vec2u(8, 2), vec2u(10, 3), vec2u(12, 4), vec2u(14, 5), vec2u(18, 6), vec2u(24, 8)]
+    for shape in shapes {
+        // The even points' places, and the reference's radius at each: first with a side of
+        // slope 1, then with the slope the first fit has there.
+        var ff: Vec<f32> = Vec::new()
+        var ft: Vec<f32> = Vec::new()
+        var fr: Vec<f32> = Vec::new()
+        for i in 0..n {
+            if i % 2 == 0 {
+                ff.push(f[i])
+                ft.push(theta[i])
+                fr.push(rho[i] - d[i])
+            }
+        }
+        var form = fitted(shape.x, shape.y, ff, ft, fr)
+        for _ in 0..2 {
+            var again: Vec<f32> = Vec::new()
+            for i in 0..n {
+                if i % 2 == 0 {
+                    again.push(rho[i] - d[i] * form.slope(f[i], theta[i], rho[i], len))
+                }
+            }
+            form = fitted(shape.x, shape.y, ff, ft, again)
+        }
+        var miss: Vec<f32> = Vec::new()
+        for i in 0..n {
+            if i % 2 == 1 {
+                let k = form.slope(f[i], theta[i], rho[i], len)
+                miss.push(((rho[i] - form.radius(f[i], theta[i])) / k - d[i]) * 1000.0)
+            }
+        }
+        let m = spread(miss)
+        print(
+            f"{shape.x} along by {shape.y} harmonics ({form.numbers()} numbers): rms {m.x:.2} mm, half under {m.y:.2}, 95% under {m.z:.2}, worst {m.w:.1}",
+        )
+    }
+}
+
+/// How steep the side of the sweep's radius plus a linear layer's is at a place.
+fn layered_slope(a: Sweep<13>, layer: Radial, f: f32, theta: f32, rho: f32, len: f32) -> f32 {
+    let df = 0.002
+    let dt = 0.01
+    let at = |x: f32, t: f32| a.section_at(x).radius(t) + layer.radius(x, t)
+    let along = (at(f + df, theta) - at(f - df, theta)) / (2.0 * df * len)
+    let round = (at(f, theta + dt) - at(f, theta - dt)) / (2.0 * dt)
+    let about = round / max(max(rho, 0.5 * at(f, theta)), 0.001)
+    sqrt(1.0 + along * along + about * about)
+}
+
+/// The arm's own sections kept, with a small linear layer under them fitted to what they miss:
+/// how far the two together are from the points the fit never saw. The layer's size is how much
+/// of the form the sections' structure doesn't hold.
+@test
+fn a_linear_layer_under_the_arms_sections() {
+    let a = arm()
+    let len = a.length()
+    let pts = near_surface(1)
+    var f: Vec<f32> = Vec::new()
+    var theta: Vec<f32> = Vec::new()
+    var rho: Vec<f32> = Vec::new()
+    var d: Vec<f32> = Vec::new()
+    var base: Vec<f32> = Vec::new()
+    for t in pts {
+        if abs(t.w) >= 0.003 {
+            continue
+        }
+        let pl = a.place(t.xyz)
+        let x = clamp(pl.along / len, 0.0, 1.0)
+        f.push(x)
+        theta.push(pl.theta)
+        rho.push(pl.rho)
+        d.push(t.w)
+        base.push(a.section_at(x).radius(pl.theta))
+    }
+    let n = f.len()
+    let shapes = [vec2u(6, 1), vec2u(8, 2), vec2u(10, 3), vec2u(14, 5)]
+    for shape in shapes {
+        var ff: Vec<f32> = Vec::new()
+        var ft: Vec<f32> = Vec::new()
+        var fr: Vec<f32> = Vec::new()
+        for i in 0..n {
+            if i % 2 == 0 {
+                ff.push(f[i])
+                ft.push(theta[i])
+                fr.push(rho[i] - d[i] - base[i])
+            }
+        }
+        var layer = fitted(shape.x, shape.y, ff, ft, fr)
+        for _ in 0..2 {
+            var again: Vec<f32> = Vec::new()
+            for i in 0..n {
+                if i % 2 == 0 {
+                    let k = layered_slope(a, layer, f[i], theta[i], rho[i], len)
+                    again.push(rho[i] - d[i] * k - base[i])
+                }
+            }
+            layer = fitted(shape.x, shape.y, ff, ft, again)
+        }
+        var miss: Vec<f32> = Vec::new()
+        var size: Vec<f32> = Vec::new()
+        for i in 0..n {
+            if i % 2 == 1 {
+                let k = layered_slope(a, layer, f[i], theta[i], rho[i], len)
+                let r = base[i] + layer.radius(f[i], theta[i])
+                miss.push(((rho[i] - r) / k - d[i]) * 1000.0)
+                size.push(layer.radius(f[i], theta[i]) * 1000.0)
+            }
+        }
+        let m = spread(miss)
+        let l = spread(size)
+        print(
+            f"sections (164) + a layer {shape.x} by {shape.y} ({layer.numbers()} numbers): rms {m.x:.2} mm, half under {m.y:.2}, 95% under {m.z:.2}, worst {m.w:.1}; the layer itself is {l.x:.2} mm rms",
+        )
+    }
+}
+
+/// The linear form about a path that isn't fitted at all: straight lines between his rig's own
+/// joints (shoulder, elbow, wrist), run on to the arm's ends. If it fits as well there, a limb's
+/// chart is its skeleton's, and no number of the fit is other than linear.
+@test
+fn a_linear_radius_about_the_joints_own_line() {
+    // His shoulder, elbow and wrist at rest (hakuro::skeleton), the line through them run from
+    // x 0.16 to x 0.62, with two points 5 cm either side of the elbow as the fitted arm has.
+    let a = engine::sweep::sweep(
+        [
+            vec3(0.16, 1.455, -0.0633),
+            vec3(0.413, 1.455, -0.0714),
+            vec3(0.463, 1.455, -0.073),
+            vec3(0.513, 1.455, -0.0714),
+            vec3(0.62, 1.455, -0.0678),
+        ],
+        up: vec3(y: 1.0),
+        sections: [engine::sweep::round(0.05)],
+        places: [0.0],
+    )
+    let len = a.length()
+    let pts = near_surface(1)
+    var f: Vec<f32> = Vec::new()
+    var theta: Vec<f32> = Vec::new()
+    var rho: Vec<f32> = Vec::new()
+    var d: Vec<f32> = Vec::new()
+    for t in pts {
+        if abs(t.w) >= 0.003 {
+            continue
+        }
+        let pl = a.place(t.xyz)
+        f.push(pl.along / len)
+        theta.push(pl.theta)
+        rho.push(pl.rho)
+        d.push(t.w)
+    }
+    let n = f.len()
+    let shapes = [vec2u(12, 4), vec2u(14, 5), vec2u(18, 6), vec2u(24, 8)]
+    for shape in shapes {
+        var ff: Vec<f32> = Vec::new()
+        var ft: Vec<f32> = Vec::new()
+        var fr: Vec<f32> = Vec::new()
+        for i in 0..n {
+            if i % 2 == 0 {
+                ff.push(f[i])
+                ft.push(theta[i])
+                fr.push(rho[i] - d[i])
+            }
+        }
+        var form = fitted(shape.x, shape.y, ff, ft, fr)
+        for _ in 0..2 {
+            var again: Vec<f32> = Vec::new()
+            for i in 0..n {
+                if i % 2 == 0 {
+                    again.push(rho[i] - d[i] * form.slope(f[i], theta[i], rho[i], len))
+                }
+            }
+            form = fitted(shape.x, shape.y, ff, ft, again)
+        }
+        var miss: Vec<f32> = Vec::new()
+        for i in 0..n {
+            if i % 2 == 1 {
+                let k = form.slope(f[i], theta[i], rho[i], len)
+                miss.push(((rho[i] - form.radius(f[i], theta[i])) / k - d[i]) * 1000.0)
+            }
+        }
+        let m = spread(miss)
+        print(
+            f"about the joints' line, {shape.x} by {shape.y} ({form.numbers()} numbers): rms {m.x:.2} mm, half under {m.y:.2}, 95% under {m.z:.2}, worst {m.w:.1}",
+        )
+    }
+}
