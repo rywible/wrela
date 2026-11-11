@@ -28,7 +28,6 @@
 use engine::chart
 use engine::chart::{Chain, Radial, Sample}
 use figure::chains
-use hakuro::arm_left_grid
 use humanoid::body::HERO
 use std::io::print
 use std::string::String
@@ -74,16 +73,16 @@ pub const ARM: Spec = Spec {
     tuck: 0.5,
 }
 
-/// What Hakuro's left arm is over the species': his sampled grid's surface, from his armhole
-/// to inside the wrap at his wrist, less the species' arm.
+/// What Hakuro's left arm is over the species': bare, from his armhole to inside the wrap at
+/// his wrist. Fitted once to his sampled grid; kept where it is since (`hakuro_arm_left`).
 pub const HAKURO_ARM_LEFT: Spec = Spec {
     name: "hakuro-arm-left",
     file: "content/hakuro/arm_left_form.wrela",
     constant: "ARM_LEFT_OVER",
     about: [
         "What Hakuro's left arm is over the figure's (`figure::arm::ARM`), bare to the wrap round",
-        "his forearm: his sampled arm's surface (`arm_left_grid`) less the figure's arm, read along",
-        "rays from the line through his shoulder, elbow and wrist and fitted by the forms tool.",
+        "his forearm. Fitted once to his sampled arm (rywible/wrela#430 holds it); the forms tool",
+        "keeps his arm where it is when the figure's arm is fitted again (studio/forms/measured).",
     ],
     chain: chains::arm_left(),
     span: vec2(0.14, 0.84),
@@ -92,15 +91,15 @@ pub const HAKURO_ARM_LEFT: Spec = Spec {
 }
 
 /// What Hakuro's right arm is over the species': his jacket's sleeve and the gauntlet over
-/// his forearm, as his sampled grid has them, less the species' arm.
+/// his forearm. Fitted once to his sampled grid; kept where it is since (`hakuro_arm_right`).
 pub const HAKURO_ARM_RIGHT: Spec = Spec {
     name: "hakuro-arm-right",
     file: "content/hakuro/arm_right_form.wrela",
     constant: "ARM_RIGHT_OVER",
     about: [
         "What Hakuro's right arm is over the figure's (`figure::arm::ARM`, mirrored): his jacket's",
-        "sleeve and his gauntlet, as his sampled arm has them (`arm_right_grid`), less the figure's",
-        "arm, read along rays from the line through his shoulder, elbow and wrist.",
+        "sleeve and his gauntlet. Fitted once to his sampled arm (rywible/wrela#430 holds it); the",
+        "forms tool keeps his arm where it is when the figure's arm is fitted again.",
     ],
     chain: chains::arm_left().mirrored(),
     span: vec2(0.14, 0.84),
@@ -310,19 +309,48 @@ pub fn arm() -> Fitted<16, 13> {
     fitted(body_arm_left(), ARM)
 }
 
-/// What Hakuro's left arm is over the species' arm `base`, fitted.
-pub fn hakuro_arm_left(base: Radial<16, 13>) -> Fitted<16, 13> {
-    fitted_over(Grid { samples: arm_left_grid::samples(0) }, HAKURO_ARM_LEFT, base, true)
+/// A character's limb kept where it is over a species' limb fitted again: what it's written as
+/// over the species' limb as written (`over`, `was`), over the species' limb as it is now
+/// (`now`). Forms about one path add, so no reference is read: the character's limb is the
+/// same radius at every place, and only what it's a difference from has changed. Measured
+/// against what its reference was found to be (`measured`, over `span` of the path).
+pub fn kept_over<const A: u32, const R: u32>(
+    s: Spec,
+    over: Radial<A, R>,
+    was: Radial<A, R>,
+    now: Radial<A, R>,
+    measured: [Sample],
+) -> Fitted<A, R> {
+    let form: Radial<A, R> = chart::rounded(over.plus(was).plus(now, by: -1.0))
+    let whole = now.plus(form)
+    Fitted {
+        form,
+        miss: miss(whole, measured, s.span, s.chain.rest().length()),
+        rays: 0,
+    }
 }
 
-/// What Hakuro's right arm is over the species' arm `base` (the left's: mirrored here),
-/// fitted.
+/// What Hakuro's left arm is over the species' arm `base`: his arm as written, kept where it
+/// is, and how far it is from his sampled arm's radii (`measured::ARM_LEFT`).
+pub fn hakuro_arm_left(base: Radial<16, 13>) -> Fitted<16, 13> {
+    kept_over(
+        HAKURO_ARM_LEFT,
+        hakuro::arm_left_form::ARM_LEFT_OVER,
+        figure::arm::ARM,
+        base,
+        measured::samples(measured::ARM_LEFT),
+    )
+}
+
+/// What Hakuro's right arm is over the species' arm `base` (the left's: mirrored here), kept
+/// where it is, and how far it is from his sampled arm's radii (`measured::ARM_RIGHT`).
 pub fn hakuro_arm_right(base: Radial<16, 13>) -> Fitted<16, 13> {
-    fitted_over(
-        Grid { samples: hakuro::arm_right_grid::samples(0) },
+    kept_over(
         HAKURO_ARM_RIGHT,
+        hakuro::arm_right_form::ARM_RIGHT_OVER,
+        figure::arm::ARM.mirrored(),
         base.mirrored(),
-        true,
+        measured::samples(measured::ARM_RIGHT),
     )
 }
 
@@ -364,7 +392,11 @@ fn said<const A: u32, const R: u32>(s: Spec, f: Fitted<A, R>) -> String {
     let m = f.miss.spread
     var out = String::new()
     out.push_str(
-        f"{s.name}: {s.file}, {f.form.numbers()} numbers from {f.rays} rays; {m.count} more between them miss by {m.rms:.2} mm rms, half under {m.half:.2}, 95% under {m.most:.2}, worst {m.worst:.1}\n",
+        if f.rays > 0 {
+            f"{s.name}: {s.file}, {f.form.numbers()} numbers from {f.rays} rays; {m.count} more between them miss by {m.rms:.2} mm rms, half under {m.half:.2}, 95% under {m.most:.2}, worst {m.worst:.1}\n"
+        } else {
+            f"{s.name}: {s.file}, {f.form.numbers()} numbers kept where they were; {m.count} radii of its reference as it was miss by {m.rms:.2} mm rms, half under {m.half:.2}, 95% under {m.most:.2}, worst {m.worst:.1}\n"
+        },
     )
     out.push_str(
         "  by place (mm rms): a row a station from the span's start to its end, a column a sector round from angle 0\n",
@@ -568,14 +600,6 @@ fn stations_of(name: str) -> Option<String> {
     }
     if name == LEG.name {
         return Some(stations(body(2), LEG))
-    }
-    if name == HAKURO_ARM_LEFT.name {
-        return Some(stations(Grid { samples: arm_left_grid::samples(0) }, HAKURO_ARM_LEFT))
-    }
-    if name == HAKURO_ARM_RIGHT.name {
-        return Some(
-            stations(Grid { samples: hakuro::arm_right_grid::samples(0) }, HAKURO_ARM_RIGHT),
-        )
     }
     if name == HAKURO_LEG.name {
         return Some(stations(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_LEG))

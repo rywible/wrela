@@ -5,8 +5,8 @@
 use engine::chart::Radial
 
 /// What Hakuro's left arm is over the figure's (`figure::arm::ARM`), bare to the wrap round
-/// his forearm: his sampled arm's surface (`arm_left_grid`) less the figure's arm, read along
-/// rays from the line through his shoulder, elbow and wrist and fitted by the forms tool.
+/// his forearm. Fitted once to his sampled arm (rywible/wrela#430 holds it); the forms tool
+/// keeps his arm where it is when the figure's arm is fitted again (studio/forms/measured).
 pub const ARM_LEFT_OVER: Radial<16, 13> = Radial {
     from: 0.0000,
     to: 1.0000,

@@ -50,6 +50,10 @@ pub fn poses() -> Vec<[mat4; 64]> {
     out
 }
 
+/// How far past its own stretch of the path a joint's change eases to nothing (of the path's
+/// length).
+pub const REACH_EASE: f32 = 0.08
+
 /// Where a limb's readings start along its path: past its root's first few centimetres,
 /// where the reference has too little of a side to read.
 pub const FROM: f32 = 0.04
@@ -155,6 +159,30 @@ pub fn solved<const N: u32>(readings: [Reading], joints: [u32; N]) -> [Solved; N
                     for b in 0..3 {
                         m[rows[a] * n + rows[b]] += lam * c[a] * c[b]
                     }
+                }
+            }
+        }
+    }
+    // Each joint's change keeps to its own stretch of the path: as far as halfway to the joint
+    // either side of it (the first's, back to the root). Left free, the solve trades one
+    // joint's change against the next's wherever the poses bend both together, and a pose that
+    // bends one alone shows the trade: a straight arm hanging at its side had its forearm
+    // thinned 14 mm by its shoulder's change.
+    for j in 0..N {
+        let at = readings[0].bends[joints[j]].at
+        let from = if j == 0 { -1.0 } else { 0.5 * (readings[0].bends[joints[j - 1]].at + at) }
+        let after = if j + 1 == N { 1.0 } else { readings[0].bends[joints[j + 1]].at }
+        let to = 0.5 * (at + after)
+        for i in 0..ALONG {
+            let x = shape.place_of_control(i)
+            let past = max(
+                1.0 - smoothstep(from - REACH_EASE, from, x),
+                smoothstep(to, to + REACH_EASE, x),
+            )
+            for p in 0..2 {
+                for k in 0..ROUND {
+                    let row = (j * 2 + p) * per + i * ROUND + k
+                    m[row * n + row] += 1.0e6 * lam * f64(past)
                 }
             }
         }
@@ -303,7 +331,13 @@ fn the_arm_as_its_drawn_against_the_posed_reference() {
         let bones = bones_of(ARM_LEFT, m)
         let chain = ARM_LEFT.chain
         let bends = chain.bends(bones)
-        let part = figure::limbs::arm(figure::arm::ARM, 0, ARM_LEFT.bones, to: 1.0, under: 0.0)
+        let part = figure::limbs::arm(
+            figure::arm::ARM,
+            0,
+            ARM_LEFT.bones,
+            to: 1.0,
+            under: vec2(0.0, 0.24),
+        )
         let form = part.posed(m).form
         let tris = posed::posed_triangles(HERO.clone(), m, keep)
         let seen = targets::rays(

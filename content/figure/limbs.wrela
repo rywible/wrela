@@ -9,11 +9,17 @@ use std::math::TAU
 /// A limb's form: 16 control values along its path, each a Fourier series of 6 harmonics.
 pub type Form = Radial<16, 13>
 
+/// How much of the shoulder's solved change is taken. The solve copies what the reference
+/// body's skin weights do, and at a shoulder they collapse: an arm hanging at the side loses a
+/// centimetre of its cap and more under it, and reads thin and pinched where it leaves a
+/// jacket. Half keeps the cap under what's worn over it and the arm its width.
+pub const SHOULDER_TAKEN: f32 = 0.5
+
 /// His shoulder's change with its bend, the size of his arm's form.
 @fuel(2 ** 36)
 pub const SHOULDER: Change<16, 13> = Change {
-    by_angle: arm_joints::SHOULDER_BY_ANGLE.resized(),
-    by_square: arm_joints::SHOULDER_BY_SQUARE.resized(),
+    by_angle: chart::round(0.0).plus(arm_joints::SHOULDER_BY_ANGLE.resized(), by: SHOULDER_TAKEN),
+    by_square: chart::round(0.0).plus(arm_joints::SHOULDER_BY_SQUARE.resized(), by: SHOULDER_TAKEN),
     upto: arm_joints::SHOULDER_UPTO,
 }
 
@@ -28,11 +34,11 @@ pub const ELBOW: Change<16, 13> = Change {
 /// An arm as a charted part of a creature: on `side` (0 left, 1 right), `rest` its form about
 /// that side's chain, its bones the creature's `bones` (its collarbone, which carries its root
 /// and which it hangs from, its upper arm, its forearm), drawn as far as `to` of the way along
-/// its path (where a hand takes over), its root `under` what's worn over its shoulder (m) until
-/// it has left it, a quarter of the way along. Its shoulder and its elbow change as the forms
-/// tool solved for them, and its elbow as its muscles do (`flex`); a right arm's are the
-/// left's, mirrored. It folds at its elbow.
-pub fn arm(rest: Form, side: u32, bones: [u32; 3], to: f32, under: f32) -> Part<16, 13> {
+/// its path (where a hand takes over), its root drawn `under.x` metres under what's worn over
+/// its shoulder until it has left it, `under.y` of the way along. Its shoulder and its elbow
+/// change as the forms tool solved for them, and its elbow as its muscles do (`flex`); a right
+/// arm's are the left's, mirrored. It folds at its elbow.
+pub fn arm(rest: Form, side: u32, bones: [u32; 3], to: f32, under: vec2) -> Part<16, 13> {
     let left = side == 0
     var changes: [Change<16, 13>; JOINTS] = [chart::unchanged(); JOINTS]
     let elbow = ELBOW.plus(flex::ELBOW_FLEX)
@@ -45,7 +51,7 @@ pub fn arm(rest: Form, side: u32, bones: [u32; 3], to: f32, under: f32) -> Part<
         form: rest,
         changes,
         band: Band { f: vec2(0.0, to), theta: vec2(0.0, TAU) },
-        sunk: vec2(under, 0.24),
+        sunk: under,
         folds: [2, 0],
     }
 }

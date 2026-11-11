@@ -58,12 +58,16 @@ pub fn set_of(s: str) -> Option<Set> {
 }
 
 /// The scenes' names.
-pub const SCENES: [Text; 1] = ["exchange"]
+pub const SCENES: [Text; 3] = ["exchange", "rider", "rider-quarter"]
 
 /// The scene named `name`, if there is one.
 /// - `exchange`: the combat lab's exchange (content/humanoid, `SHOW=28`): Hakuro and his double
 ///   in their guards, a step in, the cross thrown and landed, and the recovery, at 30 frames a
 ///   second; its clip is the four seconds the cross is in.
+/// - `rider`: the opening (scenes/opening) with its traveller close (`VIEW=8`): Hakuro aboard
+///   the skiff, a hand to the sail's boom, riding the swell, at 60 frames a second; seven
+///   seconds in, the sky and the sea have settled. Its clip is the two seconds round that.
+/// - `rider-quarter`: the same from off the starboard quarter (`VIEW=9`).
 pub fn scene(name: str) -> Option<Scene> {
     if name == "exchange" {
         return Some(
@@ -79,11 +83,25 @@ pub fn scene(name: str) -> Option<Scene> {
             },
         )
     }
+    if name == "rider" || name == "rider-quarter" {
+        return Some(
+            Scene {
+                name: if name == "rider" { "rider" } else { "rider-quarter" },
+                program: "scenes/opening",
+                sets: Vec::from([set("VIEW", if name == "rider" { "8" } else { "9" })]),
+                width: 1600,
+                height: 900,
+                fps: 60.0,
+                clip_first: 360,
+                clip_last: 480,
+            },
+        )
+    }
     None
 }
 
 /// The lists' names.
-pub const LISTS: [Text; 1] = ["arms"]
+pub const LISTS: [Text; 2] = ["arms", "rider"]
 
 /// The frames from `first` to `last`, every `every`th.
 pub fn every(first: u32, last: u32, every: u32) -> Vec<u32> {
@@ -100,6 +118,8 @@ pub fn every(first: u32, last: u32, every: u32) -> Vec<u32> {
 /// - `arms`: the exchange's six moments the charted arms' first three rounds were judged on (the
 ///   guard, the step, the cross's wind-up, its impact frame, its follow-through and the
 ///   recovery), each a still of the fighters' arms, and the cross as a strip of frames.
+/// - `rider`: the opening's traveller aboard his skiff, close and from off the quarter, at two
+///   moments of the swell each.
 pub fn list(name: str) -> Option<Vec<Shot>> {
     if name == "arms" {
         let near = Crop { x0: 560, y0: 130, x1: 1160, y1: 560 }
@@ -163,6 +183,48 @@ pub fn list(name: str) -> Option<Vec<Shot>> {
             ),
         )
     }
+    if name == "rider" {
+        let close = Crop { x0: 620, y0: 90, x1: 1120, y1: 560 }
+        let quarter = Crop { x0: 780, y0: 100, x1: 1180, y1: 520 }
+        return Some(
+            Vec::from(
+                [
+                    Shot {
+                        name: "aboard",
+                        scene: "rider",
+                        frames: Vec::from([420]),
+                        crop: close,
+                        up: 2,
+                        about: "the traveller aboard, a hand to the boom",
+                    },
+                    Shot {
+                        name: "aboard-later",
+                        scene: "rider",
+                        frames: Vec::from([480]),
+                        crop: close,
+                        up: 2,
+                        about: "the same a second on, the swell passed under him",
+                    },
+                    Shot {
+                        name: "quarter",
+                        scene: "rider-quarter",
+                        frames: Vec::from([420]),
+                        crop: quarter,
+                        up: 2,
+                        about: "the traveller from off the skiff's quarter",
+                    },
+                    Shot {
+                        name: "quarter-later",
+                        scene: "rider-quarter",
+                        frames: Vec::from([480]),
+                        crop: quarter,
+                        up: 2,
+                        about: "the same a second on",
+                    },
+                ],
+            ),
+        )
+    }
     None
 }
 
@@ -218,7 +280,11 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
             k += 1
         } else if a == "--shots" {
             if list(next.as_str()).is_none() {
-                return Err(String::from(f"no list of shots {next}: the lists are {LISTS[0]}"))
+                return Err(
+                    String::from(
+                        f"no list of shots {next}: the lists are {LISTS[0]} and {LISTS[1]}",
+                    ),
+                )
             }
             o.list = take next
             k += 1

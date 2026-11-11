@@ -34,14 +34,20 @@ fn bump(f: f32, theta: f32, at: f32, along: f32, toward: f32, height: f32) -> f3
 ///   the biceps gained, so the upper arm keeps its volume;
 /// - the forearm's flexors bunch just past the elbow on the inside.
 ///
-/// (The point of the elbow isn't one of them: the joint's solved change has what the
-/// reference's elbow does on the outside of a bend, and a bump added there read as a knob.)
+/// - the point of the elbow stands on the outside of the bend, at the joint: the arm's path
+///   cuts a bent joint's corner, so the form bends as a hose does, and a bone doesn't. This
+///   puts back some of what the cut took from the outside (a quarter of the rounding's length
+///   for each radian), so a slight bend reads as a joint.
 fn by_angle(f: f32, theta: f32) -> f32 {
     let mid = 0.5 * (SHOULDER_AT + ELBOW_AT)
     bump(f, theta, at: mid - 0.02, along: 0.085, toward: 0.0, height: 0.0075) -
         bump(f, theta, at: mid + 0.02, along: 0.11, toward: 3.1416, height: 0.0033) +
-        bump(f, theta, at: ELBOW_AT + 0.075, along: 0.06, toward: 0.35, height: 0.003)
+        bump(f, theta, at: ELBOW_AT + 0.075, along: 0.06, toward: 0.35, height: 0.003) +
+        bump(f, theta, at: ELBOW_AT + 0.005, along: 0.045, toward: 3.1416, height: ELBOW_POINT)
 }
+
+/// How far the elbow's point stands out for each radian of bend (m).
+pub const ELBOW_POINT: f32 = 0.003
 
 /// How far the elbow bends when its muscles are most bunched (radians): past it they've no
 /// more to give, and the forearm closing on the upper arm presses them flat again.

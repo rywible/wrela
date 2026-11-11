@@ -5,8 +5,8 @@
 use engine::chart::Radial
 
 /// What Hakuro's right arm is over the figure's (`figure::arm::ARM`, mirrored): his jacket's
-/// sleeve and his gauntlet, as his sampled arm has them (`arm_right_grid`), less the figure's
-/// arm, read along rays from the line through his shoulder, elbow and wrist.
+/// sleeve and his gauntlet. Fitted once to his sampled arm (rywible/wrela#430 holds it); the
+/// forms tool keeps his arm where it is when the figure's arm is fitted again.
 pub const ARM_RIGHT_OVER: Radial<16, 13> = Radial {
     from: 0.0000,
     to: 1.0000,

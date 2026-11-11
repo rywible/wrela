@@ -9,8 +9,13 @@
 // as fine as his fields, however coarse his mesh. He's lit as the skiff is (`paint::lit_solid`,
 // its sea bounce and its rim), shadowed by the rig and the clouds.
 
-use hakuro::arms::{Drape, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body}
-use hakuro::hakuro::{Cloth, FINGER_JOINTS, body_paint, coat, head, hero, jacket_paint}
+use hakuro::arms::{Drape, drape_room, draped, follow_legs, hand, jacket, sampled_body}
+use hakuro::hakuro::{
+    ARM_CHARTS, Cloth, FINGER_JOINTS, SHADED_DETAIL, arm_charts, body_paint, chart_paint, coat,
+    head, hero, jacket_paint,
+}
+use engine::chart
+use engine::chart::{Grids, Limb, Radial}
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
 use engine::character::skin_matrix
 use engine::look::CreatureLook
@@ -54,7 +59,12 @@ pub struct Aboard {
     body: Mesh,
     head: Mesh,
     coat: Mesh,
-    arms: [Mesh; 6],
+    // (His sampled meshes: his body, his jacket and his hands.)
+    sampled: [Mesh; 4],
+    // (His arms, and the wrap and the gauntlet over them, as his pose has them this drawing:
+    // drawn along their charts, `hakuro::arm_charts`, on the grids charted forms are drawn on.)
+    arms: [Limb<16, 13>; ARM_CHARTS],
+    grids: Grids,
     palette: GpuBuffer<mat4>,
     // (The sky's light from his three fixed directions, once a frame: `hero_skies`.)
     skies: GpuBuffer<vec4>,
@@ -93,12 +103,20 @@ const FINER: u32 = 2
 
 /// Hakuro realized from his fields.
 pub fn aboard() -> Aboard {
+    let parts = arm_charts()
+    var arms = [parts[0].rest(); ARM_CHARTS]
+    for a in 0..ARM_CHARTS {
+        arms[a] = parts[a].rest()
+    }
     Aboard {
         body: realize_once(hero(), BODY),
         head: realize_once(head(), HEAD),
         coat: follow_legs(realize_once(coat(), COAT)),
-        // (His arms and body are sampled from the reference's own surface: `hakuro::arms`.)
-        arms: [arm(0), arm(1), sampled_body(), jacket(), hand(0), hand(1)],
+        // (His body, jacket and hands are sampled from the reference's own surface:
+        // `hakuro::arms`.)
+        sampled: [sampled_body(), jacket(), hand(0), hand(1)],
+        arms,
+        grids: chart::grids(),
         palette: buffer(2 * MAX_BONES),
         skies: buffer(SKIES),
         lagged: [mat4(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0)); 64],
@@ -628,8 +646,56 @@ pub fn hero_pixel<F: Parts<Cloth>>(
     lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, skies, overhead(once), v.world, n, d, t, c, ao)
 }
 
-/// His sampled arms' pixel: as `hero_pixel`, but with no fields behind them, their own normal
-/// and his body's paint where they are on him at rest.
+/// What the scene is seen with, for a charted form (`engine::chart::vertex`): its own cast.
+impl chart::Seen for Shot {
+    fn clip_at(self, world: vec3) -> vec4 {
+        clip_of(self, world)
+    }
+
+    fn seen_from(self) -> vec3 {
+        self.eye
+    }
+}
+
+/// His charted arms' pixel (`hakuro::arm_charts`): as `arm_pixel`, its normal read from the
+/// form at the pixel's own place (`chart::Vertex::normal_from`; `along`: its path's length) and
+/// its paint the part's.
+@fragment
+pub fn charted_pixel<const A: u32, const R: u32>(
+    v: chart::Vertex,
+    shade: Radial<A, R>,
+    along: f32,
+    shot: Shot,
+    light: Light,
+    clouds: Clouds,
+    view: Texture<Rgba16Float>,
+    aerial: Texture3d<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    cloud: Texture<Rgba16Float>,
+    smp: Sampler,
+    skies: [vec4],
+    once: [vec4],
+    painted: Texture<Rgba16Float>,
+    part: u32,
+    pixel: FragCoord,
+) -> Targets3<vec4, vec4, vec4> {
+    let s = shot
+    let t = length(v.world - s.eye)
+    let behind = painted.load(u32(pixel.position.x) / FINER, u32(pixel.position.y) / FINER)
+    if behind.x < log2(t) - 0.006 {
+        discard()
+    }
+    let d = normalize(v.world - s.eye)
+    var n = v.normal_from(shade, along)
+    if dot(n, d) > 0.0 {
+        n = normalize(n - d * (dot(n, d) + 0.05))
+    }
+    let c = chart_paint(part, v.rest)
+    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, skies, overhead(once), v.world, n, d, t, c, 0.9)
+}
+
+/// His sampled meshes' pixel (his body, jacket and hands): as `hero_pixel`, but with no fields
+/// behind them, their own normal and his body's paint where they are on him at rest.
 @fragment
 pub fn arm_pixel(
     v: HeroVertex,
@@ -973,6 +1039,10 @@ impl Aboard {
             self.ride(shot, moved)
             let now = bones(shot, self.give)
             write(mut self.palette, 0, now)
+            let parts = arm_charts()
+            for a in 0..ARM_CHARTS {
+                self.arms[a] = parts[a].posed(now)
+            }
             // (About a tenth of a second behind: 0.16 of the way each 60th of a second.)
             let ease = 1.0 - pow(0.84, clamp(moved, 0.0, 0.1) * 60.0)
             for k in 0..64 {
@@ -1076,11 +1146,11 @@ impl Aboard {
             indirect: self.coat.draw.items(),
             cull: Cull::Front,
         )
-        for a in 0..6 {
+        for a in 0..4 {
             draw(
                 p,
                 hero_vertex.bind(
-                    verts: self.arms[a].verts.items(),
+                    verts: self.sampled[a].verts.items(),
                     palette: self.palette.items(),
                     shot: shot,
                 ),
@@ -1093,13 +1163,52 @@ impl Aboard {
                     dome: hv.sky.dome,
                     cloud: hv.sky.shadow,
                     smp: hv.linear,
-                skies: self.skies.items(),
-                once: once.items(),
+                    skies: self.skies.items(),
+                    once: once.items(),
                     painted: marks,
-                    jacket: if a == 3 { 1 } else { 0 },
+                    jacket: if a == 1 { 1 } else { 0 },
                 ),
-                indices: self.arms[a].quads.items(),
-                indirect: self.arms[a].draw.items(),
+                indices: self.sampled[a].quads.items(),
+                indirect: self.sampled[a].draw.items(),
+                cull: Cull::Front,
+            )
+        }
+        // His arms, and the wrap and the gauntlet over them, along their charts: no mesh, each
+        // form made again where his bones are.
+        let parts = arm_charts()
+        for a in 0..ARM_CHARTS {
+            let form = self.arms[a]
+            let level = form.level(shot.eye, f32(height * FINER), 1.0 / shot.focal)
+            let span = chart::level_span(level)
+            draw(
+                p,
+                chart::vertex.bind(
+                    rest: parts[a].rest(),
+                    form: form,
+                    band: parts[a].band,
+                    under: parts[a].sunk,
+                    level: level,
+                    seen: shot,
+                ),
+                charted_pixel.bind(
+                    shade: form.form.softened(SHADED_DETAIL),
+                    along: form.path.length(),
+                    shot: shot,
+                    light: hv.light,
+                    clouds: hv.clouds,
+                    view: hv.tables.view,
+                    aerial: hv.tables.aerial,
+                    dome: hv.sky.dome,
+                    cloud: hv.sky.shadow,
+                    smp: hv.linear,
+                    skies: self.skies.items(),
+                    once: once.items(),
+                    painted: marks,
+                    part: a,
+                ),
+                indices: self.grids.indices,
+                first_index: span.x,
+                index_count: span.y,
                 cull: Cull::Front,
             )
         }
