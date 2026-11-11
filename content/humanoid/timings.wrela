@@ -1,0 +1,160 @@
+// The timing sheet (`engine::timing`) held against the body's strikes: a boxer's captured cross
+// reads as one, and strikes made wrong on purpose from its own poses are each flagged for what
+// they lack. (`wrela tool moves -- --sheet <dir>` prints every strike's sheet and draws its
+// chart.)
+
+use accad_fists::CROSS_TAKE
+use body::HERO
+use engine::humanoid
+use engine::humanoid::{Clip, Pose}
+use engine::keys
+use engine::review
+use engine::timing::{ANY, RIGHT_ARM, clip_of, timing}
+use std::io::print
+
+/// Whether any of `flags` holds `what`.
+fn flagged(flags: [String], what: str) -> bool {
+    for f in flags {
+        if f.as_str().find(what).is_some() {
+            return true
+        }
+    }
+    false
+}
+
+/// `x` eased from 0 to 1.
+fn smooth(x: f32) -> f32 {
+    let u = clamp(x, 0.0, 1.0)
+    u * u * (3.0 - 2.0 * u)
+}
+
+/// A cross made pose to pose from the captured one's own two poses (as it sets off, and on its
+/// contact), 60 frames a second: wound back `wind` of the way first and held, thrown over
+/// eight frames, held, and brought home. The striking arm starts `lead` frames after the rest
+/// of the body (before it when negative; with it at 0, every part on one curve).
+fn thrown(lead: i32, wind: f32) -> Clip {
+    borrow rig = HERO.rig
+    let t = timing(CROSS_TAKE, rig, ANY, -1.0)
+    let (a, b) = (CROSS_TAKE.pose(t.sets_off), CROSS_TAKE.pose(t.contact))
+    let nb = rig.bones.len()
+    let arm = [
+        rig.find("rightShoulder"),
+        rig.find("rightUpperArm"),
+        rig.find("rightLowerArm"),
+        rig.find("rightHand"),
+    ]
+    // How far along from the one pose to the other a part is at frame `f`, its strike
+    // starting at frame `from`.
+    let along = |f: i32, from: i32| -> f32 {
+        if f < 12 {
+            return -wind * smooth(f32(f) / 12.0)
+        }
+        if f < from {
+            return -wind
+        }
+        if f < from + 8 {
+            return -wind + (1.0 + wind) * smooth(f32(f - from) / 8.0)
+        }
+        if f < from + 14 {
+            return 1.0
+        }
+        1.0 - smooth(f32(f - from - 14) / 20.0)
+    }
+    var poses: Vec<Pose> = Vec::new()
+    for f in 0..64 {
+        var p = humanoid::blend(a, b, along(f, 22), nb)
+        let q = humanoid::blend(a, b, along(f, 22 + lead), nb)
+        for bone in arm {
+            if bone != humanoid::NONE {
+                p.turns[bone] = q.turns[bone]
+            }
+        }
+        poses.push(p)
+    }
+    clip_of(rig, poses, 60.0)
+}
+
+/// A boxer's captured cross reads as a strike, with nothing flagged: the right fist found,
+/// about as fast as boxers' fists are measured (Walilko, Viano and Bir 2005: 9.14 m/s, s.d.
+/// 2.06, hitting a target; this one is thrown at the air), the chain from the hips out, the
+/// hips going well before the fist.
+@test
+fn timing_reads_a_captured_cross() {
+    borrow rig = HERO.rig
+    let t = timing(CROSS_TAKE, rig, ANY, -1.0)
+    print(t.text("the captured cross"))
+    assert(t.found && t.limb == RIGHT_ARM, "the right fist strikes")
+    assert(t.flags().len() == 0, "a real cross lacks nothing")
+    assert(t.fastest > 5.0 && t.fastest < 13.3, f"a boxer's fist, not {t.fastest} m/s")
+    assert(t.in_order(), "from the hips out")
+    assert(t.lead() >= 0.03, f"the hips go first, by {t.lead()} s")
+    assert(t.sets_off < t.fastest_at && t.fastest_at <= t.contact, "sets off, speeds, lands")
+    assert(t.out > 0.8 && t.out <= 1.0, f"the arm's {t.out} out on contact")
+    assert(abs(t.hips_turn) > 30.0 && abs(t.chest_turn) > abs(t.hips_turn), "the trunk turns in")
+}
+
+/// Strikes made wrong on purpose are flagged for what they lack, and one made right isn't.
+@test
+fn timing_flags_what_a_strike_lacks() {
+    borrow rig = HERO.rig
+    // Made right: wound up, the body three frames ahead of the arm.
+    let good = timing(thrown(3, 0.25), rig, RIGHT_ARM, -1.0)
+    print(good.text("thrown, the body first"))
+    assert(good.found && good.flags().len() == 0, "a strike that reads")
+    assert(good.lead() >= 0.03 && good.in_order())
+    assert(good.draws > 0.05, f"wound up {good.draws} m")
+    // Every part on one curve.
+    let one = timing(thrown(0, 0.25), rig, RIGHT_ARM, -1.0)
+    print(one.text("thrown, all at once"))
+    assert(flagged(one.flags(), "all at once"), "one curve")
+    assert(one.flags().len() == 1)
+    // The arm ahead of the body.
+    let arm = timing(thrown(-5, 0.25), rig, RIGHT_ARM, -1.0)
+    print(arm.text("thrown, the arm first"))
+    assert(flagged(arm.flags(), "goes before the body"), "the arm first")
+    // No wind-up.
+    let flat = timing(thrown(3, 0.0), rig, RIGHT_ARM, -1.0)
+    print(flat.text("thrown, no wind-up"))
+    assert(flagged(flat.flags(), "no wind-up"), "no wind-up")
+    assert(!flagged(good.flags(), "no wind-up"))
+    // A contact given where the fist isn't fast.
+    let late = timing(thrown(3, 0.25), rig, RIGHT_ARM, good.contact + 0.3)
+    assert(flagged(late.flags(), "not near its contact"), "a contact the fist isn't fast near")
+    // A clip nothing moves in.
+    let still = timing(humanoid::rest_clip(rig), rig, ANY, -1.0)
+    assert(!still.found && still.flags().len() == 0)
+}
+
+/// A strike's review (`review::STRIKE`) carries its sheet and a flag for each thing its timing
+/// lacks; a keyed move's review (`review::KEYED`) doesn't look.
+@test
+fn timing_is_part_of_a_strikes_review() {
+    borrow rig = HERO.rig
+    let one = thrown(0, 0.25)
+    let keyed = review::review_as(one, rig, review::KEYED)
+    let strike = review::review_as(one, rig, review::STRIKE)
+    assert(!flagged(keyed.flags, "all at once") && flagged(strike.flags, "all at once"))
+    // (Its feet aren't planted, a mix of two poses, so both reviews flag them alike.)
+    assert(strike.flags.len() == keyed.flags.len() + 1, "the one flag more")
+    assert(strike.score <= keyed.score)
+    assert(flagged(strike.numbers, "chain:") && flagged(strike.numbers, "spacing"))
+    let good = review::review_as(thrown(3, 0.25), rig, review::STRIKE)
+    assert(!flagged(good.flags, "all at once") && !flagged(good.flags, "no wind-up"))
+}
+
+/// Keys the body can't reach are named (`keys::misses`): a fist put past its arm's reach is,
+/// and the guard's keys, which the body reaches, aren't.
+@test
+fn timing_names_keys_out_of_reach() {
+    borrow rig = HERO.rig
+    let guard = fists::guard_keys()
+    assert(keys::misses(rig, guard, 60.0).len() == 0, "the guard is within reach")
+    var far = fists::guard()
+    far.at = 0.2
+    far.fists[1] = far.fists[1] + vec3(0.0, 0.0, 1.5)
+    let asked = keys::misses(rig, [fists::guard(), far], 60.0)
+    assert(asked.len() == 1 && flagged(asked, "right fist"), "a fist put 1.5 m past the guard")
+    for m in keys::misses(rig, fists::cross_keys(), 60.0) {
+        print(f"the keyed cross: {m}")
+    }
+}

@@ -1,0 +1,785 @@
+// A move's timing sheet: what an animator reads off a strike's curves and spacing chart, as
+// numbers, so a move can be written and judged without watching it. A still shows a pose; what
+// makes a strike land is in how the poses follow one another: how far it winds up and how long
+// that's held, how few frames the strike takes and how its spacing opens, which part of the body
+// goes first, whether it stops on its contact, where the weight is, how it comes home.
+//
+// From a clip and the limb that strikes (`timing`), sampled `RATE` times a second whatever the
+// clip's own frames, about the clip's root (a move's travel is gameplay's):
+//
+// - The wind-up: how far the fist or foot draws back against the way it then goes, over how
+//   long, and how long it's held there; how far the hips and chest turn back and the hips sink.
+//   (Anticipation: Lasseter 1987, after Thomas and Johnston.)
+// - The strike: when it sets off, when it's fastest and how fast, its contact, and its spacing
+//   (how far it goes each frame, the chart an animator draws beside a key: Williams 2001).
+// - The chain: when the hips' turn, the chest's turn, the limb's own two joints (the shoulder
+//   against the chest, the elbow against the upper arm; a leg's hip and knee) and its end each
+//   get going and are fastest. A thrown or struck blow goes from the middle of the body
+//   outward, each part a little after the one before (Putnam 1993).
+// - The contact: how far out the limb is, how fast it comes in and how fast it leaves, how far
+//   it's driven on, how long it's held.
+// - The body: how far the hips and chest turn through the strike and the twist between them,
+//   how far the hips go with it, and where the weight is over the feet.
+// - The recovery: when it's home, and how fast it comes back against how fast it went.
+//
+// `Timing::text` is the sheet; `Timing::flags` says in plain words what a strike lacks: no
+// wind-up, the limb going before the body or the whole body moving on one curve, nothing but
+// the limb behind it, a contact the limb isn't fastest near, the hips outside the feet. The limits are loose on purpose: they catch a
+// strike that can't read, and leave style (how hard it snaps, whether it's driven through) to
+// the numbers and to an eye. A captured boxer's cross passes each with room (content/humanoid).
+
+use std::collections::Vec
+use humanoid::{Clip, NONE, Pose, Rig, frame_world}
+
+const DEG: f32 = 0.017453292
+
+/// How many times a second a clip is read, whatever its own frames: a game's frames.
+pub const RATE: f32 = 60.0
+
+/// The limb that strikes: an arm (its fist) or a leg (its foot); `ANY` finds the one whose end
+/// goes fastest against the hips. (As `engine::anime::Look::limb` counts them.)
+pub const LEFT_ARM: u32 = 0
+pub const RIGHT_ARM: u32 = 1
+pub const LEFT_LEG: u32 = 2
+pub const RIGHT_LEG: u32 = 3
+pub const ANY: u32 = 4
+
+/// Each limb's bones (its root, its middle, its end), and what its end is called.
+const LIMBS: [[Text; 3]; 4] = [
+    ["leftUpperArm", "leftLowerArm", "leftHand"],
+    ["rightUpperArm", "rightLowerArm", "rightHand"],
+    ["leftUpperLeg", "leftLowerLeg", "leftFoot"],
+    ["rightUpperLeg", "rightLowerLeg", "rightFoot"],
+]
+const ENDS: [Text; 4] = ["left fist", "right fist", "left foot", "right foot"]
+
+/// The chain's parts, from the middle of the body out: the hips' and the chest's turns, the
+/// limb's root joint's turn against the chest and its middle joint's against the root (°/s),
+/// then its end's speed (m/s).
+pub const HIPS: u32 = 0
+pub const CHEST: u32 = 1
+pub const ROOT: u32 = 2
+pub const MIDDLE: u32 = 3
+pub const END: u32 = 4
+const ARM_PARTS: [Text; 5] = ["hips", "chest", "shoulder", "elbow", "fist"]
+const LEG_PARTS: [Text; 5] = ["hips", "chest", "hip", "knee", "foot"]
+
+/// The share of its fastest under which the end hasn't set off yet (and the least that counts,
+/// m/s); the share under which it's stopped (its contact, found); how slow it is when it's
+/// held (m/s); and the share of its fastest a part of the chain has reached when it gets going.
+const SET_OFF: f32 = 0.05
+const SET_OFF_LEAST: f32 = 0.2
+const STOPPED: f32 = 0.34
+const STILL: f32 = 0.3
+const GOING: f32 = 0.5
+
+/// How long after its contact the chain's parts are still looked at (s); how long after its
+/// contact the end may still be driven on (s); and how near its last place the end is when
+/// it's home (m).
+const CHAIN_AFTER: f32 = 0.05
+const DRIVEN: f32 = 0.3
+const HOME: f32 = 0.03
+
+/// What a strike lacks, past these: the least its end draws back (m), its hips or chest turn
+/// back (degrees) or its hips shift back (m) for a wind-up; how much sooner than the hips' or
+/// the chest's turn the end may be fastest (s), where that turn is at least `TURNS` (°/s); the
+/// least the hips or chest turn through it (degrees) or the hips go with it (m) for a body
+/// behind it; how far from a given contact its fastest may be (s); and how far outside its feet
+/// its hips may be (m).
+pub const DRAW_LEAST: f32 = 0.02
+pub const COIL_LEAST: f32 = 3.0
+pub const SHIFT_LEAST: f32 = 0.01
+pub const LEADS_MOST: f32 = 0.034
+pub const TURNS: f32 = 60.0
+pub const BEHIND_TURN: f32 = 5.0
+pub const BEHIND_GO: f32 = 0.02
+pub const CONTACT_NEAR: f32 = 0.067
+pub const OUTSIDE_MOST: f32 = 0.1
+/// The least the hips get going before the limb's own joints do (s), where they turn at all:
+/// under it the whole body moves on one curve.
+pub const LEAD_LEAST: f32 = 0.01
+
+/// One part of the chain: which (`HIPS` to `END`), its fastest (°/s for a turn, m/s for a
+/// joint) and when (s), and when it gets going (the moment it comes up through half its
+/// fastest).
+pub struct Link: Copy {
+    pub part: u32,
+    pub peak: f32,
+    pub at: f32,
+    pub from: f32,
+}
+
+/// A strike's timing (times in s from the clip's start, lengths in m, speeds in m/s, turns in
+/// degrees). `found` is false for a clip too short to read or whose limbs never move.
+pub struct Timing: Clone {
+    pub found: bool,
+    pub length: f32,
+    pub limb: u32,
+    /// The wind-up: how far the end draws back against the strike, from when, and how long
+    /// it's held before it sets off; how far the hips and the chest turn back (against the way
+    /// they turn through the strike), the hips shift back, and the hips sink.
+    pub draws: f32,
+    pub draws_from: f32,
+    pub held: f32,
+    pub hips_back: f32,
+    pub chest_back: f32,
+    pub shifts_back: f32,
+    pub sinks: f32,
+    /// The strike: when it sets off, when it's fastest and how fast, its contact (and whether
+    /// that was given), how far the end goes along its path and in a straight line, and the
+    /// sharpest turn in its path (degrees).
+    pub sets_off: f32,
+    pub fastest_at: f32,
+    pub fastest: f32,
+    pub contact: f32,
+    pub given: bool,
+    pub path: f32,
+    pub chord: f32,
+    pub kink: f32,
+    /// How far the end goes each sample (m), from two samples before it sets off to four past
+    /// its contact, and how many of them come before the contact.
+    pub spacing: Vec<f32>,
+    pub spacing_before: u32,
+    /// The chain, from the hips out.
+    pub chain: Vec<Link>,
+    /// The contact: how far out the limb is (of its length), the end's speed into it and two
+    /// samples after, how far it's driven on along the strike, and how long it's held.
+    pub out: f32,
+    pub into: f32,
+    pub after: f32,
+    pub driven: f32,
+    pub stays: f32,
+    /// The body: how far the hips and the chest turn through the strike, the chest's twist
+    /// against the hips as it sets off and on contact, and how far the hips go with the strike.
+    pub hips_turn: f32,
+    pub chest_turn: f32,
+    pub twist_set: f32,
+    pub twist_contact: f32,
+    pub hips_go: f32,
+    /// The weight: the share of the way from the right foot to the left the hips are over, as
+    /// it sets off and on contact, and how far outside the feet the hips get at most.
+    pub left_set: f32,
+    pub left_contact: f32,
+    pub outside: f32,
+    /// The recovery: when the end's home, and its fastest on the way back.
+    pub home: f32,
+    pub back: f32,
+}
+
+/// Poses as a clip at `fps`: a move that's a function of time (a pose for each moment), read
+/// at its frames, so its timing can be taken as a clip's is.
+pub fn clip_of(rig: Rig, poses: [Pose], fps: f32) -> Clip {
+    let nb = rig.bones.len()
+    var c = Clip {
+        fps,
+        frames: poses.len(),
+        bones: nb,
+        turns: Vec::with_capacity(poses.len() * nb),
+        hips: Vec::with_capacity(poses.len()),
+        looped: false,
+        travel: vec3(0.0),
+        travel_local: vec3(0.0),
+    }
+    for p in poses {
+        for b in 0..nb {
+            c.turns.push(p.turns[b])
+        }
+        c.hips.push(p.hips)
+    }
+    c
+}
+
+/// Each sample's place of `k` bones (a sample's in order) and their turns, `m` samples.
+pub struct Read: Clone {
+    pub m: u32,
+    pub k: u32,
+    pub at: Vec<vec3>,
+    pub q: Vec<Quat>,
+}
+
+/// `clip` read `RATE` times a second at `bones` (a bone `NONE` reads as nothing turned at the
+/// origin): between two frames, a place the mix of theirs.
+pub fn read(clip: Clip, rig: Rig, bones: [u32]) -> Read {
+    let n = clip.frames
+    let k = bones.len()
+    let base = rig.base
+    var at: Vec<vec3> = Vec::with_capacity(n * k)
+    var q: Vec<Quat> = Vec::with_capacity(n * k)
+    for f in 0..n {
+        let w = frame_world(rig, clip.turns, f, base.t + base.q.rotate(clip.hips[f]))
+        for b in bones {
+            if b == NONE {
+                at.push(vec3(0.0))
+                q.push(Quat::identity())
+            } else {
+                at.push(w[b].t)
+                q.push(w[b].q)
+            }
+        }
+    }
+    let m = u32(clip.length() * RATE + 0.5) + 1
+    var out = Read { m, k, at: Vec::with_capacity(m * k), q: Vec::with_capacity(m * k) }
+    for i in 0..m {
+        let x = min(f32(i) / RATE * clip.fps, f32(n - 1))
+        let f0 = min(u32(x), n - 1)
+        let f1 = min(f0 + 1, n - 1)
+        let a = x - f32(f0)
+        for j in 0..k {
+            let (p0, p1) = (at[f0 * k + j], at[f1 * k + j])
+            out.at.push(p0 + (p1 - p0) * a)
+            out.q.push(q[f0 * k + j].nlerp(q[f1 * k + j], a))
+        }
+    }
+    out
+}
+
+/// How far a turn `a` is from a turn `b` (degrees).
+fn turned(a: Quat, b: Quat) -> f32 {
+    let d = a.mul(b.inverse())
+    2.0 * acos(clamp(abs(d.v.w), 0.0, 1.0)) / DEG
+}
+
+/// `y` (degrees) brought within half a turn of `last`.
+fn near(y: f32, last: f32) -> f32 {
+    var out = y
+    while out - last > 180.0 {
+        out -= 360.0
+    }
+    while last - out > 180.0 {
+        out += 360.0
+    }
+    out
+}
+
+/// The sample of `xs`' largest from `lo` to `hi` (both taken), and it.
+fn most(xs: [f32], lo: u32, hi: u32) -> (u32, f32) {
+    var at = lo
+    var best = -1.0e9
+    for i in lo..min(hi + 1, xs.len()) {
+        if xs[i] > best {
+            best = xs[i]
+            at = i
+        }
+    }
+    (at, best)
+}
+
+/// A timing with nothing found in it.
+fn nothing(length: f32) -> Timing {
+    Timing {
+        found: false,
+        length,
+        limb: ANY,
+        draws: 0.0,
+        draws_from: 0.0,
+        held: 0.0,
+        hips_back: 0.0,
+        chest_back: 0.0,
+        shifts_back: 0.0,
+        sinks: 0.0,
+        sets_off: 0.0,
+        fastest_at: 0.0,
+        fastest: 0.0,
+        contact: 0.0,
+        given: false,
+        path: 0.0,
+        chord: 0.0,
+        kink: 0.0,
+        spacing: Vec::new(),
+        spacing_before: 0,
+        chain: Vec::new(),
+        out: 0.0,
+        into: 0.0,
+        after: 0.0,
+        driven: 0.0,
+        stays: 0.0,
+        hips_turn: 0.0,
+        chest_turn: 0.0,
+        twist_set: 0.0,
+        twist_contact: 0.0,
+        hips_go: 0.0,
+        left_set: 0.0,
+        left_contact: 0.0,
+        outside: 0.0,
+        home: 0.0,
+        back: 0.0,
+    }
+}
+
+/// The limb of `rig` whose end goes fastest against the hips in `clip`, or `ANY` where none
+/// moves.
+pub fn striking(clip: Clip, rig: Rig) -> u32 {
+    let hips = rig.find("hips")
+    var bones: Vec<u32> = Vec::from([hips])
+    for l in 0..4 {
+        bones.push(rig.find(LIMBS[l][2]))
+    }
+    let r = read(clip, rig, bones)
+    var best = SET_OFF_LEAST
+    var limb = ANY
+    for l in 0..4 {
+        if bones[l + 1] == NONE {
+            continue
+        }
+        for i in 1..r.m {
+            let now = r.at[i * r.k + l + 1] - r.at[i * r.k]
+            let was = r.at[(i - 1) * r.k + l + 1] - r.at[(i - 1) * r.k]
+            let v = length(now - was) * RATE
+            if v > best {
+                best = v
+                limb = l
+            }
+        }
+    }
+    limb
+}
+
+/// The bones a strike by `limb` is read at, in the chain's order (`HIPS` to `END`), then the
+/// left and the right foot's ball; `NONE` for one the rig lacks.
+pub fn bones_of(rig: Rig, limb: u32) -> [u32; 7] {
+    let chest = if rig.find("upperChest") != NONE { rig.find("upperChest") } else {
+        rig.find("chest")
+    }
+    [
+        rig.find("hips"),
+        chest,
+        rig.find(LIMBS[limb][0]),
+        rig.find(LIMBS[limb][1]),
+        rig.find(LIMBS[limb][2]),
+        if rig.find("leftToes") != NONE { rig.find("leftToes") } else { rig.find("leftFoot") },
+        if rig.find("rightToes") != NONE { rig.find("rightToes") } else { rig.find("rightFoot") },
+    ]
+}
+
+/// How fast each part of the chain goes into each sample of `r` (`bones_of`'s bones read): the
+/// hips' and the chest's turns, the limb's root's turn against the chest and its middle's
+/// against its root (each joint's own, °/s), then the end's speed (m/s).
+pub fn chain_speeds(r: Read) -> Vec<Vec<f32>> {
+    let (m, k) = (r.m, r.k)
+    // A part's turn at sample `i`: the hips' and the chest's in the body's space, a limb
+    // joint's against the part inside it.
+    let turn = |part: u32, i: u32| -> Quat {
+        let q = r.q[i * k + part]
+        if part == ROOT {
+            r.q[i * k + CHEST].inverse().mul(q)
+        } else if part == MIDDLE {
+            r.q[i * k + ROOT].inverse().mul(q)
+        } else {
+            q
+        }
+    }
+    var speeds: Vec<Vec<f32>> = Vec::new()
+    for part in 0..5 {
+        var v: Vec<f32> = Vec::filled(m, 0.0)
+        for i in 1..m {
+            v[i] = if part < END {
+                turned(turn(part, i), turn(part, i - 1)) * RATE
+            } else {
+                length(r.at[i * k + part] - r.at[(i - 1) * k + part]) * RATE
+            }
+        }
+        speeds.push(take v)
+    }
+    speeds
+}
+
+/// The timing of `clip`'s strike on `rig`: by `limb` (`ANY` to find it), its contact at
+/// `contact` s (the fight's, where it's known; a negative one is found: the first moment
+/// after its fastest that the end has all but stopped).
+pub fn timing(clip: Clip, rig: Rig, limb: u32, contact: f32) -> Timing {
+    let length_s = clip.length()
+    if clip.frames < 4 {
+        return nothing(length_s)
+    }
+    let l = if limb >= ANY { striking(clip, rig) } else { limb }
+    if l >= ANY {
+        return nothing(length_s)
+    }
+    let bones = bones_of(rig, l)
+    for b in bones {
+        if b == NONE {
+            return nothing(length_s)
+        }
+    }
+    let r = read(clip, rig, bones)
+    let (m, k) = (r.m, r.k)
+    let at = |part: u32, i: u32| -> vec3 { r.at[i * k + part] }
+    // How far each part goes into each sample (a sample's step ends at it), as a speed.
+    let speeds = chain_speeds(r)
+    borrow v = speeds[END]
+    // Its fastest: anywhere, or up to a given contact (a strike held on its contact and then
+    // driven through may go faster after it).
+    let given = contact >= 0.0
+    let last = if given { clamp(u32(contact * RATE + 0.5), 1, m - 1) } else { m - 1 }
+    let (ip, peak) = most(v, 1, min(last + 1, m - 1))
+    if peak < SET_OFF_LEAST {
+        return nothing(length_s)
+    }
+    // Its contact: given, or where the next step has all but stopped.
+    var ic = ip
+    if given {
+        ic = last
+    } else {
+        while ic + 1 < m && v[ic + 1] > STOPPED * peak {
+            ic += 1
+        }
+    }
+    // Where it sets off: back from its fastest (or its contact, where that's sooner) to the
+    // last sample it was all but still.
+    let floor = max(SET_OFF * peak, SET_OFF_LEAST)
+    var is = min(ip, ic)
+    while is > 0 && v[is] > floor {
+        is -= 1
+    }
+    let along = at(END, ic) - at(END, is)
+    let chord = length(along)
+    let way = if chord > 1.0e-5 { along / chord } else { vec3(0.0, 0.0, 1.0) }
+    let flat = {
+        let f = vec3(way.x, 0.0, way.z)
+        if length(f) > 1.0e-5 { normalize(f) } else { vec3(0.0, 0.0, 1.0) }
+    }
+
+    // ---- the wind-up ----
+    var draws = 0.0
+    for i in 0..is {
+        draws = max(draws, dot(at(END, i) - at(END, is), way))
+    }
+    var from = is
+    if draws > 1.0e-4 {
+        from = 0
+        for i in 0..is {
+            if dot(at(END, i) - at(END, is), way) >= 0.9 * draws {
+                from = i
+            }
+        }
+    }
+    var held = 0
+    {
+        var i = is
+        while i > 0 && v[i] <= STILL {
+            held += 1
+            i -= 1
+        }
+    }
+    // The hips' and the chest's headings (degrees about up, by where each one's left points).
+    let rw = rig.rest_world()
+    var yaws: Vec<Vec<f32>> = Vec::new()
+    for part in 0..2 {
+        let left = rw[bones[part]].q.inverse().rotate(vec3(1.0, 0.0, 0.0))
+        var ys: Vec<f32> = Vec::with_capacity(m)
+        for i in 0..m {
+            let d = r.q[i * k + part].rotate(left)
+            let y = atan2(-d.z, d.x) / DEG
+            ys.push(if i == 0 { y } else { near(y, ys[i - 1]) })
+        }
+        yaws.push(take ys)
+    }
+    let hips_turn = yaws[0][ic] - yaws[0][is]
+    let chest_turn = yaws[1][ic] - yaws[1][is]
+    // Each one's furthest back before it sets off: against the way it then turns.
+    var backs = [0.0, 0.0]
+    for part in 0..2 {
+        let through = yaws[part][ic] - yaws[part][is]
+        let sign = if through >= 0.0 { 1.0 } else { -1.0 }
+        for i in 0..is {
+            backs[part] = max(backs[part], (yaws[part][i] - yaws[part][is]) * sign)
+        }
+    }
+    var shifts_back = 0.0
+    var sinks = 0.0
+    for i in 0..is + 1 {
+        shifts_back = max(shifts_back, dot(at(HIPS, i) - at(HIPS, is), flat))
+    }
+    for i in 0..ic + 1 {
+        sinks = max(sinks, at(HIPS, 0).y - at(HIPS, i).y)
+    }
+
+    // ---- the strike's path ----
+    var path = 0.0
+    var kink = 0.0
+    for i in is + 1..ic + 1 {
+        let step = at(END, i) - at(END, i - 1)
+        path += length(step)
+        if i > is + 1 {
+            let last = at(END, i - 1) - at(END, i - 2)
+            if length(step) > 0.01 && length(last) > 0.01 {
+                let c = clamp(dot(normalize(step), normalize(last)), -1.0, 1.0)
+                kink = max(kink, acos(c) / DEG)
+            }
+        }
+    }
+    var spacing: Vec<f32> = Vec::new()
+    let s0 = if is > 1 { is - 1 } else { 1 }
+    let s1 = min(ic + 4, m - 1)
+    for i in s0..s1 + 1 {
+        spacing.push(v[i] / RATE)
+    }
+    let spacing_before = if ic >= s0 { ic - s0 + 1 } else { 0 }
+
+    // ---- the chain ----
+    // (From where it sets off: a wind-up folds the limb as fast as a strike opens it.)
+    let c0 = max(is, 1)
+    let c1 = min(ic + u32(CHAIN_AFTER * RATE), m - 1)
+    var chain: Vec<Link> = Vec::new()
+    for part in 0..5 {
+        let (i, p) = most(speeds[part], c0, c1)
+        var g = i
+        while g > c0 && speeds[part][g - 1] >= GOING * p {
+            g -= 1
+        }
+        chain.push(Link { part, peak: p, at: f32(i) / RATE, from: f32(g) / RATE })
+    }
+
+    // ---- the contact ----
+    let upper = length(rw[bones[MIDDLE]].t - rw[bones[ROOT]].t)
+    let limb_length = upper + length(rw[bones[END]].t - rw[bones[MIDDLE]].t)
+    let out = length(at(END, ic) - at(ROOT, ic)) / max(limb_length, 1.0e-5)
+    var driven = 0.0
+    for i in ic..min(ic + u32(DRIVEN * RATE), m - 1) + 1 {
+        driven = max(driven, dot(at(END, i) - at(END, ic), way))
+    }
+    var stays = 0
+    {
+        var i = ic + 1
+        // A step or two of the drive may come first.
+        while i < m && i <= ic + 2 && v[i] > STILL {
+            i += 1
+        }
+        while i < m && v[i] <= STILL {
+            stays += 1
+            i += 1
+        }
+    }
+
+    // ---- the weight ----
+    let over = |i: u32| -> (f32, f32) {
+        let (lf, rf, h) = (r.at[i * k + 5], r.at[i * k + 6], r.at[i * k + HIPS])
+        let span = vec2(lf.x - rf.x, lf.z - rf.z)
+        let d = max(length(span), 1.0e-4)
+        let t = dot(vec2(h.x - rf.x, h.z - rf.z), span) / (d * d)
+        (t, max(max(-t, t - 1.0), 0.0) * d)
+    }
+    var outside = 0.0
+    for i in 0..m {
+        let (_, o) = over(i)
+        outside = max(outside, o)
+    }
+    let (left_set, _) = over(is)
+    let (left_contact, _) = over(ic)
+
+    // ---- the recovery ----
+    var home = m - 1
+    while home > ic && length(at(END, home - 1) - at(END, m - 1)) <= HOME {
+        home -= 1
+    }
+    var back = 0.0
+    for i in min(ic + 1 + stays, m - 1)..m {
+        back = max(back, v[i])
+    }
+
+    Timing {
+        found: true,
+        length: length_s,
+        limb: l,
+        draws,
+        draws_from: f32(from) / RATE,
+        held: f32(held) / RATE,
+        hips_back: backs[0],
+        chest_back: backs[1],
+        shifts_back,
+        sinks,
+        sets_off: f32(is) / RATE,
+        fastest_at: f32(ip) / RATE,
+        fastest: peak,
+        contact: f32(ic) / RATE,
+        given,
+        path,
+        chord,
+        kink,
+        spacing,
+        spacing_before,
+        chain,
+        out,
+        into: v[ic],
+        after: v[min(ic + 2, m - 1)],
+        driven,
+        stays: f32(stays) / RATE,
+        hips_turn,
+        chest_turn,
+        twist_set: yaws[1][is] - yaws[0][is],
+        twist_contact: yaws[1][ic] - yaws[0][ic],
+        hips_go: dot(at(HIPS, ic) - at(HIPS, is), flat),
+        left_set,
+        left_contact,
+        outside,
+        home: f32(home) / RATE,
+        back,
+    }
+}
+
+impl Timing {
+    /// What its end is called: "right fist".
+    pub fn end(self) -> Text {
+        if self.limb < ANY { ENDS[self.limb] } else { "limb" }
+    }
+
+    /// What part `part` of its chain is called.
+    pub fn part(self, part: u32) -> Text {
+        if self.limb == LEFT_LEG || self.limb == RIGHT_LEG {
+            LEG_PARTS[part]
+        } else {
+            ARM_PARTS[part]
+        }
+    }
+
+    /// Whether part `part` of its chain counts: a joint that turns at all, or the end.
+    fn counts(self, part: u32) -> bool {
+        part == END || self.chain[part].peak >= TURNS
+    }
+
+    /// The first part of its chain that's fastest more than `LEADS_MOST` before a part inside
+    /// it, with that part: (the outer, the inner), or nothing for a chain in order, from the
+    /// middle of the body out.
+    pub fn out_of_order(self) -> Option<(u32, u32)> {
+        for i in 1..self.chain.len() {
+            for j in 0..i {
+                let early = self.chain[i].at + LEADS_MOST < self.chain[j].at
+                if early && self.counts(i) && self.counts(j) {
+                    return Some((i, j))
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether its chain goes from the middle of the body out.
+    pub fn in_order(self) -> bool {
+        self.out_of_order().is_none()
+    }
+
+    /// How long before the limb's own joints get going the hips do (s): the body's lead, to
+    /// the later of the limb's root and middle joints that turn at all (the end, where neither
+    /// does: a stiff limb swung by the body). Nothing where every part moves on one curve.
+    pub fn lead(self) -> f32 {
+        if self.chain.len() < 5 {
+            return 0.0
+        }
+        var last = -1.0
+        for part in ROOT..END {
+            if self.chain[part].peak >= TURNS {
+                last = max(last, self.chain[part].from)
+            }
+        }
+        if last < 0.0 {
+            last = self.chain[END].from
+        }
+        last - self.chain[HIPS].from
+    }
+
+    /// What the strike lacks, in plain words: nothing for one that reads.
+    pub fn flags(self) -> Vec<String> {
+        var out: Vec<String> = Vec::new()
+        if !self.found {
+            return out
+        }
+        let end = self.end()
+        let wound = self.draws >= DRAW_LEAST || self.shifts_back >= SHIFT_LEAST
+        let coiled = self.hips_back >= COIL_LEAST || self.chest_back >= COIL_LEAST
+        if !wound && !coiled {
+            out.push(
+                f"no wind-up: the {end} draws back {self.draws * 100.0:.1} cm and the hips turn back {self.hips_back:.0}° before it goes",
+            )
+        }
+        if let Some((outer, inner)) = self.out_of_order() {
+            if inner < ROOT {
+                let (a, b) = (self.chain[outer], self.chain[inner])
+                out.push(
+                    f"the {end} goes before the body: its {self.part(outer)} fastest at {a.at:.3} s, the {self.part(inner)}' turn at {b.at:.3} s",
+                )
+            }
+        }
+        if self.chain[HIPS].peak >= TURNS && self.in_order() && self.lead() < LEAD_LEAST {
+            out.push(
+                f"all at once: the hips get going {self.lead():.3} s before the {end}'s own joints, every part on one curve",
+            )
+        }
+        let turns = abs(self.hips_turn) >= BEHIND_TURN || abs(self.chest_turn) >= BEHIND_TURN
+        if !turns && self.hips_go < BEHIND_GO {
+            out.push(
+                f"nothing behind it: the hips turn {abs(self.hips_turn):.0}° and the chest {abs(self.chest_turn):.0}° through the strike, and the hips go {self.hips_go * 100.0:.1} cm with it",
+            )
+        }
+        if self.given && abs(self.fastest_at - self.contact) > CONTACT_NEAR {
+            out.push(
+                f"the {end} is fastest at {self.fastest_at:.3} s, not near its contact at {self.contact:.3} s",
+            )
+        }
+        if self.outside > OUTSIDE_MOST {
+            out.push(f"off its feet: the hips get {self.outside * 100.0:.0} cm outside them")
+        }
+        out
+    }
+
+    /// The sheet's lines.
+    pub fn lines(self) -> Vec<String> {
+        var out: Vec<String> = Vec::new()
+        if !self.found {
+            out.push(String::from("no strike found: no fist or foot moves"))
+            return out
+        }
+        let end = self.end()
+        out.push(
+            f"wind-up: the {end} draws back {self.draws * 100.0:.1} cm from {self.draws_from:.3} s, still {self.held:.3} s before it goes; the hips turn back {self.hips_back:.0}°, the chest {self.chest_back:.0}°; the hips shift back {self.shifts_back * 100.0:.1} cm and sink {self.sinks * 100.0:.1} cm",
+        )
+        let frames = (self.contact - self.sets_off) * RATE
+        let found = if self.given { "given" } else { "found" }
+        out.push(
+            f"strike: sets off at {self.sets_off:.3} s, contact at {self.contact:.3} s ({found}; {frames:.0} frames at {RATE:.0}); fastest {self.fastest:.1} m/s at {self.fastest_at:.3} s",
+        )
+        var chain = String::from("chain:")
+        for i in 0..self.chain.len() {
+            borrow c = self.chain[i]
+            let unit = if c.part < END { "°/s" } else { " m/s" }
+            let sep = if i == 0 { " " } else { ", " }
+            chain = f"{chain}{sep}{self.part(c.part)} going {c.from:.3} s, fastest {c.at:.3} s ({c.peak:.1}{unit})"
+        }
+        let order = if self.in_order() { "in order" } else { "out of order" }
+        out.push(f"{chain}: {order}, the hips going {self.lead():.3} s before the limb")
+        var spacing = f"spacing (cm a frame at {RATE:.0}, | the contact):"
+        for i in 0..self.spacing.len() {
+            if i == self.spacing_before {
+                spacing = f"{spacing} |"
+            }
+            spacing = f"{spacing} {self.spacing[i] * 100.0:.1}"
+        }
+        out.push(take spacing)
+        out.push(
+            f"path: {self.path * 100.0:.0} cm, {self.path / max(self.chord, 1.0e-5):.2} times the straight line, its sharpest turn {self.kink:.0}°",
+        )
+        out.push(
+            f"contact: the limb {self.out * 100.0:.0}% out; {self.into:.1} m/s into it, {self.after:.1} m/s after; driven on {self.driven * 100.0:.1} cm; held {self.stays:.3} s",
+        )
+        out.push(
+            f"body: the hips turn {self.hips_turn:.0}° through the strike, the chest {self.chest_turn:.0}° (twisted {self.twist_set:.0}° against the hips as it sets off, {self.twist_contact:.0}° on contact); the hips go {self.hips_go * 100.0:.1} cm with it",
+        )
+        out.push(
+            f"weight: {self.left_set * 100.0:.0}% of the way to the left foot as it sets off, {self.left_contact * 100.0:.0}% on contact; the hips at most {self.outside * 100.0:.1} cm outside the feet",
+        )
+        out.push(
+            f"recovery: home by {self.home:.3} s ({self.home - self.contact:.3} s after the contact), {self.back:.1} m/s at its fastest on the way ({self.back / max(self.fastest, 1.0e-5):.2} of the strike's)",
+        )
+        out
+    }
+
+    /// The sheet as text, headed by `name`.
+    pub fn text(self, name: str) -> String {
+        var s = f"{name}: {self.length:.3} s, the {self.end()}'s strike"
+        for flag in self.flags() {
+            s = f"{s}\n  flag: {flag}"
+        }
+        for line in self.lines() {
+            s = f"{s}\n  {line}"
+        }
+        s
+    }
+}

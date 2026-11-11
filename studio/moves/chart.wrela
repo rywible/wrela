@@ -1,0 +1,254 @@
+// A strike's chart: one picture an agent reads instead of watching the move. Stills of a move
+// lose what makes it: how far it goes each frame. Here that's drawn.
+//
+// - Two views of the body, from the side of the strike and from above: the pose as it sets off
+//   (blue) and on contact (white), the striking limb at every frame between (orange), and the
+//   end's path as a dot a frame, an animator's spacing chart: dots close together are slow,
+//   far apart fast. Blue dots are before it sets off, red the strike, green after the contact.
+// - Under them, how fast each part of the chain goes over the whole move, each against its own
+//   fastest (the hips' and the chest's turns, the limb's two joints' own turns, its end's
+//   speed), with the moment it sets off and its contact marked: which part goes first is which
+//   curve rises first.
+//
+// The numbers are `engine::timing`'s, printed beside it as text.
+
+use audio_tool::sheet::Image
+use engine::humanoid::{Clip, NONE, Rig}
+use engine::timing
+use engine::timing::{END, HIPS, MIDDLE, RATE, ROOT, Timing}
+use std::collections::Vec
+
+pub const WIDTH: u32 = 1600
+pub const HEIGHT: u32 = 980
+
+/// A view's size, and how many pixels a metre is in it.
+const VIEW_W: u32 = 780
+const VIEW_H: u32 = 560
+const SCALE: f32 = 250.0
+const TOP: u32 = 40
+
+/// The curves' strip: its top, its height, its left and its width.
+pub const STRIP_TOP: u32 = 700
+const STRIP_H: u32 = 220
+pub const STRIP_LEFT: u32 = 60
+pub const STRIP_W: u32 = WIDTH - STRIP_LEFT - 20
+
+const FRAME: vec3u = vec3u(55, 55, 60)
+const LABEL: vec3u = vec3u(200, 200, 205)
+const FIRST: vec3u = vec3u(70, 70, 78)
+pub const SET: vec3u = vec3u(80, 140, 240)
+pub const HIT: vec3u = vec3u(245, 245, 245)
+const GHOST: vec3u = vec3u(200, 120, 40)
+const BEFORE: vec3u = vec3u(90, 150, 250)
+const STRIKE: vec3u = vec3u(250, 70, 60)
+const AFTER: vec3u = vec3u(90, 200, 110)
+const FLOOR: vec3u = vec3u(90, 80, 60)
+
+/// Each part of the chain's colour, from the hips out.
+const PARTS: [vec3u; 5] = [
+    vec3u(180, 100, 220),
+    vec3u(70, 140, 230),
+    vec3u(80, 190, 90),
+    vec3u(240, 180, 40),
+    vec3u(250, 70, 60),
+]
+
+/// The bones a body's drawn with: every bone but the eyes, the jaw and the fingers (VRM's
+/// first 25 bones, less those three).
+fn drawn(rig: Rig) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    for b in 0..rig.bones.len() {
+        let v = rig.bones[b].vrm
+        if v < 25 && (v < 6 || v > 8) {
+            out.push(b)
+        }
+    }
+    out
+}
+
+/// A view: where its middle is on the picture, the point of the body there, and the two ways
+/// (in the body's space) that go right and up on it.
+struct View: Copy {
+    cx: f32,
+    cy: f32,
+    about: vec3,
+    right: vec3,
+    up: vec3,
+}
+
+impl View {
+    fn at(self, p: vec3) -> (f64, f64) {
+        let d = p - self.about
+        (f64(self.cx + dot(d, self.right) * SCALE), f64(self.cy - dot(d, self.up) * SCALE))
+    }
+}
+
+/// A line two pixels thick.
+fn stroke(img: mut Image, a: (f64, f64), b: (f64, f64), c: vec3u) {
+    img.line(a.0, a.1, b.0, b.1, c)
+    img.line(a.0 + 1.0, a.1, b.0 + 1.0, b.1, c)
+    img.line(a.0, a.1 + 1.0, b.0, b.1 + 1.0, c)
+}
+
+/// A dot `r` pixels out each way about `p`.
+fn dot_at(img: mut Image, p: (f64, f64), r: u32, c: vec3u) {
+    if p.0 < f64(r) || p.1 < f64(r) {
+        return
+    }
+    let (x, y) = (u32(p.0 + 0.5), u32(p.1 + 0.5))
+    img.rect(x - r, y - r, x + r + 1, y + r + 1, c)
+}
+
+/// The chart of `clip`'s strike on `rig`, as `t` found it, headed `name`.
+pub fn chart(clip: Clip, rig: Rig, t: Timing, name: str) -> Image {
+    var img = Image::new(WIDTH, HEIGHT)
+    img.text(x: 20, y: 12, s: name, scale: 2, c: LABEL)
+    if !t.found {
+        img.text(x: 20, y: 60, s: "NO STRIKE FOUND", scale: 3, c: STRIKE)
+        return img
+    }
+    let bones = drawn(rig)
+    let body = timing::read(clip, rig, bones)
+    let chain_bones = timing::bones_of(rig, t.limb)
+    let chain = timing::read(clip, rig, chain_bones)
+    let m = body.m
+    let k = body.k
+    let is = min(u32(t.sets_off * RATE + 0.5), m - 1)
+    let ic = min(u32(t.contact * RATE + 0.5), m - 1)
+    let tip = |i: u32| -> vec3 { chain.at[i * chain.k + END] }
+    // The strike's way along the floor, and the views: from its side, and from above.
+    let along = tip(ic) - tip(is)
+    let flat = {
+        let f = vec3(along.x, 0.0, along.z)
+        if length(f) > 1.0e-5 { normalize(f) } else { vec3(0.0, 0.0, 1.0) }
+    }
+    let across = cross(vec3(0.0, 1.0, 0.0), flat)
+    let hips = chain.at[is * chain.k + HIPS]
+    let views = [
+        View {
+            cx: f32(VIEW_W) * 0.42,
+            cy: f32(TOP + VIEW_H) - 30.0,
+            about: vec3(hips.x, 0.0, hips.z),
+            right: flat,
+            up: vec3(0.0, 1.0, 0.0),
+        },
+        View {
+            cx: f32(VIEW_W + 20) + f32(VIEW_W) * 0.42,
+            cy: f32(TOP) + f32(VIEW_H) * 0.5,
+            about: vec3(hips.x, 0.0, hips.z),
+            right: flat,
+            up: across,
+        },
+    ]
+    let labels = ["FROM THE SIDE (THE STRIKE GOES RIGHT)", "FROM ABOVE (THE STRIKE GOES RIGHT)"]
+    for vi in 0..2 {
+        let x0 = if vi == 0 { 10 } else { VIEW_W + 20 }
+        img.rect(x0, TOP, x0 + VIEW_W, TOP + 1, FRAME)
+        img.rect(x0, TOP + VIEW_H, x0 + VIEW_W, TOP + VIEW_H + 1, FRAME)
+        img.rect(x0, TOP, x0 + 1, TOP + VIEW_H, FRAME)
+        img.rect(x0 + VIEW_W, TOP, x0 + VIEW_W + 1, TOP + VIEW_H, FRAME)
+        img.text(x0 + 10, TOP + 8, labels[vi], 2, LABEL)
+        let v = views[vi]
+        if vi == 0 {
+            // The floor.
+            img.rect(x0 + 1, u32(v.cy), x0 + VIEW_W, u32(v.cy) + 1, FLOOR)
+        }
+        // The body as the move starts, as the strike sets off and on its contact.
+        let shown = [(0, FIRST), (is, SET), (ic, HIT)]
+        for (i, c) in shown {
+            for j in 0..k {
+                let parent = rig.bones[bones[j]].parent
+                if parent == NONE {
+                    continue
+                }
+                for j2 in 0..k {
+                    if bones[j2] == parent {
+                        stroke(mut img, v.at(body.at[i * k + j]), v.at(body.at[i * k + j2]), c)
+                    }
+                }
+            }
+        }
+        // The striking limb at each frame between.
+        for i in is + 1..ic {
+            let (a, b, c) = (
+                chain.at[i * chain.k + ROOT],
+                chain.at[i * chain.k + MIDDLE],
+                chain.at[i * chain.k + END],
+            )
+            img.line(v.at(a).0, v.at(a).1, v.at(b).0, v.at(b).1, GHOST)
+            img.line(v.at(b).0, v.at(b).1, v.at(c).0, v.at(c).1, GHOST)
+        }
+        // The end's path, a dot a frame.
+        for i in 1..m {
+            img.line(v.at(tip(i - 1)).0, v.at(tip(i - 1)).1, v.at(tip(i)).0, v.at(tip(i)).1, FRAME)
+        }
+        for i in 0..m {
+            let c = if i <= is { BEFORE } else if i <= ic { STRIKE } else { AFTER }
+            dot_at(mut img, v.at(tip(i)), if i > is && i <= ic { 3 } else { 2 }, c)
+        }
+    }
+    img.text(
+        20,
+        TOP + VIEW_H + 14,
+        "BODY: GREY THE START. BLUE AS IT SETS OFF. WHITE ON CONTACT. ORANGE THE LIMB EACH FRAME BETWEEN.",
+        2,
+        LABEL,
+    )
+    img.text(
+        20,
+        TOP + VIEW_H + 34,
+        "PATH: A DOT A FRAME AT 60. BLUE BEFORE IT SETS OFF. RED THE STRIKE. GREEN AFTER THE CONTACT.",
+        2,
+        LABEL,
+    )
+
+    // ---- the curves ----
+    let speeds = timing::chain_speeds(chain)
+    img.rect(STRIP_LEFT, STRIP_TOP + STRIP_H, STRIP_LEFT + STRIP_W, STRIP_TOP + STRIP_H + 1, FRAME)
+    img.rect(STRIP_LEFT, STRIP_TOP, STRIP_LEFT + 1, STRIP_TOP + STRIP_H, FRAME)
+    let x_of = |i: f32| -> f64 { f64(f32(STRIP_LEFT) + i / f32(max(m - 1, 1)) * f32(STRIP_W)) }
+    // A tick each tenth of a second.
+    var tenth = 0
+    while f32(tenth) * 0.1 <= t.length {
+        let x = u32(x_of(f32(tenth) * 0.1 * RATE))
+        img.rect(x, STRIP_TOP + STRIP_H, x + 1, STRIP_TOP + STRIP_H + 6, LABEL)
+        img.text(x - 8, STRIP_TOP + STRIP_H + 10, f"{f32(tenth) * 0.1:.1}".as_str(), 2, LABEL)
+        tenth += 1
+    }
+    for (i, c, word) in [(is, SET, "SETS OFF"), (ic, HIT, "CONTACT")] {
+        let x = u32(x_of(f32(i)))
+        img.rect(x, STRIP_TOP - 14, x + 1, STRIP_TOP + STRIP_H, c)
+        img.text(if i == is { x - 100 } else { x + 6 }, STRIP_TOP - 14, word, 2, c)
+    }
+    for part in 0..5 {
+        var top = 1.0e-6
+        for i in 0..m {
+            top = max(top, speeds[part][i])
+        }
+        let y_of = |s: f32| -> f64 { f64(f32(STRIP_TOP + STRIP_H) - s / top * f32(STRIP_H - 4)) }
+        for i in 1..m {
+            stroke(
+                mut img,
+                (x_of(f32(i - 1)), y_of(speeds[part][i - 1])),
+                (x_of(f32(i)), y_of(speeds[part][i])),
+                PARTS[part],
+            )
+        }
+        let unit = if part < END { "DEG/S" } else { "M/S" }
+        img.text(
+            STRIP_LEFT + 10 + part * 300,
+            HEIGHT - 26,
+            f"{t.part(part)} {top:.1} {unit}".as_str(),
+            2,
+            PARTS[part],
+        )
+    }
+    img.text(
+        STRIP_LEFT + 10,
+        STRIP_TOP - 34,
+        "HOW FAST EACH PART GOES (EACH AGAINST ITS OWN FASTEST) OVER THE MOVE (S)",
+        2,
+        LABEL,
+    )
+    img
+}
