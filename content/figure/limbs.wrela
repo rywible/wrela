@@ -1,7 +1,10 @@
 // The figure's limbs as a pose has them: each a form about its chain (`chains`), changed where
-// its joints bend by what the forms tool solved for them (`arm_joints`).
+// its joints bend by what the forms tool solved for them (`arm_joints`) and by what its muscles
+// do there (`flex`).
 
-use engine::chart::{Bend, Change, JOINTS, Radial}
+use engine::chart
+use engine::chart::{Band, Change, JOINTS, Part, Radial}
+use std::math::TAU
 
 /// A limb's form: 16 control values along its path, each a Fourier series of 6 harmonics.
 pub type Form = Radial<16, 13>
@@ -20,15 +23,26 @@ pub const ELBOW: Change<16, 13> = Change {
     by_square: arm_joints::ELBOW_BY_SQUARE.resized(),
 }
 
-/// A left arm's form as a pose bends it: `rest` (the species' arm, or a character's own)
-/// changed at its shoulder and its elbow (`bends`: `chains::arm_left`'s, whose joints 1 and 2
-/// they are).
-pub fn arm_bent(rest: Form, bends: [Bend; JOINTS]) -> Form {
-    rest.bent(SHOULDER, bends[1]).bent(ELBOW, bends[2])
-}
-
-/// A right arm's form as a pose bends it (`bends`: `chains::arm_right`'s): its joints' changes
-/// are the left's, mirrored.
-pub fn arm_right_bent(rest: Form, bends: [Bend; JOINTS]) -> Form {
-    rest.bent(SHOULDER.mirrored(), bends[1]).bent(ELBOW.mirrored(), bends[2])
+/// An arm as a charted part of a creature: on `side` (0 left, 1 right), `rest` its form about
+/// that side's chain, its bones the creature's `bones` (its collarbone, which carries its root
+/// and which it hangs from, its upper arm, its forearm), drawn as far as `to` of the way along
+/// its path (where a hand takes over), its root `under` what's worn over its shoulder (m) until
+/// it has left it, a quarter of the way along. Its shoulder and its elbow change as the forms
+/// tool solved for them, and its elbow as its muscles do (`flex`); a right arm's are the
+/// left's, mirrored.
+pub fn arm(rest: Form, side: u32, bones: [u32; 3], to: f32, under: f32) -> Part<16, 13> {
+    let left = side == 0
+    var changes: [Change<16, 13>; JOINTS] = [chart::unchanged(); JOINTS]
+    let elbow = ELBOW.plus(flex::ELBOW_FLEX)
+    changes[1] = if left { SHOULDER } else { SHOULDER.mirrored() }
+    changes[2] = if left { elbow } else { elbow.mirrored() }
+    Part {
+        chain: if left { chains::arm_left() } else { chains::arm_right() },
+        bones: [bones[0], bones[1], bones[2], 0, 0, 0, 0, 0],
+        root: bones[0],
+        form: rest,
+        changes,
+        band: Band { f: vec2(0.0, to), theta: vec2(0.0, TAU) },
+        sunk: vec2(under, 0.24),
+    }
 }

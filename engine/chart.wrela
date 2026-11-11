@@ -851,6 +851,78 @@ impl<const A: u32, const R: u32> Limb<A, R> {
     }
 }
 
+// ---- a part of a creature -----------------------------------------------------------------------
+
+/// A charted part of a creature: the chain it's charted about; which of the creature's bones
+/// the chain's bones are, in the chain's order, and the bone the chain hangs from (`root`: a
+/// chest for an arm); its form at rest; how its form changes where each of its joints bends
+/// (`changes[i]` is joint `i`'s; no change where it's nothing); the band of its chart it's
+/// drawn over; and how its root is drawn under what covers it (`sunk`: by how far at its path's
+/// start, m, and from how far along it not at all; `chart::sunk`).
+pub struct Part<const A: u32, const R: u32>: Copy {
+    pub chain: Chain,
+    pub bones: [u32; JOINTS],
+    pub root: u32,
+    pub form: Radial<A, R>,
+    pub changes: [Change<A, R>; JOINTS],
+    pub band: Band,
+    pub sunk: vec2,
+}
+
+/// No change at a joint.
+pub fn unchanged<const A: u32, const R: u32>() -> Change<A, R> {
+    Change { by_angle: round(0.0), by_square: round(0.0) }
+}
+
+impl<const A: u32, const R: u32> Part<A, R> {
+    /// It at rest.
+    pub fn rest(self) -> Limb<A, R> {
+        Limb { path: self.chain.rest(), form: self.form }
+    }
+
+    /// It as a pose has it (`palette`: each of the creature's bones' matrices, from the body at
+    /// rest to where the pose has it): its path where its bones are, its form changed where
+    /// its joints bend.
+    pub fn posed(self, palette: [mat4; 64]) -> Limb<A, R> {
+        var bones = [palette[self.root]; JOINTS]
+        for i in 0..self.chain.count - 1 {
+            bones[i] = palette[self.bones[i]]
+        }
+        let bends = self.chain.bends(bones)
+        var form = self.form
+        for i in 1..self.chain.count - 1 {
+            form = form.bent(self.changes[i], bends[i])
+        }
+        Limb { path: self.chain.posed(palette[self.root], bones), form }
+    }
+
+    /// How far under what covers it its side is drawn, `f` of the way along its path (m).
+    pub fn sunk_at(self, f: f32) -> f32 {
+        sunk_by(self.sunk, f)
+    }
+}
+
+/// How far under what covers it a part's side is drawn `f` of the way along its path (m), for
+/// the part's `sunk`: all of it over the first two fifths of the way to where it's none.
+pub fn sunk_by(sunk: vec2, f: f32) -> f32 {
+    sunk.x * (1.0 - smoothstep(0.4 * sunk.y, sunk.y, f))
+}
+
+impl<const A: u32, const R: u32> Limb<A, R> {
+    /// The level it's drawn at, seen from `eye` by a camera whose picture is `pixels` high over
+    /// `tan_half` (`level_for`, by its length and its radius halfway along).
+    pub fn level(self, eye: vec3, pixels: f32, tan_half: f32) -> u32 {
+        let len = self.path.length()
+        level_for(
+            length: len,
+            radius: self.form.radius(f: 0.5, theta: 0.0),
+            distance: length(self.path.frame(0.5 * len).at - eye),
+            pixels: pixels,
+            tan_half: tan_half,
+        )
+    }
+}
+
 // ---- fitting ------------------------------------------------------------------------------------
 
 /// A radius read off a target: at `f` of the way along a path and angle `theta` round it, the
@@ -1393,6 +1465,41 @@ fn a_mirrored_chain_carries_a_mirrored_form() {
             assert(length(vec3(-p.x, p.y, p.z) - q) < 0.00001)
         }
     }
+}
+
+@test
+fn a_part_posed_is_its_chain_posed_and_its_form_bent() {
+    // An arm whose elbow's change swells its inside by 1 cm a radian: bent a quarter turn
+    // forward by bone 2 of a palette, its path's end is where the bone carries the wrist, and
+    // its form is a quarter turn's swell more on the inside of the bend at the elbow.
+    let swell: Radial<8, 7> = of(|f: f32, theta: f32| {
+        0.01 * exp(-(f - 0.53) * (f - 0.53) / 0.08) * (0.5 + 0.5 * cos(theta))
+    })
+    var changes: [Change<8, 7>; JOINTS] = [unchanged(); JOINTS]
+    changes[1] = Change { by_angle: swell, by_square: round(0.0) }
+    let part = Part {
+        chain: arm_chain(),
+        bones: [1, 2, 0, 0, 0, 0, 0, 0],
+        root: 0,
+        form: leg_form(),
+        changes,
+        band: WHOLE,
+        sunk: vec2(0.04, 0.2),
+    }
+    var palette = [SAME; 64]
+    palette[2] = turn_about(vec3(0.0, 1.0, 0.0), -0.5 * PI, vec3(0.45, 1.4, 0.0))
+    let posed = part.posed(palette)
+    assert(length(posed.path.at[posed.path.vertices - 1] - vec3(0.45, 1.4, 0.25)) < 0.00001)
+    let inside = -0.5 * PI
+    let more = posed.form.radius(0.53, inside) - part.form.radius(0.53, inside)
+    assert(abs(more - 0.01 * 0.5 * PI) < 0.0005, f"{more}")
+    assert(abs(posed.form.radius(0.53, 0.5 * PI) - part.form.radius(0.53, 0.5 * PI)) < 0.0005)
+    // At rest it is its rest form, and its root is drawn under what covers it.
+    assert(
+        abs(part.posed([SAME; 64]).form.radius(0.53, inside) - part.form.radius(0.53, inside)) <
+            0.000001,
+    )
+    assert(part.sunk_at(0.0) == 0.04 && part.sunk_at(0.2) == 0.0 && part.sunk_at(0.9) == 0.0)
 }
 
 @test

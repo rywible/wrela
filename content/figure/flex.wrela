@@ -1,0 +1,70 @@
+// The arm's named changes: what its muscles do as it bends, over its solved shape. The forms
+// tool's solved changes (`arm_joints`) are what the reference body's skin does at a joint; these
+// are what its skin weights can't say, each a bump on the arm's chart that a bend drives, zero
+// at rest. They are written for the left arm in its elbow's bend's own frame (angle 0 is the
+// inside of the bend, where the forearm closes on the upper arm; half a turn on is its outside)
+// and added to the elbow's solved change, so they turn with the bend and mirror for the right
+// arm as it does.
+//
+// Their sizes are estimates, set by eye against the combat lab's guard and cross: no reference
+// here holds a flexed arm to solve them against.
+
+use engine::chart
+use engine::chart::{Change, Radial}
+
+/// Where the arm's joints are on its chart (`chains::arm_left`): its shoulder and its elbow, of
+/// the way along its path.
+pub const SHOULDER_AT: f32 = 0.124
+pub const ELBOW_AT: f32 = 0.569
+
+/// A bump on the chart: `height` (m) at `at` of the way along and angle `toward`, falling off
+/// over `along` either way along the path and over about a sixth of a turn either way round it.
+fn bump(f: f32, theta: f32, at: f32, along: f32, toward: f32, height: f32) -> f32 {
+    let x = (f - at) / along
+    let lobe = 0.5 + 0.5 * cos(theta - toward)
+    height * exp(-x * x) * lobe * lobe * lobe
+}
+
+/// What the arm's muscles add for each radian its elbow bends (m):
+///
+/// - the biceps' belly rises on the inside of the bend, a little toward the shoulder from the
+///   middle of the upper arm, as it shortens;
+/// - the triceps, stretched round the outside of the upper arm, thins by as much section as
+///   the biceps gained, so the upper arm keeps its volume;
+/// - the forearm's flexors bunch just past the elbow on the inside;
+/// - the point of the elbow (the ulna's end) stands out on the outside of the bend, where a
+///   form bent along a path is only round.
+fn by_angle(f: f32, theta: f32) -> f32 {
+    let mid = 0.5 * (SHOULDER_AT + ELBOW_AT)
+    bump(f, theta, at: mid - 0.02, along: 0.085, toward: 0.0, height: 0.0045) -
+        bump(f, theta, at: mid + 0.02, along: 0.11, toward: 3.1416, height: 0.002) +
+        bump(f, theta, at: ELBOW_AT + 0.075, along: 0.06, toward: 0.35, height: 0.002) +
+        bump(f, theta, at: ELBOW_AT + 0.004, along: 0.035, toward: 3.1416, height: 0.005)
+}
+
+/// The elbow's named change, the size of the arm's form.
+@fuel(2 ** 36)
+pub const ELBOW_FLEX: Change<16, 13> = Change {
+    by_angle: chart::of(by_angle),
+    by_square: chart::round(0.0),
+}
+
+@test
+fn the_upper_arm_keeps_its_volume_as_the_elbow_bends() {
+    // Over the upper arm, the section the biceps gains is the section the triceps loses,
+    // within a tenth: the change in section is the radius times the change in radius, summed
+    // round the arm (the elbow's point and the forearm's flexors are past the elbow).
+    let rest = arm::ARM
+    var gained = 0.0
+    var lost = 0.0
+    for i in 0..60 {
+        let f = SHOULDER_AT + 0.06 + (ELBOW_AT - SHOULDER_AT - 0.14) * f32(i) / 59.0
+        for j in 0..48 {
+            let theta = 6.2832 * f32(j) / 48.0
+            let d = rest.radius(f, theta) * ELBOW_FLEX.by_angle.radius(f, theta)
+            gained += max(d, 0.0)
+            lost += max(-d, 0.0)
+        }
+    }
+    assert(abs(gained - lost) < 0.1 * gained, f"gained {gained}, lost {lost}")
+}

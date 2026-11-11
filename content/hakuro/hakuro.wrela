@@ -8,6 +8,7 @@
 // (This file is written by a script from the measured pieces; the shapes, the paint and the
 // skeleton are its template's.)
 
+use engine::chart::Part
 use engine::creature::{Bone, Creature, Skeleton, creature, hard, smooth, split}
 use engine::character::Shaded
 use shapes::{
@@ -215,15 +216,24 @@ pub const ARM_RIGHT: figure::limbs::Form = figure::arm::ARM
     .mirrored()
     .plus(arm_right_form::ARM_RIGHT_OVER)
 
-/// How far along its path an arm of his is drawn: to inside the wrap or the gauntlet at his
-/// wrist, where his hand takes over.
-pub const ARM_TO: f32 = 0.84
+/// How many of his parts are drawn along their charts.
+pub const CHARTS: u32 = 2
 
-/// His arm's root is under his jacket: drawn `ARM_UNDER` metres under it at its path's start,
-/// less along it, and not at all from `ARM_OUT` of the way along, where it has left his
-/// armhole.
-pub const ARM_UNDER: f32 = 0.04
-pub const ARM_OUT: f32 = 0.24
+/// His charted parts: his left arm, bare, and his right, sleeved. Each is drawn to inside the
+/// wrap or the gauntlet at his wrist, where his hand takes over, and its root is under his
+/// jacket, whose armhole's edge lies over it.
+pub fn charts() -> [Part<16, 13>; CHARTS] {
+    [
+        figure::limbs::arm(ARM_LEFT, 0, [6, 8, 10], to: 0.84, under: 0.04),
+        figure::limbs::arm(ARM_RIGHT, 1, [7, 9, 11], to: 0.84, under: 0.04),
+    ]
+}
+
+/// His paint on charted part `part` (`charts`' order), by place on its chart (`at`: how far
+/// along its path, the angle round it).
+pub fn chart_paint(part: u32, at: vec2) -> Cloth {
+    if part == 0 { arm_left_paint(at.x) } else { arm_right_paint(at.x) }
+}
 
 /// Where the wrap round his left forearm starts, as a fraction of his arm's path's length.
 pub const WRAP_FROM: f32 = 0.75
