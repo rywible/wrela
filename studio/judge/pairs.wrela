@@ -1,0 +1,341 @@
+// The judging tool's pairs: a shot's frames laid out as one image, which of a pair is shown as A
+// and which as B, the key that says so, the critics' brief, and their votes tallied. What is
+// pure of the tool, so its tests need no build.
+
+use audio_tool::sheet::Image
+use shots::{Crop, Shot}
+
+/// The gap between a sheet's frames, and between a pair laid side by side, in pixels.
+pub const GAP: u32 = 6
+
+/// The scale of a label's 5×7 dots, and where it sits in its frame.
+pub const LABEL_SCALE: u32 = 2
+pub const LABEL_AT: u32 = 6
+
+/// `c` of a screen `width` wide (RGBA8, rows top to bottom), as RGBA8: clipped to the screen.
+pub fn cropped(screen: [u8], width: u32, c: Crop) -> Vec<u8> {
+    let height = screen.len() / (4 * max(width, 1))
+    let x1 = min(c.x1, width)
+    let y1 = min(c.y1, height)
+    var out: Vec<u8> = Vec::with_capacity((x1 - min(c.x0, x1)) * (y1 - min(c.y0, y1)) * 4)
+    var y = min(c.y0, y1)
+    while y < y1 {
+        var i = 4 * (y * width + min(c.x0, x1))
+        let end = 4 * (y * width + x1)
+        while i < end {
+            out.push(screen[i])
+            i += 1
+        }
+        y += 1
+    }
+    out
+}
+
+/// How wide and how high crop `c` of a screen `width` × `height` is.
+pub fn size_of(c: Crop, width: u32, height: u32) -> (u32, u32) {
+    let x1 = min(c.x1, width)
+    let y1 = min(c.y1, height)
+    (x1 - min(c.x0, x1), y1 - min(c.y0, y1))
+}
+
+/// A label's box: `s` in white on a half-dark box at (`x`, `y`) of `img`.
+pub fn labelled(img: mut Image, x: u32, y: u32, s: str) {
+    let bw = s.len() * 6 * LABEL_SCALE + LABEL_SCALE
+    let bh = 7 * LABEL_SCALE + 2 * LABEL_SCALE
+    for yy in y..min(y + bh, img.h) {
+        for xx in x..min(x + bw, img.w) {
+            let i = 3 * (yy * img.w + xx)
+            for c in 0..3 {
+                img.px[i + c] = img.px[i + c] / 3
+            }
+        }
+    }
+    img.text(x + LABEL_SCALE, y + LABEL_SCALE, s, LABEL_SCALE, vec3u(255, 255, 255))
+}
+
+/// A shot's frames as one image: `cells` (each `w` × `h`, RGBA8), `across` of them a row, a gap
+/// between, and (where there's more than one) each labelled by its frame's number.
+pub fn laid(cells: [Vec<u8>], w: u32, h: u32, across: u32, numbers: [u32]) -> Image {
+    let n = cells.len()
+    let cols = min(max(across, 1), max(n, 1))
+    let rows = (max(n, 1) + cols - 1) / cols
+    var img = Image::new(cols * w + (cols - 1) * GAP, rows * h + (rows - 1) * GAP)
+    for k in 0..n {
+        let x0 = (k % cols) * (w + GAP)
+        let y0 = (k / cols) * (h + GAP)
+        borrow px = cells[k]
+        for y in 0..h {
+            var from = 4 * (y * w)
+            var to = 3 * ((y0 + y) * img.w + x0)
+            for _ in 0..w {
+                img.px[to] = px[from]
+                img.px[to + 1] = px[from + 1]
+                img.px[to + 2] = px[from + 2]
+                from += 4
+                to += 3
+            }
+        }
+        if n > 1 && k < numbers.len() {
+            let label = String::from(f"{numbers[k]}")
+            labelled(mut img, x0 + LABEL_AT, y0 + LABEL_AT, label.as_str())
+        }
+    }
+    img
+}
+
+/// `a` and `b` side by side, a gap between, named `left` and `right` at their tops: the pair
+/// with its sides told, for the sealed directory.
+pub fn beside(a: Image, b: Image, left: str, right: str) -> Image {
+    var img = Image::new(a.w + GAP + b.w, max(a.h, b.h))
+    for y in 0..a.h {
+        for i in 0..3 * a.w {
+            img.px[3 * y * img.w + i] = a.px[3 * y * a.w + i]
+        }
+    }
+    let x0 = a.w + GAP
+    for y in 0..b.h {
+        for i in 0..3 * b.w {
+            img.px[3 * (y * img.w + x0) + i] = b.px[3 * y * b.w + i]
+        }
+    }
+    labelled(mut img, LABEL_AT, LABEL_AT, left)
+    labelled(mut img, x0 + LABEL_AT, LABEL_AT, right)
+    img
+}
+
+/// Whether shot `k`'s pair is swapped under `seed`: the new shown as A and the base as B (else
+/// the base is A). The same for the same seed and shot; about half of them, by a Lehmer
+/// generator's draw.
+pub fn swapped(seed: u32, k: u32) -> bool {
+    var x: u64 = u64(seed) % 2147483646 + 1
+    for _ in 0..k + 3 {
+        x = (x * 48271) % 2147483647
+    }
+    x > 1073741823
+}
+
+/// The key: a line a shot, `<shot>: A=<side> B=<side>`.
+pub fn key_text(names: [Text], swaps: [bool]) -> String {
+    var out = String::new()
+    for k in 0..names.len() {
+        let (a, b) = if swaps[k] { ("new", "base") } else { ("base", "new") }
+        out.push_str(f"{names[k]}: A={a} B={b}\n")
+    }
+    out
+}
+
+/// A key's line read: the shot's name, and whether its A is the new.
+pub struct Keyed: Clone {
+    pub shot: String,
+    pub new_is_a: bool,
+}
+
+/// What a key (`key_text`) says.
+pub fn key_of(text: str) -> Vec<Keyed> {
+    var out: Vec<Keyed> = Vec::new()
+    for (a, b) in text.split("\n") {
+        let line = text.slice(a, b)
+        let Some(colon) = line.find(":") else { continue }
+        out.push(
+            Keyed {
+                shot: String::from(line.slice(0, colon).trim()),
+                new_is_a: line.find("A=new").is_some(),
+            },
+        )
+    }
+    out
+}
+
+/// The critics' brief: where the pairs are, that the letters are shuffled, what the only
+/// difference is, each shot and what it shows, and the one line a shot they answer with.
+pub fn brief(shots: [Shot], what: str, dir: str) -> String {
+    var out = String::new()
+    out.push_str("# A blind comparison\n\n")
+    out.push_str(
+        f"Each shot below is in `{dir}` as two PNGs of the same moment, `<shot>-A.png` and `<shot>-B.png`. ",
+    )
+    out.push_str(
+        f"The only difference between A and B is {what}. Which letter is which is shuffled shot by shot, so A isn't the same one every time. Nothing else differs.\n\n",
+    )
+    out.push_str("The shots:\n\n")
+    for s in shots {
+        let kind = if s.frames.len() > 1 { "a strip of frames, each labelled by its number" } else {
+            "a still"
+        }
+        out.push_str(f"- `{s.name}`: {s.about} ({kind}).\n")
+    }
+    out.push_str(
+        "\nLook at both images of each shot and judge them as drawings: which reads better as a believable, appealing figure in this style? Look at silhouettes, joints, where one part meets another, the shapes of light and shade, and the ink lines; and for anything broken, lumpy, pinched, hollow or floating.\n\n",
+    )
+    out.push_str("Answer with exactly one line a shot, in this form:\n\n")
+    out.push_str(
+        "`<shot>: <A better | B better | no visible difference> (confidence low/medium/high) - <one sentence naming what you saw, and where on the image>`\n\n",
+    )
+    out.push_str(
+        "Then two or three sentences overall: which flaws recurred, and in which letter of which shot. \"No visible difference\" is a fine answer where it's true. Don't guess which is which.\n",
+    )
+    out
+}
+
+/// `s` with its ASCII capitals lowered.
+pub fn lowered(s: str) -> String {
+    var bytes: Vec<u8> = Vec::with_capacity(s.len())
+    for i in 0..s.len() {
+        let b = s.byte(i)
+        bytes.push(if b >= 65 && b <= 90 { b + 32 } else { b })
+    }
+    String::from_utf8(take bytes).unwrap_or(String::from(s))
+}
+
+/// What a vote picks.
+pub enum Pick: Copy + Eq {
+    A,
+    B,
+    Same,
+}
+
+/// A critic's vote on a shot: what it picks, how sure (0 unsaid, 1 low, 2 medium, 3 high), and
+/// the line as written.
+pub struct Vote: Clone {
+    pub shot: String,
+    pub pick: Pick,
+    pub sure: u32,
+    pub line: String,
+}
+
+/// The votes in a critic's answer: for each of `names`, the first line that starts with the
+/// shot's name (after any `*`, `` ` ``, `-` or space) and a colon, and says `A better`, `B
+/// better` or `no visible difference`.
+pub fn votes_of(text: str, names: [String]) -> Vec<Vote> {
+    var out: Vec<Vote> = Vec::new()
+    for name in names {
+        for (a, b) in text.split("\n") {
+            let line = text.slice(a, b)
+            let low = lowered(line)
+            var at = 0
+            while at < low.len() {
+                let c = low.as_str().byte(at)
+                if c == 42 || c == 96 || c == 45 || c == 32 {
+                    at += 1
+                } else {
+                    break
+                }
+            }
+            let rest = low.as_str().slice(at, low.len())
+            if !rest.starts_with(name.as_str()) {
+                continue
+            }
+            let after = rest.slice(name.len(), rest.len())
+            let Some(colon) = after.find(":") else { continue }
+            // (Only marks between the name and its colon: `guard`**: ...)
+            if colon > 3 {
+                continue
+            }
+            let said = after.slice(colon + 1, after.len())
+            let pick = if said.find("no visible difference").is_some() {
+                Pick::Same
+            } else {
+                let at_a = said.find("a better")
+                let at_b = said.find("b better")
+                match (at_a, at_b) {
+                    (Some(x), Some(y)) => if x < y { Pick::A } else { Pick::B },
+                    (Some(_), None) => Pick::A,
+                    (None, Some(_)) => Pick::B,
+                    (None, None) => continue,
+                }
+            }
+            let sure = if said.find("high").is_some() {
+                3
+            } else if said.find("medium").is_some() {
+                2
+            } else if said.find("low").is_some() {
+                1
+            } else {
+                0
+            }
+            out.push(Vote { shot: name.clone(), pick, sure, line: String::from(line.trim()) })
+            break
+        }
+    }
+    out
+}
+
+/// A shot's votes counted: for the new, for the base, for neither, and the votes for the new by
+/// how sure (low, medium, high).
+pub struct Count: Copy {
+    pub new: u32 = 0,
+    pub base: u32 = 0,
+    pub same: u32 = 0,
+    pub sure: [u32; 4] = [0; 4],
+}
+
+/// The votes for `shot` among `votes`, counted under the key (`new_is_a`: its A is the new).
+pub fn counted(votes: [Vote], shot: str, new_is_a: bool) -> Count {
+    var c = Count {}
+    for v in votes {
+        if v.shot.as_str() != shot {
+            continue
+        }
+        if v.pick == Pick::Same {
+            c.same += 1
+        } else if (v.pick == Pick::A) == new_is_a {
+            c.new += 1
+            c.sure[min(v.sure, 3)] += 1
+        } else {
+            c.base += 1
+        }
+    }
+    c
+}
+
+/// The tally as a page: a row a shot (the votes for the new, for the base, for neither, and how
+/// sure the new's were), their sum, and under it each critic's line with its letter read
+/// through the key.
+pub fn tally(key: [Keyed], critics: [String], votes: [Vec<Vote>]) -> String {
+    var out = String::new()
+    out.push_str("# Tally\n\n")
+    out.push_str(f"{critics.len()} critics, {key.len()} shots.\n\n")
+    out.push_str(
+        "| Shot | For the new | For the base | No difference | The new's votes: low, medium, high |\n",
+    )
+    out.push_str("|---|---|---|---|---|\n")
+    var all = Count {}
+    for k in key {
+        var c = Count {}
+        for vs in votes {
+            let one = counted(vs, k.shot.as_str(), k.new_is_a)
+            c.new += one.new
+            c.base += one.base
+            c.same += one.same
+            for i in 0..4 {
+                c.sure[i] += one.sure[i]
+            }
+        }
+        out.push_str(
+            f"| {k.shot} | {c.new} | {c.base} | {c.same} | {c.sure[1]}, {c.sure[2]}, {c.sure[3]} |\n",
+        )
+        all.new += c.new
+        all.base += c.base
+        all.same += c.same
+        for i in 0..4 {
+            all.sure[i] += c.sure[i]
+        }
+    }
+    out.push_str(
+        f"| all | {all.new} | {all.base} | {all.same} | {all.sure[1]}, {all.sure[2]}, {all.sure[3]} |\n",
+    )
+    out.push_str(f"\n{all.new} of {all.new + all.base + all.same} votes for the new.\n")
+    for k in key {
+        out.push_str(f"\n## {k.shot}\n\n")
+        let (a, b) = if k.new_is_a { ("new", "base") } else { ("base", "new") }
+        out.push_str(f"A is the {a}, B the {b}.\n\n")
+        for i in 0..critics.len() {
+            for v in votes[i] {
+                if v.shot.as_str() == k.shot.as_str() {
+                    out.push_str(f"- {critics[i]}: {v.line}\n")
+                }
+            }
+        }
+    }
+    out
+}

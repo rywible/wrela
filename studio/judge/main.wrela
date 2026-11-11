@@ -1,0 +1,432 @@
+// The judging tool (`wrela tool judge`): two builds of a scene put before critics who aren't
+// told which is which. A drawing is judged by eye, and an eye that knows which side is the new
+// one sees what it hopes to; this renders both on a fixed list of shots, shuffles each pair
+// under a key kept apart, writes the critics' brief, and tallies what they answer.
+//
+// ```text
+// wrela tool judge -- <out-dir> [--against <revision>] [--base-set NAME=VALUE ...]
+//     [--new-set NAME=VALUE ...] [--shots <list>] [--only <shot> ...] [--seed N]
+//     [--what <words>] [--clips]
+// wrela tool judge -- <out-dir> --tally
+// ```
+//
+// **The two sides.** The new is the workspace as it is. The base is the workspace at
+// `--against <revision>` (as `git archive` gives it, laid out in `<out-dir>/base`), or with no
+// revision the workspace as it is too. Each is built with its scenes' constants and its own
+// (`--base-set`, `--new-set`: a program's own constants, as `wrela build --set` takes them), so
+// two revisions are compared, or two settings of one. Paths are from the workspace's directory
+// (the root `ws`); `<out-dir>` belongs under `build/`, which the workspace ignores.
+//
+// **What it writes**, for the list's shots (shots.wrela; `--shots` names a list, `--only` the
+// shots of it to keep), each scene driven on the native host's GPU:
+// - `pairs/<shot>-A.png` and `-B.png`: the shot from each side, which is which decided shot by
+//   shot from `--seed`; and `pairs/brief.md`, what a critic is asked (`--what` says what the
+//   only difference is). A critic is given this directory alone.
+// - `sealed/key.txt`, which letter is which, and `sealed/<shot>.png`, the pair side by side
+//   with its sides named: not for critics.
+// - With `--clips`, each scene's clip from each side and the two side by side
+//   (`clips/<scene>-base.mp4`, `-new.mp4`, `-both.mp4`: the base on the left), at the scene's
+//   frame rate, for a person's look at full rate. FFmpeg makes them; it must be on `PATH`.
+//
+// **The votes.** Each critic's answer goes in `votes/` as a text file, a line a shot as the
+// brief asks. `--tally` reads them through the key, prints each shot's votes for the new, for
+// the base and for neither, and writes that with every critic's line as `tally.md`.
+
+use audio_tool::sheet::Image
+use lookbook_tool::shots::shown_path
+use pairs::{Vote, beside, brief, cropped, key_of, key_text, laid, size_of, swapped, tally, votes_of}
+use shots::{Options, Scene, Shot, WS, chosen, parse_args, scene}
+use std::input::Script
+use std::io::print
+use std::tool::{ToolError, args}
+use std::tool::blob
+use std::tool::blob::Data
+use std::tool::drive
+use std::tool::drive::Step
+use std::tool::files
+use std::tool::image
+use std::tool::run
+use std::tool::toolchain
+use std::tool::toolchain::Set
+use toolkit::driven::untrapped
+use toolkit::whole::{blob_of, chunked, data_bytes, joined, read_file, write_file, write_png}
+
+/// How long a build, a load, a request of frames or a program may take, in seconds.
+const TIMEOUT: f64 = 600.0
+
+/// How many frames a request runs at most.
+const FRAMES_A_REQUEST: u32 = 100
+
+/// Runs `program` in the workspace with `given`: what it said if it failed.
+fn ran(program: str, given: take Vec<String>) -> Result<(), ToolError> {
+    var c = run::command(program, WS)
+    c.args = take given
+    c.timeout = TIMEOUT
+    let r = run::run(c).wait()?
+    if r.status == 0 {
+        return Ok(())
+    }
+    let err = String::from_utf8(joined(data_bytes(r.stderr.clone())?)).unwrap_or(String::new())
+    Err(ToolError::new(f"{program} exited {r.status}: {err.as_str().trim()}"))
+}
+
+/// The workspace as `revision` has it, laid out in `<out>/base` (`git archive`, read by `tar`):
+/// its root path.
+fn base_tree(out: str, revision: str) -> Result<String, ToolError> {
+    let dir = String::from(f"{out}/base")
+    let _ = files::remove_all(dir.as_str()).wait()
+    let _ = files::make_dirs(dir.as_str()).wait()?
+    let tar = String::from(f"{out}/base.tar")
+    ran(
+        "git",
+        Vec::from(
+            [
+                String::from("archive"),
+                String::from("--format=tar"),
+                String::from(f"--output={shown_path(tar.as_str())}"),
+                String::from(revision),
+            ],
+        ),
+    )?
+    ran(
+        "tar",
+        Vec::from(
+            [
+                String::from("-xf"),
+                String::from(shown_path(tar.as_str())),
+                String::from("-C"),
+                String::from(shown_path(dir.as_str())),
+            ],
+        ),
+    )?
+    let _ = files::remove(tar.as_str()).wait()
+    Ok(dir)
+}
+
+/// Scene `s`'s program, of the workspace at `tree` (a root path), built into `out` with the
+/// scene's constants and `extra`.
+fn built(tree: str, s: Scene, extra: [Set], out: str) -> Result<(), ToolError> {
+    var options = toolchain::options()
+    options.timeout = TIMEOUT
+    var all = s.sets.clone()
+    for one in extra {
+        all.push(one.clone())
+    }
+    options.set = take all
+    let b = toolchain::build(f"{tree}/{s.program}", out, options).wait()?
+    if !b.ok {
+        for d in b.diagnostics {
+            if d.error {
+                print(d.rendered.as_str())
+            }
+        }
+        return Err(ToolError::new(f"{shown_path(tree)}/{s.program} didn't build"))
+    }
+    Ok(())
+}
+
+/// `px` (`w` × `h`, RGBA8) at the size `to`.
+fn sized(px: take Vec<u8>, w: u32, h: u32, to: image::Size) -> Result<Vec<u8>, ToolError> {
+    if to.width == w && to.height == h {
+        return Ok(take px)
+    }
+    let b = blob_of(chunked(take px))?
+    let from = image::Image { width: w, height: h, rgba: Data::Blob(b) }
+    let made = image::resize(from, to, timeout: TIMEOUT).wait()
+    let _ = blob::release(b).wait()
+    let img = (take made)?
+    Ok(joined(data_bytes(take img.rgba)?))
+}
+
+/// Writes `img` as a PNG at `path` (a root path).
+fn write_image(img: Image, path: str) -> Result<(), ToolError> {
+    write_png(img.rgba()?, path)
+}
+
+/// Whether `f` is one of `frames`.
+fn among(frames: [u32], f: u32) -> bool {
+    for g in frames {
+        if g == f {
+            return true
+        }
+    }
+    false
+}
+
+/// The scene's build at `build` (a root path) driven from its first frame, and each of `shots`
+/// (the scene's) as one image: its frames cropped, sized and laid out. With `clip` (a root
+/// path; empty: none), each frame of the scene's clip is written there as `NNNNN.png`.
+fn sheets(build: str, s: Scene, shots: [Shot], clip: str) -> Result<Vec<Image>, ToolError> {
+    var load = drive::gpu()
+    load.width = s.width
+    load.height = s.height
+    load.fps = s.fps
+    load.timeout = TIMEOUT
+    let b = drive::load(build, load).wait()?.build
+    let _ = untrapped("init", drive::steps(b, [Step::Init], timeout: TIMEOUT).wait()?)?
+    let clipped = clip.len() > 0 && s.clip_last > s.clip_first
+    var last = if clipped { s.clip_last } else { 0 }
+    for shot in shots {
+        for f in shot.frames {
+            last = max(last, f)
+        }
+    }
+    if clipped {
+        let _ = files::remove_all(clip).wait()
+        let _ = files::make_dirs(clip).wait()?
+    }
+    var cells: Vec<Vec<Vec<u8>>> = Vec::new()
+    for _ in shots {
+        cells.push(Vec::new())
+    }
+    let keys = Script::frames()
+    // How many of the build's frames have run.
+    var done = 0
+    for f in 0..last + 1 {
+        let in_clip = clipped && f >= s.clip_first && f <= s.clip_last
+        var wanted = in_clip
+        for shot in shots {
+            if among(shot.frames, f) {
+                wanted = true
+            }
+        }
+        if !wanted {
+            continue
+        }
+        // The frames before this one, then this one and its screen.
+        while done < f {
+            let n = min(f - done, FRAMES_A_REQUEST)
+            let before = [Step::Frames(n, keys.clone())]
+            let _ = untrapped(
+                "the frames before",
+                drive::steps(b, before, timeout: TIMEOUT).wait()?,
+            )?
+            done += n
+        }
+        let one = [Step::Frames(1, keys.clone()), Step::Capture]
+        var seen = untrapped(f"frame {f}", drive::steps(b, one, timeout: TIMEOUT).wait()?)?
+        done += 1
+        let screen = seen.captures.remove(0)
+        let width = screen.width
+        let height = screen.height
+        let px = joined(data_bytes(screen.rgba.clone())?)
+        for k in 0..shots.len() {
+            if among(shots[k].frames, f) {
+                cells[k].push(cropped(px, width, shots[k].crop))
+            }
+        }
+        if in_clip {
+            let pixels = blob_of(chunked(take px))?
+            write_png(
+                image::Image { width, height, rgba: Data::Blob(pixels) },
+                f"{clip}/{f:05}.png",
+            )?
+        }
+    }
+    let _ = drive::close(b).wait()
+    var out: Vec<Image> = Vec::new()
+    for k in 0..shots.len() {
+        borrow shot = shots[k]
+        let (w, h) = size_of(shot.crop, s.width, s.height)
+        let to = image::Size {
+            width: max(w * shot.up / max(shot.down, 1), 1),
+            height: max(h * shot.up / max(shot.down, 1), 1),
+        }
+        var fitted: Vec<Vec<u8>> = Vec::new()
+        var mine = replace(mut cells[k], Vec::new())
+        for i in 0..mine.len() {
+            fitted.push(sized(replace(mut mine[i], Vec::new()), w, h, to)?)
+        }
+        out.push(laid(fitted, to.width, to.height, shot.across, shot.frames))
+    }
+    Ok(out)
+}
+
+/// A clip of the frames in `frames` (a root path; `NNNNN.png` from `first`), at `fps`, written
+/// at `to`; with `beside` (another directory of frames), the two side by side, `frames` on the
+/// left.
+fn clip_of(frames: str, beside: str, first: u32, fps: f64, to: str) -> Result<(), ToolError> {
+    var given: Vec<String> = Vec::from(
+        [
+            String::from("-y"),
+            String::from("-loglevel"),
+            String::from("error"),
+            String::from("-framerate"),
+            String::from(f"{fps}"),
+            String::from("-start_number"),
+            String::from(f"{first}"),
+            String::from("-i"),
+            String::from(f"{shown_path(frames)}/%05d.png"),
+        ],
+    )
+    if beside.len() > 0 {
+        given.push(String::from("-framerate"))
+        given.push(String::from(f"{fps}"))
+        given.push(String::from("-start_number"))
+        given.push(String::from(f"{first}"))
+        given.push(String::from("-i"))
+        given.push(String::from(f"{shown_path(beside)}/%05d.png"))
+        given.push(String::from("-filter_complex"))
+        given.push(String::from("hstack"))
+    }
+    given.push(String::from("-c:v"))
+    given.push(String::from("libx264"))
+    given.push(String::from("-crf"))
+    given.push(String::from("12"))
+    given.push(String::from("-pix_fmt"))
+    given.push(String::from("yuv420p"))
+    given.push(String::from(shown_path(to)))
+    ran("ffmpeg", take given)
+}
+
+/// A run: both sides built and driven, the pairs, the key and the brief written.
+fn judged(o: Options) -> Result<(), ToolError> {
+    let shots = chosen(o)
+    let pairs_dir = String::from(f"{o.out}/pairs")
+    let sealed = String::from(f"{o.out}/sealed")
+    let _ = files::remove_all(pairs_dir.as_str()).wait()
+    let _ = files::remove_all(sealed.as_str()).wait()
+    let _ = files::make_dirs(pairs_dir.as_str()).wait()?
+    let _ = files::make_dirs(sealed.as_str()).wait()?
+    let _ = files::make_dirs(f"{o.out}/votes").wait()?
+    let base = if o.against.is_empty() { String::from(WS) } else {
+        base_tree(o.out.as_str(), o.against.as_str())?
+    }
+    // The shots' scenes, in the order the shots first name them.
+    var scenes: Vec<Text> = Vec::new()
+    for s in shots {
+        var seen = false
+        for n in scenes {
+            if n == s.scene {
+                seen = true
+            }
+        }
+        if !seen {
+            scenes.push(s.scene)
+        }
+    }
+    var names: Vec<Text> = Vec::new()
+    var swaps: Vec<bool> = Vec::new()
+    for k in 0..shots.len() {
+        names.push(shots[k].name)
+        swaps.push(swapped(o.seed, k))
+    }
+    for name in scenes {
+        let Some(sc) = scene(name) else { panic("a shot's scene is a scene") }
+        var mine: Vec<Shot> = Vec::new()
+        var index: Vec<u32> = Vec::new()
+        for k in 0..shots.len() {
+            if shots[k].scene == name {
+                mine.push(shots[k].clone())
+                index.push(k)
+            }
+        }
+        let base_build = String::from(f"{o.out}/build/base-{name}")
+        let new_build = String::from(f"{o.out}/build/new-{name}")
+        built(base.as_str(), sc, o.base_sets, base_build.as_str())?
+        print(f"built the base's {name}")
+        built(WS, sc, o.new_sets, new_build.as_str())?
+        print(f"built the new's {name}")
+        let base_frames = if o.clips { String::from(f"{o.out}/clips/{name}-base") } else {
+            String::new()
+        }
+        let new_frames = if o.clips { String::from(f"{o.out}/clips/{name}-new") } else {
+            String::new()
+        }
+        let was = sheets(base_build.as_str(), sc, mine, base_frames.as_str())?
+        let now = sheets(new_build.as_str(), sc, mine, new_frames.as_str())?
+        for i in 0..mine.len() {
+            let shot = mine[i].name
+            let (a, b) = if swaps[index[i]] { (now[i].clone(), was[i].clone()) } else {
+                (was[i].clone(), now[i].clone())
+            }
+            write_image(a, f"{pairs_dir}/{shot}-A.png")?
+            write_image(b, f"{pairs_dir}/{shot}-B.png")?
+            write_image(beside(was[i], now[i], "base", "new"), f"{sealed}/{shot}.png")?
+            print(f"{shot} {shown_path(pairs_dir.as_str())}/{shot}-A.png -B.png")
+        }
+        if o.clips && sc.clip_last > sc.clip_first {
+            let clips = String::from(f"{o.out}/clips")
+            clip_of(base_frames.as_str(), "", sc.clip_first, sc.fps, f"{clips}/{name}-base.mp4")?
+            clip_of(new_frames.as_str(), "", sc.clip_first, sc.fps, f"{clips}/{name}-new.mp4")?
+            clip_of(
+                base_frames.as_str(),
+                new_frames.as_str(),
+                sc.clip_first,
+                sc.fps,
+                f"{clips}/{name}-both.mp4",
+            )?
+            print(f"{name} {shown_path(clips.as_str())}/{name}-both.mp4")
+        }
+    }
+    let key = key_text(names, swaps)
+    write_file(f"{sealed}/key.txt", chunked(Vec::from(key.as_bytes())))?
+    let asked = brief(shots, o.what.as_str(), shown_path(pairs_dir.as_str()))
+    write_file(f"{pairs_dir}/brief.md", chunked(Vec::from(asked.as_bytes())))?
+    print(
+        f"the brief {shown_path(pairs_dir.as_str())}/brief.md; the key {shown_path(sealed.as_str())}/key.txt",
+    )
+    Ok(())
+}
+
+/// A file's name without its last extension.
+fn stem(name: str) -> borrow str {
+    var dot = name.len()
+    for i in 0..name.len() {
+        if name.byte(i) == 46 {
+            dot = i
+        }
+    }
+    name.slice(0, dot)
+}
+
+/// The votes in `<out>/votes` tallied through the key: printed, and written as `tally.md`.
+fn tallied(o: Options) -> Result<(), ToolError> {
+    let text = String::from_utf8(read_file(f"{o.out}/sealed/key.txt", "the key")?)
+        .unwrap_or(String::new())
+    let key = key_of(text.as_str())
+    var names: Vec<String> = Vec::new()
+    for k in key {
+        names.push(k.shot.clone())
+    }
+    var files_in: Vec<String> = Vec::new()
+    for e in files::list(f"{o.out}/votes").wait()? {
+        if e.kind == files::Kind::File {
+            // (In order of their names, so the tally reads the same on every machine.)
+            var at = 0
+            while at < files_in.len() && files_in[at].as_str() < e.name.as_str() {
+                at += 1
+            }
+            files_in.insert(at, e.name.clone())
+        }
+    }
+    var critics: Vec<String> = Vec::new()
+    var votes: Vec<Vec<Vote>> = Vec::new()
+    for name in files_in {
+        let path = String::from(f"{o.out}/votes/{name}")
+        let said = String::from_utf8(read_file(path.as_str(), name.as_str())?)
+            .unwrap_or(String::new())
+        votes.push(votes_of(said.as_str(), names))
+        critics.push(String::from(stem(name.as_str())))
+    }
+    let page = tally(key, critics, votes)
+    write_file(f"{o.out}/tally.md", chunked(Vec::from(page.as_bytes())))?
+    print(page.as_str())
+    Ok(())
+}
+
+pub fn tool() -> u32 {
+    let o = match parse_args(args()) {
+        Ok(o) => take o,
+        Err(e) => {
+            print(e.as_str())
+            return 2
+        },
+    }
+    let done = if o.tally { tallied(o) } else { judged(o) }
+    if let Err(e) = done {
+        print(f"judge: {e.message()}")
+        return 1
+    }
+    0
+}

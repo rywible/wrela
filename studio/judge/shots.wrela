@@ -1,0 +1,290 @@
+// The judging tool's scenes, shots and command line: what is pure of the tool, so its tests need
+// no build.
+
+use std::tool::files::rooted
+use std::tool::toolchain::Set
+
+/// The root the tool reads and writes the workspace in.
+pub const WS: Text = "ws"
+
+/// A scene: a program (its package, from the workspace's root) built with constants and driven
+/// at a size and a frame rate, and the frames a clip of it keeps (from `clip_first` to
+/// `clip_last`; none where the last isn't past the first).
+pub struct Scene: Clone {
+    pub name: Text,
+    pub program: Text,
+    pub sets: Vec<Set>,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub clip_first: u32 = 0,
+    pub clip_last: u32 = 0,
+}
+
+/// A crop of the screen: from (`x0`, `y0`) up to (`x1`, `y1`), in pixels.
+pub struct Crop: Copy + Eq {
+    pub x0: u32,
+    pub y0: u32,
+    pub x1: u32,
+    pub y1: u32,
+}
+
+/// A shot: its name; its scene's; the frames it shows, counted from the build's first (0), in
+/// order (one: a still; several: a strip, `across` of them a row, each labelled by its frame);
+/// each frame's crop; the size each is shown at (`up` times its pixels over `down`); and what
+/// it's there to show, for the critics' brief.
+pub struct Shot: Clone {
+    pub name: Text,
+    pub scene: Text,
+    pub frames: Vec<u32>,
+    pub crop: Crop,
+    pub up: u32 = 1,
+    pub down: u32 = 1,
+    pub across: u32 = 1,
+    pub about: Text,
+}
+
+/// `NAME=VALUE`, as `wrela build --set` takes it.
+pub fn set(name: str, value: str) -> Set {
+    Set { name: String::from(name), value: String::from(value) }
+}
+
+/// `NAME=VALUE` as a `Set`, or `None` if it has no `=` or no name.
+pub fn set_of(s: str) -> Option<Set> {
+    let at = s.find("=")?
+    if at == 0 {
+        return None
+    }
+    Some(set(s.slice(0, at), s.slice(at + 1, s.len())))
+}
+
+/// The scenes' names.
+pub const SCENES: [Text; 1] = ["exchange"]
+
+/// The scene named `name`, if there is one.
+/// - `exchange`: the combat lab's exchange (content/humanoid, `SHOW=28`): Hakuro and his double
+///   in their guards, a step in, the cross thrown and landed, and the recovery, at 30 frames a
+///   second; its clip is the four seconds the cross is in.
+pub fn scene(name: str) -> Option<Scene> {
+    if name == "exchange" {
+        return Some(
+            Scene {
+                name: "exchange",
+                program: "content/humanoid",
+                sets: Vec::from([set("SHOW", "28")]),
+                width: 1600,
+                height: 900,
+                fps: 30.0,
+                clip_first: 96,
+                clip_last: 216,
+            },
+        )
+    }
+    None
+}
+
+/// The lists' names.
+pub const LISTS: [Text; 1] = ["arms"]
+
+/// The frames from `first` to `last`, every `every`th.
+pub fn every(first: u32, last: u32, every: u32) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    var f = first
+    while f <= last {
+        out.push(f)
+        f += max(every, 1)
+    }
+    out
+}
+
+/// The list of shots named `name`, if there is one.
+/// - `arms`: the exchange's six moments the charted arms' first three rounds were judged on (the
+///   guard, the step, the cross's wind-up, its impact frame, its follow-through and the
+///   recovery), each a still of the fighters' arms, and the cross as a strip of frames.
+pub fn list(name: str) -> Option<Vec<Shot>> {
+    if name == "arms" {
+        let near = Crop { x0: 560, y0: 130, x1: 1160, y1: 560 }
+        let mid = Crop { x0: 380, y0: 60, x1: 1200, y1: 700 }
+        return Some(
+            Vec::from(
+                [
+                    Shot {
+                        name: "guard",
+                        scene: "exchange",
+                        frames: Vec::from([99]),
+                        crop: near,
+                        up: 2,
+                        about: "both fighters in their guards",
+                    },
+                    Shot {
+                        name: "step",
+                        scene: "exchange",
+                        frames: Vec::from([135]),
+                        crop: near,
+                        up: 2,
+                        about: "the step in",
+                    },
+                    Shot {
+                        name: "windup",
+                        scene: "exchange",
+                        frames: Vec::from([198]),
+                        crop: mid,
+                        about: "the cross drawn back",
+                    },
+                    Shot {
+                        name: "impact",
+                        scene: "exchange",
+                        frames: Vec::from([204]),
+                        crop: mid,
+                        about: "the cross landing",
+                    },
+                    Shot {
+                        name: "follow",
+                        scene: "exchange",
+                        frames: Vec::from([210]),
+                        crop: Crop { x0: 200, y0: 0, x1: 1600, y1: 800 },
+                        about: "the follow-through",
+                    },
+                    Shot {
+                        name: "recover",
+                        scene: "exchange",
+                        frames: Vec::from([216]),
+                        crop: Crop { x0: 380, y0: 0, x1: 1500, y1: 900 },
+                        about: "the recovery",
+                    },
+                    Shot {
+                        name: "cross",
+                        scene: "exchange",
+                        frames: every(first: 186, last: 216, every: 3),
+                        crop: Crop { x0: 200, y0: 0, x1: 1600, y1: 800 },
+                        down: 2,
+                        across: 2,
+                        about: "the whole cross, a frame in three, read left to right, top to bottom",
+                    },
+                ],
+            ),
+        )
+    }
+    None
+}
+
+pub const USAGE: Text = "usage: wrela tool judge -- <out-dir> [--against <revision>] [--base-set NAME=VALUE ...] [--new-set NAME=VALUE ...] [--shots <list>] [--only <shot> ...] [--seed N] [--what <words>] [--clips]\n       wrela tool judge -- <out-dir> --tally"
+
+/// What a run does: where it writes (a root path); the revision the base is built from (none:
+/// the workspace as it is); the constants the base and the new are each built with, on top of
+/// their scenes'; the list of shots, and the shots of it to keep (none named: all); the
+/// shuffle's seed; what the only difference between the two is, as the brief tells the critics;
+/// whether clips are made; and whether it tallies votes instead of rendering.
+pub struct Options: Clone {
+    pub out: String,
+    pub against: String = String::new(),
+    pub base_sets: Vec<Set> = Vec::new(),
+    pub new_sets: Vec<Set> = Vec::new(),
+    pub list: String,
+    pub only: Vec<String> = Vec::new(),
+    pub seed: u32 = 1,
+    pub what: String,
+    pub clips: bool = false,
+    pub tally: bool = false,
+}
+
+/// The options the command line gives, or what's wrong with it.
+pub fn parse_args(given: [String]) -> Result<Options, String> {
+    var o = Options {
+        out: String::new(),
+        list: String::from(LISTS[0]),
+        what: String::from("how the fighters are drawn"),
+    }
+    var out: Option<String> = None
+    var k = 0
+    while k < given.len() {
+        let a = given[k].as_str()
+        let next = if k + 1 < given.len() { given[k + 1].clone() } else { String::new() }
+        if a == "--against" {
+            if next.is_empty() {
+                return Err(String::from("--against takes a revision, as origin/main"))
+            }
+            o.against = take next
+            k += 1
+        } else if a == "--base-set" || a == "--new-set" {
+            let Some(s) = set_of(next.as_str()) else {
+                return Err(String::from(f"{a} takes NAME=VALUE"))
+            }
+            if a == "--base-set" {
+                o.base_sets.push(take s)
+            } else {
+                o.new_sets.push(take s)
+            }
+            k += 1
+        } else if a == "--shots" {
+            if list(next.as_str()).is_none() {
+                return Err(String::from(f"no list of shots {next}: the lists are {LISTS[0]}"))
+            }
+            o.list = take next
+            k += 1
+        } else if a == "--only" {
+            if next.is_empty() {
+                return Err(String::from("--only takes a shot's name"))
+            }
+            o.only.push(take next)
+            k += 1
+        } else if a == "--seed" {
+            let Some(n) = next.as_str().parse_u32() else {
+                return Err(String::from("--seed takes a number"))
+            }
+            o.seed = n
+            k += 1
+        } else if a == "--what" {
+            if next.is_empty() {
+                return Err(String::from("--what takes what differs between the two, in words"))
+            }
+            o.what = take next
+            k += 1
+        } else if a == "--clips" {
+            o.clips = true
+        } else if a == "--tally" {
+            o.tally = true
+        } else if out.is_none() {
+            let Some(path) = rooted(WS, a) else {
+                return Err(String::from(f"{a} isn't a directory in the workspace"))
+            }
+            out = Some(take path)
+        } else {
+            return Err(String::from(USAGE))
+        }
+        k += 1
+    }
+    let Some(path) = take out else { return Err(String::from(USAGE)) }
+    o.out = take path
+    let Some(all) = list(o.list.as_str()) else { panic("the list was checked") }
+    for name in o.only {
+        var found = false
+        for s in all {
+            if name.as_str() == s.name {
+                found = true
+            }
+        }
+        if !found {
+            return Err(String::from(f"no shot {name} in the list {o.list}"))
+        }
+    }
+    Ok(o)
+}
+
+/// The shots a run renders: its list's, or those of it `--only` names, in the list's order.
+pub fn chosen(o: Options) -> Vec<Shot> {
+    let Some(all) = list(o.list.as_str()) else { panic("the list was checked") }
+    if o.only.is_empty() {
+        return all
+    }
+    var out: Vec<Shot> = Vec::new()
+    for s in all {
+        for name in o.only {
+            if name.as_str() == s.name {
+                out.push(s.clone())
+                break
+            }
+        }
+    }
+    out
+}
