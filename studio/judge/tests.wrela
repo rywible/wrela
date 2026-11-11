@@ -40,7 +40,7 @@ fn the_command_line_takes_a_directory_a_revision_and_each_sides_constants() {
     let kept = chosen(o)
     assert(kept.len() == 1 && kept[0].name == "impact")
     let Ok(t) = parse_args(texts(["build/judge", "--tally"])) else { panic("a tally") }
-    assert(t.tally && t.critics == 5 && chosen(t).len() == 7)
+    assert(t.tally && t.critics == 10 && chosen(t).len() == 7)
     let Err(why) = parse_args(texts(["build/judge", "--only", "elbow"])) else {
         panic("an unknown shot")
     }
@@ -145,31 +145,57 @@ fn a_strips_pairs_are_a_row_a_frame_over_as_many_pages_as_they_need() {
 }
 
 @test
-fn the_shuffle_is_the_seeds_and_each_critics_own_and_the_key_says_it() {
+fn each_shot_is_shown_each_way_round_to_half_its_panel_and_the_key_says_it() {
+    // Every shot of every seed: swapped for exactly half of a panel of ten, four of nine.
+    for seed in 200..212 {
+        for k in 0..9 {
+            var of_ten = 0
+            var of_nine = 0
+            for c in 1..11 {
+                assert(
+                    swapped(seed: seed, critics: 10, critic: c, k: k) ==
+                        swapped(seed: seed, critics: 10, critic: c, k: k),
+                )
+                if swapped(seed: seed, critics: 10, critic: c, k: k) {
+                    of_ten += 1
+                }
+                if c < 10 && swapped(seed: seed, critics: 9, critic: c, k: k) {
+                    of_nine += 1
+                }
+            }
+            assert(of_ten == 5 && of_nine == 4, f"seed {seed}, shot {k}: {of_ten}, {of_nine}")
+        }
+    }
+    // No two shots split a panel the same way throughout, nor two critics see every shot alike.
+    var same_shots = 0
+    var same_critics = 0
+    for k in 0..40 {
+        var alike = true
+        var twins = true
+        for c in 1..11 {
+            if swapped(seed: 303, critics: 10, critic: c, k: k) !=
+                swapped(seed: 303, critics: 10, critic: c, k: k + 1) {
+                alike = false
+            }
+        }
+        for j in 0..7 {
+            if swapped(seed: 303, critics: 10, critic: 1 + k % 9, k: j) !=
+                swapped(seed: 303, critics: 10, critic: 2 + k % 9, k: j) {
+                twins = false
+            }
+        }
+        if alike {
+            same_shots += 1
+        }
+        if twins {
+            same_critics += 1
+        }
+    }
+    assert(same_shots <= 2 && same_critics <= 4, f"{same_shots} shots, {same_critics} critics")
     var swaps: Vec<bool> = Vec::new()
-    var some = 0
-    for k in 0..40 {
-        assert(swapped(101, critic: 1, k: k) == swapped(101, critic: 1, k: k))
-        if swapped(101, critic: 1, k: k) {
-            some += 1
-        }
-        if k < 3 {
-            swaps.push(swapped(101, critic: 1, k: k))
-        }
+    for k in 0..3 {
+        swaps.push(swapped(seed: 101, critics: 10, critic: 1, k: k))
     }
-    // About half are swapped; another seed swaps others, and so does another critic.
-    assert(some > 10 && some < 30, f"{some} of 40")
-    var by_seed = false
-    var by_critic = false
-    for k in 0..40 {
-        if swapped(101, critic: 1, k: k) != swapped(102, critic: 1, k: k) {
-            by_seed = true
-        }
-        if swapped(101, critic: 1, k: k) != swapped(101, critic: 2, k: k) {
-            by_critic = true
-        }
-    }
-    assert(by_seed && by_critic)
     let text = key_text(["guard", "step", "cross"], swaps)
     let key = key_of(text.as_str())
     assert(key.len() == 3 && key[1].shot.as_str() == "step")
@@ -205,6 +231,7 @@ fn a_critics_answer_is_read_by_its_verdict_and_tallied_through_its_own_key() {
     assert(page.as_str().find("| guard | 2 | 0 | 0 | 0, 1, 1 | 0.250 |").is_some(), page.as_str())
     assert(page.as_str().find("| step | 0 | 2 | 0 | 0, 0, 0 | 1.000 |").is_some(), page.as_str())
     assert(page.as_str().find("2 of 5 votes for the new").is_some(), page.as_str())
+    assert(page.as_str().find("A was chosen 3 times and B 2 times").is_some(), page.as_str())
 }
 
 @test

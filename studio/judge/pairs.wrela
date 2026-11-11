@@ -143,15 +143,37 @@ pub fn page_name(shot: str, page: u32, pages: u32) -> String {
     if pages <= 1 { String::from(f"{shot}.png") } else { String::from(f"{shot}-{page + 1}.png") }
 }
 
-/// Whether shot `k`'s pair is swapped for critic `critic` under `seed`: the new shown as A and
-/// the base as B (else the base is A). The same for the same seed, critic and shot; about half
-/// of them, by a Lehmer generator's draw.
-pub fn swapped(seed: u32, critic: u32, k: u32) -> bool {
-    var x: u64 = (u64(seed) * 7919 + u64(critic) * 104729) % 2147483646 + 1
-    for _ in 0..k + 3 {
-        x = (x * 48271) % 2147483647
+/// Three numbers mixed into one (below 2^32), each bit of it moved by each of theirs: for a
+/// draw that neighbouring seeds, critics and shots don't share.
+pub fn mixed(a: u32, b: u32, c: u32) -> u64 {
+    let m: u64 = 4294967296
+    var x = ((u64(a) * 2654435761) % m +
+        (u64(b) * 2246822519) % m +
+        (u64(c) * 3266489917) % m +
+        374761393) %
+        m
+    x = x ^ (x >> 15)
+    x = (x * 2246822519) % m
+    x = x ^ (x >> 13)
+    x = (x * 3266489917) % m
+    x ^ (x >> 16)
+}
+
+/// Whether shot `k`'s pair is swapped for critic `critic` (from 1) of a panel of `critics`
+/// under `seed`: the new shown as A and the base as B (else the base is A). Each shot is
+/// swapped for half its panel, drawn afresh for each shot (the half of an odd panel rounded
+/// down), so a critic's lean toward one letter falls on both sides alike: critics shown the
+/// same pictures chose B about two times in three, whichever side it was.
+pub fn swapped(seed: u32, critics: u32, critic: u32, k: u32) -> bool {
+    let mine = mixed(seed, k, critic)
+    var before = 0
+    for other in 1..critics + 1 {
+        let theirs = mixed(seed, k, other)
+        if theirs < mine || (theirs == mine && other < critic) {
+            before += 1
+        }
     }
-    x > 1073741823
+    before < critics / 2
 }
 
 /// The key: a line a shot, `<shot>: A=<side> B=<side>`.
@@ -196,7 +218,7 @@ pub fn brief(shots: [Shot], files: [Vec<String>], what: str, dir: str) -> String
         f"Each shot below is an image in `{dir}` that shows the same moment twice, marked A and B at the top left of each. ",
     )
     out.push_str(
-        f"The only difference between A and B is {what}. Which letter is which is shuffled shot by shot, so A isn't the same one every time. Nothing else differs.\n\n",
+        f"The only difference between A and B is {what}. Which letter is which is shuffled shot by shot, so A isn't the same one every time, and neither letter is a before or an after: judge each on what it shows, not on where it sits. Nothing else differs.\n\n",
     )
     out.push_str("The shots:\n\n")
     for k in 0..shots.len() {
@@ -421,6 +443,21 @@ pub fn tally(keys: [Vec<Keyed>], critics: [String], votes: [Vec<Vote>]) -> Strin
         f"| all | {all.new} | {all.base} | {all.same} | {all.sure[1]}, {all.sure[2]}, {all.sure[3]} | {chance} |\n",
     )
     out.push_str(f"\n{all.new} of {all.new + all.base + all.same} votes for the new.\n")
+    // The letters themselves: a lean toward one is the critics', not the pictures'.
+    var a = 0
+    var b = 0
+    for vs in votes {
+        for v in vs {
+            if v.pick == Pick::A {
+                a += 1
+            } else if v.pick == Pick::B {
+                b += 1
+            }
+        }
+    }
+    out.push_str(
+        f"\nA was chosen {a} times and B {b} times. Each shot is shown each way round to half its panel, so a lean toward one letter falls on both sides alike.\n",
+    )
     for s in 0..shots.len() {
         out.push_str(f"\n## {shots[s].shot}\n\n")
         for i in 0..critics.len() {
