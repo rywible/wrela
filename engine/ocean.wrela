@@ -915,11 +915,6 @@ pub struct Moment {
 /// tile's longest waves out: `band`): the length of `shape`'s tables each way.
 const LATTICE: u32 = 48
 
-/// Two complex numbers' product.
-fn times(a: vec2, b: vec2) -> vec2 {
-    vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x)
-}
-
 /// e^(i j θ) for j from -(LATTICE - 1) to LATTICE - 1, at `at + LATTICE - 1 + j` of `into`: each
 /// from the one before, θ's own cosine and sine taken once.
 fn powers(into: mut [vec2; 4 * (2 * LATTICE - 1)], at: u32, theta: f32) {
@@ -928,7 +923,7 @@ fn powers(into: mut [vec2; 4 * (2 * LATTICE - 1)], at: u32, theta: f32) {
     var e = vec2(1.0, 0.0)
     into[mid] = e
     for j in 1..LATTICE {
-        e = times(e, one)
+        e = cmul(e, one)
         into[mid + j] = e
         into[mid - j] = vec2(e.x, -e.y)
     }
@@ -992,7 +987,7 @@ impl Swell {
         var turned: Vec<vec2> = Vec::with_capacity(self.modes.len())
         for m in self.modes {
             let phase = -m.w * t
-            turned.push(times(m.a, vec2(cos(phase), sin(phase))))
+            turned.push(cmul(m.a, vec2(cos(phase), sin(phase))))
         }
         Moment { turned }
     }
@@ -1022,7 +1017,7 @@ impl Swell {
             let at = m.tile * 2 * (2 * LATTICE - 1) + LATTICE - 1
             let ex = e[u32(i32(at) + m.n.x)]
             let ez = e[u32(i32(at + 2 * LATTICE - 1) + m.n.y)]
-            let a = times(now.turned[i], times(ex, ez))
+            let a = cmul(now.turned[i], cmul(ex, ez))
             d += vec3(-m.u.x * a.y, a.x, -m.u.y * a.y) * 2.0
             if m.tile == 0 { tiles.x += a.x * 2.0 } else { tiles.y += a.x * 2.0 }
         }
@@ -1137,27 +1132,43 @@ fn shape_plainly(sw: Swell, p: vec2, t: f32) -> vec3 {
 }
 
 /// The CPU's sea summed from its lattice's tables is the sea summed a wave at a time, to well
-/// under a millimetre, near and far, early and late; and the same from a moment asked once.
+/// under a millimetre, near and far, early and late, in a gentle sea and in a gale with its mid
+/// tile weighted down (as the opening rides it); and the same from a moment asked once.
 @test
 fn the_swell_summed_by_tables_is_the_swell_summed_plainly() {
-    let sw = Swell::new(gentle(), 4096, 1.0)
-    var worst = 0.0
-    for (p, t) in [
-        (vec2(0.0, 0.0), 0.0),
-        (vec2(3.7, -12.9), 4.25),
-        (vec2(-1811.3, 2404.6), 61.5),
-        (vec2(997.0, -131.0), 600.0),
-        (vec2(5210.4, 77.7), 1234.5),
-    ] {
-        let plain = shape_plainly(sw, p, t)
-        let now = sw.moment(t)
-        let got = sw.shape_at(now, p)
-        assert(got == sw.shape(p, t), "a moment asked once gives what one asked each time does")
-        assert(sw.height_at(now, p) == sw.height(p, t))
-        worst = max(worst, length(got - plain))
+    let gale = SeaState {
+        wind: vec2(-0.96858, 0.24869),
+        speed: 19.0,
+        fetch: 300000.0,
+        swell: vec2(0.17007, 0.98543),
+        swell_height: 5.5,
+        swell_period: 10.5,
+        chop: 2.5,
+        seed: 7,
     }
-    print(f"{sw.modes.len()} waves: the tables' sum within {worst * 1000.0} mm of the plain one")
-    assert(worst < 5.0e-4, f"{worst} m apart")
+    for (sea, mid) in [(gentle(), 1.0), (gale, 0.6)] {
+        let sw = Swell::new(sea, 4096, mid)
+        var worst = 0.0
+        for (p, t) in [
+            (vec2(0.0, 0.0), 0.0),
+            (vec2(3.7, -12.9), 4.25),
+            (vec2(-1811.3, 2404.6), 61.5),
+            (vec2(-1811.3, -2404.6), 61.5),
+            (vec2(997.0, -131.0), 600.0),
+            (vec2(5210.4, 77.7), 1234.5),
+        ] {
+            let plain = shape_plainly(sw, p, t)
+            let now = sw.moment(t)
+            let got = sw.shape_at(now, p)
+            assert(got == sw.shape(p, t), "a moment asked once gives what one asked each time does")
+            assert(sw.height_at(now, p) == sw.height(p, t))
+            worst = max(worst, length(got - plain))
+        }
+        print(
+            f"{sw.modes.len()} waves: the tables' sum within {worst * 1000.0} mm of the plain one",
+        )
+        assert(worst < 5.0e-4, f"{worst} m apart")
+    }
 }
 
 /// The crests break as often as the wind whitens a sea: rarely in a moderate breeze, a tenth of
