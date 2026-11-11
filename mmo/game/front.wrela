@@ -132,6 +132,99 @@ pub struct Veil: Copy + GpuData {
     pub texel: vec2,
 }
 
+/// How many of the latest frames the readout keeps (two seconds of a screen that shows 120).
+const HEARD: u32 = 240
+/// How often the readout's numbers are worked out afresh (s): often enough to follow, seldom
+/// enough to read.
+const READ_EVERY: f32 = 0.5
+
+/// What the page's frames really did, for a person to read on the page itself (the backquote
+/// key shows it): the time each of the latest frames took, and what they come to. Nothing of it
+/// leaves the page.
+pub struct Readout {
+    shown: bool,
+    /// The latest frames' times (s), the next written at `at`; how long since the numbers were
+    /// last worked out (s).
+    took: Vec<f32>,
+    at: u32,
+    since: f32,
+    /// The numbers as last worked out.
+    read: Read,
+}
+
+/// A readout's numbers: new images a second, the middle frame's time and the slow ones' (the
+/// 95th of a hundred, the slowest; ms), and how many of the frames kept were late (took half
+/// again the middle's time or more).
+pub struct Read: Copy {
+    pub rate: f32,
+    pub middle: f32,
+    pub slow: f32,
+    pub slowest: f32,
+    pub late: u32,
+    pub of: u32,
+}
+
+/// What frames that took `took` (s each, in any order) come to.
+pub fn read(took: Vec<f32>) -> Read {
+    let n = took.len()
+    if n == 0 { return Read { rate: 0.0, middle: 0.0, slow: 0.0, slowest: 0.0, late: 0, of: 0 } }
+    var sorted = took.clone()
+    sorted.sort_by(|a, b| a < b)
+    var sum = 0.0
+    for t in sorted { sum += t }
+    let middle = sorted[n / 2]
+    var late = 0
+    for t in sorted { if t >= middle * 1.5 { late += 1 } }
+    Read {
+        rate: if sum > 0.0 { f32(n) / sum } else { 0.0 },
+        middle: middle * 1000.0,
+        slow: sorted[min(n * 95 / 100, n - 1)] * 1000.0,
+        slowest: sorted[n - 1] * 1000.0,
+        late,
+        of: n,
+    }
+}
+
+impl Readout {
+    pub fn new() -> Readout {
+        Readout { shown: false, took: Vec::new(), at: 0, since: READ_EVERY, read: read(Vec::new()) }
+    }
+
+    /// A frame took `dt` s.
+    pub fn hear(mut self, dt: f32) {
+        if self.took.len() < HEARD {
+            self.took.push(dt)
+        } else {
+            self.took[self.at] = dt
+            self.at = (self.at + 1) % HEARD
+        }
+        self.since += dt
+        if self.shown && self.since >= READ_EVERY {
+            self.read = read(self.took)
+            self.since = 0.0
+        }
+    }
+}
+
+@test
+fn a_readout_reads_a_steady_pace_and_counts_its_late_frames() {
+    // Two seconds at 120 a second, one frame in ten taking two frames' time.
+    var r = Readout::new()
+    r.shown = true
+    for i in 0..HEARD {
+        r.hear(if i % 10 == 9 { 2.0 / 120.0 } else { 1.0 / 120.0 })
+    }
+    let got = read(r.took)
+    assert(got.of == HEARD && got.late == HEARD / 10, f"{got.late} late of {got.of}")
+    assert(abs(got.middle - 1000.0 / 120.0) < 0.01, f"{got.middle} ms")
+    assert(abs(got.slowest - 2000.0 / 120.0) < 0.01, f"{got.slowest} ms")
+    assert(abs(got.rate - 120.0 / 1.1) < 0.1, f"{got.rate} a second")
+    // It keeps only the latest: a steady 60 after that reads as 60, none late.
+    for _ in 0..HEARD { r.hear(1.0 / 60.0) }
+    let after = read(r.took)
+    assert(after.late == 0 && abs(after.rate - 60.0) < 0.01, f"{after.rate} a second")
+}
+
 pub struct Front {
     scene: Scene,
     smp: Sampler,
@@ -189,6 +282,8 @@ pub struct Front {
     saved: bool,
     saved_at: f32,
     reduced: bool,
+    /// The readout (`Readout`), shown or not (the backquote key).
+    readout: Readout,
 }
 
 /// The page, its scene not yet drawn, in `fonts`: the console's, whose third face
@@ -253,6 +348,7 @@ pub fn init(fonts: take Fonts) -> Front {
         saved: false,
         saved_at: 0.0,
         reduced: false,
+        readout: Readout::new(),
     }
 }
 
@@ -950,6 +1046,7 @@ pub fn frame<A: Account>(
     if f.drawings > 2 && dt > 0.0 {
         let (slow, _) = frame_limits(f.stage == Stage::Page, f.base)
         f.budget = heard(f.budget, dt, slow, f.time)
+        f.readout.hear(dt)
         // Infer the screen's pace from its fastest window; later rendering load must not
         // make a known faster display appear slower.
         f.quickest = min(f.quickest, dt)
@@ -983,6 +1080,11 @@ pub fn frame<A: Account>(
     let on_phone = phone(w / k, h / k)
     for e in events() {
         if f.online { break }
+        // (The readout's key, wherever the page is: it's nobody else's.)
+        if let Event::KeyDown { key: Key::Backquote, repeat: false, .. } = e {
+            f.readout.shown = !f.readout.shown
+            continue
+        }
         if f.stage == Stage::Rowing {
             match e {
                 Event::KeyDown { key: Key::Escape, .. } => pause(mut f),
@@ -1105,6 +1207,9 @@ pub fn frame<A: Account>(
         }
         account.draw(mut f.list, f.fonts, width, height)
         f.list.alpha = 1.0
+    }
+    if f.readout.shown {
+        draw_readout(mut f, w, h, k)
     }
     f.renderer.fetch(mut f.fonts, f.list)
     f.renderer.upload(f.list)
@@ -1366,6 +1471,40 @@ fn cap(f: mut Front, key: str, x: f32, y: f32, k: f32) -> f32 {
         weight: kit::MEDIUM,
     )
     kw
+}
+
+/// The readout in the screen's corner: the pace the frames kept, the times they took, and the
+/// size the scene is drawn at.
+fn draw_readout(f: mut Front, w: f32, h: f32, k: f32) {
+    let r = f.readout.read
+    let (wide, high) = f.drawn_at
+    let lines = [
+        String::from(f"{r.rate:.0} new images a second (the screen shows {1.0 / f.base:.0})"),
+        String::from(
+            f"a frame takes {r.middle:.1} ms, 1 in 20 over {r.slow:.1}, the slowest {r.slowest:.1}",
+        ),
+        String::from(f"{r.late} late of the last {r.of}"),
+        String::from(f"drawn {wide} x {high} on a screen of {w:.0} x {h:.0}"),
+    ]
+    let size = 13.0 * k
+    let row = round(19.0 * k)
+    let pad = round(10.0 * k)
+    var wideness = 0.0
+    for line in lines {
+        wideness = max(wideness, f.fonts.font(Face::Sans).measure(line.as_str(), size))
+    }
+    let plate = Rect::new(
+        pad,
+        pad,
+        round(wideness) + 2.0 * pad,
+        f32(lines.len()) * row + 2.0 * pad - round(4.0 * k),
+    )
+    f.list.rect(plate, vec4(0.0, 0.0, 0.0, 0.72), radius: round(6.0 * k))
+    var y = plate.y + pad
+    for line in lines {
+        let _ = f.list.text(f.fonts, Face::Sans, line.as_str(), size, vec2(plate.x + pad, y), IVORY)
+        y += row
+    }
 }
 
 /// The pause menu in the middle of the dimmed scene: Resume, Play online and the title, and
