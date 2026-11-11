@@ -19,15 +19,16 @@
 //
 // **What it writes**, for the list's shots (shots.wrela; `--shots` names a list, `--only` the
 // shots of it to keep), each scene driven on the native host's GPU:
-// - `pairs/<n>/`, for each of `--critics N` critics (10 unless said): each shot as one image
-//   with both sides in it, marked A and B (a strip as a row a frame, over as many pages as it
-//   needs); and `brief.md`, what the critic is asked (`--what` says what the only difference
+// - `pairs/<n>/`, for each of `--critics N` critics (10 unless said): each still as one image
+//   with both sides in it, marked A and B; and `brief.md`, what the critic is asked (`--what` says what the only difference
 //   is). Which side is A is drawn from `--seed` shot by shot so that half the panel sees each
 //   shot each way round: critics lean toward a letter (B, two times in three, on the charted
 //   arms' pictures), and a balanced panel's lean falls on both sides alike. A critic is given
 //   their own directory alone.
 // - `sealed/key-<n>.txt`, which letter is which for critic `n`, and `sealed/<shot>.png`, the
-//   pair with its sides named: not for critics.
+//   pair with its sides named: not for critics. A strip of frames is written here alone, for
+//   a person's eye: critics shown one at half size answered it from their memory of the
+//   stills, letter for letter, whichever side the strip's letters were.
 // - With `--clips`, each scene's clip from each side and the two side by side
 //   (`clips/<scene>-base.mp4`, `-new.mp4`, `-both.mp4`: the base on the left), at the scene's
 //   frame rate, for a person's look at full rate. FFmpeg makes them; it must be on `PATH`.
@@ -373,7 +374,9 @@ fn judged(o: Options) -> Result<(), ToolError> {
                 write_image(told[p], f"{sealed}/{file}")?
                 named[index[i]].push(take file)
             }
-            for n in 0..o.critics {
+            // (A strip is for a person's eye, in `sealed`: see the header.)
+            let critics = if numbers.len() == 1 { o.critics } else { 0 }
+            for n in 0..critics {
                 let made = if swapped(o.seed, o.critics, critic: n + 1, k: index[i]) {
                     pages(now[i].cells, was[i].cells, w, h, numbers, first: "A", second: "B")
                 } else {
@@ -400,19 +403,28 @@ fn judged(o: Options) -> Result<(), ToolError> {
             print(f"{name} {shown_path(clips.as_str())}/{name}-both.mp4")
         }
     }
+    // What the critics judge: the stills.
+    var stills: Vec<Shot> = Vec::new()
+    var files_of: Vec<Vec<String>> = Vec::new()
     var names: Vec<Text> = Vec::new()
-    for s in shots {
-        names.push(s.name)
+    var at: Vec<u32> = Vec::new()
+    for k in 0..shots.len() {
+        if shots[k].frames.len() == 1 {
+            stills.push(shots[k].clone())
+            files_of.push(named[k].clone())
+            names.push(shots[k].name)
+            at.push(k)
+        }
     }
     for n in 0..o.critics {
         var swaps: Vec<bool> = Vec::new()
-        for k in 0..shots.len() {
+        for k in at {
             swaps.push(swapped(o.seed, o.critics, critic: n + 1, k: k))
         }
         let key = key_text(names, swaps)
         write_file(f"{sealed}/key-{n + 1}.txt", chunked(Vec::from(key.as_bytes())))?
         let dir = String::from(f"{pairs_dir}/{n + 1}")
-        let asked = brief(shots, named, o.what.as_str(), shown_path(dir.as_str()))
+        let asked = brief(stills, files_of, o.what.as_str(), shown_path(dir.as_str()))
         write_file(f"{dir}/brief.md", chunked(Vec::from(asked.as_bytes())))?
     }
     print(
