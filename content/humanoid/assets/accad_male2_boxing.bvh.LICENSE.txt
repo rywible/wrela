@@ -1,0 +1,18 @@
+accad_male2_boxing.bvh: from ACCAD's Open Motion Project, The Ohio State University
+(https://accad.osu.edu/research/motion-lab/mocap-system-and-data). "Open Motion Project by
+ACCAD/The Ohio State University is licensed under a Creative Commons Attribution 3.0 Unported
+License" (https://creativecommons.org/licenses/by/3.0/), as the page states it, read 2026-11-05.
+The page asks no other credit and states no other terms.
+
+What this file is: Male2_Extended_1.bvh of the actor's BVH archive,
+https://accad.osu.edu/sites/accad.osu.edu/files/Male2_bvh.zip (sha256
+f30dc56f8557d4b9f1bd6b8b0c4218c076471de0a9c1a20f3bc4a8b776cc14b1): Male 2 boxing ("Male 2 extended 1 (boxing)"): 20 seconds of jabs, crosses,
+hooks, uppercuts, footwork and guard (30 frames a second, 603 frames). Optical marker capture (ACCAD publishes each
+set's markers as C3D too), in centimetres.
+
+sha256 696158c170e09b4e36e1e2fbec14d8d4e7dbf18225ca6857328e67afcda9f25c
+
+Changes made here: none to the file. engine::arms learns from it how real arms move (their
+elbows' bends and their shapes), to check other clips' arms against in tests; and the humanoid
+workbench plays it on the hero as a reference view (content/humanoid/kimodo.wrela), retargeted at
+build time.

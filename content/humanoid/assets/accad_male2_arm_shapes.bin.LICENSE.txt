@@ -1,0 +1,18 @@
+accad_male2_arm_shapes.bin: derived from ACCAD's Open Motion Project, The Ohio State University
+(https://accad.osu.edu/research/motion-lab/mocap-system-and-data). "Open Motion Project by
+ACCAD/The Ohio State University is licensed under a Creative Commons Attribution 3.0 Unported
+License" (https://creativecommons.org/licenses/by/3.0/), as the page states it, read 2026-11-05.
+
+What this file is: the arm shapes in all 149 BVH takes of Male 2 (https://accad.osu.edu/sites/
+accad.osu.edu/files/Male2_bvh.zip, sha256 f30dc56f8557d4b9f1bd6b8b0c4218c076471de0a9c1a20f3bc4a8b776cc14b1),
+each frame's upper arm and forearm directions in a chest frame built from joint places (across
+the shoulders, up from the hips), thinned so no two kept shapes are within 5 degrees, quantised
+to signed bytes. Left arm 7413 shapes, right arm 7736. The layout is in engine/arms.wrela
+(shapes_of). Made outside this repo by a script kept in the project's files
+(combat-unlock/tools/bank.py); held out one take at a time, the fighting takes all came within
+27 degrees of the rest (victory poses and long improvised sequences up to 63).
+
+sha256 d89486624b938f9da8e28fae68ce8786d5b9c2cbaeba6fecd4a973c24494545e
+
+Changes made here: it is derived data (directions only), used by tests to check that a clip's
+arms make shapes a person's arms make.

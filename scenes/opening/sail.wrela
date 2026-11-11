@@ -383,8 +383,9 @@ pub fn step(r: mut Rig, time: f32, swell: Swell) {
     let want = RUN * polar(off) * r.power * r.gust
     let rate = if want > r.speed { mix(0.3, 0.9, r.plane) } else { mix(0.3, 1.2, 1.0 - r.power) }
     r.speed += (want - r.speed) * rate * dt
-    let bow = swell.height(r.at + heading * 1.6, time)
-    let stern = swell.height(r.at - heading * 1.6, time)
+    let now = swell.moment(time)
+    let bow = swell.height_at(now, r.at + heading * 1.6)
+    let stern = swell.height_at(now, r.at - heading * 1.6)
     r.speed -= 9.81 * (bow - stern) / 3.2 * 0.5 * dt
     // (A hard turn bleeds its way.)
     r.speed -= abs(r.turn) * max(r.speed, 0.0) * 0.18 * dt

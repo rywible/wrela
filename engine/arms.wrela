@@ -1,0 +1,235 @@
+// Arm checks: what a broken arm looks like, measured against arms real people moved, so a clip
+// whose arms no person could make is caught before anyone watches it. Three checks:
+//
+// - The hinge: an elbow bends one way only. Each frame an elbow is bent, the way it bends (the
+//   axis it turns about, in the upper arm's own frame) is held against the way real elbows bent
+//   in captured takes; one bent the other way, or sideways, is off.
+// - The head: a hand (its wrist or its knuckles) inside the head.
+// - Real poses: each arm's shape (the upper arm's and the forearm's ways, in the chest's frame)
+//   held against the nearest shape a real person's arm made in the captured takes; an arm far
+//   from every one is a shape nobody made.
+//
+// The real elbows' bends come from takes a caller passes (retargeted onto the rig, so in this
+// rig's own bones' frames). The real arm shapes come packed (`shapes_of`): unit ways in a chest
+// frame built from the joints' places alone (across the shoulders, up from the hips), so a
+// skeleton's own bone frames don't matter and shapes from another skeleton compare.
+
+use std::collections::Vec
+use humanoid::{Clip, NONE, Rig, Rigid, frame_world}
+
+const DEG: f32 = 0.017453292
+
+/// An elbow counts as bent past this (degrees from straight), and its bend is judged.
+pub const BENT: f32 = 35.0
+
+/// The head: where its middle is from the head bone (the body's space at rest: up and a little
+/// ahead) and how big it is (m).
+pub const HEAD_UP: f32 = 0.10
+pub const HEAD_AHEAD: f32 = 0.03
+pub const HEAD_R: f32 = 0.105
+
+/// The limits: an elbow's bend this far (degrees) off a real one's, a hand this far (m) into
+/// the head, an arm this far (degrees, upper arm and forearm together) from every real arm.
+pub const HINGE_OFF: f32 = 40.0
+pub const HEAD_IN: f32 = 0.01
+pub const UNREAL: f32 = 40.0
+
+/// One arm's bones: upper arm, forearm, hand, the hand's middle knuckle.
+fn arm(rig: Rig, side: u32) -> [u32; 4] {
+    let n = if side == 0 { "left" } else { "right" }
+    [
+        rig.find(f"{n}UpperArm".as_str()),
+        rig.find(f"{n}LowerArm".as_str()),
+        rig.find(f"{n}Hand".as_str()),
+        rig.find(f"{n}MiddleProximal".as_str()),
+    ]
+}
+
+/// The chest's frame from the joints' places: across (the left shoulder from the right), up (from
+/// the hips to between the shoulders, square to across) and ahead; a way `d` read in it.
+fn in_chest(w: [Rigid], c: [u32; 3], d: vec3) -> vec3 {
+    let x = normalize(w[c[0]].t - w[c[1]].t)
+    var up = (w[c[0]].t + w[c[1]].t) * 0.5 - w[c[2]].t
+    up = normalize(up - x * dot(up, x))
+    let z = cross(x, up)
+    vec3(dot(d, x), dot(d, up), dot(d, z))
+}
+
+/// The bones the chest's frame is read from: the left and right upper arms and the hips.
+fn chest(rig: Rig) -> [u32; 3] {
+    [rig.find("leftUpperArm"), rig.find("rightUpperArm"), rig.find("hips")]
+}
+
+/// A frame's bones in the body's space.
+fn world(rig: Rig, c: Clip, f: u32) -> Vec<Rigid> {
+    frame_world(rig, c.turns, f, rig.base.t + rig.base.q.rotate(c.hips[f]))
+}
+
+/// How bent arm `a`'s elbow is (degrees from straight) and the axis it bends about, in the upper
+/// arm's frame.
+fn bend(w: [Rigid], a: [u32; 4]) -> (f32, vec3) {
+    let up = normalize(w[a[1]].t - w[a[0]].t)
+    let fore = normalize(w[a[2]].t - w[a[1]].t)
+    let angle = acos(clamp(dot(up, fore), -1.0, 1.0)) / DEG
+    let axis = cross(up, fore)
+    if length(axis) < 1.0e-5 {
+        return (angle, vec3(0.0))
+    }
+    (angle, w[a[0]].q.inverse().rotate(normalize(axis)))
+}
+
+/// Arm `a`'s shape: its upper arm's and forearm's ways in the chest's frame.
+fn shape(w: [Rigid], a: [u32; 4], c: [u32; 3]) -> (vec3, vec3) {
+    (
+        in_chest(w, c, normalize(w[a[1]].t - w[a[0]].t)),
+        in_chest(w, c, normalize(w[a[2]].t - w[a[1]].t)),
+    )
+}
+
+/// What real arms did: each elbow's usual bend axis, and the arm shapes real people made, by side
+/// (0 the left).
+pub struct Real: Clone {
+    pub hinge: [vec3; 2],
+    pub upper: [Vec<vec3>; 2],
+    pub fore: [Vec<vec3>; 2],
+}
+
+/// The real arms: the elbows' bends from `takes` (clips on `rig`), the shapes from `shapes` (packed
+/// as `shapes_of` reads).
+pub fn real(rig: Rig, takes: [Clip], shapes: Bytes) -> Real {
+    var r = Real {
+        hinge: [vec3(0.0), vec3(0.0)],
+        upper: [Vec::new(), Vec::new()],
+        fore: [Vec::new(), Vec::new()],
+    }
+    let arms = [arm(rig, 0), arm(rig, 1)]
+    for t in takes {
+        for f in 0..t.frames {
+            let w = world(rig, t, f)
+            for s in 0..2 {
+                let (angle, axis) = bend(w, arms[s])
+                if angle > BENT {
+                    r.hinge[s] += axis
+                }
+            }
+        }
+    }
+    for s in 0..2 {
+        assert(
+            length(r.hinge[s]) > 1.0e-4,
+            "no take bends this elbow far enough to learn its hinge",
+        )
+        r.hinge[s] = normalize(r.hinge[s])
+    }
+    shapes_of(shapes, mut r)
+    r
+}
+
+/// Packed arm shapes read into `r`: for the left arm then the right, a count (4 bytes, little
+/// end first), then that many shapes, each six signed bytes (the upper arm's way, then the
+/// forearm's, in the chest's frame, as `in_chest` reads it, times 127).
+fn shapes_of(b: Bytes, r: mut Real) {
+    var at = 0
+    let signed = |i: u32| -> f32 {
+        let v = i32(b.at(i))
+        f32(if v > 127 { v - 256 } else { v }) / 127.0
+    }
+    for s in 0..2 {
+        let n = u32(b.at(at)) +
+            u32(b.at(at + 1)) * 256 +
+            u32(b.at(at + 2)) * 65536 +
+            u32(b.at(at + 3)) * 16777216
+        at += 4
+        for _ in 0..n {
+            r.upper[s].push(normalize(vec3(signed(at), signed(at + 1), signed(at + 2))))
+            r.fore[s].push(normalize(vec3(signed(at + 3), signed(at + 4), signed(at + 5))))
+            at += 6
+        }
+    }
+}
+
+/// A clip's arms checked: the worst of each check, when, and which arm, and what's wrong in
+/// plain words (empty, none).
+pub struct Checked: Clone {
+    pub hinge_off: f32,
+    pub hinge_at: f32,
+    pub head_in: f32,
+    pub head_at: f32,
+    pub unreal: f32,
+    pub unreal_at: f32,
+    pub flags: Vec<String>,
+}
+
+/// Clip `c`'s arms (on `rig`) against the real ones `r`.
+pub fn checked(rig: Rig, c: Clip, r: Real) -> Checked {
+    let arms = [arm(rig, 0), arm(rig, 1)]
+    let ch = chest(rig)
+    let head = rig.find("head")
+    let rw = rig.rest_world()
+    let middle = rw[head].q.inverse().rotate(vec3(0.0, HEAD_UP, HEAD_AHEAD))
+    var out = Checked {
+        hinge_off: 0.0,
+        hinge_at: 0.0,
+        head_in: 0.0,
+        head_at: 0.0,
+        unreal: 0.0,
+        unreal_at: 0.0,
+        flags: Vec::new(),
+    }
+    var sides = [0, 0, 0]
+    for f in 0..c.frames {
+        let t = f32(f) / c.fps
+        let w = world(rig, c, f)
+        let centre = w[head].t + w[head].q.rotate(middle)
+        for s in 0..2 {
+            let a = arms[s]
+            let (angle, axis) = bend(w, a)
+            if angle > BENT {
+                let off = acos(clamp(dot(axis, r.hinge[s]), -1.0, 1.0)) / DEG
+                if off > out.hinge_off {
+                    out.hinge_off = off
+                    out.hinge_at = t
+                    sides[0] = s
+                }
+            }
+            for b in [a[2], a[3]] {
+                let into = HEAD_R - length(w[b].t - centre)
+                if into > out.head_in {
+                    out.head_in = into
+                    out.head_at = t
+                    sides[1] = s
+                }
+            }
+            let (u, v) = shape(w, a, ch)
+            var best = 1.0e9
+            for k in 0..r.upper[s].len() {
+                let d = acos(clamp(dot(u, r.upper[s][k]), -1.0, 1.0)) +
+                    acos(clamp(dot(v, r.fore[s][k]), -1.0, 1.0))
+                best = min(best, d)
+            }
+            best = best / DEG
+            if best > out.unreal {
+                out.unreal = best
+                out.unreal_at = t
+                sides[2] = s
+            }
+        }
+    }
+    let name = |s: u32| -> Text { if s == 0 { "left" } else { "right" } }
+    if out.hinge_off > HINGE_OFF {
+        out.flags.push(
+            f"the {name(sides[0])} elbow bends {out.hinge_off:.0} degrees across its own hinge (the arm twisted, or bent the wrong way), at {out.hinge_at:.2} s",
+        )
+    }
+    if out.head_in > HEAD_IN {
+        out.flags.push(
+            f"the {name(sides[1])} hand is {out.head_in * 100.0:.1} cm inside the head at {out.head_at:.2} s",
+        )
+    }
+    if out.unreal > UNREAL {
+        out.flags.push(
+            f"the {name(sides[2])} arm is {out.unreal:.0} degrees from any arm a person made, at {out.unreal_at:.2} s",
+        )
+    }
+    out
+}

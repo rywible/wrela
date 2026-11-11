@@ -35,11 +35,13 @@ pub fn under(s: Shot, swell: Swell, t: f32) -> Under {
     let at = vec2(s.boat.x, s.boat.z)
     let bz = normalize(vec2(s.boat_z.x, s.boat_z.z))
     let bx = vec2(bz.y, -bz.x)
+    // (The waves turned on to `t` once for the six heights.)
+    let now = swell.moment(t)
     var h = [0.0; 5]
     for k in 0..5 {
-        h[k] = swell.height(at + bz * (f32(k) - 2.0), t)
+        h[k] = swell.height_at(now, at + bz * (f32(k) - 2.0))
     }
-    let across = (swell.height(at + bx * 0.6, t) - h[2]) / 0.6
+    let across = (swell.height_at(now, at + bx * 0.6) - h[2]) / 0.6
     Under { at, bz, bx, h, across }
 }
 

@@ -1,0 +1,13 @@
+stand.bvh: generated 2026-11-06 by NVIDIA Kimodo (model Kimodo-SOMA-RP-v1.1, released under the
+NVIDIA Open Model License, https://huggingface.co/nvidia/Kimodo-SOMA-RP-v1.1), run through the
+community Replicate deployment sprited/kimodo. Under that licence NVIDIA claims no ownership of
+outputs and puts no limit on distributing them; Replicate's terms assign outputs to the user.
+No model weights or code are included here.
+
+Prompt: "A person stands still in a relaxed neutral pose with arms at the sides."
+(1 s, seed 1, sample 0). SOMA 77-joint skeleton, centimetres, 30 frames a second.
+
+sha256 957b04dbf05be98fa1720a9e1ac6756cbe2cc75793125cba06990b37e3f2feee
+
+Changes made here: none to the file. content/humanoid/kimodo retargets it onto the body at build
+time as the rest its takes are read against.

@@ -1,0 +1,370 @@
+// Anime timing over a body's fight moves, for the drawing alone: the fight keeps its own exact
+// frames, and gameplay its body's place. Each one-off is drawn as its own look says
+// (`Look`): a strike on twos (a new drawing twelve times a second, each held), a drawing put
+// down on its contact whatever the count (its authored hit, `ACTIVE`'s start), a flash on that
+// contact, and a fist or foot that travels far between drawings smeared back along its path; a
+// roll smooth. Walking and running stay smooth. The weight, the pause and the follow-through
+// are the move's own keys (`engine::keys`): nothing here invents a pose.
+//
+// After the animator's practice in limited animation (Japanese TV animation's drawings on twos
+// and threes, holds and impact frames) as Arc System Works brought it to 3D: Junya Motomura,
+// "GuiltyGearXrd's Art Style: The X Factor Between 2D and 3D", GDC 2015.
+
+use humanoid::{NONE, Pose, Rig, Rigid}
+use playback::{ACTIVE, Move, Mover, layered}
+
+/// How the fight's moves are drawn: drawings a second for a move on twos (twelve); how long (s)
+/// the picture flashes on a strike's contact and how hard (the frame's kinetic, 0 to 1); and
+/// how far back a smear trails (`smear` of the travel since the last drawing, the limb stretched
+/// at most `smear_most` times its length), from how fast (m/s, against the body) a fist or foot
+/// must go to smear.
+pub struct Anime: Copy {
+    pub drawings: f32 = 12.0,
+    pub impact: f32 = 0.05,
+    pub flash: f32 = 0.3,
+    pub smear: f32 = 0.6,
+    pub smear_most: f32 = 1.8,
+    pub smear_from: f32 = 2.5,
+}
+
+/// How one move's drawn: on twos (else smooth, every frame), whether its contact flashes, and
+/// whether its fast limbs smear.
+pub struct Look: Copy {
+    pub twos: bool = false,
+    pub flash: bool = false,
+    pub smear: bool = false,
+    pub limb: u32 = 4,
+    pub heavy: bool = false,
+}
+
+/// A heavy strike's look (a counter, a finisher: the hits that decide something): on twos,
+/// flashed on contact, smeared, its force along `limb` (0 the left arm, 1 the right, 2 and 3
+/// the legs; 4 none) fraying his whole form and draining the page round him.
+pub const STRIKE: Look = Look { twos: true, flash: true, smear: true, limb: 1, heavy: true }
+
+/// An everyday strike's look: on twos and smeared, its force fraying the striking fist alone, no
+/// flash, no drain. The full fury's kept for the hits that earn it.
+pub const LIGHT: Look = Look { twos: true, smear: true, limb: 1 }
+
+/// A move drawn as it plays: smooth, no flash, no smear.
+pub const PLAIN: Look = Look {}
+
+/// A limb stretched back along its path: its end (the world) now, the way (unit) back toward
+/// where it was, and by how much (1 none).
+pub struct Smear: Copy {
+    pub on: bool,
+    pub from: vec3,
+    pub back: vec3,
+    pub by: f32,
+}
+
+impl Smear {
+    pub fn none() -> Smear {
+        Smear { on: false, from: vec3(0.0), back: vec3(0.0, 0.0, 1.0), by: 1.0 }
+    }
+}
+
+/// The limbs that smear, each by its end and the bones it stretches from: the forearms with the
+/// hands (and fingers), the shins with the feet (and toes).
+const ENDS = ["leftHand", "rightHand", "leftFoot", "rightFoot"]
+const FROM = ["leftLowerArm", "rightLowerArm", "leftLowerLeg", "rightLowerLeg"]
+
+/// What's drawn of a body: the drawing it holds, where it was drawn (a whole-body move's drawn
+/// place steps with it), how long it's held, which one-off it's drawing, whether its strike's
+/// struck (its contact drawn), how long its flash has left, where each limb's end was at the
+/// last drawing, and each limb's smear.
+pub struct Drawer: Copy {
+    pub drawing: Pose,
+    pub place: mat4,
+    pub since: f32,
+    pub on: bool,
+    pub acting: u32,
+    pub struck: bool,
+    pub impact_left: f32,
+    pub ends: [vec3; 4],
+    pub smears: [Smear; 4],
+}
+
+impl Drawer {
+    pub fn new() -> Drawer {
+        Drawer {
+            drawing: Pose { turns: [Quat::identity(); 64], hips: vec3(0.0) },
+            place: std::transform::identity(),
+            since: 0.0,
+            on: false,
+            acting: NONE,
+            struck: false,
+            impact_left: 0.0,
+            ends: [vec3(0.0); 4],
+            smears: [Smear::none(); 4],
+        }
+    }
+}
+
+/// A body as it's drawn: its pose, where (its place), how much of an impact frame this is (1 at
+/// the hit, for the picture to flash on), and its limbs' smears.
+pub struct Drawn: Copy {
+    pub pose: Pose,
+    pub place: mat4,
+    pub impact: f32,
+    pub smears: [Smear; 4],
+    pub force: Force,
+}
+
+/// Where a strike's force runs and how hard (0 to 1): from the limb's root (a shoulder, a hip)
+/// out through its end and on past it, rising as the strike snaps in, at its most on contact,
+/// dying away after; for the ink to pile its fury along.
+pub struct Force: Copy {
+    pub from: vec3,
+    pub to: vec3,
+    pub by: f32,
+    pub heavy: bool,
+}
+
+impl Force {
+    pub fn none() -> Force {
+        Force { from: vec3(0.0), to: vec3(0.0), by: 0.0, heavy: false }
+    }
+}
+
+/// How long (s) a strike's force builds before its contact, and dies after it.
+const FORCE_IN: f32 = 0.09
+const FORCE_OUT: f32 = 0.22
+
+/// The bones a limb's force runs from (its root) to (its end).
+const ROOTS = ["leftUpperArm", "rightUpperArm", "leftUpperLeg", "rightUpperLeg"]
+
+/// Bone `b`'s place, drawn as `pose` at `place`.
+fn bone_at(rig: Rig, pose: Pose, place: mat4, b: u32) -> vec3 {
+    var chain: [u32; 64] = [NONE; 64]
+    var n = 0
+    var at = b
+    while at != NONE && n < 64 {
+        chain[n] = at
+        n += 1
+        at = rig.bones[at].parent
+    }
+    var w = rig.base
+    var i = n
+    while i > 0 {
+        i -= 1
+        borrow rb = rig.bones[chain[i]]
+        let t = if rb.parent == NONE { pose.hips } else { rb.rest.t }
+        w = w.then(Rigid { q: pose.turns[chain[i]], t })
+    }
+    (place * vec4(w.t, 1.0)).xyz
+}
+
+/// A strike's force at `time` (s into it), its contact at `contact`, along limb `limb`.
+fn force_of(rig: Rig, pose: Pose, place: mat4, look: Look, time: f32, contact: f32) -> Force {
+    let limb = look.limb
+    if limb >= 4 || contact < 0.0 {
+        return Force::none()
+    }
+    let by = if time < contact - FORCE_IN {
+        0.0
+    } else if time < contact {
+        let x = (time - (contact - FORCE_IN)) / FORCE_IN
+        x * x
+    } else {
+        let x = clamp(1.0 - (time - contact) / FORCE_OUT, 0.0, 1.0)
+        x * x
+    }
+    if by <= 0.0 {
+        return Force::none()
+    }
+    let (r, e) = (rig.find(ROOTS[limb]), rig.find(ENDS[limb]))
+    if r == NONE || e == NONE {
+        return Force::none()
+    }
+    let from = bone_at(rig, pose, place, r)
+    let end = bone_at(rig, pose, place, e)
+    let to = end + normalize(end - from + vec3(1.0e-5)) * 0.12
+    Force { from, to, by, heavy: look.heavy }
+}
+
+/// Where each limb's end is, drawn as `pose` at `place`.
+fn ends_of(rig: Rig, pose: Pose, place: mat4) -> [vec3; 4] {
+    var world = [Rigid::identity(); 64]
+    for b in 0..rig.bones.len() {
+        borrow rb = rig.bones[b]
+        let up = if rb.parent == NONE { rig.base } else { world[rb.parent] }
+        let t = if rb.parent == NONE { pose.hips } else { rb.rest.t }
+        world[b] = up.then(Rigid { q: pose.turns[b], t })
+    }
+    var out = [vec3(0.0); 4]
+    for i in 0..4 {
+        let b = rig.find(ENDS[i])
+        if b != NONE {
+            out[i] = (place * vec4(world[b].t, 1.0)).xyz
+        }
+    }
+    out
+}
+
+/// The length (m) of a limb at rest, from the bone it stretches from to its end.
+fn limb_length(rig: Rig, i: u32) -> f32 {
+    let a = rig.find(FROM[i])
+    let e = rig.find(ENDS[i])
+    if a == NONE || e == NONE {
+        return 0.3
+    }
+    let rw = rig.rest_world()
+    max(length(rw[e].t - rw[a].t), 0.1)
+}
+
+/// A new drawing, `pose` at `place`: each limb drawn (the arms alone, `arms`, over an upper-body
+/// move) whose end has come far against the body since the last smears back toward where it was.
+fn draw_new(d: mut Drawer, rig: Rig, pose: Pose, place: mat4, how: Anime, smear: bool, arms: bool) {
+    // Against the body: a fist carried along by a run hasn't moved.
+    let ends = ends_of(rig, pose, std::transform::identity())
+    let world = ends_of(rig, pose, place)
+    for i in 0..4 {
+        let way = d.ends[i] - ends[i]
+        let far = length(way)
+        d.smears[i] = Smear::none()
+        let drawn = !arms || i < 2
+        if smear && d.on && drawn && far * how.drawings > how.smear_from {
+            let back = normalize((place * vec4(way, 0.0)).xyz)
+            d.smears[i] = Smear {
+                on: true,
+                from: world[i],
+                back,
+                by: min(1.0 + how.smear * far / limb_length(rig, i), how.smear_most),
+            }
+        }
+    }
+    d.ends = ends
+    d.drawing = pose
+    d.place = place
+}
+
+/// One frame of body `m` (`pose`, shown at `place`, as `playback::step` gave it) as it's drawn:
+/// smooth while it walks and runs, each of its one-offs (`acts`) as its look (`looks`) says, by
+/// `how`. `mask` is the upper body's (a one-off over it alone steps it alone, the legs going on
+/// smooth). `dt` (s) on.
+pub fn drawn(
+    d: mut Drawer,
+    m: Mover,
+    acts: [Move],
+    looks: [Look],
+    rig: Rig,
+    mask: [f32; 64],
+    pose: Pose,
+    place: mat4,
+    how: Anime,
+    dt: f32,
+) -> Drawn {
+    let bones = rig.bones.len()
+    if m.acting == NONE || m.acting >= acts.len() || m.acting >= looks.len() {
+        d.on = false
+        d.acting = NONE
+        return Drawn { pose, place, impact: 0.0, smears: [Smear::none(); 4], force: Force::none() }
+    }
+    let look = looks[m.acting]
+    if !look.twos && !look.flash && !look.smear {
+        d.on = false
+        d.acting = NONE
+        return Drawn { pose, place, impact: 0.0, smears: [Smear::none(); 4], force: Force::none() }
+    }
+    let period = if look.twos { 1.0 / max(how.drawings, 1.0) } else { 0.0 }
+    borrow mv = acts[m.acting]
+    let contact = match mv.mark(ACTIVE) {
+        Some(a) => a.from,
+        None => -1.0,
+    }
+    if !d.on || d.acting != m.acting {
+        // A one-off begun: its first drawing, now.
+        draw_new(mut d, rig, pose, place, how, smear: false, arms: m.upper)
+        d.on = true
+        d.acting = m.acting
+        d.struck = false
+        d.since = 0.0
+        d.impact_left = 0.0
+    } else if !d.struck && contact >= 0.0 && m.act_time >= contact {
+        // Its contact: drawn now, whatever the count, and flashed.
+        d.struck = true
+        d.impact_left = if look.flash { how.impact } else { 0.0 }
+        draw_new(mut d, rig, pose, place, how, smear: look.smear, arms: m.upper)
+        d.since = 0.0
+    } else {
+        d.impact_left -= dt
+        d.since += dt
+        if d.since >= period {
+            d.since = if period > 0.0 { d.since - period } else { 0.0 }
+            draw_new(mut d, rig, pose, place, how, smear: look.smear, arms: m.upper)
+        } else if d.since >= 0.5 * period {
+            // A smear's an in-between: half a drawing, then the limb's whole.
+            d.smears = [Smear::none(); 4]
+        }
+    }
+    let impact = if d.impact_left > 1.0e-3 { how.flash } else { 0.0 }
+    var shown = d.drawing
+    var at = d.place
+    if m.upper {
+        // Over the upper body alone: the arms and trunk drawn (already layered when drawn, so
+        // shown whole), the legs going on smooth under them, where gameplay has the body.
+        var whole = [0.0; 64]
+        for b in 0..bones {
+            whole[b] = if mask[b] > 0.0 { 1.0 } else { 0.0 }
+        }
+        shown = layered(pose, d.drawing, whole, 1.0, bones)
+        at = place
+    }
+    // Each smear stretches from where its limb's end is as shown now (the legs and place under an
+    // upper-body drawing go on moving).
+    var smears = d.smears
+    let ends = ends_of(rig, shown, at)
+    for i in 0..4 {
+        if smears[i].on {
+            smears[i].from = ends[i]
+        }
+    }
+    let force = force_of(rig, shown, at, look, m.act_time, contact)
+    Drawn { pose: shown, place: at, impact, smears, force }
+}
+
+/// A palette (`humanoid::palette`) with its smears: each smearing limb's bones, from the one it
+/// stretches from down to its tips, stretched along the way back from its end.
+pub fn smeared(palette: [mat4; 64], rig: Rig, smears: [Smear; 4]) -> [mat4; 64] {
+    var out = palette
+    for i in 0..4 {
+        let s = smears[i]
+        if !s.on {
+            continue
+        }
+        let root = rig.find(FROM[i])
+        if root == NONE {
+            continue
+        }
+        // Stretched by `by` along `back` about the end: x + (by - 1) (x - from)·back back.
+        let u = s.back
+        let k = s.by - 1.0
+        let c0 = vec3(1.0, 0.0, 0.0) + u * (k * u.x)
+        let c1 = vec3(0.0, 1.0, 0.0) + u * (k * u.y)
+        let c2 = vec3(0.0, 0.0, 1.0) + u * (k * u.z)
+        let shift = s.from - (c0 * s.from.x + c1 * s.from.y + c2 * s.from.z)
+        let stretch = mat4(vec4(c0, 0.0), vec4(c1, 0.0), vec4(c2, 0.0), vec4(shift, 1.0))
+        for b in 0..rig.bones.len() {
+            if descends(rig, b, root) {
+                out[b] = stretch * out[b]
+            }
+        }
+    }
+    out
+}
+
+/// Whether bone `b` is `root` or below it.
+fn descends(rig: Rig, b: u32, root: u32) -> bool {
+    var at = b
+    for _ in 0..64 {
+        if at == root {
+            return true
+        }
+        if at == NONE {
+            return false
+        }
+        at = rig.bones[at].parent
+    }
+    false
+}

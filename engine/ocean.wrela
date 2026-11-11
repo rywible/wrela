@@ -886,6 +886,8 @@ pub struct Mode: Copy {
     pub tile: u32,
     /// The way it runs (`k` made a unit vector).
     pub u: vec2,
+    /// Its place on its tile's lattice: `k` is `n` · 2π / the tile's side.
+    pub n: vec2i,
 }
 
 fn louder(a: Mode, b: Mode) -> bool {
@@ -903,6 +905,30 @@ pub struct Swell: Clone {
     pub lean: vec2,
 }
 
+/// A swell at one time (`Swell::moment`): each of its waves' amplitudes turned on to it
+/// (a e^(-iωt)), once, for every shape and height asked of that time.
+pub struct Moment {
+    turned: Vec<vec2>,
+}
+
+/// How far out a tile's lattice the CPU's waves lie, at most (a tile's band ends six of the next
+/// tile's longest waves out: `band`): the length of `shape`'s tables each way.
+const LATTICE: u32 = 48
+
+/// e^(i j θ) for j from -(LATTICE - 1) to LATTICE - 1, at `at + LATTICE - 1 + j` of `into`: each
+/// from the one before, θ's own cosine and sine taken once.
+fn powers(into: mut [vec2; 4 * (2 * LATTICE - 1)], at: u32, theta: f32) {
+    let one = vec2(cos(theta), sin(theta))
+    let mid = at + LATTICE - 1
+    var e = vec2(1.0, 0.0)
+    into[mid] = e
+    for j in 1..LATTICE {
+        e = cmul(e, one)
+        into[mid + j] = e
+        into[mid - j] = vec2(e.x, -e.y)
+    }
+}
+
 impl Swell {
     /// `sea`'s `kept` loudest waves of the big and mid tiles, the mid's weighted `mid`.
     pub fn new(sea: SeaState, kept: u32, mid: f32) -> Swell {
@@ -913,6 +939,7 @@ impl Swell {
             let weight = if i == 0 { 1.0 } else { mid }
             // The band's waves lie within hi of the origin: the lattice points out to there.
             let reach = min(i32(ceil(b.hi * b.side / TAU)), i32(SIDE / 2) - 1)
+            assert(reach < i32(LATTICE), f"tile {i}'s waves lie {reach} out: past `shape`'s tables")
             for y in -reach..reach + 1 {
                 for x in -reach..reach + 1 {
                     let n = vec2i(x, y)
@@ -922,7 +949,15 @@ impl Swell {
                         let k = wavenumber(b, n)
                         total += power
                         all.push(
-                            Mode { k, w: sqrt(G * length(k)), a, power, tile: i, u: k / length(k) },
+                            Mode {
+                                k,
+                                w: sqrt(G * length(k)),
+                                a,
+                                power,
+                                tile: i,
+                                u: k / length(k),
+                                n,
+                            },
                         )
                     }
                 }
@@ -945,19 +980,46 @@ impl Swell {
         }
     }
 
+    /// It at time `t`: every wave turned on to `t`, a cosine and a sine each. Ask it once for all
+    /// the shapes and heights wanted at `t` (`shape_at`, `height_at`): turning the waves is most
+    /// of summing them.
+    pub fn moment(self, t: f32) -> Moment {
+        var turned: Vec<vec2> = Vec::with_capacity(self.modes.len())
+        for m in self.modes {
+            let phase = -m.w * t
+            turned.push(cmul(m.a, vec2(cos(phase), sin(phase))))
+        }
+        Moment { turned }
+    }
+
     /// Its displacement along x, height and displacement along z at lattice point `p` (x, z) at
     /// time `t`: each wave 2 Re(a e^(i(k·p - ωt))), carried toward its crests (2 Re(iκ̂ a e^(...))).
     pub fn shape(self, p: vec2, t: f32) -> vec3 {
+        self.shape_at(self.moment(t), p)
+    }
+
+    /// `shape` at `now`'s time.
+    pub fn shape_at(self, now: Moment, p: vec2) -> vec3 {
+        // (A tile's waves lie on its lattice, k = n · 2π / side, so e^(i k·p) is e^(i n.x θx) times
+        // e^(i n.y θz) with θ = 2π p / side: two short tables a tile, each power from the one
+        // before, in place of a cosine and a sine a wave. p's whole turns of the tile dropped
+        // first, so the powers are of an angle under a turn.)
+        var e = [vec2(0.0); 4 * (2 * LATTICE - 1)]
+        for tile in 0..2 {
+            let q = p / SIDES[tile]
+            powers(mut e, tile * 2 * (2 * LATTICE - 1), TAU * fract(q.x))
+            powers(mut e, (tile * 2 + 1) * (2 * LATTICE - 1), TAU * fract(q.y))
+        }
         var d = vec3(0.0)
         var tiles = vec2(0.0)
-        for m in self.modes {
-            let phase = dot(m.k, p) - m.w * t
-            let c = cos(phase)
-            let s = sin(phase)
-            let re = m.a.x * c - m.a.y * s
-            let im = m.a.x * s + m.a.y * c
-            d += vec3(-m.u.x * im, re, -m.u.y * im) * 2.0
-            if m.tile == 0 { tiles.x += re * 2.0 } else { tiles.y += re * 2.0 }
+        for i in 0..self.modes.len() {
+            let m = self.modes[i]
+            let at = m.tile * 2 * (2 * LATTICE - 1) + LATTICE - 1
+            let ex = e[u32(i32(at) + m.n.x)]
+            let ez = e[u32(i32(at + 2 * LATTICE - 1) + m.n.y)]
+            let a = cmul(now.turned[i], cmul(ex, ez))
+            d += vec3(-m.u.x * a.y, a.x, -m.u.y * a.y) * 2.0
+            if m.tile == 0 { tiles.x += a.x * 2.0 } else { tiles.y += a.x * 2.0 }
         }
         // (Each tile's crests leaned on their own height, as the GPU leans them.)
         let carried = self.lean * (standing(tiles.x) + standing(tiles.y))
@@ -967,12 +1029,17 @@ impl Swell {
     /// Its height at `p` (x, z: a place on the level) at time `t`, the water carried there found
     /// back in two steps (as the shading finds it).
     pub fn height(self, p: vec2, t: f32) -> f32 {
+        self.height_at(self.moment(t), p)
+    }
+
+    /// `height` at `now`'s time.
+    pub fn height_at(self, now: Moment, p: vec2) -> f32 {
         var q = p
         for _ in 0..2 {
-            let d = self.shape(q, t)
+            let d = self.shape_at(now, q)
             q = p - vec2(d.x, d.z)
         }
-        self.shape(q, t).y
+        self.shape_at(now, q).y
     }
 }
 
@@ -1044,6 +1111,64 @@ fn the_loudest_waves_hold_most_of_the_height() {
     let sw = Swell::new(gentle(), 512, 1.0)
     print(f"{sw.modes.len()} waves hold {sw.held * 100.0} % of the long tiles' variance")
     assert(sw.held > 0.6, f"{sw.held}")
+}
+
+/// `sw`'s shape summed a wave at a time, a cosine and a sine each: what `Swell::shape` gives by
+/// its tables, to check it by.
+fn shape_plainly(sw: Swell, p: vec2, t: f32) -> vec3 {
+    var d = vec3(0.0)
+    var tiles = vec2(0.0)
+    for m in sw.modes {
+        let phase = dot(m.k, p) - m.w * t
+        let c = cos(phase)
+        let s = sin(phase)
+        let re = m.a.x * c - m.a.y * s
+        let im = m.a.x * s + m.a.y * c
+        d += vec3(-m.u.x * im, re, -m.u.y * im) * 2.0
+        if m.tile == 0 { tiles.x += re * 2.0 } else { tiles.y += re * 2.0 }
+    }
+    let carried = sw.lean * (standing(tiles.x) + standing(tiles.y))
+    vec3(d.x * sw.chop + carried.x, d.y, d.z * sw.chop + carried.y)
+}
+
+/// The CPU's sea summed from its lattice's tables is the sea summed a wave at a time, to well
+/// under a millimetre, near and far, early and late, in a gentle sea and in a gale with its mid
+/// tile weighted down (as the opening rides it); and the same from a moment asked once.
+@test
+fn the_swell_summed_by_tables_is_the_swell_summed_plainly() {
+    let gale = SeaState {
+        wind: vec2(-0.96858, 0.24869),
+        speed: 19.0,
+        fetch: 300000.0,
+        swell: vec2(0.17007, 0.98543),
+        swell_height: 5.5,
+        swell_period: 10.5,
+        chop: 2.5,
+        seed: 7,
+    }
+    for (sea, mid) in [(gentle(), 1.0), (gale, 0.6)] {
+        let sw = Swell::new(sea, 4096, mid)
+        var worst = 0.0
+        for (p, t) in [
+            (vec2(0.0, 0.0), 0.0),
+            (vec2(3.7, -12.9), 4.25),
+            (vec2(-1811.3, 2404.6), 61.5),
+            (vec2(-1811.3, -2404.6), 61.5),
+            (vec2(997.0, -131.0), 600.0),
+            (vec2(5210.4, 77.7), 1234.5),
+        ] {
+            let plain = shape_plainly(sw, p, t)
+            let now = sw.moment(t)
+            let got = sw.shape_at(now, p)
+            assert(got == sw.shape(p, t), "a moment asked once gives what one asked each time does")
+            assert(sw.height_at(now, p) == sw.height(p, t))
+            worst = max(worst, length(got - plain))
+        }
+        print(
+            f"{sw.modes.len()} waves: the tables' sum within {worst * 1000.0} mm of the plain one",
+        )
+        assert(worst < 5.0e-4, f"{worst} m apart")
+    }
 }
 
 /// The crests break as often as the wind whitens a sea: rarely in a moderate breeze, a tenth of
