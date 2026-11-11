@@ -268,8 +268,9 @@ pub const CREASE: f32 = 40.0
 pub const SIDES: u32 = 4
 
 /// The words a cell's vertex takes in the sides map: its sides' vertices (`NO_VERTEX` past the
-/// last), then their normals, packed.
-const SIDE_WORDS: u32 = 2 * SIDES
+/// last), then their normals, packed, then where it is (its position's three words): the pass
+/// that reads its sides reads its place there too, and so binds one buffer fewer.
+const SIDE_WORDS: u32 = 2 * SIDES + 3
 
 /// `x`'s sign, 1 for 0.
 fn sign_of(x: f32) -> f32 {
@@ -329,7 +330,14 @@ fn edge_normal(
     if a == NO_VERTEX || b == NO_VERTEX || c == NO_VERTEX || d == NO_VERTEX {
         return vec3(0.0)
     }
-    let n = cross(points[c].pos - points[a].pos, points[d].pos - points[b].pos)
+    quad_normal(points[a].pos, points[b].pos, points[c].pos, points[d].pos, axis, inside_low)
+}
+
+/// The outward normal (unit) of the quad whose corners are at `a`, `b`, `c` and `d` in order
+/// round a lattice edge along `axis`, inside at the edge's low end or not; zero if it has no
+/// area.
+fn quad_normal(a: vec3, b: vec3, c: vec3, d: vec3, axis: u32, inside_low: bool) -> vec3 {
+    let n = cross(c - a, d - b)
     let l = length(n)
     if l < 1.0e-12 {
         return vec3(0.0)
@@ -402,6 +410,9 @@ pub fn crease_vertices(
         sums[0] = p.normal
         count = 1
     }
+    sides.store(v0 * SIDE_WORDS + 2 * SIDES, bitcast_u32(p.pos.x))
+    sides.store(v0 * SIDE_WORDS + 2 * SIDES + 1, bitcast_u32(p.pos.y))
+    sides.store(v0 * SIDE_WORDS + 2 * SIDES + 2, bitcast_u32(p.pos.z))
     for k in 0..SIDES {
         if k < count {
             let nk = unit_or(sums[k], p.normal)
@@ -441,6 +452,12 @@ fn side_facing(sides: [u32], v: u32, nf: vec3) -> u32 {
     best
 }
 
+/// Where cell vertex `v` is (the sides map's).
+fn side_pos(sides: [u32], v: u32) -> vec3 {
+    let i = v * SIDE_WORDS + 2 * SIDES
+    vec3(bitcast_f32(sides[i]), bitcast_f32(sides[i + 1]), bitcast_f32(sides[i + 2]))
+}
+
 /// `realize::emit_quads` for a creased mesh: each quad round a crossed edge takes, at each corner,
 /// the side of that cell's vertex facing as it does.
 @compute(4, 4, 4)
@@ -450,7 +467,6 @@ pub fn emit_creased_quads(
     blocks: [LiveBlock],
     block_map: [u32],
     cells: [u32],
-    points: [SkinVertex],
     sides: [u32],
     quads: mut Append<Quad>,
     holes: mut Atomics<u32>,
@@ -459,7 +475,7 @@ pub fn emit_creased_quads(
 ) {
     let slot = block.x + first
     let n = cells.len() / (BLOCK * BLOCK * BLOCK)
-    let room = points.len()
+    let room = sides.len() / SIDE_WORDS
     let cell = CellWord::of_bits(cells[cell_key(slot, lid.xyz(), n)])
     if cell.vertex >= room {
         return
@@ -478,7 +494,14 @@ pub fn emit_creased_quads(
             let _ = holes.add(i: 0, value: 1)
             continue
         }
-        let nf = edge_normal(grid, block_map, cells, n, points, g, axis, in0 == 1)
+        let nf = quad_normal(
+            side_pos(sides, cell.vertex),
+            side_pos(sides, p1),
+            side_pos(sides, p2),
+            side_pos(sides, p3),
+            axis,
+            in0 == 1,
+        )
         let v0 = side_facing(sides, cell.vertex, nf)
         let v1 = side_facing(sides, p1, nf)
         let v2 = side_facing(sides, p2, nf)
@@ -557,7 +580,6 @@ pub fn realize_sampled(shape: Sampled, crease: f32 = CREASE) -> Mesh {
             blocks: scratch.live.items(),
             block_map: scratch.block_map.items(),
             cells: scratch.cells.items(),
-            points: points.items(),
             sides: sides.items(),
             quads: mut mesh.quads,
             holes: mut mesh.holes,
