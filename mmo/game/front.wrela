@@ -154,7 +154,7 @@ pub struct Readout {
 
 /// A readout's numbers: new images a second, the middle frame's time and the slow ones' (the
 /// 95th of a hundred, the slowest; ms), and how many of the frames kept were late (took half
-/// again the middle's time or more).
+/// again the screen's own frame or more: a frame the screen showed twice).
 pub struct Read: Copy {
     pub rate: f32,
     pub middle: f32,
@@ -164,8 +164,9 @@ pub struct Read: Copy {
     pub of: u32,
 }
 
-/// What frames that took `took` (s each, in any order) come to.
-pub fn read(took: Vec<f32>) -> Read {
+/// What frames that took `took` (s each, in any order) come to, on a screen whose own frame
+/// takes `base` s.
+pub fn read(took: Vec<f32>, base: f32) -> Read {
     let n = took.len()
     if n == 0 { return Read { rate: 0.0, middle: 0.0, slow: 0.0, slowest: 0.0, late: 0, of: 0 } }
     var sorted = took.clone()
@@ -174,7 +175,7 @@ pub fn read(took: Vec<f32>) -> Read {
     for t in sorted { sum += t }
     let middle = sorted[n / 2]
     var late = 0
-    for t in sorted { if t >= middle * 1.5 { late += 1 } }
+    for t in sorted { if t >= base * 1.5 { late += 1 } }
     Read {
         rate: if sum > 0.0 { f32(n) / sum } else { 0.0 },
         middle: middle * 1000.0,
@@ -187,11 +188,17 @@ pub fn read(took: Vec<f32>) -> Read {
 
 impl Readout {
     pub fn new() -> Readout {
-        Readout { shown: false, took: Vec::new(), at: 0, since: READ_EVERY, read: read(Vec::new()) }
+        Readout {
+            shown: false,
+            took: Vec::new(),
+            at: 0,
+            since: READ_EVERY,
+            read: read(Vec::new(), 1.0),
+        }
     }
 
-    /// A frame took `dt` s.
-    pub fn hear(mut self, dt: f32) {
+    /// A frame took `dt` s, on a screen whose own frame takes `base` s.
+    pub fn hear(mut self, dt: f32, base: f32) {
         if self.took.len() < HEARD {
             self.took.push(dt)
         } else {
@@ -200,7 +207,16 @@ impl Readout {
         }
         self.since += dt
         if self.shown && self.since >= READ_EVERY {
-            self.read = read(self.took)
+            self.read = read(self.took, base)
+            self.since = 0.0
+        }
+    }
+
+    /// Shown if it wasn't, hidden if it was: its numbers worked out as it comes.
+    pub fn toggle(mut self, base: f32) {
+        self.shown = !self.shown
+        if self.shown {
+            self.read = read(self.took, base)
             self.since = 0.0
         }
     }
@@ -208,21 +224,35 @@ impl Readout {
 
 @test
 fn a_readout_reads_a_steady_pace_and_counts_its_late_frames() {
-    // Two seconds at 120 a second, one frame in ten taking two frames' time.
+    // Two seconds on a screen that shows 120: every tenth frame of the first second takes two
+    // frames' time, and the last twenty of the second take three.
+    let base = 1.0 / 120.0
     var r = Readout::new()
-    r.shown = true
     for i in 0..HEARD {
-        r.hear(if i % 10 == 9 { 2.0 / 120.0 } else { 1.0 / 120.0 })
+        r.hear(if i >= HEARD - 20 { 3.0 * base } else if i < 120 && i % 10 == 9 {
+            2.0 * base
+        } else {
+            base
+        }, base)
     }
-    let got = read(r.took)
-    assert(got.of == HEARD && got.late == HEARD / 10, f"{got.late} late of {got.of}")
-    assert(abs(got.middle - 1000.0 / 120.0) < 0.01, f"{got.middle} ms")
-    assert(abs(got.slowest - 2000.0 / 120.0) < 0.01, f"{got.slowest} ms")
-    assert(abs(got.rate - 120.0 / 1.1) < 0.1, f"{got.rate} a second")
-    // It keeps only the latest: a steady 60 after that reads as 60, none late.
-    for _ in 0..HEARD { r.hear(1.0 / 60.0) }
-    let after = read(r.took)
-    assert(after.late == 0 && abs(after.rate - 60.0) < 0.01, f"{after.rate} a second")
+    // (Hidden, it works nothing out; shown, at once.)
+    assert(r.read.of == 0)
+    r.toggle(base)
+    let got = r.read
+    assert(got.of == HEARD && got.late == 32, f"{got.late} late of {got.of}")
+    assert(abs(got.middle - 1000.0 * base) < 0.01, f"{got.middle} ms")
+    // The 95th of a hundred is among the twenty slowest (the 228th of 240), the two-frame ones
+    // under it.
+    assert(abs(got.slow - 3000.0 * base) < 0.01, f"{got.slow} ms")
+    assert(abs(got.slowest - 3000.0 * base) < 0.01, f"{got.slowest} ms")
+    assert(abs(got.rate - 240.0 / (292.0 * base)) < 0.1, f"{got.rate} a second")
+    // It keeps only the latest: a steady 60 after that reads as 60, and on this screen every
+    // one of those frames was shown twice.
+    for _ in 0..HEARD { r.hear(2.0 * base, base) }
+    let after = read(r.took, base)
+    assert(abs(after.rate - 60.0) < 0.01 && after.late == HEARD, f"{after.rate} a second")
+    // On a screen that shows 60, none is late.
+    assert(read(r.took, 2.0 * base).late == 0)
 }
 
 pub struct Front {
@@ -1039,14 +1069,16 @@ pub fn frame<A: Account>(
             time
         },
     }
-    let dt = clamp(time - start - f.time, 0.0, 0.25)
+    // (The frame's real time, for the readout: a stall is as long as it was.)
+    let took = max(time - start - f.time, 0.0)
+    let dt = clamp(took, 0.0, 0.25)
     f.time = time - start
     f.dt = dt
     f.reduced = reduced
     if f.drawings > 2 && dt > 0.0 {
         let (slow, _) = frame_limits(f.stage == Stage::Page, f.base)
         f.budget = heard(f.budget, dt, slow, f.time)
-        f.readout.hear(dt)
+        f.readout.hear(took, f.base)
         // Infer the screen's pace from its fastest window; later rendering load must not
         // make a known faster display appear slower.
         f.quickest = min(f.quickest, dt)
@@ -1081,10 +1113,11 @@ pub fn frame<A: Account>(
     for e in events() {
         if f.online { break }
         // (The readout's key, wherever the page is, but not while the account's pages are open:
-        // there it's a character someone may be typing.)
-        if let Event::KeyDown { key: Key::Backquote, repeat: false, .. } = e {
-            if !account.shown() {
-                f.readout.shown = !f.readout.shown
+        // there it's a character someone may be typing. Nor with Command or Alt held: those
+        // are the browser's and the desktop's.)
+        if let Event::KeyDown { key: Key::Backquote, repeat: false, mods } = e {
+            if !account.shown() && !mods.command() && !mods.alt {
+                f.readout.toggle(f.base)
                 continue
             }
         }
