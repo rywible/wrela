@@ -170,6 +170,12 @@ pub const TIMINGS: bool = false
 /// then held, the clouds' march skipped every drawing after.
 pub const MOVING_CLOUDS: bool = false
 
+/// Whether the screen shows what each pixel's ray met, not the scene (`--set IDS=true`): its
+/// number in `look` (`SKY`, `SEA`, ... `TILE`) times `ink::ID_STEP` of the 8 bits, in each
+/// channel, so a tool can read which pixels are the rock's or the cathedral's (studio/lookbook's
+/// crawl, `wrela tool steady`). With `RENDER_SCALE=1.0`, so no pixel is a mix of two.
+pub const IDS: bool = false
+
 /// The passes `TIMINGS` prints.
 const TIMED: [Text; 9] = [
     "clouds",
@@ -367,4 +373,3 @@ pub const LOW_CLOUD: f32 = 1.0
 /// 1: the sea painted as what the water the skiff stirs holds (`engine::stir`): its rise red, its
 /// fall blue, its churn green. For looking at its wake's reach.
 pub const WAKE_DEBUG: f32 = 0.0
-

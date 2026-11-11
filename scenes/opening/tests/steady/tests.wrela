@@ -1,0 +1,59 @@
+// The opening held steady under sail. Its sailing shot (studio/steady's `sailing`: the skiff
+// under way, the camera riding the swell behind it, the rock and its cathedral far off) is
+// drawn as it's shipped and measured for crawl (studio/lookbook's `measures::Crawl`): of the
+// cathedral's pixels and their outline, how many in a thousand step by more than 15 levels of
+// luma from one frame to the next, over a second of frames, 1280 × 720, on the machine's GPU.
+// A spire met on and off, or an edge that moves a pixel at a time, is a step; so a flicker of
+// the cathedral fails this test, and isn't left to an eye on stills (rywible/wrela#416 took a
+// day of them).
+//
+// `wrela tool steady -- <out-dir> --switches` is the same measure with its reference, where the
+// crawl is (a picture), and which of the opening's switches it follows: what to run when this
+// fails.
+
+use steady_tool::measure::{Options, measure}
+use steady_tool::shots::shot
+use std::io::print
+
+/// The most the cathedral's crawl may be: half as much again as it is (0.48: 0.47 to 0.49 over
+/// eight runs on an M-series Mac, 2026-11-11; studio/lookbook's bars hold a look's flicker to
+/// 1.5 times too). For scale: its reference (every pixel met every frame, at twice the size)
+/// has 0.03, and with the vista off (`VISTA=false`: the rock and the cathedral met a few pixels
+/// a drawing in the screen's own, as before #416) it has 1.37 to 1.42 over three runs.
+///
+/// The cathedral's alone: the rock's kind takes in the sea stacks the camera passes, whose
+/// outlines truly move (0.83 in play, 1.93 in the sharper reference), so its crawl says little.
+pub const CATHEDRAL_MOST: f64 = 0.72
+
+/// The fewest pixels a frame the cathedral must be found in (8,300 as it is): fewer, and the
+/// shot or the ids' view has changed, and the bar above holds nothing.
+pub const CATHEDRAL_LEAST: f64 = 6000.0
+
+/// The cathedral holds steady while the skiff sails.
+@test(tool, read: [("ws", "../../../..")], budget: 600)
+fn the_cathedral_holds_steady_under_sail() {
+    let Some(sailing) = shot("sailing") else { panic("the sailing shot") }
+    let o = Options {
+        shot: sailing,
+        out: String::from("scratch/steady"),
+        ws: String::from("ws"),
+        reference: false,
+        heat: false,
+    }
+    let report = match measure(o) {
+        Ok(r) => take r,
+        Err(e) => panic(f"the shot wasn't measured: {e.message()}"),
+    }
+    print(report.text().as_str())
+    let Some(play) = report.row("play") else { panic("play's row") }
+    assert(report.kinds[0].as_str() == "cathedral", report.kinds[0].as_str())
+    let (crawl, pixels) = (play.crawl[0], play.pixels[0])
+    assert(
+        pixels >= CATHEDRAL_LEAST,
+        f"the cathedral is in {pixels:.0} pixels a frame, under {CATHEDRAL_LEAST}: the shot or its ids' view has changed",
+    )
+    assert(
+        crawl <= CATHEDRAL_MOST,
+        f"the cathedral crawls: {crawl:.2} of its pixels in a thousand step a frame, over {CATHEDRAL_MOST} (`wrela tool steady -- build/steady --switches` says where, and which switch it follows)",
+    )
+}

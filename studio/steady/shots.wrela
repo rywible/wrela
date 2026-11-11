@@ -1,0 +1,142 @@
+// The steady tool's shots: each a program, the keys that move its camera, the frames measured,
+// the constants that build its reference and its view of what each pixel shows, the kinds of
+// pixel its crawl is counted for, and the switches worth trying when it crawls. What is pure of
+// the tool, so its tests need no build.
+
+use std::input::{Key, Script}
+use std::tool::toolchain::Set
+
+/// A kind of pixel: its name, the numbers its pixels show in the ids' view (`Shot::ids`), and
+/// whether it's ground (what the others stand against: its pixels beside another kind's are
+/// that kind's outline, `lookbook_tool::measures::outlined`).
+pub struct Kind: Clone {
+    pub name: Text,
+    pub ids: Vec<u8>,
+    pub ground: bool = false,
+}
+
+/// A switch to try: the program's constants set otherwise, and what that does.
+pub struct Switch: Clone {
+    pub name: Text,
+    pub sets: Vec<Set>,
+    pub about: Text,
+}
+
+/// A shot: its name; its program's package (from the workspace's root); the player's keys, by
+/// frame; the frames run before the first measured (its load over, its caches settled) and the
+/// frames measured; the constants that build the reference (every pixel met every frame; it's
+/// drawn at twice the size and brought down) and those that build the ids' view (each pixel
+/// showing what it is: its number times `id_step` of the 255 levels, at the screen's own size);
+/// its kinds, the first the one it's about; and its switches.
+pub struct Shot: Clone {
+    pub name: Text,
+    pub program: Text,
+    pub keys: Script,
+    pub settle: u32,
+    pub frames: u32,
+    pub reference: Vec<Set>,
+    pub ids: Vec<Set>,
+    pub id_step: u32,
+    pub kinds: Vec<Kind>,
+    pub switches: Vec<Switch>,
+}
+
+/// The shots' names.
+pub const NAMES: [Text; 1] = ["sailing"]
+
+/// `NAME=VALUE`, as `wrela build --set` takes it.
+pub fn set(name: str, value: str) -> Set {
+    Set { name: String::from(name), value: String::from(value) }
+}
+
+/// `NAME=VALUE` as a `Set`, or `None` if it has no `=` or no name.
+pub fn set_of(s: str) -> Option<Set> {
+    let at = s.find("=")?
+    if at == 0 {
+        return None
+    }
+    Some(set(s.slice(0, at), s.slice(at + 1, s.len())))
+}
+
+/// The shot named `name`, if there is one.
+pub fn shot(name: str) -> Option<Shot> {
+    if name == "sailing" { Some(sailing()) } else { None }
+}
+
+/// The opening's sailing shot (scenes/opening): the skiff sheeted in from the first frame and
+/// held, turned a little to starboard, as its `clips::RUN` sails it; the camera rides behind it
+/// on the swell, the floating rock and its cathedral far off on the left. Seven seconds in (the
+/// sky's dome marched, the vista laid in, the skiff under way), a second of frames.
+///
+/// Its reference meets every pixel afresh every frame: no vista, no quarter far pass, no half
+/// paint, the rock's rest off (`OFF=4096`), the drawing at the screen's size. The ids' view is
+/// that with `IDS=true` (scenes/opening's `ink::ID_STEP`, 16). Its kinds are `look`'s numbers:
+/// the cathedral's stone, gilding, glass and roofs; the town's houses and their tiles; the rock
+/// (the isle's and the sea stacks'); the skiff; and the ground, the sea and the sky.
+pub fn sailing() -> Shot {
+    let every = |off: str| -> Vec<Set> {
+        Vec::from(
+            [
+                set("VISTA", "false"),
+                set("QUARTER", "false"),
+                set("HALF_PAINT", "false"),
+                set("OFF", off),
+                set("RENDER_SCALE", "1.0"),
+            ],
+        )
+    }
+    // (The ids' view with the shading left out too: the sea's, the spray, the weather, the
+    // rock's and the stacks', `OFF`'s 64, 128, 256, 512 and 1024. What each pixel met is the
+    // same, in half the time.)
+    var ids = every("6080")
+    ids.push(set("IDS", "true"))
+    Shot {
+        name: "sailing",
+        program: "scenes/opening",
+        keys: Script::frames().key_down(1, Key::W).key_down(1, Key::D).key_up(50, Key::D),
+        settle: 420,
+        frames: 60,
+        reference: every("4096"),
+        ids,
+        id_step: 16,
+        kinds: Vec::from(
+            [
+                Kind { name: "cathedral", ids: Vec::from([5, 6, 7, 8]) },
+                Kind { name: "town", ids: Vec::from([9, 10]) },
+                Kind { name: "rock", ids: Vec::from([4]) },
+                Kind { name: "skiff", ids: Vec::from([3]) },
+                Kind { name: "sea", ids: Vec::from([2]), ground: true },
+                Kind { name: "sky", ids: Vec::from([1]), ground: true },
+            ],
+        ),
+        switches: Vec::from(
+            [
+                Switch {
+                    name: "VISTA=false",
+                    sets: Vec::from([set("VISTA", "false")]),
+                    about: "the rock and the cathedral met in the screen's pixels a few at a time, not in their own picture",
+                },
+                Switch {
+                    name: "HALF_PAINT=false",
+                    sets: Vec::from([set("HALF_PAINT", "false")]),
+                    about: "every column painted, none filled from its neighbours",
+                },
+                Switch {
+                    name: "QUARTER=false",
+                    sets: Vec::from([set("QUARTER", "false")]),
+                    about: "the far pass met in every pixel every drawing",
+                },
+                Switch {
+                    name: "RENDER_SCALE=1.0",
+                    sets: Vec::from([set("RENDER_SCALE", "1.0")]),
+                    about: "drawn at the screen's size, not brought up from three quarters",
+                },
+                Switch {
+                    name: "UPSCALE=true",
+                    sets: Vec::from([set("UPSCALE", "true")]),
+                    about: "brought up over the frames before (engine::upscale), not each alone",
+                },
+            ],
+        ),
+    }
+}

@@ -1,0 +1,406 @@
+// A shot measured: its builds made and driven on the native host's GPU, each with one worker so
+// its frames repeat exactly, and each build's crawl counted (studio/lookbook's
+// `measures::Crawl`) over the same frames with the same keys, so the same camera.
+//
+// The ids' view runs first, and says each frame's pixels' kinds (each kind's outline taken in).
+// Then each build alone: play (the program as it's shipped, with any `--set`), the reference (at
+// twice the size, brought down), and each switch (play with it set). A build's heat is where its
+// pixels stepped: a picture of the last frame in grey, the pixels that stepped lit from red (a
+// step in the frames) to yellow (a step in a quarter of them or more).
+
+use lookbook_tool::measures::{Crawl, NO_KIND, halved, luma, outlined}
+use shots::Shot
+use std::input::Script
+use std::io::print
+use std::tool::ToolError
+use std::tool::blob::Data
+use std::tool::drive
+use std::tool::drive::Step
+use std::tool::files
+use std::tool::image
+use std::tool::toolchain
+use std::tool::toolchain::Set
+use toolkit::driven::untrapped
+use toolkit::whole::{blob_of, chunked, data_bytes, joined, write_file, write_png}
+
+/// What a run measures: the shot; where its builds, its report and its pictures go (a root
+/// path in a write root); the workspace's root; the screen's size; the step a pixel must pass
+/// (of the 255 levels); play's own constants; whether the reference and the switches are
+/// measured too; how many times play is measured (its runs differ a little: the GPU's pixels
+/// may differ by a level or two between runs of one build); and whether each build's heat is
+/// written.
+pub struct Options: Clone {
+    pub shot: Shot,
+    pub out: String,
+    pub ws: String,
+    pub width: u32 = 1280,
+    pub height: u32 = 720,
+    pub step: f32 = 15.0,
+    pub sets: Vec<Set> = Vec::new(),
+    pub reference: bool = true,
+    pub switches: bool = false,
+    pub runs: u32 = 1,
+    pub heat: bool = true,
+}
+
+/// A build's crawl: its name (`play`, `reference`, a switch's), what it is, each kind's crawl
+/// (its pixels that stepped, in a thousand) and each kind's pixels a frame, on average.
+pub struct Row: Clone {
+    pub name: String,
+    pub about: String,
+    pub crawl: Vec<f64>,
+    pub pixels: Vec<f64>,
+}
+
+/// A run's report: the shot's name and package, the screen's size, the first frame measured and
+/// how many, the step, the kinds' names, and each build's row, play's first.
+pub struct Report: Clone {
+    pub shot: String,
+    pub program: String,
+    pub width: u32,
+    pub height: u32,
+    pub first: u32,
+    pub frames: u32,
+    pub step: f32,
+    pub kinds: Vec<String>,
+    pub rows: Vec<Row>,
+}
+
+impl Report {
+    /// The row named `name`.
+    pub fn row(self, name: str) -> Option<Row> {
+        for r in self.rows {
+            if r.name.as_str() == name {
+                return Some(r.clone())
+            }
+        }
+        None
+    }
+
+    /// Build `name`'s crawl of kind `kind`, if both are there.
+    pub fn crawl(self, name: str, kind: str) -> Option<f64> {
+        let r = self.row(name)?
+        for k in 0..self.kinds.len() {
+            if self.kinds[k].as_str() == kind {
+                return Some(r.crawl[k])
+            }
+        }
+        None
+    }
+
+    /// The report as a table, a row a build and a column a kind, under a line that says what
+    /// was measured; then each kind's pixels a frame, and what each switch is.
+    pub fn text(self) -> String {
+        var s = String::from(
+            f"{self.shot} ({self.program}), {self.width}x{self.height}, frames {self.first} to {self.first + self.frames}: pixels in a thousand that step more than {self.step:.0} levels a frame\n\n| build |",
+        )
+        for k in self.kinds {
+            s.push_str(f" {k} |")
+        }
+        s.push_str("\n|---|")
+        for _ in self.kinds {
+            s.push_str("---|")
+        }
+        for r in self.rows {
+            s.push_str(f"\n| {r.name} |")
+            for c in r.crawl {
+                s.push_str(f" {c:.2} |")
+            }
+        }
+        if self.rows.len() > 0 {
+            s.push_str("\n| (pixels a frame) |")
+            for p in self.rows[0].pixels {
+                s.push_str(f" {p:.0} |")
+            }
+        }
+        for r in self.rows {
+            if r.about.len() > 0 {
+                s.push_str(f"\n{r.name}: {r.about}")
+            }
+        }
+        s
+    }
+
+    /// The report as JSON.
+    pub fn json(self) -> String {
+        var s = String::from(
+            f"{{\"shot\": \"{self.shot}\", \"package\": \"{self.program}\", \"width\": {self.width}, \"height\": {self.height}, \"first\": {self.first}, \"frames\": {self.frames}, \"step\": {self.step}, \"builds\": [",
+        )
+        for i in 0..self.rows.len() {
+            borrow r = self.rows[i]
+            if i > 0 {
+                s.push_str(", ")
+            }
+            s.push_str(f"{{\"build\": \"{r.name}\", \"crawl\": {{")
+            for k in 0..self.kinds.len() {
+                if k > 0 {
+                    s.push_str(", ")
+                }
+                s.push_str(f"\"{self.kinds[k]}\": {r.crawl[k]:.4}")
+            }
+            s.push_str("}, \"pixels\": {")
+            for k in 0..self.kinds.len() {
+                if k > 0 {
+                    s.push_str(", ")
+                }
+                s.push_str(f"\"{self.kinds[k]}\": {r.pixels[k]:.1}")
+            }
+            s.push_str("}}")
+        }
+        s.push_str("]}\n")
+        s
+    }
+}
+
+/// Each number an ids' view can show (a level over `id_step`, rounded) as its kind in `shot`,
+/// or `NO_KIND`.
+pub fn kinds_by_id(shot: Shot) -> Vec<u8> {
+    var table: Vec<u8> = Vec::with_capacity(256)
+    for _ in 0..256 {
+        table.push(NO_KIND)
+    }
+    for k in 0..shot.kinds.len() {
+        for id in shot.kinds[k].ids {
+            if table[u32(id)] == NO_KIND {
+                table[u32(id)] = u8(k)
+            }
+        }
+    }
+    table
+}
+
+/// Each pixel's kind in an ids' view's frame (`rgba`, `w` to a row): its red level over
+/// `id_step`, rounded, as `table` says, with each kind's outline taken in (`ground`).
+pub fn kinds_in(rgba: [u8], w: u32, id_step: u32, table: [u8], ground: [bool]) -> Vec<u8> {
+    let n = rgba.len() / 4
+    var kind: Vec<u8> = Vec::with_capacity(n)
+    for i in 0..n {
+        let id = (u32(rgba[4 * i]) + id_step / 2) / max(id_step, 1)
+        kind.push(table[min(id, 255)])
+    }
+    outlined(kind, w, ground)
+}
+
+/// A build's heat as a picture (RGBA8): `last` (its last frame) in dim grey, and each pixel
+/// that stepped `heat` times in `frames` lit, red for once, toward yellow for a quarter of the
+/// frames or more.
+pub fn heat_picture(last: [u8], heat: [u32], frames: u32) -> Vec<u8> {
+    let l = luma(last)
+    var out: Vec<u8> = Vec::with_capacity(last.len())
+    let full = max(f32(frames) * 0.25, 1.0)
+    for i in 0..l.len() {
+        let g = l[i] * 0.4 * 255.0
+        let n = if i < heat.len() { heat[i] } else { 0 }
+        if n == 0 {
+            out.push(u8(g + 0.5))
+            out.push(u8(g + 0.5))
+            out.push(u8(g + 0.5))
+        } else {
+            let t = min(f32(n) / full, 1.0)
+            out.push(255)
+            out.push(u8(30.0 + 225.0 * t + 0.5))
+            out.push(0)
+        }
+        out.push(255)
+    }
+    out
+}
+
+/// The shot's package built into `out` (a root path) with `sets`.
+fn built(o: Options, out: str, sets: take Vec<Set>) -> Result<(), ToolError> {
+    var options = toolchain::options()
+    options.timeout = 600.0
+    options.set = take sets
+    let b = toolchain::build(f"{o.ws}/{o.shot.program}", out, options).wait()?
+    if !b.ok {
+        for d in b.diagnostics {
+            if d.error {
+                print(d.rendered.as_str())
+            }
+        }
+        return Err(ToolError::new(f"{o.shot.program} didn't build into {out}"))
+    }
+    Ok(())
+}
+
+/// The build at `build` loaded at `width` × `height` with one worker, and run to the shot's
+/// first measured frame.
+fn started(o: Options, build: str, width: u32, height: u32) -> Result<drive::Build, ToolError> {
+    var load = drive::gpu()
+    load.width = width
+    load.height = height
+    load.workers = 1
+    load.timeout = 600.0
+    let b = drive::load(build, load).wait()?.build
+    let _ = untrapped("init", drive::steps(b, [Step::Init], timeout: 600.0).wait()?)?
+    // (A hundred frames a request: a request may take ten minutes at most, and a reference's
+    // frame at a large size is a second or more.)
+    var left = o.shot.settle
+    while left > 0 {
+        let n = min(left, 100)
+        let before = [Step::Frames(n, o.shot.keys.clone())]
+        let _ = untrapped("the frames before", drive::steps(b, before, timeout: 600.0).wait()?)?
+        left -= n
+    }
+    Ok(b)
+}
+
+/// The build's next frame's screen (RGBA8).
+fn screen(b: drive::Build, keys: Script) -> Result<Vec<u8>, ToolError> {
+    let steps = [Step::Frames(1, keys.clone()), Step::Capture]
+    var saw = untrapped("a frame", drive::steps(b, steps, timeout: 600.0).wait()?)?
+    let shot = saw.captures.remove(0)
+    Ok(joined(data_bytes(take shot.rgba)?))
+}
+
+/// Each measured frame's pixels' kinds (the first measured frame's, then each after), from the
+/// ids' view built into `<out>/build/ids`.
+fn kinds_of(o: Options) -> Result<Vec<Vec<u8>>, ToolError> {
+    let build = String::from(f"{o.out}/build/ids")
+    built(o, build.as_str(), o.shot.ids.clone())?
+    let table = kinds_by_id(o.shot)
+    var ground: Vec<bool> = Vec::new()
+    for k in o.shot.kinds {
+        ground.push(k.ground)
+    }
+    let b = started(o, build.as_str(), o.width, o.height)?
+    var out: Vec<Vec<u8>> = Vec::new()
+    for _ in 0..o.shot.frames + 1 {
+        let rgba = screen(b, o.shot.keys.clone())?
+        out.push(kinds_in(rgba, o.width, o.shot.id_step, table, ground))
+    }
+    let _ = drive::close(b).wait()
+    Ok(out)
+}
+
+/// The row of the build named `name` (what it is, `about`): the shot's package built with
+/// `sets` into `<out>/build/<dir>`, drawn at twice the size and brought down if `twice`, its
+/// crawl counted against `kinds`, and its heat written as `<out>/heat-<dir>.png`.
+fn row_of(
+    o: Options,
+    name: str,
+    about: str,
+    dir: str,
+    sets: take Vec<Set>,
+    twice: bool,
+    kinds: [Vec<u8>],
+) -> Result<Row, ToolError> {
+    let build = String::from(f"{o.out}/build/{dir}")
+    built(o, build.as_str(), take sets)?
+    let scale = if twice { 2 } else { 1 }
+    let b = started(o, build.as_str(), o.width * scale, o.height * scale)?
+    var crawl = Crawl::new(o.shot.kinds.len(), o.step / 255.0)
+    var last: Vec<u8> = Vec::new()
+    for f in 0..kinds.len() {
+        let drawn = screen(b, o.shot.keys.clone())?
+        let rgba = if twice { halved(drawn, w: o.width * 2, h: o.height * 2) } else { take drawn }
+        crawl.add(luma(rgba), kinds[f])
+        last = take rgba
+    }
+    let _ = drive::close(b).wait()
+    if o.heat {
+        let img = image::Image {
+            width: o.width,
+            height: o.height,
+            rgba: Data::Blob(
+                blob_of(chunked(heat_picture(last, crawl.heat, max(kinds.len(), 2) - 1)))?,
+            ),
+        }
+        write_png(take img, f"{o.out}/heat-{dir}.png")?
+    }
+    var per: Vec<f64> = Vec::new()
+    var pixels: Vec<f64> = Vec::new()
+    let steps = f64(max(kinds.len(), 2) - 1)
+    for k in 0..o.shot.kinds.len() {
+        per.push(crawl.per_thousand(k))
+        pixels.push(crawl.looked[k] / steps)
+    }
+    Ok(Row { name: String::from(name), about: String::from(about), crawl: per, pixels })
+}
+
+/// `name` as a directory's name: its `=`, `.` and spaces dashes.
+pub fn dir_of(name: str) -> String {
+    var out = String::new()
+    for i in 0..name.len() {
+        // (`=` is 61, `.` 46, a space 32.)
+        let b = name.byte(i)
+        if b == 61 || b == 46 || b == 32 {
+            out.push_str("-")
+        } else {
+            out.push_str(name.slice(i, i + 1))
+        }
+    }
+    out
+}
+
+/// The shot measured as `o` says: its report, also written as `<out>/crawl.json` and
+/// `<out>/crawl.md`, each build's heat beside them.
+pub fn measure(o: Options) -> Result<Report, ToolError> {
+    let _ = files::make_dirs(o.out.as_str()).wait()?
+    let kinds = kinds_of(o)?
+    var rows: Vec<Row> = Vec::new()
+    rows.push(row_of(o, "play", "", "play", o.sets.clone(), twice: false, kinds: kinds)?)
+    for r in 1..max(o.runs, 1) {
+        rows.push(
+            row_of(
+                o,
+                f"play, run {r + 1}",
+                "",
+                f"play-{r + 1}",
+                o.sets.clone(),
+                twice: false,
+                kinds: kinds,
+            )?,
+        )
+    }
+    if o.reference {
+        rows.push(
+            row_of(
+                o,
+                "reference",
+                "every pixel met every frame, drawn at twice the size and brought down: what the motion itself costs",
+                "reference",
+                o.shot.reference.clone(),
+                twice: true,
+                kinds: kinds,
+            )?,
+        )
+    }
+    if o.switches {
+        for s in o.shot.switches {
+            var sets = o.sets.clone()
+            for one in s.sets {
+                sets.push(one.clone())
+            }
+            rows.push(
+                row_of(
+                    o,
+                    s.name,
+                    s.about,
+                    dir_of(s.name).as_str(),
+                    take sets,
+                    twice: false,
+                    kinds: kinds,
+                )?,
+            )
+        }
+    }
+    var names: Vec<String> = Vec::new()
+    for k in o.shot.kinds {
+        names.push(String::from(k.name))
+    }
+    let report = Report {
+        shot: String::from(o.shot.name),
+        program: String::from(o.shot.program),
+        width: o.width,
+        height: o.height,
+        first: o.shot.settle,
+        frames: o.shot.frames,
+        step: o.step,
+        kinds: names,
+        rows,
+    }
+    write_file(f"{o.out}/crawl.json", chunked(Vec::from(report.json().as_bytes())))?
+    write_file(f"{o.out}/crawl.md", chunked(Vec::from(f"{report.text()}\n".as_bytes())))?
+    Ok(report)
+}

@@ -171,6 +171,7 @@ The project's budget is about $20 a month on Workers Paid. Two alarms watch it:
 | `lookbook`           | A program's lookbook shots as stills and clips (`--package <pkg>`, `--stills`, `--view clay`)            |
 | `motion`             | A scene in motion: frames, a clip and a contact sheet                                                     |
 | `moves`              | A reference clip written as Wrela motion in content/moves; `--sheet <dir>` a strike's timing sheet and chart |
+| `steady`             | A scene's flicker under a moving camera, as numbers: each kind of pixel's crawl against a reference, a picture of where, and with `--switches` which switch it follows (`wrela tool steady -- build/steady --switches`) |
 | `styles`             | Each look under content/styles built into a scene, and the check that adding one changed nothing in `engine/` |
 | `serve`              | A directory served to a browser                                                                           |
 | `audio`              | A piece's take and measurements                                                                           |

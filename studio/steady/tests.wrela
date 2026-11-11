@@ -1,0 +1,167 @@
+// The steady tool's tests: its command line, the kinds an ids' view's pixels are, a build's heat
+// as a picture, and its report as a table and as JSON, on small fixtures. (The measure itself
+// is studio/lookbook's, tested there; the opening's shot is held to its bar by
+// scenes/opening/tests/steady.)
+
+use main::parse_args
+use measure::{Report, Row, dir_of, heat_picture, kinds_by_id, kinds_in}
+use lookbook_tool::measures::NO_KIND
+use shots::{NAMES, set_of, shot}
+use std::json::{TOP, parse}
+
+fn texts(lines: [Text]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for l in lines {
+        out.push(String::from(l))
+    }
+    out
+}
+
+@test
+fn the_command_line_takes_a_directory_a_shot_and_its_options() {
+    let Ok(o) = parse_args(
+        texts(
+            [
+                "build/steady",
+                "--shot",
+                "sailing",
+                "--size",
+                "640x360",
+                "--frames",
+                "30",
+                "--settle",
+                "300",
+                "--step",
+                "8",
+                "--set",
+                "VISTA=false",
+                "--set",
+                "FINE=0.3",
+                "--runs",
+                "3",
+                "--switches",
+                "--no-reference",
+                "--no-heat",
+            ],
+        ),
+    ) else {
+        panic("a run")
+    }
+    assert(o.out.as_str() == "ws/build/steady" && o.ws.as_str() == "ws", o.out.as_str())
+    assert(o.width == 640 && o.height == 360 && o.shot.frames == 30 && o.shot.settle == 300)
+    assert(o.step == 8.0 && o.runs == 3 && o.switches && !o.reference && !o.heat)
+    assert(o.sets.len() == 2 && o.sets[0].name.as_str() == "VISTA")
+    assert(o.sets[1].name.as_str() == "FINE" && o.sets[1].value.as_str() == "0.3")
+    let Ok(plain) = parse_args(texts(["out"])) else { panic("defaults") }
+    assert(plain.width == 1280 && plain.height == 720 && plain.step == 15.0 && plain.runs == 1)
+    assert(plain.reference && !plain.switches && plain.heat && plain.sets.is_empty())
+    assert(plain.shot.name == NAMES[0] && plain.shot.frames == 60 && plain.shot.settle == 420)
+    assert(parse_args(texts([])).is_err(), "no directory")
+    assert(parse_args(texts(["/tmp/out"])).is_err(), "a directory outside the workspace")
+    assert(parse_args(texts(["out", "--shot", "walk"])).is_err(), "an unknown shot")
+    assert(parse_args(texts(["out", "--size", "640"])).is_err(), "a size without its height")
+    assert(parse_args(texts(["out", "--frames", "0"])).is_err(), "no frames")
+    assert(parse_args(texts(["out", "--runs", "0"])).is_err(), "no runs")
+    assert(parse_args(texts(["out", "--set", "VISTA"])).is_err(), "a set without its value")
+    assert(parse_args(texts(["out", "more"])).is_err(), "two directories")
+    assert(set_of("=1").is_none() && set_of("A=").is_some())
+}
+
+/// The sailing shot's kinds are the opening's numbers (scenes/opening's `look`): the cathedral
+/// first, the sea and the sky ground; a number no kind names is no kind's. A frame of its ids'
+/// view (each pixel its number times 16) gives each pixel its kind, the cathedral's outline on
+/// the sky taken in.
+@test
+fn an_ids_views_pixels_are_the_shots_kinds() {
+    let Some(s) = shot("sailing") else { panic("the shot") }
+    assert(s.kinds[0].name == "cathedral" && s.id_step == 16)
+    let table = kinds_by_id(s)
+    assert(table.len() == 256)
+    // The sky 1, the sea 2, the skiff 3, the rock 4, stone 5 to roof 8, house 9, tile 10.
+    let want: [u8; 12] = [NO_KIND, 5, 4, 3, 2, 0, 0, 0, 0, 1, 1, NO_KIND]
+    for id in 0..12 {
+        assert(table[id] == want[id], f"id {id}: kind {table[id]}, not {want[id]}")
+    }
+    var ground: Vec<bool> = Vec::new()
+    for k in s.kinds {
+        ground.push(k.ground)
+    }
+    // Three pixels in a row: the sky, stone (5 × 16 = 80, a level off), the sea; under them
+    // the sky, the sky, the sea.
+    var rgba: Vec<u8> = Vec::new()
+    for level in [16, 81, 32, 16, 16, 32] {
+        for _ in 0..3 {
+            rgba.push(u8(level))
+        }
+        rgba.push(255)
+    }
+    let kind = kinds_in(rgba, w: 3, id_step: 16, table: table, ground: ground)
+    // The stone's neighbours left, right and below are its outline; the corners aren't.
+    let seen: [u8; 6] = [0, 0, 0, 5, 0, 4]
+    for i in 0..6 {
+        assert(kind[i] == seen[i], f"pixel {i}: kind {kind[i]}, not {seen[i]}")
+    }
+}
+
+/// A build's heat is its last frame in dim grey, with the pixels that stepped lit: red for one
+/// step, yellow for a quarter of the frames or more.
+@test
+fn heat_lights_the_pixels_that_stepped() {
+    let last: [u8; 12] = [255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 255]
+    let out = heat_picture(last, [0, 1, 40], frames: 60)
+    assert(out.len() == 12)
+    // A white pixel that never stepped: grey at 0.4.
+    assert(out[0] == 102 && out[1] == 102 && out[2] == 102 && out[3] == 255, f"{out[0]}")
+    // One step in 60 frames: red, a little toward yellow (30 + 225 / 15).
+    assert(out[4] == 255 && out[5] == 45 && out[6] == 0, f"{out[5]}")
+    // Forty: past a quarter of them, yellow.
+    assert(out[8] == 255 && out[9] == 255 && out[10] == 0, f"{out[9]}")
+}
+
+/// A report is a table, a row a build and a column a kind, and JSON that says the same; a
+/// build's crawl of a kind is found by their names.
+@test
+fn a_report_is_a_table_and_json() {
+    let r = Report {
+        shot: String::from("sailing"),
+        program: String::from("scenes/opening"),
+        width: 1280,
+        height: 720,
+        first: 420,
+        frames: 60,
+        step: 15.0,
+        kinds: texts(["cathedral", "rock"]),
+        rows: Vec::from(
+            [
+                Row {
+                    name: String::from("play"),
+                    about: String::new(),
+                    crawl: Vec::from([0.47, 0.79]),
+                    pixels: Vec::from([8366.0, 83122.0]),
+                },
+                Row {
+                    name: String::from("VISTA=false"),
+                    about: String::from("the vista off"),
+                    crawl: Vec::from([1.41, 0.79]),
+                    pixels: Vec::from([8366.0, 83122.0]),
+                },
+            ],
+        ),
+    }
+    assert(
+        r.crawl("play", "cathedral") == Some(0.47) && r.crawl("VISTA=false", "rock") == Some(0.79),
+    )
+    assert(r.crawl("reference", "rock").is_none() && r.crawl("play", "sea").is_none())
+    let text = r.text()
+    assert(text.as_str().find("frames 420 to 480").is_some(), text.as_str())
+    assert(text.as_str().find("| build | cathedral | rock |").is_some(), text.as_str())
+    assert(text.as_str().find("| play | 0.47 | 0.79 |").is_some(), text.as_str())
+    assert(text.as_str().find("| VISTA=false | 1.41 | 0.79 |").is_some(), text.as_str())
+    assert(text.as_str().find("| (pixels a frame) | 8366 | 83122 |").is_some(), text.as_str())
+    assert(text.as_str().find("VISTA=false: the vista off").is_some(), text.as_str())
+    let json = r.json()
+    let Some(doc) = parse(json.as_str()) else { panic("the report's JSON parses") }
+    let Some(builds) = doc.get(TOP, "builds") else { panic("its builds") }
+    assert(doc.count(builds) == 2, json.as_str())
+    assert(dir_of("RENDER_SCALE=1.0").as_str() == "RENDER_SCALE-1-0")
+}

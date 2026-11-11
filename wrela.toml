@@ -31,6 +31,7 @@ members = [
     "studio/motion",
     "studio/moves",
     "studio/serve",
+    "studio/steady",
     "studio/release",
     "studio/deploy",
     "studio/costs",
@@ -106,6 +107,14 @@ browser = true
 package = "studio/motion"
 write = ["ws=."]
 run = ["ffmpeg"]
+
+# The steady tool (studio/steady): how unsteady a scene's picture is while its camera moves (its
+# crawl, kind of pixel by kind, against a reference of the same frames), on the native host's
+# GPU. It builds the scene's package where its command line says, in the workspace, and writes
+# its table and each build's heat there.
+[tools.steady]
+package = "studio/steady"
+write = ["ws=."]
 
 # The moves tool (studio/moves): a reference capture's clip fitted as motion written in Wrela,
 # written into content/moves.
