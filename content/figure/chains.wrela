@@ -1,0 +1,23 @@
+// The figure's chains: the lines of joints its forms are charted about, at rest (a T-pose, +x
+// his left, m). The joints are the reference body's own, as its rig has them.
+
+use engine::chart::{Chain, chain}
+
+/// His left arm: from 7 cm inside his shoulder (a point his collarbone carries, so the arm's
+/// root stays under what he wears there while the arm swings), through his shoulder and elbow
+/// to his wrist. Its bones are his collarbone, his upper arm and his forearm. Angle 0 is up, a
+/// quarter turn his back. His upper arm's turn about its length is reached a third of the way
+/// to his elbow (past his shoulder's cap, his arm's muscles turn with the bone); his forearm's
+/// is spread from elbow to wrist.
+pub fn arm_left() -> Chain {
+    chain(
+        [
+            vec3(0.142, 1.455, -0.0628),
+            vec3(0.212, 1.455, -0.065),
+            vec3(0.463, 1.455, -0.073),
+            vec3(0.706, 1.455, -0.065),
+        ],
+        vec3(y: 1.0),
+        spread: [1.0, 0.33, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    )
+}

@@ -1,0 +1,320 @@
+// The forms tool (`wrela tool forms`): charted forms' numbers, solved. Each form is a radius
+// about the line of a chain of joints (`engine::chart`), linear in its numbers, so fitting it to
+// its reference is one exact solve: no starting guess, no steps, the same answer every run. The
+// tool reads each form's reference along rays from the form's own path (`targets`), solves its
+// numbers, and writes them as a Wrela file where the game reads them (content/figure for the
+// species' body, content/hakuro for what the hero wears over it). The references stay
+// references: the game builds without them.
+//
+// ```text
+// wrela tool forms -- [form ...]
+// ```
+//
+// With no form named, it writes them all. For each it prints how far the written form is from
+// its reference where it wasn't fitted (between the fit's own places): the misses' root mean
+// square, the size half are under, the size 95% are under and the worst (mm, across the side),
+// and their root mean square by place on the chart, stations along the form's span by sectors
+// round it.
+
+use engine::chart
+use engine::chart::{Chain, Radial, Sample}
+use figure::chains
+use hakuro::arm_left_grid
+use humanoid::body::HERO
+use std::io::print
+use std::string::String
+use std::tool::args
+use std::tool::files
+use std::tool::files::rooted
+use targets::{Grid, Miss, Reference, SECTORS, STATIONS, miss, rays, triangles_of}
+
+pub const USAGE: Text = "usage: wrela tool forms -- [form ...]"
+
+/// A form the tool fits: its name on the command line, its file in the workspace and its
+/// constant there, what the file says it is, the chain it's charted about, the span of the
+/// chain's path its reference covers (fractions of its length), how far from the path its
+/// reference is read (m), and how its root is tucked in (`tuck`: its radius at its path's
+/// start, as a share of its radius where its reference starts, so its root stays under what's
+/// worn over it). A form covers its whole path: past its reference's end it keeps the radius it
+/// has there.
+pub struct Spec: Copy {
+    pub name: Text,
+    pub file: Text,
+    pub constant: Text,
+    pub about: [Text; 3],
+    pub chain: Chain,
+    pub span: vec2,
+    pub most: f32,
+    pub tuck: f32,
+}
+
+/// The species' left arm: the reference body's own, bare, from where it leaves his trunk to
+/// his wrist.
+pub const ARM: Spec = Spec {
+    name: "arm",
+    file: "content/figure/arm.wrela",
+    constant: "ARM",
+    about: [
+        "The figure's left arm, bare: Quaternius's Superhero Male (CC0), read along rays from the",
+        "line through its shoulder, elbow and wrist (`chains::arm_left`) and fitted by the forms tool.",
+        "His right is its mirror image (`Radial::mirrored`).",
+    ],
+    chain: chains::arm_left(),
+    span: vec2(0.14, 1.0),
+    most: 0.14,
+    tuck: 0.5,
+}
+
+/// What Hakuro's left arm is over the species': his sampled grid's surface, from his armhole
+/// to inside the wrap at his wrist, less the species' arm.
+pub const HAKURO_ARM_LEFT: Spec = Spec {
+    name: "hakuro-arm-left",
+    file: "content/hakuro/arm_left_form.wrela",
+    constant: "ARM_LEFT_OVER",
+    about: [
+        "What Hakuro's left arm is over the figure's (`figure::arm::ARM`), bare to the wrap round",
+        "his forearm: his sampled arm's surface (`arm_left_grid`) less the figure's arm, read along",
+        "rays from the line through his shoulder, elbow and wrist and fitted by the forms tool.",
+    ],
+    chain: chains::arm_left(),
+    span: vec2(0.14, 0.84),
+    most: 0.14,
+    tuck: 0.5,
+}
+
+/// A form fitted: its numbers as written, how far it is from its reference where it wasn't
+/// fitted, and how many rays it was fitted to.
+pub struct Fitted<const A: u32, const R: u32>: Copy {
+    pub form: Radial<A, R>,
+    pub miss: Miss,
+    pub rays: u32,
+}
+
+/// What's fitted of `s` over `base`: the reference `t` read at four places a control value
+/// along by four a term round over its span, less `base` there; the root's radius narrowing
+/// evenly from where the reference starts to `tuck` of it at the path's start (or, over a base
+/// that isn't nothing, the difference held: the base is tucked already); and past the
+/// reference's end, what it is at its end. Solved, rounded as it's written, and measured with
+/// `base` added back, between the fit's places.
+pub fn fitted_over<const A: u32, const R: u32, T: Reference>(
+    t: T,
+    s: Spec,
+    base: Radial<A, R>,
+    based: bool,
+) -> Fitted<A, R> {
+    let path = s.chain.rest()
+    let along = 4 * A
+    let about = 4 * R
+    let read = rays(t, path, s.span, along, about, vec2(0.0, 0.0), s.most)
+    var seen: Vec<Sample> = Vec::new()
+    for k in read {
+        seen.push(Sample { r: k.r - base.radius(k.f, k.theta), ..k })
+    }
+    // The root, before the reference starts.
+    let first = rays(t, path, vec2(s.span.x, s.span.x + 0.0001), 1, about, vec2(0.0, 0.0), s.most)
+    let steps = max(u32(f32(along) * s.span.x / max(s.span.y - s.span.x, 0.001)), 2)
+    for i in 0..steps {
+        let f = s.span.x * f32(i) / f32(steps)
+        for k in first {
+            let r = if based { k.r - base.radius(s.span.x, k.theta) } else {
+                k.r * mix(s.tuck, 1.0, smoothstep(0.0, s.span.x, f))
+            }
+            seen.push(Sample { f, theta: k.theta, r })
+        }
+    }
+    // Past the reference's end.
+    if s.span.y < 0.999 {
+        let last = rays(
+            t,
+            path,
+            vec2(s.span.y - 0.0001, s.span.y),
+            1,
+            about,
+            vec2(0.0, 0.0),
+            s.most,
+        )
+        let more = max(u32(f32(along) * (1.0 - s.span.y) / max(s.span.y - s.span.x, 0.001)), 2)
+        for i in 0..more {
+            let f = s.span.y + (1.0 - s.span.y) * f32(i + 1) / f32(more)
+            for k in last {
+                seen.push(Sample { f, theta: k.theta, r: k.r - base.radius(s.span.y, k.theta) })
+            }
+        }
+    }
+    let form: Radial<A, R> = chart::rounded(chart::fit(seen))
+    let unseen = rays(t, path, s.span, along, about, vec2(0.5, 0.5), s.most)
+    Fitted { form, miss: miss(base.plus(form), unseen, s.span, path.length()), rays: read.len() }
+}
+
+/// `s`'s form fitted to reference `t`, over nothing.
+pub fn fitted<const A: u32, const R: u32, T: Reference>(t: T, s: Spec) -> Fitted<A, R> {
+    fitted_over(t, s, chart::round(0.0), false)
+}
+
+/// The reference body's left arm's triangles (its shoulder, arm and hand).
+pub fn body_arm_left() -> targets::Triangles {
+    triangles_of(
+        HERO.clone(),
+        [false, false, false, false, true, false],
+        vec3(0.1, 1.2, -0.3),
+        vec3(0.8, 1.7, 0.2),
+    )
+}
+
+/// The species' arm, fitted.
+pub fn arm() -> Fitted<16, 13> {
+    fitted(body_arm_left(), ARM)
+}
+
+/// What Hakuro's left arm is over the species' arm `base`, fitted.
+pub fn hakuro_arm_left(base: Radial<16, 13>) -> Fitted<16, 13> {
+    fitted_over(Grid { samples: arm_left_grid::samples(0) }, HAKURO_ARM_LEFT, base, true)
+}
+
+/// What's said of a fitted form: its misses' spread, and their size by place.
+fn said<const A: u32, const R: u32>(s: Spec, f: Fitted<A, R>) -> String {
+    let m = f.miss.spread
+    var out = String::new()
+    out.push_str(
+        f"{s.name}: {s.file}, {f.form.numbers()} numbers from {f.rays} rays; {m.count} more between them miss by {m.rms:.2} mm rms, half under {m.half:.2}, 95% under {m.most:.2}, worst {m.worst:.1}\n",
+    )
+    out.push_str(
+        "  by place (mm rms): a row a station from the span's start to its end, a column a sector round from angle 0\n",
+    )
+    for i in 0..STATIONS {
+        out.push_str("   ")
+        for j in 0..SECTORS {
+            out.push_str(f" {f.miss.by_place[i][j]:.2}")
+        }
+        out.push_str("\n")
+    }
+    out
+}
+
+/// The source of form `s`'s file.
+pub fn file_of<const A: u32, const R: u32>(s: Spec, form: Radial<A, R>) -> String {
+    var out = String::new()
+    out.push_str(
+        "// Written by the forms tool (`wrela tool forms`, studio/forms): don't edit it by hand, change\n",
+    )
+    out.push_str(
+        "// the tool or what it fits and write it again. A charted form's radius (engine::chart): a row\n",
+    )
+    out.push_str(
+        "// a control value along its path, each a Fourier series round it (m).\n\n",
+    )
+    out.push_str("use engine::chart::Radial\n\n")
+    var doc: Vec<String> = Vec::new()
+    for line in s.about {
+        doc.push(line.to_string())
+    }
+    out.push_str(chart::source(form, s.constant.to_string().as_str(), doc).as_str())
+    out
+}
+
+/// Form `s` written: what to print of it, or why it failed.
+fn written<const A: u32, const R: u32>(s: Spec, f: Fitted<A, R>) -> Result<String, String> {
+    let Some(path) = rooted("ws", s.file.to_string().as_str()) else {
+        return Err(f"no path for {s.file}")
+    }
+    if files::write(path.as_str(), file_of(s, f.form).as_bytes()).wait().is_err() {
+        return Err(f"couldn't write {path}")
+    }
+    Ok(said(s, f))
+}
+
+/// The arm's joints' changes written (content/figure/arm_joints.wrela): what to print of
+/// them, or why it failed.
+fn arm_joints_written() -> Result<String, String> {
+    let file = "content/figure/arm_joints.wrela"
+    let Some(path) = rooted("ws", file) else {
+        return Err(f"no path for {file}")
+    }
+    let (changes, left) = joints::arm_changes()
+    var out = String::new()
+    out.push_str(
+        "// Written by the forms tool (`wrela tool forms`, studio/forms): don't edit it by hand, change\n",
+    )
+    out.push_str(
+        "// the tool or what it fits and write it again. How the arm's form changes where its shoulder\n",
+    )
+    out.push_str(
+        "// and its elbow bend (engine::chart::Change): each a form times the bend's angle and a form\n",
+    )
+    out.push_str(
+        "// times its square, written for a bend toward angle 0. Solved against the reference body\n",
+    )
+    out.push_str(
+        "// (Quaternius's Superhero Male, CC0) posed by its own skin weights, over poses of captured\n",
+    )
+    out.push_str("// motion (studio/forms/joints.wrela).\n\n")
+    out.push_str("use engine::chart::Radial\n\n")
+    let names = ["SHOULDER_BY_ANGLE", "SHOULDER_BY_SQUARE", "ELBOW_BY_ANGLE", "ELBOW_BY_SQUARE"]
+    let about = [
+        "His shoulder's change, a radian of its bend (m).",
+        "His shoulder's change, a radian squared of its bend (m).",
+        "His elbow's change, a radian of its bend (m).",
+        "His elbow's change, a radian squared of its bend (m).",
+    ]
+    for k in 0..4 {
+        let form = if k % 2 == 0 { changes[k / 2].by_angle } else { changes[k / 2].by_square }
+        var doc: Vec<String> = Vec::new()
+        doc.push(about[k].to_string())
+        out.push_str(chart::source(form, names[k], doc).as_str())
+        if k < 3 {
+            out.push_str("\n")
+        }
+    }
+    if files::write(path.as_str(), out.as_bytes()).wait().is_err() {
+        return Err(f"couldn't write {path}")
+    }
+    Ok(
+        f"arm-joints: {file}, the shoulder's and the elbow's changes; outside its bends the posed reference is {left.x:.1} mm rms from itself at rest, {left.y:.1} with the changes taken off\n",
+    )
+}
+
+/// Whether the command line asks for the form named `name` (every form, if it names none).
+fn chosen(wanted: [String], name: Text) -> bool {
+    if wanted.is_empty() {
+        return true
+    }
+    for w in wanted {
+        if w.as_str() == name {
+            return true
+        }
+    }
+    false
+}
+
+pub fn tool() -> u32 {
+    let wanted = args()
+    var done = 0
+    var results: Vec<Result<String, String>> = Vec::new()
+    // (What's fitted over the species' arm is fitted over it as this run has it, so one run
+    // writes them all the same whatever was written before.)
+    let species = arm()
+    if chosen(wanted, ARM.name) {
+        results.push(written(ARM, species))
+    }
+    if chosen(wanted, HAKURO_ARM_LEFT.name) {
+        results.push(written(HAKURO_ARM_LEFT, hakuro_arm_left(species.form)))
+    }
+    if chosen(wanted, "arm-joints") {
+        results.push(arm_joints_written())
+    }
+    for r in results {
+        match r {
+            Ok(text) => print(text),
+            Err(e) => {
+                print(f"forms: {e}")
+                return 1
+            },
+        }
+        done += 1
+    }
+    if done == 0 {
+        print(USAGE)
+        return 2
+    }
+    0
+}

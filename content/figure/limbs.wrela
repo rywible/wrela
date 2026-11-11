@@ -1,0 +1,28 @@
+// The figure's limbs as a pose has them: each a form about its chain (`chains`), changed where
+// its joints bend by what the forms tool solved for them (`arm_joints`).
+
+use engine::chart::{Bend, Change, JOINTS, Radial}
+
+/// A limb's form: 16 control values along its path, each a Fourier series of 6 harmonics.
+pub type Form = Radial<16, 13>
+
+/// His shoulder's change with its bend, the size of his arm's form.
+@fuel(2 ** 36)
+pub const SHOULDER: Change<16, 13> = Change {
+    by_angle: arm_joints::SHOULDER_BY_ANGLE.resized(),
+    by_square: arm_joints::SHOULDER_BY_SQUARE.resized(),
+}
+
+/// His elbow's change with its bend, the size of his arm's form.
+@fuel(2 ** 36)
+pub const ELBOW: Change<16, 13> = Change {
+    by_angle: arm_joints::ELBOW_BY_ANGLE.resized(),
+    by_square: arm_joints::ELBOW_BY_SQUARE.resized(),
+}
+
+/// An arm's form as a pose bends it: `rest` (the species' arm, or a character's own) changed
+/// at its shoulder and its elbow (`bends`: `chains::arm_left`'s, whose joints 1 and 2 they
+/// are).
+pub fn arm_bent(rest: Form, bends: [Bend; JOINTS]) -> Form {
+    rest.bent(SHOULDER, bends[1]).bent(ELBOW, bends[2])
+}

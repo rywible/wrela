@@ -152,6 +152,29 @@ pub fn body_paint(p: vec3) -> Cloth {
     BLACK
 }
 
+/// His left arm at rest: the figure's arm and what his is over it (`arm_left_form`), about
+/// the figure's arm's chain (`figure::chains::arm_left`).
+pub const ARM_LEFT: figure::limbs::Form = figure::arm::ARM.plus(arm_left_form::ARM_LEFT_OVER)
+
+/// How far along its path his left arm is drawn: to inside the wrap at his wrist, where his
+/// hand takes over.
+pub const ARM_LEFT_TO: f32 = 0.84
+
+/// His arm's root is under his jacket: drawn `ARM_UNDER` metres under it at its path's start,
+/// less along it, and not at all from `ARM_OUT` of the way along, where it has left his
+/// armhole.
+pub const ARM_UNDER: f32 = 0.04
+pub const ARM_OUT: f32 = 0.24
+
+/// Where the wrap round his left forearm starts, as a fraction of his arm's path's length.
+pub const WRAP_FROM: f32 = 0.75
+
+/// His left arm's paint by place on its chart (`f` of the way along its path): bare, a charcoal
+/// wrap round his forearm.
+pub fn arm_left_paint(f: f32) -> Cloth {
+    if f > WRAP_FROM { CHARCOAL } else { SKIN }
+}
+
 /// The collar's paint: the jacket's black, standing up round his neck, open in front.
 fn collar_paint(p: vec3) -> Cloth {
     BLACK

@@ -11,7 +11,6 @@ members = [
     "console/server",
     "console/tests/shader-budget",
     "content/*",
-    "content/arm/reference",
     "docsite",
     "docsite/tests/reader",
     "engine",
@@ -36,6 +35,7 @@ members = [
     "studio/release",
     "studio/deploy",
     "studio/costs",
+    "studio/forms",
     "studio/toolkit",
     "ui",
     "ui/brand",
@@ -121,6 +121,13 @@ write = ["ws=."]
 # written into content/moves.
 [tools.moves]
 package = "studio/moves"
+write = ["ws=."]
+
+# The forms tool (studio/forms): each charted form's numbers fitted to its reference (the CC0
+# body's triangles, Hakuro's sampled grids) by one solve, written into content/figure and
+# content/hakuro, with how far each is from its reference by place on its chart.
+[tools.forms]
+package = "studio/forms"
 write = ["ws=."]
 
 # The bench tool (studio/bench): what the engine's scenes cost on this machine, in headless
