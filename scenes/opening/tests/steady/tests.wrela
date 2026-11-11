@@ -1,15 +1,22 @@
-// The opening held steady under sail. Its sailing shot (studio/steady's `sailing`: the skiff
-// under way, the camera riding the swell behind it, the rock and its cathedral far off) is
-// drawn as it's shipped and measured for crawl (studio/lookbook's `measures::Crawl`): of the
-// cathedral's pixels and their outline, how many in a thousand step by more than 15 levels of
-// luma from one frame to the next, over a second of frames, 1280 × 720, on the machine's GPU.
-// A spire met on and off, or an edge that moves a pixel at a time, is a step; so a flicker of
-// the cathedral fails this test, and isn't left to an eye on stills (rywible/wrela#416 took a
-// day of them).
+// The opening held steady. Its sailing shot (studio/steady's `sailing`: the skiff under way, the
+// camera riding the swell behind it, the rock and its cathedral far off) is drawn as it's
+// shipped and measured for crawl (studio/lookbook's `measures::Crawl`): of a kind's pixels and
+// their outline, how many in a thousand step by more than 15 levels of luma from one frame to
+// the next, over a second of frames, 1280 × 720, on the machine's GPU. A spire met on and off,
+// or an edge that moves a pixel at a time, is a step; so a flicker fails a test, and isn't left
+// to an eye on stills (rywible/wrela#416 took a day of them). Three tests:
 //
-// `wrela tool steady -- <out-dir> --switches` is the same measure with its reference, where the
-// crawl is (a picture), and which of the opening's switches it follows: what to run when this
-// fails.
+// - The cathedral's crawl under sail, under a bar (39 s): the flicker #416 fixed.
+// - Every kind's crawl with the scene held (`held`), which must be none (40 s): nothing moves,
+//   so whatever steps is the drawing's own.
+// - Every kind's crawl of its own under sail, under a bar each (4 minutes): what steps in the
+//   drawing that doesn't in its settled twin, the same build dwelling on each frame's moment
+//   until nothing is left to come. Motion is in both and drops out, so this holds the sea and
+//   the skiff and the stacks too, which truly move.
+//
+// `wrela tool steady -- <out-dir> --switches` is the same measures with where each crawl is (a
+// picture), the middle frame beside its settled twin's, and which of the opening's switches it
+// follows: what to run when one of these fails.
 
 use steady_tool::measure::{Options, measure}
 use steady_tool::shots::shot
@@ -17,12 +24,13 @@ use std::io::print
 
 /// The most the cathedral's crawl may be: half as much again as it is (0.48: 0.47 to 0.49 over
 /// eight runs on an M-series Mac, 2026-11-11; studio/lookbook's bars hold a look's flicker to
-/// 1.5 times too). For scale: its reference (every pixel met every frame, at twice the size)
-/// has 0.03, and with the vista off (`VISTA=false`: the rock and the cathedral met a few pixels
-/// a drawing in the screen's own, as before #416) it has 1.37 to 1.42 over three runs.
+/// 1.5 times too). With the vista off (`VISTA=false`: the rock and the cathedral met a few
+/// pixels a drawing in the screen's own, as before #416) it has 1.37 to 1.42 over three runs.
 ///
-/// The cathedral's alone: the rock's kind takes in the sea stacks the camera passes, whose
-/// outlines truly move (0.83 in play, 1.93 in the sharper reference), so its crawl says little.
+/// The cathedral's alone, and no lower: this is its crawl as it's drawn, motion and all, and
+/// the scene drawn sharp steps more than this as the camera rides the swell (2.25, `wrela tool
+/// steady -- <dir> --reference`): a softer picture steps less. What the drawing adds of its
+/// own is the third test's.
 pub const CATHEDRAL_MOST: f64 = 0.72
 
 /// The fewest pixels a frame the cathedral must be found in (8,300 as it is): fewer, and the
@@ -37,7 +45,7 @@ fn the_cathedral_holds_steady_under_sail() {
         shot: sailing,
         out: String::from("scratch/steady"),
         ws: String::from("ws"),
-        reference: false,
+        own: false,
         heat: false,
     }
     let report = match measure(o) {
@@ -56,4 +64,81 @@ fn the_cathedral_holds_steady_under_sail() {
         crawl <= CATHEDRAL_MOST,
         f"the cathedral crawls: {crawl:.2} of its pixels in a thousand step a frame, over {CATHEDRAL_MOST} (`wrela tool steady -- build/steady --switches` says where, and which switch it follows)",
     )
+}
+
+/// The most any kind's crawl may be with the scene held (`shot("held")`: the sailing shot
+/// stopped at its seventh second, scenes/opening's `HOLD`). Nothing moves, so nothing should
+/// step: as shipped every kind has 0.00 but the sea stacks' 0.01 (two runs, an M-series Mac,
+/// 2026-11-11). With the vista off (`VISTA=false`, as before #416) the cathedral has 0.20 and
+/// the town 0.11, in a picture where nothing moves at all.
+pub const HELD_MOST: f64 = 0.05
+
+/// A held scene holds: with the sea, the skiff, the camera and the sky stopped, no kind of
+/// pixel steps. What the drawing spreads over frames (the vista's texels, the far pass's
+/// quarters, the half paint's columns) must come to rest when the scene does.
+@test(tool, read: [("ws", "../../../..")], budget: 600)
+fn a_held_scene_holds_still() {
+    let Some(held) = shot("held") else { panic("the held shot") }
+    let o = Options {
+        shot: held,
+        out: String::from("scratch/held"),
+        ws: String::from("ws"),
+        own: false,
+        heat: false,
+    }
+    let report = match measure(o) {
+        Ok(r) => take r,
+        Err(e) => panic(f"the shot wasn't measured: {e.message()}"),
+    }
+    print(report.text().as_str())
+    let Some(play) = report.row("play") else { panic("play's row") }
+    assert(play.pixels[0] >= CATHEDRAL_LEAST, "the cathedral is in the held shot")
+    for k in 0..report.kinds.len() {
+        assert(
+            play.crawl[k] <= HELD_MOST,
+            f"the {report.kinds[k]} steps with the scene held: {play.crawl[k]:.2} of its pixels in a thousand a frame, over {HELD_MOST} (`wrela tool steady -- build/steady --shot held --switches` says where, and which switch it follows)",
+        )
+    }
+}
+
+/// The most each kind's crawl of its own may be under sail: about half as much again as it is,
+/// and a tenth of a pixel in a thousand where it's all but none (an M-series Mac, 2026-11-11):
+/// the cathedral 0.76, the town 0.09, the isle 0.04, the stacks 3.50, the skiff 0.57, the sea
+/// 0.00, the sky 1.58. The target of each is none: these are what's still owed. The stacks'
+/// and the sky's are a near stack's edge a drawing or two behind the stack as it slides, and
+/// the cathedral's its picture's (the vista's) lag behind the camera on the swell.
+pub const OWN_MOST: [(Text, f64); 7] = [
+    ("cathedral", 1.2),
+    ("town", 0.25),
+    ("isle", 0.15),
+    ("stacks", 5.3),
+    ("skiff", 0.9),
+    ("sea", 0.05),
+    ("sky", 2.4),
+]
+
+/// Under sail, the drawing adds little of its own: each kind's crawl against its settled twin
+/// (`Shot::settled`) is under its bar. Four minutes: each of the sixty frames' moments is
+/// dwelt on for 96 frames.
+@test(tool, read: [("ws", "../../../..")], budget: 600)
+fn the_drawing_adds_little_of_its_own_under_sail() {
+    let Some(sailing) = shot("sailing") else { panic("the sailing shot") }
+    let o = Options {
+        shot: sailing,
+        out: String::from("scratch/own"),
+        ws: String::from("ws"),
+        heat: false,
+    }
+    let report = match measure(o) {
+        Ok(r) => take r,
+        Err(e) => panic(f"the shot wasn't measured: {e.message()}"),
+    }
+    print(report.text().as_str())
+    for (kind, most) in OWN_MOST {
+        let Some(own) = report.own("play", kind) else { panic(f"no crawl of its own for {kind}") }
+        assert(
+            own <= most,
+            f"the {kind} steps on its own under sail: {own:.2} of its pixels in a thousand a frame, over {most} (`wrela tool steady -- build/steady --switches` says where, and which switch it follows)",
+        )
+    }
 }

@@ -54,7 +54,8 @@ fn glare(colour: Texture<Rgba16Float>, light: Light, px: vec2, size: vec2, scale
 }
 
 /// What `main::IDS` multiplies a pixel's number by (of the screen's 255 levels): 16, so `TILE`,
-/// the last, is 160, and a level's rounding can't make one number another.
+/// the last, is 160, and a level's rounding can't make one number another. (And how far off
+/// the pixel is, as the base-2 logarithm of the metres: to a sixteenth, up to 15.9.)
 pub const ID_STEP: f32 = 16.0
 
 /// A pixel's texel of a target, its coordinates clamped to it.
@@ -313,7 +314,7 @@ pub fn ink(
     var c0 = seen(light, at(colour, px, size).xyz, clean)
     let m0 = at(marks, px, size)
     if IDS {
-        return vec4(vec3(m0.y * ID_STEP / 255.0), 1.0)
+        return vec4(m0.y * ID_STEP / 255.0, clamp(m0.x, 0.0, 15.9) * ID_STEP / 255.0, 0.0, 1.0)
     }
     let n0 = at8(normal, px, size)
     // The painted look lays the render in as strokes, everywhere alike but the open sky, the

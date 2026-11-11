@@ -6,12 +6,16 @@
 use std::input::{Key, Script}
 use std::tool::toolchain::Set
 
-/// A kind of pixel: its name, the numbers its pixels show in the ids' view (`Shot::ids`), and
-/// whether it's ground (what the others stand against: its pixels beside another kind's are
-/// that kind's outline, `lookbook_tool::measures::outlined`).
+/// A kind of pixel: its name, the numbers its pixels show in the ids' view (`Shot::ids`), how
+/// far off they are (from `nearer` up to `farther`, each a power of two of metres: 12 is
+/// 4096 m; every distance unless said), and whether it's ground (what the others stand against:
+/// its pixels beside another kind's are that kind's outline,
+/// `lookbook_tool::measures::outlined`). A pixel is of the first kind that takes it.
 pub struct Kind: Clone {
     pub name: Text,
     pub ids: Vec<u8>,
+    pub nearer: u32 = 0,
+    pub farther: u32 = 16,
     pub ground: bool = false,
 }
 
@@ -27,14 +31,33 @@ pub struct Switch: Clone {
 /// frames measured; the constants that build the reference (every pixel met every frame; it's
 /// drawn at twice the size and brought down) and those that build the ids' view (each pixel
 /// showing what it is: its number times `id_step` of the 255 levels, at the screen's own size);
-/// its kinds, the first the one it's about; and its switches.
+/// its kinds, the first the one it's about; and its switches. `always` are constants every one
+/// of its builds is made with (a held shot's `HOLD`).
+///
+/// A program that spreads its work over frames (rays moved about in the pixel from frame to
+/// frame, a few pixels met a frame, a picture built up over many) is drawn in full only when a
+/// moment is dwelt on. `hold` are the constants that make a build dwell from the first measured
+/// frame's moment on, and `dwell` names the one that says for how many frames (the opening's
+/// `HOLD` and `DWELL`); none, and the shot has no such builds.
+/// - `settled`: the frames a moment takes to settle as the program is shipped. A build's
+///   settled twin is that build dwelling so long on each measured frame's moment, its last
+///   frame kept: the same drawing with nothing left to come. What a build steps by that its
+///   settled twin doesn't is its own unsteadiness, none of it motion (0: not measured).
+/// - `dwelt` and `mean`: the reference dwells `dwelt` frames a moment, and its frame is the
+///   mean of the last `mean` of them (as many as its rays' places come round in).
 pub struct Shot: Clone {
     pub name: Text,
     pub program: Text,
     pub keys: Script,
     pub settle: u32,
     pub frames: u32,
+    pub always: Vec<Set> = Vec::new(),
     pub reference: Vec<Set>,
+    pub hold: Vec<Set> = Vec::new(),
+    pub dwell: Text = "",
+    pub settled: u32 = 0,
+    pub dwelt: u32 = 1,
+    pub mean: u32 = 1,
     pub ids: Vec<Set>,
     pub id_step: u32,
     pub kinds: Vec<Kind>,
@@ -42,7 +65,7 @@ pub struct Shot: Clone {
 }
 
 /// The shots' names.
-pub const NAMES: [Text; 1] = ["sailing"]
+pub const NAMES: [Text; 2] = ["sailing", "held"]
 
 /// `NAME=VALUE`, as `wrela build --set` takes it.
 pub fn set(name: str, value: str) -> Set {
@@ -60,7 +83,13 @@ pub fn set_of(s: str) -> Option<Set> {
 
 /// The shot named `name`, if there is one.
 pub fn shot(name: str) -> Option<Shot> {
-    if name == "sailing" { Some(sailing()) } else { None }
+    if name == "sailing" {
+        Some(sailing())
+    } else if name == "held" {
+        Some(held())
+    } else {
+        None
+    }
 }
 
 /// The opening's sailing shot (scenes/opening): the skiff sheeted in from the first frame and
@@ -71,8 +100,9 @@ pub fn shot(name: str) -> Option<Shot> {
 /// Its reference meets every pixel afresh every frame: no vista, no quarter far pass, no half
 /// paint, the rock's rest off (`OFF=4096`), the drawing at the screen's size. The ids' view is
 /// that with `IDS=true` (scenes/opening's `ink::ID_STEP`, 16). Its kinds are `look`'s numbers:
-/// the cathedral's stone, gilding, glass and roofs; the town's houses and their tiles; the rock
-/// (the isle's and the sea stacks'); the skiff; and the ground, the sea and the sky.
+/// the cathedral's stone, gilding, glass and roofs; the town's houses and their tiles; the
+/// floating rock (the isle: rock 4 km off or more); the sea stacks (rock nearer); the skiff; and
+/// the ground, the sea and the sky.
 pub fn sailing() -> Shot {
     let every = |off: str| -> Vec<Set> {
         Vec::from(
@@ -97,13 +127,25 @@ pub fn sailing() -> Shot {
         settle: 420,
         frames: 60,
         reference: every("4096"),
+        // (The moment after the frames before: 420 frames at 60 a second. The vista meets each
+        // texel once in 64 drawings and fades in over 16: 96 frames settle a moment. The far
+        // pass's rays go through 16 places in the pixel, a drawing each, and a pixel holds four
+        // drawings or so: the reference's moment is drawn 32 times, the last 16 its mean.)
+        hold: Vec::from([set("HOLD", "7.0")]),
+        dwell: "DWELL",
+        settled: 96,
+        dwelt: 32,
+        mean: 16,
         ids,
         id_step: 16,
         kinds: Vec::from(
             [
                 Kind { name: "cathedral", ids: Vec::from([5, 6, 7, 8]) },
                 Kind { name: "town", ids: Vec::from([9, 10]) },
-                Kind { name: "rock", ids: Vec::from([4]) },
+                // (The floating rock is 8 km off; the stacks the skiff sails among are within
+                // two or three, and their outlines truly move as it passes.)
+                Kind { name: "isle", ids: Vec::from([4]), nearer: 12 },
+                Kind { name: "stacks", ids: Vec::from([4]) },
                 Kind { name: "skiff", ids: Vec::from([3]) },
                 Kind { name: "sea", ids: Vec::from([2]), ground: true },
                 Kind { name: "sky", ids: Vec::from([1]), ground: true },
@@ -139,4 +181,23 @@ pub fn sailing() -> Shot {
             ],
         ),
     }
+}
+
+/// The sailing shot held: the same sailing to its seventh second, where the scene stops
+/// (scenes/opening's `HOLD`): the sea, the skiff, the camera and the sky all still. A second
+/// later (what's drawn over many frames has come round), a second of frames of the one moment.
+/// Nothing moves, so nothing should step: every kind's crawl here is the drawing's own, and its
+/// reference's is none.
+pub fn held() -> Shot {
+    var s = sailing()
+    s.name = "held"
+    s.always = Vec::from([set("HOLD", "7.0")])
+    s.settle = 480
+    // (Held, every frame is the one moment: the reference's frames are each the mean of the
+    // next 16 with no constants of their own, and a build has no settled twin but itself.)
+    s.hold = Vec::new()
+    s.dwell = ""
+    s.settled = 0
+    s.dwelt = 16
+    s
 }

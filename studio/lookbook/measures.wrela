@@ -389,11 +389,13 @@ pub const NO_KIND: u8 = 255
 /// Crawl: how unsteady a moving picture is, kind by kind (a kind is some of what the pixels
 /// show: the cathedral's, the rock's, the sea's). Of a kind's pixels, how many in a thousand step
 /// by more than `step` of luma from one frame to the next: a spire met on and off, an edge that
-/// moves a pixel at a time. What truly moves steps too, so a play's crawl is read beside a
-/// reference's over the same frames (every pixel met every frame, drawn larger and brought
-/// down, `halved`): the reference's is what the motion itself costs, and what's over it is the
-/// drawing's own. Where `Spread`'s flicker needs the eye held still, this is for an eye that
-/// moves. (How rywible/wrela#416 measured the cathedral's flicker in the opening's sailing shot,
+/// moves a pixel at a time. What truly moves steps too, and the sharper it's drawn the more
+/// (a reference of every pixel every frame, drawn larger and brought down, `halved`, steps
+/// more than a softer play). So a play's own unsteadiness is counted in its difference from
+/// the same frames with nothing left to come (each moment dwelt on until the drawing has
+/// settled: `wrela tool steady`): what moves is in both and drops out, and the crawl of the
+/// difference is the drawing's own, whose target is none. Where `Spread`'s flicker needs the
+/// eye held still, this is for an eye that moves. (How rywible/wrela#416 measured the cathedral's flicker in the opening's sailing shot,
 /// its step 15 of the 255 levels.)
 pub struct Crawl {
     pub step: f32,

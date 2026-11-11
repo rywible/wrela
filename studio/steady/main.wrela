@@ -5,20 +5,32 @@
 //
 // ```text
 // wrela tool steady -- <out-dir> [--shot <name>] [--size WxH] [--frames N] [--settle N]
-//     [--step LEVELS] [--set NAME=VALUE ...] [--runs N] [--switches] [--no-reference]
-//     [--no-heat]
+//     [--step LEVELS] [--set NAME=VALUE ...] [--runs N] [--switches] [--reference]
+//     [--no-own] [--no-heat]
 // ```
 //
 // It builds the shot's program (shots.wrela; `sailing`, the opening's, unless `--shot` names
-// another) into `<out-dir>/build`, with any `--set` for play's own, and drives each build on
-// the native host's GPU with one worker (measure.wrela): the ids' view, play, the reference
-// (every pixel met every frame, at twice the size, brought down), and with `--switches` play
-// again with each of the shot's switches set. It prints a table and writes it as
-// `<out-dir>/crawl.md` and `crawl.json`: each build's crawl of each kind, the pixels in a
-// thousand that step by more than `--step` levels (15) of luma from one frame to the next
-// (`lookbook_tool::measures::Crawl`). A kind's crawl in the reference is what its motion costs;
-// what play has over it is the drawing's own. `heat-<build>.png` shows where each build's
-// pixels stepped. `--runs N` measures play N times, to see how far its runs differ. Paths are
+// another: `held` is the same shot with the scene stopped, where nothing should step at all)
+// into `<out-dir>/build`, with any `--set` for play's own, and drives each build on the native
+// host's GPU with one worker (measure.wrela): the ids' view, play, and with `--switches` play
+// again with each of the shot's switches set. It prints two tables and writes them as
+// `<out-dir>/crawl.md` and `crawl.json`:
+//
+// - Each build's crawl of each kind: the pixels in a thousand that step by more than `--step`
+//   levels (15) of luma from one frame to the next (`lookbook_tool::measures::Crawl`). What
+//   truly moves steps too, and the sharper it's drawn the more, so this alone doesn't say what
+//   is wrong: a soft picture steps less than a sharp one.
+// - Each build's crawl of its own: the same count in its difference from its settled twin, the
+//   same build dwelling on each frame's moment until nothing is left to come (`Shot::settled`).
+//   Motion is in both and drops out; what's left is what the drawing does by spreading its
+//   work over frames: a pixel met late, a fill that hops, a history that trails. Its target is
+//   none, for every kind. `--no-own` leaves it out (it takes most of the time).
+//
+// `--reference` adds the scene drawn sharp (every pixel met every frame, at twice the size,
+// each moment the mean of its frames): how much the motion itself steps when nothing is
+// softened. `heat-<build>.png` shows where each build's pixels stepped, `own-<build>.png` where
+// its own did, and `frame-<build>.png` is its middle frame (`frame-<build>-settled.png` its
+// settled twin's, to lay beside it). `--runs N` measures play N times, to see how far its runs differ. Paths are
 // from the workspace's directory (the root `ws`).
 //
 // The crawl depends on the screen's size and the frames, so numbers compare only between runs
@@ -31,7 +43,7 @@ use std::tool::args
 use std::tool::files::rooted
 use toolkit::command::size_of
 
-pub const USAGE: Text = "usage: wrela tool steady -- <out-dir> [--shot <name>] [--size WxH] [--frames N] [--settle N] [--step LEVELS] [--set NAME=VALUE ...] [--runs N] [--switches] [--no-reference] [--no-heat]"
+pub const USAGE: Text = "usage: wrela tool steady -- <out-dir> [--shot <name>] [--size WxH] [--frames N] [--settle N] [--step LEVELS] [--set NAME=VALUE ...] [--runs N] [--switches] [--reference] [--no-own] [--no-heat]"
 
 /// The workspace's root.
 pub const WS: Text = "ws"
@@ -49,7 +61,7 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
         let next = if k + 1 < given.len() { given[k + 1].clone() } else { String::new() }
         if a == "--shot" {
             let Some(s) = shot(next.as_str()) else {
-                return Err(String::from(f"no shot {next}: the shots are {NAMES[0]}"))
+                return Err(String::from(f"no shot {next}: the shots are {NAMES[0]} and {NAMES[1]}"))
             }
             o.shot = take s
             k += 1
@@ -98,8 +110,10 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
             k += 1
         } else if a == "--switches" {
             o.switches = true
-        } else if a == "--no-reference" {
-            o.reference = false
+        } else if a == "--reference" {
+            o.reference = true
+        } else if a == "--no-own" {
+            o.own = false
         } else if a == "--no-heat" {
             o.heat = false
         } else if out.is_none() {

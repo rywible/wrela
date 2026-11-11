@@ -4,9 +4,11 @@
 // scenes/opening/tests/steady.)
 
 use main::parse_args
-use measure::{Report, Row, dir_of, heat_picture, kinds_by_id, kinds_in}
-use lookbook_tool::measures::NO_KIND
-use shots::{NAMES, set_of, shot}
+use measure::{
+    DISTANCES, Report, Row, apart, dir_of, dwelling, heat_picture, kinds_by_id, kinds_in, levels,
+}
+use lookbook_tool::measures::{Crawl, NO_KIND}
+use shots::{NAMES, set, set_of, shot}
 use std::json::{TOP, parse}
 
 fn texts(lines: [Text]) -> Vec<String> {
@@ -40,7 +42,8 @@ fn the_command_line_takes_a_directory_a_shot_and_its_options() {
                 "--runs",
                 "3",
                 "--switches",
-                "--no-reference",
+                "--reference",
+                "--no-own",
                 "--no-heat",
             ],
         ),
@@ -49,12 +52,12 @@ fn the_command_line_takes_a_directory_a_shot_and_its_options() {
     }
     assert(o.out.as_str() == "ws/build/steady" && o.ws.as_str() == "ws", o.out.as_str())
     assert(o.width == 640 && o.height == 360 && o.shot.frames == 30 && o.shot.settle == 300)
-    assert(o.step == 8.0 && o.runs == 3 && o.switches && !o.reference && !o.heat)
+    assert(o.step == 8.0 && o.runs == 3 && o.switches && o.reference && !o.own && !o.heat)
     assert(o.sets.len() == 2 && o.sets[0].name.as_str() == "VISTA")
     assert(o.sets[1].name.as_str() == "FINE" && o.sets[1].value.as_str() == "0.3")
     let Ok(plain) = parse_args(texts(["out"])) else { panic("defaults") }
     assert(plain.width == 1280 && plain.height == 720 && plain.step == 15.0 && plain.runs == 1)
-    assert(plain.reference && !plain.switches && plain.heat && plain.sets.is_empty())
+    assert(!plain.reference && plain.own && !plain.switches && plain.heat && plain.sets.is_empty())
     assert(plain.shot.name == NAMES[0] && plain.shot.frames == 60 && plain.shot.settle == 420)
     assert(parse_args(texts([])).is_err(), "no directory")
     assert(parse_args(texts(["/tmp/out"])).is_err(), "a directory outside the workspace")
@@ -68,39 +71,62 @@ fn the_command_line_takes_a_directory_a_shot_and_its_options() {
 }
 
 /// The sailing shot's kinds are the opening's numbers (scenes/opening's `look`): the cathedral
-/// first, the sea and the sky ground; a number no kind names is no kind's. A frame of its ids'
-/// view (each pixel its number times 16) gives each pixel its kind, the cathedral's outline on
-/// the sky taken in.
+/// first, the sea and the sky ground; a number no kind names is no kind's; the rock is the
+/// isle's 4 km off or more, and the stacks' nearer. A frame of its ids' view (each pixel its
+/// number times 16 in red, how far off in green) gives each pixel its kind, the cathedral's
+/// outline on the sky taken in.
 @test
 fn an_ids_views_pixels_are_the_shots_kinds() {
     let Some(s) = shot("sailing") else { panic("the shot") }
     assert(s.kinds[0].name == "cathedral" && s.id_step == 16)
     let table = kinds_by_id(s)
-    assert(table.len() == 256)
-    // The sky 1, the sea 2, the skiff 3, the rock 4, stone 5 to roof 8, house 9, tile 10.
-    let want: [u8; 12] = [NO_KIND, 5, 4, 3, 2, 0, 0, 0, 0, 1, 1, NO_KIND]
+    assert(table.len() == 256 * DISTANCES)
+    // The sky 1, the sea 2, the skiff 3, the rock 4 (the stacks', near), stone 5 to roof 8,
+    // house 9, tile 10: at 1 km off (2 to the 10 m).
+    let want: [u8; 12] = [NO_KIND, 6, 5, 4, 3, 0, 0, 0, 0, 1, 1, NO_KIND]
     for id in 0..12 {
-        assert(table[id] == want[id], f"id {id}: kind {table[id]}, not {want[id]}")
+        let got = table[id * DISTANCES + 10]
+        assert(got == want[id], f"id {id}: kind {got}, not {want[id]}")
     }
+    // Rock 8 km off (2 to the 13 m) is the isle's; rock just short of 4 km is still a stack's.
+    assert(table[4 * DISTANCES + 13] == 2 && table[4 * DISTANCES + 12] == 2)
+    assert(table[4 * DISTANCES + 11] == 3)
+    assert(s.kinds[2].name == "isle" && s.kinds[3].name == "stacks")
+    // The held shot is the sailing shot stopped: the same kinds, every build held.
+    let Some(h) = shot("held") else { panic("the held shot") }
+    assert(h.kinds.len() == s.kinds.len() && h.always.len() == 1 && s.always.len() == 0)
+    assert(h.always[0].name.as_str() == "HOLD" && h.settle > s.settle)
+    // The sailing shot's builds can dwell (their settled twins, its reference); held, they
+    // have no need to.
+    assert(s.settled == 96 && s.dwell == "DWELL" && s.hold.len() == 1)
+    assert(h.settled == 0 && h.dwell == "" && h.hold.len() == 0)
+    let twin = dwelling(s, [set("VISTA", "false")], s.settled)
+    assert(twin.len() == 3 && twin[0].name.as_str() == "VISTA")
+    assert(twin[2].name.as_str() == "DWELL" && twin[2].value.as_str() == "96")
+    assert(dwelling(h, [], 16).len() == 0)
     var ground: Vec<bool> = Vec::new()
     for k in s.kinds {
         ground.push(k.ground)
     }
     // Three pixels in a row: the sky, stone (5 × 16 = 80, a level off), the sea; under them
-    // the sky, the sky, the sea.
+    // the sky, the sky, the sea. All 8 km off (13 × 16 = 208 in green, and some).
     var rgba: Vec<u8> = Vec::new()
     for level in [16, 81, 32, 16, 16, 32] {
-        for _ in 0..3 {
-            rgba.push(u8(level))
-        }
+        rgba.push(u8(level))
+        rgba.push(215)
+        rgba.push(0)
         rgba.push(255)
     }
     let kind = kinds_in(rgba, w: 3, id_step: 16, table: table, ground: ground)
     // The stone's neighbours left, right and below are its outline; the corners aren't.
-    let seen: [u8; 6] = [0, 0, 0, 5, 0, 4]
+    let seen: [u8; 6] = [0, 0, 0, 6, 0, 5]
     for i in 0..6 {
         assert(kind[i] == seen[i], f"pixel {i}: kind {kind[i]}, not {seen[i]}")
     }
+    // Rock (4 × 16) far off is the isle's, near a stack's.
+    let rocks: [u8; 8] = [64, 208, 0, 255, 64, 160, 0, 255]
+    let two = kinds_in(rocks, w: 2, id_step: 16, table: table, ground: ground)
+    assert(two[0] == 2 && two[1] == 3, f"{two[0]} {two[1]}")
 }
 
 /// A build's heat is its last frame in dim grey, with the pixels that stepped lit: red for one
@@ -137,12 +163,14 @@ fn a_report_is_a_table_and_json() {
                     name: String::from("play"),
                     about: String::new(),
                     crawl: Vec::from([0.47, 0.79]),
+                    own: Vec::from([0.41, 0.2]),
                     pixels: Vec::from([8366.0, 83122.0]),
                 },
                 Row {
                     name: String::from("VISTA=false"),
                     about: String::from("the vista off"),
                     crawl: Vec::from([1.41, 0.79]),
+                    own: Vec::new(),
                     pixels: Vec::from([8366.0, 83122.0]),
                 },
             ],
@@ -159,9 +187,35 @@ fn a_report_is_a_table_and_json() {
     assert(text.as_str().find("| VISTA=false | 1.41 | 0.79 |").is_some(), text.as_str())
     assert(text.as_str().find("| (pixels a frame) | 8366 | 83122 |").is_some(), text.as_str())
     assert(text.as_str().find("VISTA=false: the vista off").is_some(), text.as_str())
+    // A build held against its settled twin has a crawl of its own: a second table, its rows
+    // alone.
+    assert(r.own("play", "cathedral") == Some(0.41) && r.own("VISTA=false", "rock").is_none())
+    assert(text.as_str().find("| play | 0.41 | 0.20 |").is_some(), text.as_str())
     let json = r.json()
     let Some(doc) = parse(json.as_str()) else { panic("the report's JSON parses") }
     let Some(builds) = doc.get(TOP, "builds") else { panic("its builds") }
     assert(doc.count(builds) == 2, json.as_str())
     assert(dir_of("RENDER_SCALE=1.0").as_str() == "RENDER_SCALE-1-0")
+}
+
+/// A build's crawl of its own is counted in its difference from its settled twin's frames:
+/// what moves the same in both isn't in it, and what only the build does is.
+@test
+fn what_moves_in_the_settled_twin_too_is_not_a_builds_own() {
+    // Two pixels over three frames. The first brightens the same in both (motion); the second
+    // flickers in the build alone.
+    let settled: [[f32; 2]; 3] = [[0.1, 0.5], [0.4, 0.5], [0.7, 0.5]]
+    let build: [[f32; 2]; 3] = [[0.12, 0.5], [0.42, 0.8], [0.72, 0.5]]
+    var raw = Crawl::new(2, 15.0 / 255.0)
+    var own = Crawl::new(2, 15.0 / 255.0)
+    let kind: [u8; 2] = [0, 1]
+    for f in 0..3 {
+        let l = Vec::from(build[f])
+        own.add(apart(l, levels(settled[f])), kind)
+        raw.add(take l, kind)
+    }
+    // Raw, both step every frame; of its own, only the flicker does.
+    assert(raw.per_thousand(0) == 1000.0 && raw.per_thousand(1) == 1000.0)
+    assert(own.per_thousand(0) == 0.0 && own.per_thousand(1) == 1000.0)
+    assert(levels([0.0, 0.5, 1.0, 2.0])[1] == 128 && levels([2.0])[0] == 255)
 }
