@@ -754,8 +754,9 @@ fn lit_hero(
     ao: f32,
 ) -> Targets3<vec4, vec4, vec4> {
     let h = Heaven { light, clouds, over }
-    let cast = vessel_shadow(s, p + n * 0.01, light.sun)
-    let sun = cast * cloud_shadow(clouds, cloud, smp, p)
+    // (No march of the vessel's shadow where the clouds let no sun through.)
+    let clouded = cloud_shadow(clouds, cloud, smp, p)
+    let sun = if clouded > 0.0 { vessel_shadow(s, p + n * 0.01, light.sun) * clouded } else { 0.0 }
     var col = if INKED > 0.5 {
         illustrated(s, light, skies, p, n, c, sun, ao)
     } else {

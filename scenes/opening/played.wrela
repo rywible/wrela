@@ -4,13 +4,16 @@
 // which it lays on its own screen.
 
 use main::{
-    HALF_PAINT, HERO, KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, START, STYLE, VISTA, VISTA_SIZE,
+    HALF_PAINT, HERO, KINETIC, LANTERN, LOOK, OFF, QUARTER, SPARSE, STACKED, START, STYLE, VISTA,
+    VISTA_SIZE,
 }
 use aboard::{Aboard, aboard}
 use heavens::{Heavens, heavens}
 use look::{SUN, Shot, shot_at}
-use sea::{MID_CALM, RIDDEN, SEA, held}
-use engine::ocean::{Ocean, Waves}
+use sea::{HULL_MID, MID_CALM, RIDDEN, SEA, held}
+use engine::ocean::{Ocean, Swell, Waves}
+use engine::stir::Stir
+use wake::{STIRRED, pressed, sunk, under, washed}
 use engine::upscale::{Body, NO_BODY, Pinhole}
 use paint::{OVERHEAD, overhead_once, paint, paint_fill, paint_half}
 use yonder::{
@@ -24,6 +27,7 @@ use engine::far::{
 }
 use ink::ink
 use rock::{Rock, reach, rock, step_rock}
+use stacked::{Stacked, reach_stacks, stacked, step_stacks}
 use weather::weather
 use sail::{Rig, key, let_go, rest, step}
 use std::collections::swap
@@ -34,6 +38,13 @@ use std::gpu::{
     Texture3d, VertexIndex, begin_pass, begin_pass3, depth_texture, dispatch, draw, label, texture,
     texture3d, writable_texture,
 }
+
+/// The water the skiff stirs (`engine::stir`): its side in cells (a power of two), and a cell's
+/// (m): 32 m across, a cell a quarter of a metre, centred `STIR_AFT` behind the skiff so its wake
+/// trails out long behind it.
+const STIR_CELLS: u32 = 128
+const STIR_CELL: f32 = 0.25
+const STIR_AFT: f32 = 8.0
 
 /// How finely a live page meets the scene (`Shot::fine`): the rock and the cathedral four times
 /// over a pixel, the rest once.
@@ -80,6 +91,8 @@ pub struct State {
     pub(package) rock: Rock,
     pub(package) reach: Texture<Rg32Float>,
     pub(package) reach_depth: DepthTexture,
+    /// The sea stacks as meshes (`stacked`), drawn into `reach` after the rock's.
+    pub(package) stacks: Stacked,
     /// The rock and the cathedral in a picture of their own, pinned to the world (`main::VISTA`):
     /// its view, whether it's been aimed yet, what it holds (`vista_*`) and what's written from it
     /// when it's carried to a new aim (`vista_new_*`, the two swapped after), whose turn it is, and the
@@ -166,6 +179,15 @@ pub struct State {
     pub(package) band: u32,
     /// The hero, realized, and what he's drawn into before he's laid over the paint (`aboard`).
     pub(package) aboard: Aboard,
+    /// The water the skiff stirs (`engine::stir`), pressed by its hull (`wake::pressed`) where
+    /// it sits in the waves as they're drawn along it (`sea::HULL_MID`).
+    pub(package) stir: Stir,
+    pub(package) drawn_swell: Swell,
+    /// How far up the hull's sides the sea has lately washed (`wake::washed`), and when.
+    pub(package) wash: [f32; 24],
+    pub(package) washed_at: f32,
+    /// How far the skiff has settled into the water it stirs (`wake::sunk`), eased.
+    pub(package) sink: f32,
 }
 
 pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State {
@@ -207,6 +229,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         isle_field: texture3d::<R32Float>(FIELD_SIDE, FIELD_SIDE, FIELD_SIDE),
         isle_cooked: 0,
         rock: rock(),
+        stacks: stacked(),
         reach: texture(width: width, height: height),
         reach_depth: depth_texture(width, height),
         vista: aimed(shot.eye, isle_extent(), size: f32(VISTA_SIZE), margin: 0.04),
@@ -258,6 +281,11 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         shot,
         band: 0,
         aboard: aboard(),
+        stir: Stir::new(STIR_CELLS, STIR_CELL),
+        drawn_swell: Swell::new(SEA, RIDDEN, HULL_MID),
+        wash: [0.0; 24],
+        washed_at: -1.0e4,
+        sink: 0.0,
         width,
         height,
     }
@@ -303,6 +331,7 @@ fn afresh(shot: Shot) -> Yon {
         turn: 0,
         meshed: 0,
         rock_turn: 0,
+        stacked: 0,
         vista: 0,
     }
 }
@@ -440,6 +469,11 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
         fine,
         ..shot_at(START + time, s.width, s.height, KINETIC, view, rig, s.ocean.swell),
     }
+    // (Settled into the hollow its own bow wave leaves, as the drawing before measured it.)
+    // (The sim is pressed and measured by the skiff where it floats unsettled, `afloat`: pressing
+    // it with the settled hull would dig the hollow deeper the deeper it settled.)
+    let afloat = shot
+    let shot = Shot { boat: shot.boat + vec3(y: s.sink), ..shot }
     s.heavens.step(shot.eye, shot.forward, START + time)
     let shot = Shot { storm: s.heavens.storm, wind: s.heavens.wind, ..shot }
     // (Its rays through each pixel moved by the upscaler's jitter, `s.jitter`; the camera as it
@@ -448,13 +482,41 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     s.plain = shot
     s.body = Body { at: shot.boat, x: shot.boat_x, y: shot.boat_y, z: shot.boat_z }
     next_yon(mut s, shot)
-    // The sea as it is at this drawing.
-    s.ocean.step(held(START + time))
+    // The sea as it is at this drawing, and the water the skiff stirs in it.
+    let now = held(START + time)
+    s.ocean.step(now)
+    let shot = if STIRRED > 0.5 {
+        // (Only as the scene's own drawings come: a frame between two of them, on a screen
+        // faster than they are, has moved nothing on.)
+        if now != s.washed_at {
+            s.stir.sheet.follow(vec2(afloat.boat.x, afloat.boat.z) - normalize(vec2(afloat.boat_z.x, afloat.boat_z.z)) * STIR_AFT)
+            let u = under(afloat, s.drawn_swell, now)
+            let (press, froth) = pressed(afloat, s.stir.sheet, u)
+            s.stir.step(now, press, froth)
+            let ease = 1.0 - exp(-4.0 * clamp(now - s.washed_at, 0.0, 1.0))
+            s.sink = mix(s.sink, sunk(afloat, s.stir.sheet), ease)
+            s.wash = washed(shot, s.stir.sheet, u, s.wash, now - s.washed_at)
+            s.washed_at = now
+        }
+        var wash = [vec4(0.0); 6]
+        for i in 0..24 {
+            wash[i / 4][i % 4] = s.wash[i]
+        }
+        Shot { wash, stir_at: s.stir.at(), ..shot }
+    } else {
+        shot
+    }
+    s.plain = shot
     // The rock's meshes, and how far each pixel is to them.
     label("rock")
     let ready = step_rock(mut s.rock, shot, s.heavens.light.sun)
     let meshed = reach(s.rock, shot, ready, s.unbaked, mut s.reach, mut s.reach_depth)
     s.yon.meshed = if meshed { 1 } else { 0 }
+    label("stacks")
+    // (Not stepped when they're not drawn: their meshes would be realized for nothing.)
+    let whole = STACKED && step_stacks(mut s.stacks, shot)
+    let stacked = reach_stacks(s.stacks, shot, whole, meshed, s.unbaked, mut s.reach, mut s.reach_depth)
+    s.yon.stacked = if stacked { 1 } else { 0 }
     if VISTA {
         label("vista")
         aim_vista(mut s, shot)
@@ -857,6 +919,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 cloud: hv.sky.shadow,
                 smp: hv.linear,
                 waves: waves,
+                stir: s.stir.cells.items(),
                 yon_colour: s.yon_colour,
                 yon_marks: s.yon_marks,
                 yon_normal: s.yon_normal,
@@ -905,6 +968,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
             cloud: hv.sky.shadow,
             smp: hv.linear,
             waves: waves,
+            stir: s.stir.cells.items(),
             yon_colour: s.yon_colour,
             yon_marks: s.yon_marks,
             yon_normal: s.yon_normal,

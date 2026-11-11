@@ -1,0 +1,13 @@
+pick.bvh: generated 2026-11-06 by NVIDIA Kimodo (model Kimodo-SOMA-RP-v1.1, released under the
+NVIDIA Open Model License, https://huggingface.co/nvidia/Kimodo-SOMA-RP-v1.1), run through the
+community Replicate deployment sprited/kimodo. Under that licence NVIDIA claims no ownership of
+outputs and puts no limit on distributing them; Replicate's terms assign outputs to the user.
+No model weights or code are included here.
+
+Prompt: "A person in a fighting stance shifts their weight onto the back foot, then throws a powerful right straight punch, rotating the hips and shoulders into it."
+(3 s, seed 7, sample 2 of 4). SOMA 77-joint skeleton, centimetres, 30 frames a second.
+
+sha256 39881bbf995d8c3e5638dfe806cebaf37a86de3b5a76c046027f825fae674bbc
+
+Changes made here: none to the file. content/humanoid/kimodo retargets it onto the body at build
+time, retimes it to the fight's frame data, straightens and cocks the wrists and closes the hands.

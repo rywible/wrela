@@ -68,22 +68,45 @@ pub fn ground(vertex: VertexIndex, shot: Shot) -> GroundVertex {
     GroundVertex { clip: ClipPosition { position: shot.cam.clip(world) }, world }
 }
 
+/// A body's shadow on the ground at `off` from its feet: how deep (pooled under them, and cast
+/// away from the sun a body's length), and how far along the cast it is (m).
+fn shadow_of(off: vec2, sun: vec3) -> (f32, f32) {
+    let away = -normalize(sun.xz)
+    let along = dot(off, away)
+    let across = dot(off, vec2(-away.y, away.x))
+    let reach = 1.8 * length(sun.xz) / max(sun.y, 0.2)
+    let cast = band(along, edge: -0.15, soft: 0.1) *
+        (1.0 - band(along, reach, 0.4)) *
+        (1.0 - band(abs(across), 0.22 + 0.05 * along, 0.08))
+    let pool = 1.0 - band(length(off * vec2(1.0, 1.4)), edge: 0.32, soft: 0.12)
+    (max(cast * 0.7, pool * 0.85), along)
+}
+
 @fragment
 pub fn paint_ground(g: GroundVertex, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     let p = g.world
     let t = length(p - shot.cam.eye)
     // Its shadow: pooled under the body's feet, and thrown away from the sun along the ground,
-    // a body's length, softening as it goes.
-    let off = p.xz - shot.feet.xz
-    let away = -normalize(shot.sun.xz)
-    let along = dot(off, away)
-    let across = dot(off, vec2(-away.y, away.x))
-    let reach = 1.8 * length(shot.sun.xz) / max(shot.sun.y, 0.2)
-    let cast = band(along, edge: -0.15, soft: 0.1) *
-        (1.0 - band(along, reach, 0.4)) *
-        (1.0 - band(abs(across), 0.22 + 0.05 * along, 0.08))
-    let pool = 1.0 - band(length(off * vec2(1.0, 1.4)), edge: 0.32, soft: 0.12)
-    let shade = max(cast * 0.7, pool * 0.85)
+    // a body's length, softening as it goes. (Two fighters: one under each.)
+    let one = shadow_of(p.xz - shot.feet.xz, shot.sun)
+    var shade = one.0
+    var along = one.1
+    if shot.pair_a.w > 1.5 {
+        // (The fighters cast their own, in their own shapes: `cast_shadow`.)
+        shade = 0.0
+        along = 0.0
+    } else if shot.pair_a.w > 0.5 {
+        let (sa, la) = shadow_of(p.xz - shot.pair_a.xz, shot.sun)
+        let (sb, lb) = shadow_of(p.xz - shot.pair_b.xz, shot.sun)
+        shade = max(sa, sb)
+        along = if sa > sb { la } else { lb }
+    }
+    page(p, shot, shade, along)
+}
+
+/// The ground at `p`, `shade` deep in shadow (`along` m down a cast one from its feet).
+fn page(p: vec3, shot: Shot, shade: f32, along: f32) -> Targets3<vec4, vec4, vec4> {
+    let t = length(p - shot.cam.eye)
     // The page: paper with a little tooth, falling off into the wash far away.
     let tooth = noise(p.xz * 3.0) * 0.04
     let lit = PAPER * (0.86 + tooth) * mix(vec3(1.0), WARM, vec3(0.12))
@@ -100,6 +123,13 @@ pub fn paint_ground(g: GroundVertex, shot: Shot) -> Targets3<vec4, vec4, vec4> {
         0.25 * (1.0 - band(along, edge: 0.6, soft: 0.3)),
         vec3(0.0, 1.0, 0.0),
     )
+}
+
+/// The ground at `p` in a body's cast shadow (a fighter's mesh laid on it along the sun: his own
+/// shape, flat, one value, as a cel's shadow is), lighter the higher on him it's cast from
+/// (`from`, m).
+pub fn cast_shadow(p: vec3, shot: Shot, from: f32) -> Targets3<vec4, vec4, vec4> {
+    page(p, shot, 0.8 - 0.25 * saturate(from / 1.8), 0.0)
 }
 
 /// The body's clothes, sRGB, blocked in value so its parts read in motion: a mid terracotta shirt,
@@ -152,6 +182,9 @@ pub struct BodyOut: Copy {
     pub albedo: vec3,
     pub rest: vec3,
     pub part: Flat<u32>,
+    /// The body's tint (`Shot::tint`, from its palette's last slot) and its left (xyz).
+    pub tint: vec4,
+    pub left: vec4,
 }
 
 /// A vertex's skinning matrix: its four bones' matrices in the palette, blended by its weights.
@@ -178,6 +211,8 @@ pub fn body(v: VertexIndex, verts: [BodyVertex], palette: [mat4], shot: Shot) ->
         albedo: c * c,
         rest: sv.pos,
         part: Flat { value: sv.part },
+        tint: palette[63][0],
+        left: palette[63][1],
     }
 }
 
@@ -196,6 +231,11 @@ pub fn paint_body(b: BodyOut, shot: Shot) -> Targets3<vec4, vec4, vec4> {
         Some(c) => c * c,
         None => b.albedo,
     }
+    // (A tint above 1 is stone: the clothes' colour gone, their value kept, in the tint's hue.)
+    let grey = dot(albedo, vec3(0.3, 0.55, 0.15))
+    let albedo = if b.tint.w > 1.5 { b.tint.rgb * (0.12 + 0.6 * sqrt(grey)) } else {
+        mix(albedo, albedo * b.tint.rgb, vec3(saturate(b.tint.w)))
+    }
     let ndl = dot(n, l)
     let lit_side = band(ndl, edge: 0.02, soft: 0.035)
     let full = band(ndl, edge: 0.45, soft: 0.035)
@@ -212,10 +252,27 @@ pub fn paint_body(b: BodyOut, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     c += COOL * edge * 0.10 * (1.0 - lit_side)
     // The far side: a limb's side (by its x at rest) against the side the camera's on.
     let to_eye = shot.cam.eye - shot.feet
-    let facing = dot(shot.left, normalize(vec3(to_eye.x, 0.0, to_eye.z)))
+    let own_left = if b.left.w > 0.5 { b.left.xyz } else { shot.left }
+    let facing = dot(own_left, normalize(vec3(to_eye.x, 0.0, to_eye.z)))
     let side = if abs(b.rest.x) > 0.07 { sign(b.rest.x) } else { 0.0 }
     let far = saturate(-side * facing * 3.0)
     c = mix(c, c * mix(COOL, vec3(1.0), vec3(0.55)) * 0.78, vec3(far))
     let t = length(b.world - shot.cam.eye)
-    targets(c, t, BODY, line: field, weight: mix(0.8, 0.55, far), n: n)
+    var out = targets(c, t, if b.tint.w > 0.0 { BODY + 20.0 } else {
+        BODY
+    }, line: field, weight: mix(0.8, 0.55, far), n: n)
+    // A strike's force: his energy along it.
+    let f = shot.force_from
+    if shot.force_to.w > 0.0 {
+        let ab = shot.force_to.xyz - f.xyz
+        let k = saturate(dot(b.world - f.xyz, ab) / max(dot(ab, ab), 1.0e-6))
+        let d = length(b.world - (f.xyz + ab * k))
+        // A heavy strike: his whole form a little, the striking limb most, out to its end. A
+        // light one: its fist alone.
+        let heavy = f.w > 0.5
+        let near = 1.0 - band(d, edge: 0.16, soft: 0.08)
+        let limb = near * saturate((k - (if heavy { 0.25 } else { 0.62 })) / 0.3)
+        out.third.w = shot.force_to.w * max(limb, if heavy { 0.3 } else { 0.0 })
+    }
+    out
 }

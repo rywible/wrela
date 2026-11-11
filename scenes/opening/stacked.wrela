@@ -1,0 +1,186 @@
+// The sea stacks as meshes, as the rock is (`rock`): their field (`stacks::stacks`) realized by
+// the engine in tiles (`engine::solids`), each at the level its size on screen asks for, and drawn
+// each drawing into the same `reach` the rock's meshes are, after them. The far pass (`yonder`)
+// starts the stacks' march where the meshes say, a little short, and a pixel no mesh covers (nor
+// any pixel round it) doesn't march them at all: most of the frame is sea and sky that no stack
+// stands in, and that march ran out kilometres over the open sea for every one of those pixels.
+//
+// The mesh only says where to look: what the stacks look like is the traced field's still. It's
+// meshed proud of the stone (`PROUD`) by its coarsest level's error, so no mesh, even a tile's
+// first, falls inside a stack's silhouette and leaves a sliver of it unmarched, nor loses a
+// skerry (the least, proud, is wider than that level's cell); the far pass starts a little short
+// of it (`rock::SHORT`), so its depth's error is covered too.
+
+use rock::{NEAR, how_far, placed, view_proj}
+use stacks::{TALLEST, stacks, stacks_near, stacks_reach}
+use look::Shot
+use engine::creature::{CreatureField, Placed}
+use engine::look::Level
+use engine::realize::{Eye, solid}
+use engine::solids::{Tiles, tiles}
+use std::derive::{Box3, Interval}
+use std::field::{Bound, Field, Surface, UNBOUNDED}
+use std::gpu::{Cull, DepthTexture, GpuBuffer, Rg32Float, Texture, begin_pass_with_depth, draw}
+
+/// The stacks as a surface, proud of the stone by `PROUD`.
+pub struct Stone: Copy + GpuData {
+    pub unused: f32,
+}
+
+impl Surface for Stone {
+    /// Unbounded: the scene culls it by its tiles (`engine::solids`) and `stacks_near`, not by a
+    /// sphere.
+    fn bound(self) -> Bound {
+        UNBOUNDED
+    }
+
+    fn distance(self, p: vec3) -> f32 {
+        stacks(p, DETAIL) - PROUD
+    }
+
+    /// From its distance at the box's centre and a bound on its steepness, as the rock's is
+    /// (`rock::Isle`).
+    fn interval(self, over: Box3) -> Interval {
+        // (Clear of every cluster's reach, or over the tallest: no stone in it, by some way.)
+        if over.lo.y > TALLEST + PROUD || !stacks_near(over.lo.xz, over.hi.xz, PROUD) {
+            return Interval { lo: PROUD, hi: 1.0e6 }
+        }
+        let r = STEEP * 0.5 * length(over.hi - over.lo)
+        let d = stacks(over.center(), DETAIL) - PROUD
+        Interval { lo: d - r, hi: d + r }
+    }
+}
+
+impl Field<f32> for Stone {
+    fn channels(self, p: vec3) -> f32 {
+        0.0
+    }
+}
+
+/// How far proud of the stone the mesh stands (m): the coarsest level's error, half its cell (a
+/// tile's first mesh is its coarsest, and stands until the budget comes to it). No more than
+/// `stacks` gives by a cell's edge, less a metre (5 m): prouder, the mesh would stand there too.
+const PROUD: f32 = 4.0
+
+/// The stone's detail the mesh is cut at (m: a pixel's width, `stacks`'s `px`).
+const DETAIL: f32 = 1.0
+
+/// A bound on how steep the stacks' distance is (their pieces are scaled, some unevenly).
+const STEEP: f32 = 1.5
+
+/// The stacks' meshes, kept by the engine.
+pub type Stacked = Tiles<CreatureField<Placed<Stone>>>
+
+/// The levels (cells, m), coarse to fine, and each's estimated cost a block (us). None coarser
+/// than twice `PROUD`.
+pub const LEVELS = [
+    Level { cell: 8.0, cost_us: 0.3 },
+    Level { cell: 4.0, cost_us: 0.3 },
+    Level { cell: 2.0, cost_us: 0.3 },
+]
+
+/// A tile's side (m): one tile covers a cluster's height whole.
+pub const SIDE: f32 = 128.0
+
+/// `reach`'s far plane (m): where a pixel sees no mesh (`rock::FAR`).
+const FAR: f32 = 100000.0
+
+/// The stacks' box: as far out as they stand, from their feet to over the tallest.
+pub fn stacks_box() -> Box3 {
+    let r = stacks_reach()
+    Box3 { lo: vec3(-r, -20.0, -r), hi: vec3(r, TALLEST + 8.0, r) }
+}
+
+/// The stacks' tiles, none realized yet.
+pub fn stacked() -> Stacked {
+    let shape = solid(Stone { unused: 0.0 }, stacks_box(), name: "stacks")
+    tiles(shape.field(), stacks_box(), SIDE, LEVELS, max_cell_px: 1.0, budget_us: 3000.0)
+}
+
+/// The stacks' tiles stepped on for `s`: each tile's level, and what the budget realizes.
+/// Whether the meshes can say where the stacks are this frame: every tile `s` sees has a mesh at
+/// some level, and no stone stands near enough the eye for `reach`'s near plane to cut its mesh.
+/// (Not every tile: the engine realizes one it doesn't see a drawing at a time, last, and four
+/// hundred of them behind the eye would hold the meshes back for many seconds; what's off the
+/// screen has no pixel to say anything of.)
+pub fn step_stacks(st: mut Stacked, s: Shot) -> bool {
+    let fovy = 2.0 * atan(1.0 / s.focal)
+    let vp = view_proj(s)
+    st.frame(Eye { at: s.eye, view_proj: vp, height: s.resolution.y, fovy })
+    // (A cluster within the near plane of the eye, out to the frame's corners, and the mesh's
+    // pride and its coarsest error past that: its mesh could be cut there, and the stone behind
+    // it left unmarched. The cluster's whole reach, and the 4 m past it its field still says
+    // stone could be, not its stone: `stacks` is no distance by a cell's edge.)
+    let tx = s.resolution.x / (s.resolution.y * s.focal)
+    let ty = 1.0 / s.focal
+    let near = vec2(NEAR * sqrt(1.0 + tx * tx + ty * ty) + PROUD + LEVELS[0].cell)
+    if stacks_near(s.eye.xz - near, s.eye.xz + near, 4.0) {
+        return false
+    }
+    let scale = max(length(vec3(vp[0].x, vp[1].x, vp[2].x)), length(vec3(vp[0].y, vp[1].y, vp[2].y)))
+    for i in 0..st.len() {
+        if st.drawn(i) {
+            continue
+        }
+        let b = st.cubes[i]
+        // (The engine's own test, `realize::on_screen`, on the cube's sphere: a tile it sees
+        // waits on nothing else, so one it doesn't see but this did would never be realized
+        // before the rest. What its grid takes in past the cube, its neighbours' grids do too.)
+        let r = 0.5 * length(b.hi - b.lo)
+        let clip = vp * vec4(0.5 * (b.lo + b.hi), 1.0)
+        let rs = r * scale
+        if clip.w > -r && abs(clip.x) <= clip.w + rs && abs(clip.y) <= clip.w + rs {
+            return false
+        }
+    }
+    true
+}
+
+/// The stacks' meshes drawn into `out` (and `depth`) over what the rock's left there
+/// (`rock::reach`), nearer wins, or over nothing if the rock's didn't draw (`drew`: then the far
+/// pass doesn't read the rock from it); their shade unbaked (-1: the far pass shades a stack as
+/// ever). Only once the meshes can say where the stacks are (`ready`, `step_stacks`): until then
+/// the far pass marches the stacks as it did. Whether it drew.
+pub fn reach_stacks(
+    st: Stacked,
+    s: Shot,
+    ready: bool,
+    drew: bool,
+    unbaked: GpuBuffer<vec4>,
+    out: mut Texture<Rg32Float>,
+    depth: mut DepthTexture,
+) -> bool {
+    if !ready {
+        return false
+    }
+    let vp = view_proj(s)
+    let pass = begin_pass_with_depth(
+        mut out,
+        mut depth,
+        clear: vec4(FAR, 0.0, 0.0, 0.0),
+        keep: drew,
+        keep_depth: drew,
+    )
+    for i in 0..st.len() {
+        if !st.drawn(i) {
+            continue
+        }
+        borrow m = st.mesh(i)
+        draw(
+            pass,
+            placed.bind(
+                verts: m.verts.items(),
+                shade: unbaked.items(),
+                cooked: 0,
+                view_proj: vp,
+                eye: s.eye,
+            ),
+            how_far.bind(),
+            indices: m.quads.items(),
+            indirect: m.draw.items(),
+            cull: Cull::None,
+        )
+    }
+    pass.end()
+    true
+}
