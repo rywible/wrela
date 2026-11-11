@@ -28,6 +28,7 @@ use lit::Lighting
 use switches::Switches
 use style::Style
 use lod::{IMPOSTOR, Lod, VOLUME, ways}
+use neural::unhalves
 use memory::{Share, Usage}
 use plant::{
     CARD_LEVELS, CORNERS, Card, Instance, Leaves, NO_INSTANCE, Plant, Wind, cook_outlines,
@@ -937,7 +938,7 @@ pub struct Wood {
     /// A kind's impostor read through a net, and its weights (`read_through`: none unless a game
     /// gives one, `switches::Switches::NEURAL`).
     neural: Neural,
-    net: GpuBuffer<Half2>,
+    net: GpuBuffer<f32>,
     /// The near individuals (§E1.3, `reserve_near`): each one's archetype (`NO_KIND`: free), its
     /// cards and limbs, the room each has (cards, limbs), and where the first's starts in the
     /// pool (its cards, orders and limbs).
@@ -1101,10 +1102,11 @@ impl Wood {
         )
     }
 
-    /// Its kind `k`'s impostor read through net `nn` (its weights then its grid's, `w`) in place
-    /// of its atlas (§B14.2); every kind's if `k` is `impostor::EVERY_KIND`.
+    /// Its kind `k`'s impostor read through net `nn` (its weights then its grid's, `w`, half
+    /// floats as shipped: decoded here, once) in place of its atlas (§B14.2); every kind's if `k`
+    /// is `impostor::EVERY_KIND`.
     pub fn read_through(mut self, k: u32, nn: Neural, w: [Half2]) {
-        self.net = buffer_of(w)
+        self.net = buffer_of(unhalves(w, nn.model.size() + nn.grid * nn.grid * nn.features))
         self.neural = Neural { layer: k, on: 1, ..nn }
     }
 

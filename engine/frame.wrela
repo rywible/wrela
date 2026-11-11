@@ -44,9 +44,12 @@ use sky::{Clouds, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky, sky_shade}
 use switches::Switches
 use marks
 use marks::{dab_map, lines}
+use neural::unhalves
 use style::Style
 use substance
-use temporal::{FoundRow, Resolve, found_rows, held, neighbourhoods, resolve, resolve_gathered}
+use temporal::{
+    FoundRow, REJECTOR, Resolve, found_rows, held, neighbourhoods, resolve, resolve_gathered,
+}
 use cull::{Hzb, Pyramid}
 use terrain::{Clipmap, SIDES, Texel, ground, ground_shade}
 use view::{BEHIND, Camera, NEAREST, camera, jitter_of}
@@ -610,7 +613,7 @@ pub trait Resolver {
         last_history: Texture<Rgba16Float>,
         tone: Texture<R32Uint>,
         s: Sampler,
-        net: GpuSpan<Half2>,
+        net: GpuSpan<f32>,
     )
 }
 
@@ -641,7 +644,7 @@ impl Resolver for Gathered {
         last_history: Texture<Rgba16Float>,
         tone: Texture<R32Uint>,
         s: Sampler,
-        net: GpuSpan<Half2>,
+        net: GpuSpan<f32>,
     ) {
         let p = begin_pass(mut into)
         draw(
@@ -698,7 +701,7 @@ impl Resolver for Shared {
         last_history: Texture<Rgba16Float>,
         tone: Texture<R32Uint>,
         s: Sampler,
-        net: GpuSpan<Half2>,
+        net: GpuSpan<f32>,
     ) {
         dispatch(neighbourhoods.bind(scene, mut self.means, mut self.spreads), over: scene)
         let p = begin_pass(mut into)
@@ -1141,7 +1144,7 @@ pub struct Frame<R: Resolver, Q: Switches, Y: Style> {
     cascades: Option<Cascades>,
     /// The learned rejector's net (`Switches::LEARNED`, `reject_by`: none until given),
     /// and the output pixels whose resolve is asked for (`ask_found`) with where it goes.
-    rejector: GpuBuffer<Half2>,
+    rejector: GpuBuffer<f32>,
     rejects: bool,
     found: Option<(GpuBuffer<vec2u>, GpuBuffer<FoundRow>)>,
     /// The scene's local lights, binned into the frame's froxels (`lights`).
@@ -1412,10 +1415,10 @@ impl<R: Resolver, Q: Switches, Y: Style> Frame<R, Q, Y> {
         }
     }
 
-    /// The learned rejector's net (`temporal::REJECTOR`'s shape, half floats), which temporal AA
-    /// reads under `Switches::LEARNED`.
+    /// The learned rejector's net (`temporal::REJECTOR`'s shape, half floats as shipped), which
+    /// temporal AA reads under `Switches::LEARNED`: decoded here, once.
     pub fn reject_by(mut self, net: [Half2]) {
-        self.rejector = buffer_of(net)
+        self.rejector = buffer_of(unhalves(net, REJECTOR.size()))
         self.rejects = true
     }
 

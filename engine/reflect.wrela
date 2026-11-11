@@ -18,10 +18,11 @@ use light::{LUMA, Light}
 use probes::open_light
 use sky::clouded_sky
 use std::gpu::{
-    Cubemap, FragCoord, GlobalId, Rgba16Float, Sampler, Texels, Texture, dispatch, label,
-    writable_cubemap,
+    Cubemap, FragCoord, GlobalId, GpuBuffer, Rgba16Float, Sampler, Texels, Texture, buffer_of,
+    dispatch, label, writable_cubemap,
 }
 use std::math::TAU
+use std::mem::size_of
 use view::Camera
 
 /// What the water's pass reads of the scene drawn before it: its colour, and each pixel's
@@ -241,10 +242,14 @@ pub const LEVELS: u32 = 5
 pub const GLOSSY: f32 = 0.3
 
 /// The specular probe: the sky round it (`sky`, a level), and its levels prefiltered for
-/// roughness (`cube`, `LEVELS`); the face baked next, and whether every face has been.
+/// roughness (`cube`, `LEVELS`); each level's lobe (`lobes`); the face baked next, and whether
+/// every face has been.
 pub struct Specular {
     pub sky: Cubemap<Rgba16Float>,
     pub cube: Cubemap<Rgba16Float>,
+    /// Each level's samples of its lobe (`lobe`), `SAMPLES` a level: the same for every texel
+    /// of a level, so worked out once here, not again in each (§18.13).
+    pub lobes: GpuBuffer<vec2>,
     pub face: u32,
     pub baked: bool,
 }
@@ -255,6 +260,7 @@ impl Specular {
         Specular {
             sky: writable_cubemap::<Rgba16Float>(side: SIDE),
             cube: writable_cubemap::<Rgba16Float>(side: SIDE, levels: LEVELS),
+            lobes: buffer_of(lobes()),
             face: 0,
             baked: false,
         }
@@ -295,6 +301,7 @@ impl Specular {
                     face: f,
                     level: level,
                     side: side,
+                    lobes: self.lobes.items(),
                     sky: self.sky,
                     s: s,
                     out: self.cube.face_mut(f, level: level),
@@ -313,7 +320,7 @@ impl Specular {
             let side = max(SIDE >> level, 1)
             n += memory::texels(side, side, 8, d: 6)
         }
-        n
+        n + u64(self.lobes.len()) * u64(size_of::<vec2>())
     }
 }
 
@@ -374,14 +381,36 @@ pub fn rough_of(level: u32) -> f32 {
 /// The samples a prefiltered texel takes.
 const SAMPLES: u32 = 48
 
+/// Sample `i` of the lobe of level `level`: the cosine and the sine of the angle between the
+/// surface's normal and its half vector (GGX's distribution sampled at the Hammersley set's
+/// `i`th point, Karis 2013).
+fn lobe(level: u32, i: u32) -> vec2 {
+    let a = rough_of(level) * rough_of(level)
+    let xi = hammersley(i, SAMPLES)
+    let ct = sqrt((1.0 - xi.y) / (1.0 + (a * a - 1.0) * xi.y))
+    vec2(ct, sqrt(max(1.0 - ct * ct, 0.0)))
+}
+
+/// Every level's lobe (`lobe`), level by level.
+fn lobes() -> Vec<vec2> {
+    var out: Vec<vec2> = Vec::with_capacity(LEVELS * SAMPLES)
+    for level in 0..LEVELS {
+        for i in 0..SAMPLES {
+            out.push(lobe(level, i))
+        }
+    }
+    out
+}
+
 /// Texel `id` of level `level` (`side` texels a side) of face `face` of the probe: the sky
 /// (`sky`) reflected about its direction by a surface of the level's roughness, GGX's lobe
-/// sampled (the eye along the reflection: Karis 2013's split sum's first factor).
+/// sampled (`lobes`; the eye along the reflection: Karis 2013's split sum's first factor).
 @compute(8, 8)
 pub fn prefilter(
     face: u32,
     level: u32,
     side: u32,
+    lobes: [vec2],
     sky: Cubemap<Rgba16Float>,
     s: Sampler,
     out: mut Texels<Rgba16Float>,
@@ -395,18 +424,15 @@ pub fn prefilter(
         out.store(id, vec4(sky.sample_level(s, n).rgb, 1.0))
         return
     }
-    let a = rough_of(level) * rough_of(level)
     let up = if abs(n.y) < 0.999 { vec3(0.0, 1.0, 0.0) } else { vec3(1.0, 0.0, 0.0) }
     let tx = normalize(cross(up, n))
     let ty = cross(n, tx)
     var sum = vec3(0.0)
     var weight = 0.0
     for i in 0..SAMPLES {
-        let xi = hammersley(i, SAMPLES)
-        let phi = TAU * xi.x
-        let ct = sqrt((1.0 - xi.y) / (1.0 + (a * a - 1.0) * xi.y))
-        let st = sqrt(max(1.0 - ct * ct, 0.0))
-        let h = tx * (st * cos(phi)) + ty * (st * sin(phi)) + n * ct
+        let phi = TAU * hammersley(i, SAMPLES).x
+        let cs = lobes[level * SAMPLES + i]
+        let h = tx * (cs.y * cos(phi)) + ty * (cs.y * sin(phi)) + n * cs.x
         let l = h * (2.0 * dot(n, h)) - n
         let nl = dot(n, l)
         if nl > 0.0 {

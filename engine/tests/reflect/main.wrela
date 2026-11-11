@@ -193,6 +193,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                     side: side,
                     sky: spec.sky,
                     s: lin,
+                    lobes: spec.lobes.items(),
                     out: spec.cube.face_mut(f, level: level),
                 ),
                 over: (side, side),

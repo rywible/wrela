@@ -26,9 +26,9 @@ use light::{LUMA, Light, sky}
 use sky::{Clouds, cloud_shadow, clouded_sky}
 use shadow::{Shadows, statically_sunlit}
 use std::gpu::{
-    Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, R32Float, Rgba16Float,
-    Rgba8, Sampler, Slots, Texels, Texels3d, Texture, Texture3d, buffer, buffer_of, dispatch, label,
-    texture3d, writable_texture, write,
+    Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, One, R32Float,
+    Rgba16Float, Rgba8, Sampler, Slots, Texels, Texels3d, Texture, Texture3d, buffer, buffer_of,
+    dispatch, label, texture3d, writable_texture, write,
 }
 use std::math::PI
 use switches::Switches
@@ -45,7 +45,7 @@ pub struct Probe: Copy + GpuData {
 }
 
 /// What a probe holds: the sky's part and the sun's (see the module's docs).
-pub struct Held: Copy {
+pub struct Held: Copy + GpuData {
     pub sky: Probe,
     pub sun: Probe,
 }
@@ -900,15 +900,15 @@ const SKY_MOST = vec3(4.0)
 
 /// The open sky as a probe at the eye would hold it, with nothing round it: the air's sky
 /// (`view`; not its clouds) above, and below, the ground (`ground`, its albedo) lit by the sun
-/// and that sky. Two invocations: the sky's part (slot 0), and the sun's (slot 1, the ground's
-/// light from the sun).
-@compute(2)
+/// and that sky: its sky's part, and its sun's (the ground's light from the sun). One
+/// invocation: both parts take the same sums over the sky, worked out once (§18.13).
+@compute(1)
 pub fn open_sky(
     light: Light,
     ground: vec3,
     view: Texture<Rgba16Float>,
     s: Sampler,
-    out: mut Slots<Probe>,
+    out: mut One<Held>,
     id: GlobalId,
 ) {
     var up = NONE
@@ -925,14 +925,19 @@ pub fn open_sky(
     let sky_up = convolved(up, OPEN_RAYS)
     // The ground below: even light, its albedo times the sky on it, or (the sun's part) the
     // sun.
-    let lit = if id.x == 0 {
-        ground * probe_light(sky_up, vec3(0.0, 1.0, 0.0))
-    } else {
-        ground * light.sun_colour * max(light.sun.y, 0.0)
-    }
     let even = convolved(down, OPEN_RAYS)
-    let below = Probe { r: even.r * lit.x, g: even.g * lit.y, b: even.b * lit.z }
-    out[id] = if id.x == 0 { plus(sky_up, below) } else { below }
+    let by_sky = ground * probe_light(sky_up, vec3(0.0, 1.0, 0.0))
+    let by_sun = ground * light.sun_colour * max(light.sun.y, 0.0)
+    out.set(
+        id,
+        Held {
+            sky: plus(
+                sky_up,
+                Probe { r: even.r * by_sky.x, g: even.g * by_sky.y, b: even.b * by_sky.z },
+            ),
+            sun: Probe { r: even.r * by_sun.x, g: even.g * by_sun.y, b: even.b * by_sun.z },
+        },
+    )
 }
 
 fn scaled(p: Probe, w: f32) -> Probe {
@@ -976,7 +981,7 @@ pub fn map_probes(
     probes: [Probe],
     bounces: [Probe],
     seen: [u32],
-    open: [Probe],
+    open: [Held],
     out: mut Texels<Rgba16Float>,
     id: GlobalId,
 ) {
@@ -988,7 +993,7 @@ pub fn map_probes(
     }
     let plane = id.x / cols
     let (p, q, traced) = if open_row {
-        (open[0], open[1], false)
+        (open[0].sky, open[0].sun, false)
     } else {
         let i = grid.index(id.x % cols, id.y % cols, id.y / cols)
         (probes[i], bounces[i], seen[i * VIS_TEXELS] != 0)
@@ -1298,8 +1303,8 @@ pub struct Baked {
     /// A strip's rays' hit distances (`bake`, `trace_again`), which `see` makes the sight of:
     /// held while the first bake is under way, and a strip baked again's after.
     hits: GpuBuffer<u32>,
-    /// The open sky's probe (`open_sky`): its sky's part, then its sun's.
-    pub open: GpuBuffer<Probe>,
+    /// The open sky's probe (`open_sky`): its sky's part and its sun's.
+    pub open: GpuBuffer<Held>,
     pub density: Texture3d<Rgba16Float>,
     /// The voxels the occluders are cooked into (`cook_occluders`), cleared before each cook and
     /// given back after it (a texel until the next).
@@ -1513,7 +1518,8 @@ impl Baked {
     /// The GPU bytes its probes, their maps, its volume and its occluders take.
     pub fn bytes(self) -> u64 {
         let d = self.grid.volume_dims
-        u64(self.probes.len() + self.bounces.len() + self.open.len()) * u64(size_of::<Probe>()) +
+        u64(self.probes.len() + self.bounces.len()) * u64(size_of::<Probe>()) +
+            u64(self.open.len()) * u64(size_of::<Held>()) +
             u64(self.grounds.len()) * 4 +
             u64(self.seen.len() + self.hits.len()) * 4 +
             memory::texels(self.maps.width(), self.maps.height(), 8) +
@@ -1545,7 +1551,7 @@ impl Baked {
             grounds: buffer(grid.probes()),
             seen: buffer(grid.probes() * VIS_TEXELS),
             hits: buffer(AGAIN_COLUMNS * LAYERS * AGAIN_RAYS),
-            open: buffer(2),
+            open: buffer(1),
             density: texture3d::<Rgba16Float>(
                 grid.volume_dims.x,
                 grid.volume_dims.y,
@@ -1762,7 +1768,7 @@ impl Baked {
                 self.probes.span(start: 0, count: n),
                 self.bounces.span(start: 0, count: n),
                 seen: self.seen.span(start: 0, count: n * VIS_TEXELS),
-                open: self.open.span(start: 0, count: 2),
+                open: self.open.span(start: 0, count: 1),
                 out: mut self.maps,
             ),
             // The probes' layers, and the open sky's row below them.
