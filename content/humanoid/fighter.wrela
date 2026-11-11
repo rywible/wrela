@@ -5,7 +5,9 @@
 // values, a rim, his cloth's edges as the ink's seams. The one he strikes is his double, his
 // values turned over (pale where he's black), so the two part on the page as ink and paper do.
 
-use hakuro::arms::{Drape, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body}
+use arm::arm::{Posed, posed}
+use engine::sweep::Sweep
+use hakuro::arms::{Drape, CHARTED, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body}
 use hakuro::clear::fists_off_mask
 use hakuro::fingers::{FIST_CURL, curled}
 use hakuro::hakuro::{Cloth, body_paint, coat, head, hero, jacket_paint}
@@ -20,6 +22,7 @@ use paint::cast_shadow
 use std::gpu::{
     ClipPosition, Cull, Flat, GpuBuffer, RenderPass, Targets3, VertexIndex, buffer, draw, write,
 }
+use std::math::TAU
 use std::transform::translate
 
 /// His body's grid (cells of about 13 mm), his head's (5 mm: the mask's ears and the hair's
@@ -46,7 +49,18 @@ pub struct Fighters {
     arms: [Mesh; 6],
     palettes: GpuBuffer<mat4>,
     drape: Drape,
+    /// Each fighter's left arm as his bones pose it this frame (`CHARTED`: drawn along its
+    /// chart, in place of its sampled mesh).
+    charted: [Posed; FIGHTERS],
 }
+
+/// His left arm's bones: his upper arm's and his forearm's.
+const UPPER_ARM: u32 = 8
+const FOREARM: u32 = 10
+
+/// The charted arm's quads: along its path, and round it.
+const ALONG: u32 = 96
+const ROUND: u32 = 48
 
 pub fn fighters() -> Fighters {
     Fighters {
@@ -56,6 +70,7 @@ pub fn fighters() -> Fighters {
         arms: [arm(0), arm(1), sampled_body(), jacket(), hand(0), hand(1)],
         palettes: buffer(2 * FIGHTERS * MAX_BONES),
         drape: drape_room(FIGHTERS),
+        charted: [posed(translate(vec3(0.0)), translate(vec3(0.0))); FIGHTERS],
     }
 }
 
@@ -132,6 +147,9 @@ impl Fighters {
     pub fn pose(mut self, who: u32, m: [mat4; 64]) {
         write(mut self.palettes, who * MAX_BONES, m)
         write(mut self.palettes, (FIGHTERS + who) * MAX_BONES, m)
+        if CHARTED == 1 {
+            self.charted[who] = posed(m[UPPER_ARM], m[FOREARM])
+        }
     }
 
     /// Their coats' tails moved on `dt` seconds (0 through a hit-stop: the cloth holds with them).
@@ -150,6 +168,22 @@ impl Fighters {
             shadow_of(p, self.body, self.palettes, first, shot)
             shadow_of(p, self.head, self.palettes, first, shot)
             for k in 0..6 {
+                if k == 0 && CHARTED == 1 {
+                    let c = self.charted[who]
+                    draw(
+                        p,
+                        charted_shadow_vertex.bind(
+                            form: c.form,
+                            turn: vec2(c.turn, c.from),
+                            shot: shot,
+                        ),
+                        shadow_pixel.bind(shot: shot),
+                        vertices: ALONG * ROUND * 6,
+                        cull: Cull::None,
+                        depth: engine::view::NEAREST,
+                    )
+                    continue
+                }
                 shadow_of(p, self.arms[k], self.palettes, first, shot)
             }
             draw(
@@ -215,6 +249,23 @@ impl Fighters {
                 depth: engine::view::NEAREST,
             )
             for k in 0..6 {
+                if k == 0 && CHARTED == 1 {
+                    let c = self.charted[who]
+                    draw(
+                        p,
+                        charted_vertex.bind(
+                            rest: arm::arm::arm(),
+                            form: c.form,
+                            turn: vec2(c.turn, c.from),
+                            shot: shot,
+                        ),
+                        sampled_pixel.bind(shot: shot, who: who, jacket: 0),
+                        vertices: ALONG * ROUND * 6,
+                        cull: Cull::Back,
+                        depth: engine::view::NEAREST,
+                    )
+                    continue
+                }
                 draw(
                     p,
                     fighter_vertex.bind(
@@ -274,6 +325,58 @@ pub fn coat_vertex(
     f.world = draped(f.world, f.rest, mat3(f.tx, f.ty, f.tz), grid, facing, first / MAX_BONES)
     f.clip = ClipPosition { position: shot.cam.clip(f.world) }
     f
+}
+
+/// Where vertex `v` of the charted arm is on its chart: how far along its path (0 to 1) and at
+/// what angle round it. Six vertices a quad (two triangles), `ROUND` quads round each of `ALONG`
+/// steps along: no vertices are kept, each is worked out from its number.
+fn chart_place(v: u32) -> vec2 {
+    let q = v / 6
+    let k = v % 6
+    let along = q / ROUND + (if k == 1 || k == 2 || k == 4 { 1 } else { 0 })
+    let round = q % ROUND + (if k == 2 || k == 4 || k == 5 { 1 } else { 0 })
+    vec2(f32(along) / f32(ALONG), TAU * f32(round) / f32(ROUND))
+}
+
+/// His left arm's vertex drawn along its chart, in posed space: where its place on the chart is
+/// on the form his bones pose this frame (`form`, its sections turned with his forearm from his
+/// elbow on: `turn`'s angle, from `turn.y` of the way along), its normal the posed form's own,
+/// and where the same place is on him at rest (`rest`), which his paint reads. No skin weights:
+/// the form is made again where his bones are.
+@vertex
+pub fn charted_vertex(
+    v: VertexIndex,
+    rest: Sweep<13>,
+    form: Sweep<13>,
+    turn: vec2,
+    shot: Shot,
+) -> FighterVertex {
+    let at = chart_place(v.index)
+    let turned = turn.x * smoothstep(turn.y, 1.0, at.x)
+    let (world, normal) = form.side_and_normal(at.x, at.y, turned)
+    FighterVertex {
+        clip: ClipPosition { position: shot.cam.clip(world) },
+        world,
+        rest: rest.side(at.x, at.y),
+        tx: vec3(1.0, 0.0, 0.0),
+        ty: vec3(0.0, 1.0, 0.0),
+        tz: vec3(0.0, 0.0, 1.0),
+        normal,
+        lo: Flat { value: 0 },
+        hi: Flat { value: 0 },
+    }
+}
+
+/// The charted arm's shadow.
+@vertex
+pub fn charted_shadow_vertex(
+    v: VertexIndex,
+    form: Sweep<13>,
+    turn: vec2,
+    shot: Shot,
+) -> ShadowVertex {
+    let at = chart_place(v.index)
+    cast(form.side(at.x, at.y, turn.x * smoothstep(turn.y, 1.0, at.x)), shot)
 }
 
 /// Mesh `m`'s shadow drawn, posed by the palette at `first`.

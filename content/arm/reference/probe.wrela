@@ -85,8 +85,8 @@ fn the_reference_arms_middle() {
 }
 
 /// The part of the arm that's fitted: between the reference's cut ends (x, m).
-pub const FROM: f32 = 0.205
-pub const TO: f32 = 0.605
+pub const FROM: f32 = 0.23
+pub const TO: f32 = 0.615
 
 /// How near the reference's surface a lattice point is to count (m).
 pub const NEAR: f32 = 0.008
@@ -190,7 +190,7 @@ fn the_arm_against_its_reference() {
 }
 
 /// As `reach`, of the arm.
-fn arm_reach(a: Sweep<11>, from: vec3, dir: vec3) -> f32 {
+fn arm_reach(a: Sweep<13>, from: vec3, dir: vec3) -> f32 {
     if a.near(from) >= 0.0 {
         return -1.0
     }

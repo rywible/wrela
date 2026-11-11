@@ -4,7 +4,6 @@
 // to it. Each is realized from its samples, then skinned by the reference rig's own weights
 // round it (`*_weights`, `skinning`), every finger joint, so he bends where and as it does.
 
-use arm::arm::arm as fitted_form
 use arm_left_grid
 use arm_left_weights
 use arm_right_grid
@@ -18,14 +17,9 @@ use hand_right_weights
 use jacket_grid
 use shapes::{TAILS_AXIS, TAILS_FROM, TAILS_TO, hem, tails}
 use skinning::{WeightTables, Weights, weights_at}
-use engine::creature::{Creature, creature}
-use engine::look::CreatureLook
-use engine::look::Mesh as Tolerance
-use engine::realize::{BLOCK, Mesh, SkinVertex, Tally, realize_once}
-use hakuro::{Cloth, body_paint, skeleton}
+use engine::realize::{BLOCK, Mesh, SkinVertex, Tally}
 use engine::realize::corner_offset
 use engine::sampled::{BLOCK_WORDS, Lattice, STORED, Samples, realize_sampled}
-use std::field::{Surface, cuboid}
 use std::gpu::{GlobalId, GpuBuffer, GpuSpan, Slots, Unorm8x4, buffer, dispatch}
 
 /// The skeleton's bone numbers (`hakuro::skeleton` adds them in this order: the trunk, then
@@ -60,82 +54,16 @@ fn sampled_at(l: Lattice, slots: [u32], words: [u32], p: vec3) -> f32 {
     )
 }
 
-/// 1 to draw his left arm from its fitted form (content/arm: a sweep whose numbers were solved
-/// against the arm's samples) in place of the samples (`--set FITTED=1`): the same weights, so
-/// the two differ in their shape alone. An experiment's switch: set here (`--set` reaches only a
-/// program's own constants). While the fitted form is here at all, a shipped build of anything
-/// that draws him fails (E0707: the sweep's `cull_blocks` is 878 KiB of WGSL and its
-/// `place_vertices` 404 KiB, over a pipeline's 256 KiB), so this isn't to merge as it is; a debug
-/// build isn't held to it.
-pub const FITTED: u32 = 0
-
-/// The fitted arm's grid: cells of about 5.5 mm, as its samples' are.
-const HOW_FITTED = CreatureLook {
-    surface: Tolerance { tolerance: 0.5e-3, radius: 0.012, largest: 0.0055 },
-}
-
-/// Each of a mesh's vertices given the bones and weights a weight lattice has where it is.
-@compute(64)
-pub fn skin_by_lattice(
-    grid: Weights,
-    wslots: [u32],
-    wwords: [u32],
-    tally: [Tally],
-    verts: mut Slots<SkinVertex>,
-    id: GlobalId,
-) {
-    if id.x >= tally[0].vertices {
-        return
-    }
-    let v = verts[id]
-    let found = weights_at(grid, wslots, wwords, v.pos)
-    verts[id] = SkinVertex {
-        pos: v.pos,
-        bones: found.0,
-        normal: v.normal,
-        weights: found.1,
-        mask: v.mask,
-    }
-}
-
-/// His left arm's fitted form as a creature's part, on his upper arm's bone.
-fn fitted_creature() -> Creature<Cloth> {
-    let s = skeleton()
-    let bone = s.find("upper arm left")
-    // (Between the ends it was fitted between, x from 0.205 to 0.605: past them nothing held its
-    // numbers, and its first section is a fin half a metre long.)
-    let between = cuboid(vec3(0.2, 1.0, 1.0)).translate(vec3(0.405, 1.44, -0.08))
-    creature(s).join(
-        "arm",
-        bone,
-        fitted_form().intersect(between).with_at(body_paint).translate(-s.rest(bone)),
-    )
-}
-
-/// His left arm from its fitted form, realized as the engine realizes a creature's part and
-/// skinned by the weights his sampled arm is.
-fn fitted_arm() -> Mesh {
-    var mesh = realize_once(fitted_creature(), HOW_FITTED)
-    let w = arm_left_weights::weights().upload()
-    dispatch(
-        skin_by_lattice.bind(
-            grid: w.grid,
-            wslots: w.slots.items(),
-            wwords: w.words.items(),
-            tally: mesh.tally.items(),
-            verts: mesh.verts.items_mut(),
-        ),
-        groups: mesh.skin.items(),
-    )
-    mesh
-}
+/// 1 where a program draws his left arm from its fitted form (content/arm: a sweep whose
+/// numbers were solved against the arm's samples), along the form's own chart where his bones
+/// are each frame, with no mesh of it and no weights (the combat lab's fighters); 0 for its
+/// sampled mesh. An experiment's switch: set here (`--set` reaches only a program's own
+/// constants).
+pub const CHARTED: u32 = 0
 
 /// His arm on `side` (0 left, 1 right) realized from its samples and skinned by the reference's
 /// own weights round it.
 pub fn arm(side: u32) -> Mesh {
-    if side == 0 && FITTED == 1 {
-        return fitted_arm()
-    }
     if side == 0 {
         weighted(arm_left_grid::samples(B_UPPER), arm_left_weights::weights(), reach: 1.5, pull: 0.0)
     } else {

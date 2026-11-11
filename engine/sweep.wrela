@@ -14,8 +14,8 @@
 // carried along the path without twisting it: at a paw that turns forward from the leg, the
 // leg's front becomes the paw's top. Angles grow toward the left (`up × forward`).
 
-use std::derive::{Box3, interval}
-use std::field::Surface
+use std::derive::{Box3, gradient, interval}
+use std::field::{Bound, Surface}
 use std::math::{PI, TAU}
 
 /// A section across a sweep: its extents from the path toward `up` (angle 0), its left
@@ -467,6 +467,61 @@ impl<const S: u32> Sweep<S> {
     }
 }
 
+impl<const S: u32> Sweep<S> {
+    /// The point of its side at a place on its chart: `f` of the way along its path, at angle
+    /// `theta` of its section there (from up, toward the left); the section turned about the
+    /// path by `turned` more (a limb twisted along its length). Where the sweep doesn't fold
+    /// over itself this is the point `place` puts at (`f` of its length, the section's radius,
+    /// `theta`), so its distance there is 0: a form with a chart can be drawn along it, a point
+    /// for each place, with no grid searched for its surface.
+    pub fn side(self, f: f32, theta: f32, turned: f32 = 0.0) -> vec3 {
+        let len = self.length()
+        let s = saturate(f) * len
+        // The piece of path that holds `s`.
+        var i = 0
+        for k in 1..self.vertices - 1 {
+            if self.along[k] <= s {
+                i = k
+            }
+        }
+        let a = self.at[i]
+        let b = self.at[i + 1]
+        let seg = length(b - a)
+        let w = (b - a) / max(seg, 0.000000001)
+        let t = clamp(s - self.along[i], 0.0, seg)
+        let n0 = self.normal[i]
+        let n1 = self.normal[i + 1]
+        let c0 = dot(n0, w)
+        let c1 = dot(n1, w)
+        // How far the section's plane has turned from the piece's first to its last (`about`
+        // finds `t` from it; this is that, the other way).
+        let lam = saturate(t * c0 / max(seg * c1 + t * (c0 - c1), 0.000001))
+        let n = unit(mix(n0, n1, lam))
+        let u = mix(self.up[i], self.up[i + 1], lam)
+        let uu = unit(u - n * dot(u, n))
+        let v = cross(uu, n)
+        let r = self.section_at(s / len).radius(theta)
+        let at = theta + turned
+        a + w * t + (uu * cos(at) + v * sin(at)) * r
+    }
+
+    /// A point of its side (`side`) and the side's outward normal (unit) there: across the
+    /// side's points a little further along and a little further round. The three points are
+    /// worked out in one loop, so a shader holds the side's code once.
+    pub fn side_and_normal(self, f: f32, theta: f32, turned: f32 = 0.0) -> (vec3, vec3) {
+        let df = 0.002
+        let dt = 0.01
+        let f0 = min(f, 1.0 - df)
+        var p = [vec3(); 3]
+        for k in 0..3 {
+            let further = if k == 1 { df } else { 0.0 }
+            let round = if k == 2 { dt } else { 0.0 }
+            p[k] = self.side(f0 + further, theta + round, turned)
+        }
+        (p[0], unit(cross(p[1] - p[0], p[2] - p[0])))
+    }
+}
+
 impl<const S: u32> Surface for Sweep<S> {
     /// The distance to the union of its pieces (`near`), never less than the distance to the
     /// path less the sweep's reach (a bound that's 0 or less at the surface, so the surface is
@@ -474,6 +529,25 @@ impl<const S: u32> Surface for Sweep<S> {
     /// is about, it keeps the interval tight.
     fn distance(self, p: vec3) -> f32 {
         max(self.near(p), self.to_path(p) - self.reach)
+    }
+
+    /// A sphere about the middle of its path's vertices that holds them and its reach from
+    /// them. Its distance is never less than the distance to the path less its reach
+    /// (`distance`), and every point of the path is within the sphere's radius less that reach
+    /// of its centre: slope 1.
+    fn bound(self) -> Bound {
+        var lo = self.at[0]
+        var hi = self.at[0]
+        for i in 1..self.vertices {
+            lo = min(lo, self.at[i])
+            hi = max(hi, self.at[i])
+        }
+        let centre = 0.5 * (lo + hi)
+        var far = 0.0
+        for i in 0..self.vertices {
+            far = max(far, length(self.at[i] - centre))
+        }
+        Bound { centre, radius: far + self.reach, slope: 1.0 }
     }
 
     /// From samples of its sections (64 places by 64 angles): the side's slope changes over
@@ -812,6 +886,40 @@ fn a_sweeps_interval_holds_its_values() {
             assert(v >= r.lo && v <= r.hi)
         }
     }
+}
+
+@test
+fn a_sweeps_side_is_where_its_distance_is_0() {
+    let s = leg()
+    var worst = 0.0
+    var turned = 1.0
+    for i in 0..19 {
+        for j in 0..24 {
+            let f = 0.03 + 0.94 * f32(i) / 18.0
+            let theta = TAU * f32(j) / 24.0
+            let p = s.side(f, theta)
+            worst = max(worst, abs(s.near(p)))
+            // Its normal is the distance's gradient's way.
+            let (at, n) = s.side_and_normal(f, theta)
+            assert(length(at - p) < 0.000001, "a side's point with its normal is the side's point")
+            turned = min(turned, dot(n, normalize(gradient(|q| s.near(q), p))))
+        }
+    }
+    assert(worst < 0.0002, f"a point of a sweep's side is {worst} m from its surface")
+    assert(turned > 0.98, f"a sweep's side's normal is {turned} of the gradient's way")
+}
+
+@test
+fn a_sweeps_bound_is_below_its_distance() {
+    let s = leg()
+    let b = s.bound()
+    var worst = 1.0e9
+    for i in 0..4000 {
+        let h = vec3(f32(i % 20), f32((i / 20) % 20), f32(i / 400)) / vec3(19.0, 19.0, 9.0)
+        let p = b.centre + (h - vec3(0.5)) * 6.0 * b.radius
+        worst = min(worst, s.distance(p) - b.below(p))
+    }
+    assert(worst > -1.0e-5, f"a sweep's distance is {-worst} m under its bound")
 }
 
 @test
