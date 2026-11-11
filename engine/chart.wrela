@@ -407,6 +407,17 @@ impl Chain {
         Points { at, bone, other, reach, count: n }
     }
 
+    /// Its mirror image in the plane x = 0: a right limb's chain from its left's. Angles on
+    /// its chart then run the other way round the body, so a form about it is the left's
+    /// mirrored (`Radial::mirrored`).
+    pub fn mirrored(self) -> Chain {
+        var joints = self.joints
+        for i in 0..JOINTS {
+            joints[i] = vec3(-joints[i].x, joints[i].y, joints[i].z)
+        }
+        Chain { joints, up: vec3(-self.up.x, self.up.y, self.up.z), ..self }
+    }
+
     /// Its path at rest.
     pub fn rest(self) -> Path {
         let p = self.points()
@@ -555,6 +566,21 @@ impl Bend {
 pub struct Change<const A: u32, const R: u32>: Copy {
     pub by_angle: Radial<A, R>,
     pub by_square: Radial<A, R>,
+}
+
+impl<const A: u32, const R: u32> Change<A, R> {
+    /// Its mirror image: a right limb's joint's change from its left's.
+    pub fn mirrored(self) -> Change<A, R> {
+        Change { by_angle: self.by_angle.mirrored(), by_square: self.by_square.mirrored() }
+    }
+
+    /// It with `other` added: a named change (a muscle's) over a solved one.
+    pub fn plus(self, other: Change<A, R>) -> Change<A, R> {
+        Change {
+            by_angle: self.by_angle.plus(other.by_angle),
+            by_square: self.by_square.plus(other.by_square),
+        }
+    }
 }
 
 /// An angle brought into −π to π.
@@ -1344,6 +1370,28 @@ fn a_bent_joint_changes_a_form_toward_its_bend() {
     for i in 0..20 {
         let f = f32(i) / 19.0
         assert(abs(wider.radius(f, 1.3 * f32(i)) - form.radius(f, 1.3 * f32(i))) < 0.0002)
+    }
+}
+
+@test
+fn a_mirrored_chain_carries_a_mirrored_form() {
+    // A point of a form about a chain, mirrored in x = 0, is a point of the mirrored form
+    // about the mirrored chain, at the same place along and the angle's negative.
+    let c = chain(
+        [vec3(0.2, 1.4, 0.0), vec3(0.45, 1.38, 0.03), vec3(0.7, 1.4, 0.0)],
+        vec3(y: 1.0),
+    )
+    let form = leg_form()
+    let left = Limb { path: c.rest(), form }
+    let right = Limb { path: c.mirrored().rest(), form: form.mirrored() }
+    for i in 0..9 {
+        for j in 0..12 {
+            let f = 0.05 + 0.9 * f32(i) / 8.0
+            let theta = TAU * f32(j) / 12.0
+            let p = left.side(f, theta)
+            let q = right.side(f, -theta)
+            assert(length(vec3(-p.x, p.y, p.z) - q) < 0.00001)
+        }
     }
 }
 

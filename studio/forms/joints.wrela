@@ -102,6 +102,7 @@ pub fn solved<const N: u32>(
     joints: [u32; N],
     hinges_from: f32,
 ) -> [Solved; N] {
+    assert(N <= 8, "a limb's changes are solved for 8 joints at most")
     let shape: Radial<10, 7> = Radial { from: 0.0, to: 1.0, coef: [[0.0; 7]; 10] }
     let per = ALONG * ROUND
     let n = N * 2 * per
@@ -112,30 +113,45 @@ pub fn solved<const N: u32>(
         for s in r.samples {
             // What each number weighs in this sample: joint by joint, its form times the
             // bend's angle and its form times the angle's square, at the angle from the bend.
-            var at: Vec<u32> = Vec::new()
-            var w: Vec<f64> = Vec::new()
+            var at = [0; 448]
+            var w = [0.0; 448]
+            var k = 0
             let (i, along) = shape.along_weights(s.f)
             for j in 0..N {
                 let b = r.bends[joints[j]]
+                if b.angle <= 0.0 {
+                    continue
+                }
                 let round: [f64; 7] = chart::terms(s.theta - b.lean_at(s.f))
                 for p in 0..2 {
                     let by = if p == 0 { f64(b.angle) } else { f64(b.angle * b.angle) }
                     for a in 0..4 {
-                        for k in 0..ROUND {
-                            at.push((j * 2 + p) * per + (i + a) * ROUND + k)
-                            w.push(by * along[a] * round[k])
+                        for t in 0..ROUND {
+                            at[k] = (j * 2 + p) * per + (i + a) * ROUND + t
+                            w[k] = by * along[a] * round[t]
+                            k += 1
                         }
                     }
                 }
             }
             let want = f64(asked(s, r.bends, joints, hinges_from))
-            for x in 0..at.len() {
+            // (The sums' upper half: the matrix is symmetric, and is filled out after.)
+            for x in 0..k {
                 g[at[x]] += w[x] * want
-                for y in 0..at.len() {
-                    m[at[x] * n + at[y]] += w[x] * w[y]
+                let row = at[x] * n
+                let wx = w[x]
+                for y in x..k {
+                    m[row + at[y]] += wx * w[y]
                 }
             }
             count += 1
+        }
+    }
+    for x in 0..n {
+        for y in x + 1..n {
+            let v = m[x * n + y] + m[y * n + x]
+            m[x * n + y] = v
+            m[y * n + x] = v
         }
     }
     // Each number near 0 where no pose asks otherwise, and near its neighbours along the path.

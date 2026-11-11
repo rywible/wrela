@@ -82,6 +82,23 @@ pub const HAKURO_ARM_LEFT: Spec = Spec {
     tuck: 0.5,
 }
 
+/// What Hakuro's right arm is over the species': his jacket's sleeve and the gauntlet over
+/// his forearm, as his sampled grid has them, less the species' arm.
+pub const HAKURO_ARM_RIGHT: Spec = Spec {
+    name: "hakuro-arm-right",
+    file: "content/hakuro/arm_right_form.wrela",
+    constant: "ARM_RIGHT_OVER",
+    about: [
+        "What Hakuro's right arm is over the figure's (`figure::arm::ARM`, mirrored): his jacket's",
+        "sleeve and his gauntlet, as his sampled arm has them (`arm_right_grid`), less the figure's",
+        "arm, read along rays from the line through his shoulder, elbow and wrist.",
+    ],
+    chain: chains::arm_left().mirrored(),
+    span: vec2(0.14, 0.84),
+    most: 0.14,
+    tuck: 0.5,
+}
+
 /// A form fitted: its numbers as written, how far it is from its reference where it wasn't
 /// fitted, and how many rays it was fitted to.
 pub struct Fitted<const A: u32, const R: u32>: Copy {
@@ -169,6 +186,17 @@ pub fn arm() -> Fitted<16, 13> {
 /// What Hakuro's left arm is over the species' arm `base`, fitted.
 pub fn hakuro_arm_left(base: Radial<16, 13>) -> Fitted<16, 13> {
     fitted_over(Grid { samples: arm_left_grid::samples(0) }, HAKURO_ARM_LEFT, base, true)
+}
+
+/// What Hakuro's right arm is over the species' arm `base` (the left's: mirrored here),
+/// fitted.
+pub fn hakuro_arm_right(base: Radial<16, 13>) -> Fitted<16, 13> {
+    fitted_over(
+        Grid { samples: hakuro::arm_right_grid::samples(0) },
+        HAKURO_ARM_RIGHT,
+        base.mirrored(),
+        true,
+    )
 }
 
 /// What's said of a fitted form: its misses' spread, and their size by place.
@@ -298,6 +326,9 @@ pub fn tool() -> u32 {
     }
     if chosen(wanted, HAKURO_ARM_LEFT.name) {
         results.push(written(HAKURO_ARM_LEFT, hakuro_arm_left(species.form)))
+    }
+    if chosen(wanted, HAKURO_ARM_RIGHT.name) {
+        results.push(written(HAKURO_ARM_RIGHT, hakuro_arm_right(species.form)))
     }
     if chosen(wanted, "arm-joints") {
         results.push(arm_joints_written())

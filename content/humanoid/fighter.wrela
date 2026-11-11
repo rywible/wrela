@@ -11,7 +11,9 @@ use figure::chains
 use hakuro::arms::{Drape, CHARTED, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body}
 use hakuro::clear::fists_off_mask
 use hakuro::fingers::{FIST_CURL, curled}
-use hakuro::hakuro::{Cloth, arm_left_paint, body_paint, coat, head, hero, jacket_paint}
+use hakuro::hakuro::{
+    Cloth, arm_left_paint, arm_right_paint, body_paint, coat, head, hero, jacket_paint,
+}
 use hakuro::reference_rig::HAKURO_BONE
 use engine::character::skin_matrix
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
@@ -50,24 +52,48 @@ pub struct Fighters {
     arms: [Mesh; 6],
     palettes: GpuBuffer<mat4>,
     drape: Drape,
-    /// Each fighter's left arm as his bones pose it this frame (`CHARTED`: drawn along its
-    /// chart, in place of its sampled mesh), and the grids charted forms are drawn on.
-    charted: [Arm; FIGHTERS],
+    /// Each fighter's arms (his left, his right) as his bones pose them this frame (`CHARTED`:
+    /// drawn along their charts, in place of their sampled meshes), and the grids charted forms
+    /// are drawn on.
+    charted: [[Arm; 2]; FIGHTERS],
     grids: Grids,
 }
 
 /// A charted arm's form: its radius about the line of its joints.
 type Arm = Limb<16, 13>
 
-/// His left arm's bones: his collarbone's (which carries its root), his upper arm's and his
-/// forearm's.
-const COLLAR: u32 = 6
-const UPPER_ARM: u32 = 8
-const FOREARM: u32 = 10
+/// His arms' bones, his left's then his right's: his collarbone's (which carries the arm's
+/// root), his upper arm's and his forearm's.
+const COLLAR: [u32; 2] = [6, 7]
+const UPPER_ARM: [u32; 2] = [8, 9]
+const FOREARM: [u32; 2] = [10, 11]
 
-/// His left arm at rest.
-fn arm_at_rest() -> Arm {
-    Limb { path: chains::arm_left().rest(), form: hakuro::hakuro::ARM_LEFT }
+/// His arm on `side` (0 left, 1 right) at rest.
+fn arm_at_rest(side: u32) -> Arm {
+    if side == 0 {
+        Limb { path: chains::arm_left().rest(), form: hakuro::hakuro::ARM_LEFT }
+    } else {
+        Limb { path: chains::arm_right().rest(), form: hakuro::hakuro::ARM_RIGHT }
+    }
+}
+
+/// His arm on `side` as palette `m` poses it: its path where its bones are, its form changed
+/// where its shoulder and its elbow bend.
+fn arm_posed(side: u32, m: [mat4; 64]) -> Arm {
+    let bones = [m[COLLAR[side]], m[UPPER_ARM[side]], m[FOREARM[side]]]
+    if side == 0 {
+        let chain = chains::arm_left()
+        Limb {
+            path: chain.posed_by(bones[0], bones),
+            form: figure::limbs::arm_bent(hakuro::hakuro::ARM_LEFT, chain.bends_by(bones)),
+        }
+    } else {
+        let chain = chains::arm_right()
+        Limb {
+            path: chain.posed_by(bones[0], bones),
+            form: figure::limbs::arm_right_bent(hakuro::hakuro::ARM_RIGHT, chain.bends_by(bones)),
+        }
+    }
 }
 
 pub fn fighters() -> Fighters {
@@ -78,7 +104,7 @@ pub fn fighters() -> Fighters {
         arms: [arm(0), arm(1), sampled_body(), jacket(), hand(0), hand(1)],
         palettes: buffer(2 * FIGHTERS * MAX_BONES),
         drape: drape_room(FIGHTERS),
-        charted: [arm_at_rest(); FIGHTERS],
+        charted: [[arm_at_rest(0), arm_at_rest(1)]; FIGHTERS],
         grids: chart::grids(),
     }
 }
@@ -157,15 +183,7 @@ impl Fighters {
         write(mut self.palettes, who * MAX_BONES, m)
         write(mut self.palettes, (FIGHTERS + who) * MAX_BONES, m)
         if CHARTED == 1 {
-            let chain = chains::arm_left()
-            let bones = [m[COLLAR], m[UPPER_ARM], m[FOREARM]]
-            self.charted[who] = Limb {
-                path: chain.posed_by(m[COLLAR], bones),
-                form: figure::limbs::arm_bent(
-                    hakuro::hakuro::ARM_LEFT,
-                    chain.bends_by(bones),
-                ),
-            }
+            self.charted[who] = [arm_posed(0, m), arm_posed(1, m)]
         }
     }
 
@@ -185,8 +203,8 @@ impl Fighters {
             shadow_of(p, self.body, self.palettes, first, shot)
             shadow_of(p, self.head, self.palettes, first, shot)
             for k in 0..6 {
-                if k == 0 && CHARTED == 1 {
-                    let c = self.charted[who]
+                if k < 2 && CHARTED == 1 {
+                    let c = self.charted[who][k]
                     let level = level_of(c, shot)
                     let span = chart::level_span(level)
                     draw(
@@ -266,14 +284,19 @@ impl Fighters {
                 depth: engine::view::NEAREST,
             )
             for k in 0..6 {
-                if k == 0 && CHARTED == 1 {
-                    let c = self.charted[who]
+                if k < 2 && CHARTED == 1 {
+                    let c = self.charted[who][k]
                     let level = level_of(c, shot)
                     let span = chart::level_span(level)
                     draw(
                         p,
-                        charted_vertex.bind(rest: arm_at_rest(), form: c, level: level, shot: shot),
-                        charted_pixel.bind(shot: shot, who: who),
+                        charted_vertex.bind(
+                            rest: arm_at_rest(k),
+                            form: c,
+                            level: level,
+                            shot: shot,
+                        ),
+                        charted_pixel.bind(shot: shot, who: who, side: k),
                         indices: self.grids.indices,
                         first_index: span.x,
                         index_count: span.y,
@@ -356,10 +379,10 @@ fn level_of(c: Arm, shot: Shot) -> u32 {
     )
 }
 
-/// The band of its chart his left arm is drawn over: from its path's start (its root, under
+/// The band of its chart an arm of his is drawn over: from its path's start (its root, under
 /// what he wears there) to where his hand takes over, all the way round.
 fn band_of(c: Arm) -> Band {
-    Band { f: vec2(0.0, hakuro::hakuro::ARM_LEFT_TO), theta: vec2(0.0, TAU) }
+    Band { f: vec2(0.0, hakuro::hakuro::ARM_TO), theta: vec2(0.0, TAU) }
 }
 
 /// A charted form's vertex, in posed space: where its place on the chart is on the form his
@@ -367,7 +390,13 @@ fn band_of(c: Arm) -> Band {
 /// him at rest (`rest`), and the place itself (`tx`: how far along, the angle round), which his
 /// paint reads. No skin weights: the form is made again where his bones are.
 @vertex
-pub fn charted_vertex(v: VertexIndex, rest: Arm, form: Arm, level: u32, shot: Shot) -> FighterVertex {
+pub fn charted_vertex(
+    v: VertexIndex,
+    rest: Arm,
+    form: Arm,
+    level: u32,
+    shot: Shot,
+) -> FighterVertex {
     let at = chart::place_of(v.index, level, band_of(form))
     let (world, normal) = form.side_and_normal(f: at.x, theta: at.y)
     // (Its root is under his jacket, whose armhole's edge lies over it.)
@@ -510,11 +539,17 @@ pub fn sampled_pixel(
     painted(shot, v.world, normalize(v.normal), c, who, 0)
 }
 
-/// His pixel where his form is drawn along its chart (his left arm): its own normal, and his
-/// paint by its place on the chart.
+/// His pixel where his form is drawn along its chart (his arm on `side`): its own normal, and
+/// his paint by its place on the chart.
 @fragment
-pub fn charted_pixel(v: FighterVertex, shot: Shot, who: u32) -> Targets3<vec4, vec4, vec4> {
-    painted(shot, v.world, normalize(v.normal), arm_left_paint(v.tx.x), who, 0)
+pub fn charted_pixel(
+    v: FighterVertex,
+    shot: Shot,
+    who: u32,
+    side: u32,
+) -> Targets3<vec4, vec4, vec4> {
+    let c = if side == 0 { arm_left_paint(v.tx.x) } else { arm_right_paint(v.tx.x) }
+    painted(shot, v.world, normalize(v.normal), c, who, 0)
 }
 
 /// What his black cloth's lit planes are raised by (linear).

@@ -21,3 +21,8 @@ pub fn arm_left() -> Chain {
         spread: [1.0, 0.33, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
     )
 }
+
+/// His right arm: his left's, mirrored.
+pub fn arm_right() -> Chain {
+    arm_left().mirrored()
+}
