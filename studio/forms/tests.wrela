@@ -57,6 +57,8 @@ fn the_arms_written_joints_are_the_reference_solved() {
     for k in 0..4 {
         assert(apart(now[k], written[k]) < 0.000011, "content/figure/arm_joints.wrela is stale")
     }
+    assert(abs(changes[0].upto - figure::arm_joints::SHOULDER_UPTO) < 0.006)
+    assert(abs(changes[1].upto - figure::arm_joints::ELBOW_UPTO) < 0.006)
     // Outside its bends, the changes take off some of what the posed reference differs by.
     assert(left.y < left.x, f"the joints' changes leave {left.y} mm rms of {left.x}")
 }

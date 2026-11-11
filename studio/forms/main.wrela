@@ -412,19 +412,18 @@ fn written<const A: u32, const R: u32>(s: Spec, f: Fitted<A, R>) -> Result<Strin
 }
 
 /// A limb's joints' changes written: `name` on the command line, into `file`, its two
-/// joints' constants named after `joints` (as "SHOULDER", "ELBOW"), solved for `limb` whose
-/// hinge takes over `hinges_from` of the way along. What to print of them, or why it failed.
+/// joints' constants named after `joints` (as "SHOULDER", "ELBOW"), solved for `limb`. What to
+/// print of them, or why it failed.
 fn joints_written(
     name: Text,
     file: Text,
     joints: [Text; 2],
     limb: posed::Limb,
-    hinges_from: f32,
 ) -> Result<String, String> {
     let Some(path) = rooted("ws", file.to_string().as_str()) else {
         return Err(f"no path for {file}")
     }
-    let (changes, left) = joints::changes_of(limb, hinges_from)
+    let (changes, left) = joints::changes_of(limb)
     var out = String::new()
     out.push_str(
         "// Written by the forms tool (`wrela tool forms`, studio/forms): don't edit it by hand, change\n",
@@ -443,6 +442,11 @@ fn joints_written(
     )
     out.push_str("// (studio/forms/joints.wrela).\n\n")
     out.push_str("use engine::chart::Radial\n\n")
+    for j in 0..2 {
+        out.push_str(
+            f"/// The deepest the joint bent among the poses its change was solved over (radians).\npub const {joints[j]}_UPTO: f32 = {changes[j].upto:.2}\n\n",
+        )
+    }
     for k in 0..4 {
         let form = if k % 2 == 0 { changes[k / 2].by_angle } else { changes[k / 2].by_square }
         let by = if k % 2 == 0 { "ANGLE" } else { "SQUARE" }
@@ -630,7 +634,6 @@ pub fn tool() -> u32 {
                 "content/figure/arm_joints.wrela",
                 ["SHOULDER", "ELBOW"],
                 posed::ARM_LEFT,
-                joints::ARM_HINGES_FROM,
             ),
         )
     }
@@ -662,7 +665,6 @@ pub fn tool() -> u32 {
                 "content/figure/leg_joints.wrela",
                 ["HIP", "KNEE"],
                 posed::LEG_LEFT,
-                joints::LEG_HINGES_FROM,
             ),
         )
     }

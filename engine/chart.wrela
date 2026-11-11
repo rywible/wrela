@@ -299,7 +299,11 @@ pub const JOINTS: u32 = 8
 /// and for each bone (bone `i` runs from joint `i` to joint `i + 1`) how far along it its own
 /// turn about its length is reached (`spread`: 1 for a forearm, whose two bones cross all the
 /// way from elbow to wrist; a third for an upper arm or a thigh, whose skin turns with the bone
-/// past the muscle that caps the joint).
+/// past the muscle that caps the joint). And how far its path cuts the corner at a bent joint
+/// (`cut`, 0 to 1): at 0 the path goes through the joint itself however far it's bent; at 1 it
+/// follows the arc that leaves one bone's line where the rounding starts and meets the other's
+/// where it ends, so a deep bend is one smooth curve and the limb's two lengths don't cross
+/// inside it.
 pub struct Chain: Copy {
     pub joints: [vec3; JOINTS],
     pub count: u32,
@@ -308,6 +312,7 @@ pub struct Chain: Copy {
     pub round: f32,
     pub up: vec3,
     pub spread: [f32; JOINTS],
+    pub cut: f32,
 }
 
 /// A chain through `joints`.
@@ -318,13 +323,14 @@ pub fn chain<const J: u32>(
     after: f32 = 0.0,
     round: f32 = 0.05,
     spread: [f32; JOINTS] = [1.0; JOINTS],
+    cut: f32 = 0.0,
 ) -> Chain {
     assert(J >= 2 && J <= JOINTS, "a chain has 2 to 8 joints")
     var all = [vec3(); JOINTS]
     for i in 0..J {
         all[i] = joints[i]
     }
-    Chain { joints: all, count: J, before, after, round, up, spread }
+    Chain { joints: all, count: J, before, after, round, up, spread, cut }
 }
 
 /// `p` as matrix `m` carries it.
@@ -416,6 +422,36 @@ impl Chain {
         Points { at, bone, other, reach, count: n }
     }
 
+    /// Its path's points with each bent joint's own point moved in across its corner (`cut`):
+    /// toward the middle of the arc from the point before it, where the bend's rounding starts,
+    /// to the point after it, where it ends. Where the joint is straight it stays.
+    fn corners_cut(self, p: Points, at: [vec3; VERTICES]) -> [vec3; VERTICES] {
+        var out = at
+        if self.cut <= 0.0 {
+            return out
+        }
+        for i in 1..p.count - 1 {
+            // (A joint's own point is the one two bones share, with a rounding point of each
+            // either side of it.)
+            let shared = p.other[i] != p.bone[i]
+            if !shared || p.other[i - 1] != p.bone[i - 1] || p.other[i + 1] != p.bone[i + 1] {
+                continue
+            }
+            let before = at[i] - at[i - 1]
+            let after = at[i + 1] - at[i]
+            let lean = unit(after) - unit(before)
+            let bent = acos(clamp(dot(unit(before), unit(after)), -1.0, 1.0))
+            if length(lean) < 0.000001 {
+                continue
+            }
+            // The arc's middle is the rounding's length times tan(a quarter of the bend) in
+            // from the corner.
+            let t = 0.5 * (length(before) + length(after))
+            out[i] = at[i] + unit(lean) * (self.cut * t * tan(0.25 * min(bent, 3.0)))
+        }
+        out
+    }
+
     /// Its mirror image in the plane x = 0: a right limb's chain from its left's. Angles on
     /// its chart then run the other way round the body, so a form about it is the left's
     /// mirrored (`Radial::mirrored`).
@@ -430,7 +466,7 @@ impl Chain {
     /// Its path at rest.
     pub fn rest(self) -> Path {
         let p = self.points()
-        laid(p.at, [0.0; VERTICES], p.count, self.up)
+        laid(self.corners_cut(p, p.at), [0.0; VERTICES], p.count, self.up)
     }
 
     /// Its path as its bones pose it. `root` is the matrix of what the chain hangs from (a
@@ -442,11 +478,13 @@ impl Chain {
     /// elbow to the wrist, an upper arm's within its first third.
     pub fn posed(self, root: mat4, bones: [mat4; JOINTS]) -> Path {
         let p = self.points()
-        let rest = laid(p.at, [0.0; VERTICES], p.count, self.up)
-        var at = [vec3(); VERTICES]
+        let rest = laid(self.corners_cut(p, p.at), [0.0; VERTICES], p.count, self.up)
+        var carried_to = [vec3(); VERTICES]
         for i in 0..p.count {
-            at[i] = 0.5 * (carried(bones[p.bone[i]], p.at[i]) + carried(bones[p.other[i]], p.at[i]))
+            carried_to[i] = 0.5 *
+                (carried(bones[p.bone[i]], p.at[i]) + carried(bones[p.other[i]], p.at[i]))
         }
+        let at = self.corners_cut(p, carried_to)
         // Angle 0 at the start: the root's, swung from where the root has the path's start
         // pointing to where the first bone has it.
         let ahead = unit(at[1] - at[0])
@@ -571,23 +609,32 @@ impl Bend {
 /// made again along its posed path lacks (the outside of an elbow comes to a point, the cap of
 /// a shoulder thins as the arm comes down). Two forms written for a bend toward angle 0:
 /// `by_angle` is added times the bend's angle (radians), `by_square` times its square, each
-/// turned to where the bend leans (`Radial::bent`).
+/// turned to where the bend leans (`Radial::bent`). A bend past `upto` (radians) changes the
+/// form as one of `upto` does: a change solved over poses holds at the deepest bend among them,
+/// since its square would carry it on past anything it was solved against.
 pub struct Change<const A: u32, const R: u32>: Copy {
     pub by_angle: Radial<A, R>,
     pub by_square: Radial<A, R>,
+    pub upto: f32 = 3.2,
 }
 
 impl<const A: u32, const R: u32> Change<A, R> {
     /// Its mirror image: a right limb's joint's change from its left's.
     pub fn mirrored(self) -> Change<A, R> {
-        Change { by_angle: self.by_angle.mirrored(), by_square: self.by_square.mirrored() }
+        Change {
+            by_angle: self.by_angle.mirrored(),
+            by_square: self.by_square.mirrored(),
+            upto: self.upto,
+        }
     }
 
-    /// It with `other` added: a named change (a muscle's) over a solved one.
+    /// It with `other` added: a named change (a muscle's) over a solved one. The two hold at
+    /// the lesser of their deepest bends.
     pub fn plus(self, other: Change<A, R>) -> Change<A, R> {
         Change {
             by_angle: self.by_angle.plus(other.by_angle),
             by_square: self.by_square.plus(other.by_square),
+            upto: min(self.upto, other.upto),
         }
     }
 }
@@ -784,9 +831,10 @@ impl<const A: u32, const R: u32> Radial<A, R> {
         for i in 0..A {
             angles[i] = bend.lean_at(change.by_angle.place_of_control(i))
         }
+        let by = min(bend.angle, change.upto)
         self
-            .plus(change.by_angle.turned_along(angles), by: bend.angle)
-            .plus(change.by_square.turned_along(angles), by: bend.angle * bend.angle)
+            .plus(change.by_angle.turned_along(angles), by: by)
+            .plus(change.by_square.turned_along(angles), by: by * by)
     }
 
     /// It in `A2` control values along and `R2` terms round: the form of that size nearest it
@@ -806,6 +854,25 @@ impl<const A: u32, const R: u32> Radial<A, R> {
         fit(samples, from: self.from, to: self.to, smooth: 0.0)
     }
 
+    /// It with its finer detail round the path damped: each harmonic kept by
+    /// 1 / (1 + (h / `detail`)⁸), so those under `detail` stay and those over it go.
+    /// A form's shading reads its normal from this (`normal_at`): the small ripples a fit
+    /// leaves are a fraction of a millimetre on the silhouette, but they tilt the surface
+    /// enough to fray a cel's bands of light.
+    pub fn softened(self, detail: f32) -> Radial<A, R> {
+        var coef = self.coef
+        for j in 0..(R - 1) / 2 {
+            let x = f32(j + 1) / max(detail, 0.001)
+            let x4 = x * x * x * x
+            let keep = 1.0 / (1.0 + x4 * x4)
+            for i in 0..A {
+                coef[i][2 * j + 1] = keep * self.coef[i][2 * j + 1]
+                coef[i][2 * j + 2] = keep * self.coef[i][2 * j + 2]
+            }
+        }
+        Radial { coef, ..self }
+    }
+
     /// How many numbers it holds.
     pub fn numbers(self) -> u32 {
         A * R
@@ -813,6 +880,11 @@ impl<const A: u32, const R: u32> Radial<A, R> {
 }
 
 // ---- a limb -------------------------------------------------------------------------------------
+
+/// The least a limb's side is from its path (m). A joint's change that follows a reference
+/// into the press of a limb against a body can take a radius to nothing or past it; a side on
+/// the wrong side of its path would be drawn inside out.
+pub const LEAST: f32 = 0.003
 
 /// The most hinges a limb folds at.
 pub const FOLDS: u32 = 2
@@ -881,7 +953,7 @@ impl<const A: u32, const R: u32> Limb<A, R> {
     pub fn side(self, f: f32, theta: f32) -> vec3 {
         let x = saturate(f)
         let fr = self.path.frame(x * self.path.length())
-        var r = self.form.radius(x, theta)
+        var r = max(self.form.radius(x, theta), LEAST)
         for k in 0..FOLDS {
             // (The lesser of the two, eased over 4 mm: a crease, not a tear.)
             let most = self.folds[k].most(x, theta)
@@ -889,6 +961,19 @@ impl<const A: u32, const R: u32> Limb<A, R> {
             r = mix(most, r, h) - 0.004 * h * (1.0 - h)
         }
         fr.at + (fr.up * cos(theta) + fr.left * sin(theta)) * r
+    }
+
+    /// Whether a folded hinge holds its side in at a place on its chart (1 where its radius is
+    /// the fold's, 0 where it is its form's own): where it does, the side's normal is the
+    /// fold's, not what the form's slopes say (`normal_at`).
+    pub fn folded(self, f: f32, theta: f32) -> f32 {
+        let x = saturate(f)
+        let r = self.form.radius(x, theta)
+        var held = 0.0
+        for k in 0..FOLDS {
+            held = max(held, saturate(0.5 - 0.5 * (self.folds[k].most(x, theta) - r) / 0.004))
+        }
+        held
     }
 
     /// A point of its side (`side`) and the side's outward normal (unit) there: across the
@@ -918,6 +1003,29 @@ impl<const A: u32, const R: u32> Limb<A, R> {
         let along = k.y / len
         (pl.rho - k.x) / sqrt(1.0 + along * along + around * around)
     }
+}
+
+/// The outward normal (unit) of a form's side at a place on its chart, from its radius's slopes
+/// there: for a pixel, which knows its place (`f` of the way along, the angle `theta`) and the
+/// section's plane there (`up`, angle 0, and `left`, a quarter turn on, as its vertices passed
+/// them down), about a path `length` long. Exact at every pixel however coarse the grid the
+/// form was drawn on, where the path is straight; where it bends, off by the little the
+/// section's plane turns across the radius's change along it.
+pub fn normal_at<const A: u32, const R: u32>(
+    form: Radial<A, R>,
+    up: vec3,
+    left: vec3,
+    length: f32,
+    f: f32,
+    theta: f32,
+) -> vec3 {
+    let u = unit(up)
+    let l = unit(left - u * dot(left, u))
+    let along = cross(l, u)
+    let k = form.radius_and_slopes(saturate(f), theta)
+    let out = u * cos(theta) + l * sin(theta)
+    let round = l * cos(theta) - u * sin(theta)
+    unit(out - round * (k.z / max(k.x, 0.001)) - along * (k.y / max(length, 0.001)))
 }
 
 // ---- where a form is ----------------------------------------------------------------------------
@@ -1620,6 +1728,9 @@ fn a_bent_joint_changes_a_form_toward_its_bend() {
     let bend = Bend { at: 0.5, angle: 0.5, toward: 0.5 * PI, after: 0.5 * PI, reached: 0.6 }
     let bent = form.bent(Change { by_angle: swell, by_square: none }, bend)
     assert(abs(bent.radius(0.5, 0.5 * PI) - form.radius(0.5, 0.5 * PI) - 0.005) < 0.0003)
+    // Held at a bend of 0.3 radians, half a radian's bend changes it as 0.3's does.
+    let held = form.bent(Change { by_angle: swell, by_square: none, upto: 0.3 }, bend)
+    assert(abs(held.radius(0.5, 0.5 * PI) - form.radius(0.5, 0.5 * PI) - 0.003) < 0.0003)
     assert(abs(bent.radius(0.5, -0.5 * PI) - form.radius(0.5, -0.5 * PI)) < 0.0003)
     assert(bent.radius(0.0, 0.5 * PI) - form.radius(0.0, 0.5 * PI) < 0.001)
     // Resized, a form is the same form.
@@ -1777,6 +1888,69 @@ fn a_chain_with_no_rounding_curves_through_its_joints() {
     for i in 0..p.vertices {
         assert(length(posed.at[i] - p.at[i]) < 0.000001)
     }
+}
+
+@test
+fn a_chain_that_cuts_its_corners_follows_the_bends_arc() {
+    // An elbow bent a quarter turn, its rounding 5 cm either side: cutting the corner all the
+    // way, the path's point at the joint is on the circle that meets both bones 5 cm from the
+    // joint (its radius 5 cm, its centre 5 cm in from each bone), and the path is shorter than
+    // through the joint itself. At rest, where the arm is straight, the path is as it was.
+    let joints = [vec3(0.2, 1.4, 0.0), vec3(0.45, 1.4, 0.0), vec3(0.7, 1.4, 0.0)]
+    let through = chain(joints, vec3(y: 1.0))
+    let cutting = chain(joints, vec3(y: 1.0), cut: 1.0)
+    let bend = turn_about(vec3(0.0, 1.0, 0.0), -0.5 * PI, vec3(0.45, 1.4, 0.0))
+    let a = through.posed_by(SAME, [SAME, bend])
+    let b = cutting.posed_by(SAME, [SAME, bend])
+    let centre = vec3(0.4, 1.4, 0.05)
+    var nearest = 1.0
+    for i in 0..b.vertices {
+        nearest = min(nearest, abs(length(b.at[i] - centre) - 0.05))
+    }
+    assert(nearest < 0.0005, f"the cut path is {nearest} m off the arc at its nearest")
+    assert(b.place(vec3(0.45, 1.4, 0.0)).rho > 0.018, "the cut path leaves the joint's corner")
+    assert(a.place(vec3(0.45, 1.4, 0.0)).rho < 0.0005, "the other goes through it")
+    assert(b.length() < a.length() - 0.01)
+    let rest = cutting.rest()
+    let plain = through.rest()
+    for i in 0..rest.vertices {
+        assert(length(rest.at[i] - plain.at[i]) < 0.000001)
+    }
+}
+
+@test
+fn a_forms_normal_at_a_place_is_its_sides_normal() {
+    // On a straight limb, the normal read from the radius's slopes is the normal across the
+    // side's neighbouring points, at every place; and a softened form's is within a few degrees
+    // of it.
+    let l = Limb {
+        path: path([vec3(0.0, 1.0, 0.0), vec3(0.6, 1.0, 0.0)], vec3(y: 1.0)),
+        form: leg_form(),
+    }
+    let len = l.path.length()
+    var worst = 1.0
+    var soft = 1.0
+    for i in 0..15 {
+        for j in 0..24 {
+            let f = 0.05 + 0.9 * f32(i) / 14.0
+            let theta = TAU * f32(j) / 24.0
+            let (_, n) = l.side_and_normal(f, theta)
+            let fr = l.path.frame(f * len)
+            worst = min(worst, dot(n, normal_at(l.form, fr.up, fr.left, len, f, theta)))
+            soft = min(soft, dot(n, normal_at(l.form.softened(3.5), fr.up, fr.left, len, f, theta)))
+        }
+    }
+    assert(worst > 0.9995, f"a form's normal at a place is {worst} of its side's")
+    assert(soft > 0.995, f"a softened form's is {soft} of it")
+    // Softening keeps what's broad (this form's two harmonics move its radius by under half a
+    // millimetre) and drops what's fine: a ripple of 6 to the turn is left a hundredth.
+    assert(abs(l.form.softened(3.5).radius(0.3, 1.0) - l.form.radius(0.3, 1.0)) < 0.0005)
+    var rippled = l.form
+    for i in 0..8 {
+        rippled.coef[i][5] = 0.001
+    }
+    let left_of_it = rippled.softened(1.5).coef[3][5]
+    assert(left_of_it < 0.00002, f"{left_of_it}")
 }
 
 @test

@@ -6,13 +6,13 @@
 // values turned over (pale where he's black), so the two part on the page as ink and paper do.
 
 use engine::chart
-use engine::chart::{Band, Grids, Limb, Part}
+use engine::chart::{Band, Grids, Limb, Part, Radial}
 use hakuro::arms::{Drape, CHARTED, arm, drape_room, draped, follow_legs, hand, jacket, sampled_body}
 use hakuro::clear::fists_off_mask
 use hakuro::fingers::{FIST_CURL, curled}
 use hakuro::hakuro::{
-    CHARTS, COVERED, Cloth, WIDE_CHARTS, body_paint, chart_cut, chart_paint, charts, coat, head,
-    hero, jacket_paint, wide_charts,
+    ARM_CHARTS, CHARTS, COVERED, Cloth, WIDE_CHARTS, body_paint, chart_cut, chart_paint, charts,
+    coat, head, hero, jacket_paint, wide_charts,
 }
 use hakuro::reference_rig::HAKURO_BONE
 use engine::character::skin_matrix
@@ -68,10 +68,14 @@ pub struct Fighters {
 type Charted = Limb<16, 13>
 
 /// Whether charted part `part` (`hakuro::charts`' order, then `hakuro::wide_charts`') is drawn:
-/// his arms from `CHARTED` 1, the rest of him from 2.
+/// his arms and what's over them from `CHARTED` 1, the rest of him from 2.
 fn charted_now(part: u32) -> bool {
-    CHARTED >= (if part < 2 { 1 } else { 2 })
+    CHARTED >= (if part < ARM_CHARTS { 1 } else { 2 })
 }
+
+/// How fine the detail round a charted part's path its shading keeps (harmonics): its light's
+/// bands are read off its form without the ripples finer than this (`Radial::softened`).
+const SHADED_DETAIL: f32 = 3.5
 
 /// Whether sampled mesh `k` (`Fighters::arms`: his arms, his body, his jacket, his hands) has
 /// charted parts drawn in its place.
@@ -423,7 +427,14 @@ fn chart_drawn<P: RenderPass, const A: u32, const R: u32>(
             level: level,
             shot: shot,
         ),
-        charted_pixel.bind(cover: cover.items(), shot: shot, who: who, part: part),
+        charted_pixel.bind(
+            shade: form.form.softened(SHADED_DETAIL),
+            length: form.path.length(),
+            cover: cover.items(),
+            shot: shot,
+            who: who,
+            part: part,
+        ),
         indices: grids.indices,
         first_index: span.x,
         index_count: span.y,
@@ -455,10 +466,13 @@ fn chart_shadow<P: RenderPass, const A: u32, const R: u32>(
 }
 
 /// A charted part's vertex, in posed space: where its place on the chart (`band`: what of the
-/// chart is drawn) is on the form his bones pose this frame (`form`), its normal the posed
-/// form's own, where the same place is on him at rest (`rest`), and the place itself (`tx`:
-/// how far along, the angle round), which his paint reads. Its root is drawn under what covers
-/// it (`sunk`). No skin weights: the form is made again where his bones are.
+/// chart is drawn) is on the form his bones pose this frame (`form`), the side's normal there
+/// across its neighbouring points, where the same place is on him at rest (`rest`, which his
+/// paint reads), the place itself with whether a folded hinge holds the side in there (`tx`:
+/// how far along, the angle round, and 1 where it's folded), and the section's plane there
+/// (`ty`, angle 0; `tz`, a quarter turn on), from which a pixel reads its own normal
+/// (`charted_pixel`). Its root is drawn under what covers it (`sunk`). No skin weights: the
+/// form is made again where his bones are.
 @vertex
 pub fn charted_vertex<const A: u32, const R: u32>(
     v: VertexIndex,
@@ -472,13 +486,14 @@ pub fn charted_vertex<const A: u32, const R: u32>(
     let at = chart::place_of(v.index, level, band)
     let (world, normal) = form.side_and_normal(f: at.x, theta: at.y)
     let under = chart::sunk(world, shot.cam.eye, chart::sunk_by(sunk, at.x))
+    let section = form.path.frame(saturate(at.x) * form.path.length())
     FighterVertex {
         clip: ClipPosition { position: shot.cam.clip(under) },
         world,
         rest: rest.side(f: at.x, theta: at.y),
-        tx: vec3(at, 0.0),
-        ty: vec3(0.0, 1.0, 0.0),
-        tz: vec3(0.0, 0.0, 1.0),
+        tx: vec3(at, form.folded(f: at.x, theta: at.y)),
+        ty: section.up,
+        tz: section.left,
         normal,
         lo: Flat { value: 0 },
         hi: Flat { value: 0 },
@@ -616,12 +631,17 @@ pub fn sampled_pixel(
     painted(shot, v.world, normalize(v.normal), c, who, 0)
 }
 
-/// His pixel where his form is drawn along its chart (charted part `part`): its own normal,
-/// and his paint by its place on the chart and where that is on him at rest. Nothing where the
+/// His pixel where his form is drawn along its chart (charted part `part`): his paint by the
+/// part and where the place is on him at rest, and its normal read at the pixel itself from the
+/// form's slopes at its place (`shade`: the posed form, its finest ripples left out; about a
+/// path `length` long), so his light's bands are as clean on a coarse grid as on a fine one.
+/// Where a folded hinge holds the side in, the normal is the side's own. Nothing where the
 /// part isn't (`cover`: his jacket's front and armholes) or is cut away.
 @fragment
-pub fn charted_pixel(
+pub fn charted_pixel<const A: u32, const R: u32>(
     v: FighterVertex,
+    shade: Radial<A, R>,
+    length: f32,
     cover: [u32],
     shot: Shot,
     who: u32,
@@ -633,7 +653,9 @@ pub fn charted_pixel(
     if chart_cut(part, v.rest) {
         discard()
     }
-    painted(shot, v.world, normalize(v.normal), chart_paint(part, v.tx.xy, v.rest), who, 0)
+    let read = chart::normal_at(shade, v.ty, v.tz, length, v.tx.x, v.tx.y)
+    let n = normalize(mix(read, normalize(v.normal), vec3(saturate(v.tx.z))))
+    painted(shot, v.world, n, chart_paint(part, v.rest), who, 0)
 }
 
 /// What his black cloth's lit planes are raised by (linear).

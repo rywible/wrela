@@ -8,7 +8,9 @@ use engine::chart::{Chain, chain}
 /// to his wrist. Its bones are his collarbone, his upper arm and his forearm. Angle 0 is up, a
 /// quarter turn his back. His upper arm's turn about its length is reached a third of the way
 /// to his elbow (past his shoulder's cap, his arm's muscles turn with the bone); his forearm's
-/// is spread from elbow to wrist.
+/// is spread from elbow to wrist. Its path cuts the corner of a bent joint: read about that
+/// path, the reference body posed is nearer itself at rest than about a path through the joint
+/// (studio/forms/joints.wrela measures it).
 pub fn arm_left() -> Chain {
     chain(
         [
@@ -19,6 +21,7 @@ pub fn arm_left() -> Chain {
         ],
         vec3(y: 1.0),
         spread: [1.0, 0.33, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        cut: 1.0,
     )
 }
 
@@ -41,6 +44,7 @@ pub fn leg_left() -> Chain {
         ],
         vec3(z: 1.0),
         spread: [1.0, 0.33, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        cut: 1.0,
     )
 }
 

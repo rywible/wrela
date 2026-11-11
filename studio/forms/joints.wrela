@@ -23,13 +23,6 @@ pub const ROUND: u32 = 7
 /// A joint's change as it's solved (`engine::chart::Change`).
 pub type Solved = chart::Change<10, 7>
 
-/// How far a hinge's change follows the reference in (m): inside an elbow or a knee the
-/// reference's skin folds onto the limb itself, further than a drawn form should follow. A
-/// joint against the trunk (a shoulder, a hip) follows the reference all the way: there the
-/// limb presses on the body, and a form that didn't thin would pass through what's worn over
-/// it.
-pub const FOLD: f32 = 0.015
-
 /// A pose of the reference, and what's read of it: the limb's joints' bends, and the
 /// reference's radius less the rest form's at places on the posed chart.
 pub struct Reading {
@@ -77,14 +70,8 @@ pub fn reading(l: Limb, at_rest: [Sample], m: [mat4; 64], shift: vec2) -> Readin
 
 /// What a reading's sample asks of the changes: its difference; but inside a bend (within a
 /// quarter turn of where it leans, near its joint) no growth, since flesh pressed there has
-/// nowhere to go but into what it's pressed against; and past the limb's last joint against
-/// the trunk (`hinges_from` of the way along), held to `FOLD` inside a bend.
-fn asked<const N: u32>(
-    s: Sample,
-    bends: [Bend; JOINTS],
-    joints: [u32; N],
-    hinges_from: f32,
-) -> f32 {
+/// nowhere to go but into what it's pressed against.
+fn asked<const N: u32>(s: Sample, bends: [Bend; JOINTS], joints: [u32; N]) -> f32 {
     var r = s.r
     for j in 0..N {
         let b = bends[joints[j]]
@@ -92,16 +79,12 @@ fn asked<const N: u32>(
             r = min(r, 0.0)
         }
     }
-    if s.f > hinges_from { max(r, -FOLD) } else { r }
+    r
 }
 
 /// The changes of the joints `joints` of a limb (their places in its chain), solved over
 /// `readings`: each joint's two forms, nearest the readings' differences by least squares.
-pub fn solved<const N: u32>(
-    readings: [Reading],
-    joints: [u32; N],
-    hinges_from: f32,
-) -> [Solved; N] {
+pub fn solved<const N: u32>(readings: [Reading], joints: [u32; N]) -> [Solved; N] {
     assert(N <= 8, "a limb's changes are solved for 8 joints at most")
     let shape: Radial<10, 7> = Radial { from: 0.0, to: 1.0, coef: [[0.0; 7]; 10] }
     let per = ALONG * ROUND
@@ -134,7 +117,7 @@ pub fn solved<const N: u32>(
                     }
                 }
             }
-            let want = f64(asked(s, r.bends, joints, hinges_from))
+            let want = f64(asked(s, r.bends, joints))
             // (The sums' upper half: the matrix is symmetric, and is filled out after.)
             for x in 0..k {
                 g[at[x]] += w[x] * want
@@ -179,6 +162,12 @@ pub fn solved<const N: u32>(
     let x = chart::solve_symmetric(take m, g, n)
     var out = [chart::Change { by_angle: shape, by_square: shape }; N]
     for j in 0..N {
+        // (It holds at the deepest bend among the poses it was solved over.)
+        var deepest = 0.0
+        for r in readings {
+            deepest = max(deepest, r.bends[joints[j]].angle)
+        }
+        out[j].upto = engine::cycle::rounded_to(deepest, 2)
         for i in 0..ALONG {
             for k in 0..ROUND {
                 out[j].by_angle.coef[i][k] = f32(x[(j * 2) * per + i * ROUND + k])
@@ -248,30 +237,23 @@ pub fn left_over<const N: u32>(
     )
 }
 
-/// Where the arm's hinge (its elbow) takes over from its shoulder: 35% of the way along.
-pub const ARM_HINGES_FROM: f32 = 0.35
-
-/// Where the leg's hinge (its knee) takes over from its hip: 30% of the way along.
-pub const LEG_HINGES_FROM: f32 = 0.3
-
-/// A limb's two joints' changes (its joint against the trunk, then its hinge, which takes
-/// over `hinges_from` of the way along), solved over every pose (`poses`): how the reference's
-/// own radius changes from rest, and how much of that is left outside its bends with no change
-/// and with them (mm rms).
-pub fn changes_of(limb: Limb, hinges_from: f32) -> ([Solved; 2], vec2) {
+/// A limb's two joints' changes (its joint against the trunk, then its hinge), solved over
+/// every pose (`poses`): how the reference's own radius changes from rest, and how much of
+/// that is left outside its bends with no change and with them (mm rms).
+pub fn changes_of(limb: Limb) -> ([Solved; 2], vec2) {
     let at_rest = posed::rest_rays(limb, vec2(FROM, 1.0), 44, 24, vec2(0.0, 0.0))
     var readings: Vec<Reading> = Vec::new()
     for m in poses() {
         readings.push(reading(limb, at_rest, m, vec2(0.0, 0.0)))
     }
-    let changes = solved(readings, [1, 2], hinges_from)
+    let changes = solved(readings, [1, 2])
     let left = left_over(changes, [1, 2], readings)
     (changes, vec2(left.w, left.y))
 }
 
 /// The arm's shoulder's and elbow's changes (`changes_of`).
 pub fn arm_changes() -> ([Solved; 2], vec2) {
-    changes_of(ARM_LEFT, ARM_HINGES_FROM)
+    changes_of(ARM_LEFT)
 }
 
 @test
@@ -289,7 +271,7 @@ fn the_arms_joints_changes_solved() {
             held.push(reading(ARM_LEFT, at_rest_between, all[k], vec2(0.5, 0.5)))
         }
     }
-    let changes = solved(fit, [1, 2], ARM_HINGES_FROM)
+    let changes = solved(fit, [1, 2])
     let on_fit = left_over(changes, [1, 2], fit)
     let on_held = left_over(changes, [1, 2], held)
     std::io::print(
@@ -345,15 +327,48 @@ fn the_arm_as_its_drawn_against_the_posed_reference() {
             least = min(least, r)
         }
         let n = f32(max(seen.len(), 1))
-        // (And over its whole chart, its root too, its radius stays an arm's.)
+        // (And over its whole chart, its root too, its side stays an arm's: never nearer its
+        // path than the engine's least, never a flap.)
+        let limb = part.posed(m)
         for i in 0..50 {
             for j in 0..24 {
-                let r = form.radius(f32(i) / 49.0, TAU * f32(j) / 24.0)
-                assert(r > 0.005 && r < 0.16, f"pose {k}'s arm is {r} m from its path")
+                let f = f32(i) / 49.0
+                let centre = limb.path.frame(f * limb.path.length()).at
+                let r = length(limb.side(f, TAU * f32(j) / 24.0) - centre)
+                assert(r > 0.0029 && r < 0.16, f"pose {k}'s arm is {r} m from its path")
             }
         }
         std::io::print(
             f"pose {k}: shoulder {bends[1].angle:.2} rad toward {bends[1].toward:.2} after {bends[1].after:.2} reached {bends[1].reached:.2}, elbow {bends[2].angle:.2} toward {bends[2].toward:.2} after {bends[2].after:.2}; drawn radius {least * 1000.0:.0} to {most * 1000.0:.0} mm; from the reference {sqrt(sum.x / n):.1} mm rms (unchanged {sqrt(sum.y / n):.1})",
         )
     }
+}
+
+/// What's left of the posed reference's change once the arm's joints' changes are solved, with
+/// the arm's chain cutting a bent joint's corner by `cut`: solved on every other pose, measured
+/// on the rest (mm rms).
+fn left_cutting(cut: f32) -> f32 {
+    let limb = Limb { chain: engine::chart::Chain { cut, ..ARM_LEFT.chain }, ..ARM_LEFT }
+    let at_rest = posed::rest_rays(limb, vec2(FROM, 1.0), 44, 24, vec2(0.0, 0.0))
+    let between = posed::rest_rays(limb, vec2(FROM, 1.0), 44, 24, vec2(0.5, 0.5))
+    let all = poses()
+    var fit: Vec<Reading> = Vec::new()
+    var held: Vec<Reading> = Vec::new()
+    for k in 0..all.len() {
+        if k % 2 == 0 {
+            fit.push(reading(limb, at_rest, all[k], vec2(0.0, 0.0)))
+        } else {
+            held.push(reading(limb, between, all[k], vec2(0.5, 0.5)))
+        }
+    }
+    left_over(solved(fit, [1, 2]), [1, 2], held).x
+}
+
+@test
+fn an_arm_whose_path_cuts_its_elbows_corner_is_nearer_the_posed_reference() {
+    // Through the joint itself, 12.1 mm rms is left on poses the solve never saw; cutting the
+    // corner all the way, 10.1. (A longer rounding, 8 or 10 cm, is worse than 5: 11.1, 11.5.)
+    let through = left_cutting(0.0)
+    let cutting = left_cutting(1.0)
+    assert(cutting < through - 1.0, f"cutting leaves {cutting} mm rms, through the joint {through}")
 }

@@ -222,19 +222,40 @@ pub const ARM_RIGHT: figure::limbs::Form = figure::arm::ARM
 /// (`leg_form`), about `figure::chains::leg_left`. His right is its mirror image.
 pub const LEG_LEFT: figure::limbs::Form = figure::leg::LEG.plus(leg_form::LEG_OVER)
 
-/// How many of his parts are drawn along their charts as limbs are, and how many as his trunk
-/// is (a larger form).
-pub const CHARTS: u32 = 5
+/// How many of his parts are drawn along their charts as limbs are, how many of those are his
+/// arms' (the first of them), and how many are drawn as his trunk is (a larger form).
+pub const CHARTS: u32 = 7
+pub const ARM_CHARTS: u32 = 4
 pub const WIDE_CHARTS: u32 = 2
 
-/// His charted limbs: his left arm, bare, and his right, sleeved, each drawn to inside the wrap
-/// or the gauntlet at his wrist, where his hand takes over, its root under his jacket; his
-/// legs, in his trousers, each drawn to inside his boot, its root under his trousers' seat; and
-/// his neck and head, under his mask and his hair, to his crown.
+/// Where the wrap round his left forearm starts, and the gauntlet over his right, as fractions
+/// of an arm's path's length; and how far each stands off the arm under it (m).
+pub const WRAP_FROM: f32 = 0.75
+pub const GAUNTLET_FROM: f32 = 0.634
+pub const WRAP_OVER: f32 = 0.0025
+pub const GAUNTLET_OVER: f32 = 0.0035
+
+/// His charted limbs. His left arm, bare, and his right, in his jacket's sleeve, each drawn to
+/// inside the wrap or the gauntlet at his wrist, where his hand takes over, its root under his
+/// jacket. The wrap round his left forearm and the gauntlet over his right: each a layer over
+/// its arm's own form, a little off it, on the arm's chain and bones, so it goes where the arm
+/// goes and its edge is a real step. His legs, in his trousers, each drawn to inside his boot,
+/// its root under his trousers' seat. And his neck and head, under his mask and his hair, to
+/// his crown.
 pub fn charts() -> [Part<16, 13>; CHARTS] {
+    let left = figure::limbs::arm(ARM_LEFT, 0, [6, 8, 10], to: 0.84, under: 0.04)
+    let right = figure::limbs::arm(ARM_RIGHT, 1, [7, 9, 11], to: 0.84, under: 0.04)
+    let over = |arm: Part<16, 13>, from: f32, by: f32| Part {
+        form: arm.form.plus(chart::round(by)),
+        band: Band { f: vec2(from, 0.86), theta: arm.band.theta },
+        sunk: vec2(0.0, 0.1),
+        ..arm,
+    }
     [
-        figure::limbs::arm(ARM_LEFT, 0, [6, 8, 10], to: 0.84, under: 0.04),
-        figure::limbs::arm(ARM_RIGHT, 1, [7, 9, 11], to: 0.84, under: 0.04),
+        left,
+        right,
+        over(left, WRAP_FROM, WRAP_OVER),
+        over(right, GAUNTLET_FROM, GAUNTLET_OVER),
         figure::limbs::leg(LEG_LEFT, 0, [0, 18, 20], to: 0.78, under: 0.02),
         figure::limbs::leg(LEG_LEFT.mirrored(), 1, [0, 19, 21], to: 0.78, under: 0.02),
         Part {
@@ -264,15 +285,21 @@ pub fn wide_charts() -> [Part<24, 21>; WIDE_CHARTS] {
     [on_spine(trunk_form::TRUNK, 0.0), on_spine(jacket_form::JACKET, 0.03)]
 }
 
-/// His paint on charted part `part` (`charts`' order, then `wide_charts`'), by place on its
-/// chart (`at`: how far along its path, the angle round it) for his arms, and by where the
-/// place is on him at rest (`rest`) for the others, as his outfit's regions are written.
-pub fn chart_paint(part: u32, at: vec2, rest: vec3) -> Cloth {
+/// His paint on charted part `part` (`charts`' order, then `wide_charts`'): his arms and what's
+/// over them each one cloth, the others by where the place is on him at rest (`rest`), as his
+/// outfit's regions are written.
+pub fn chart_paint(part: u32, rest: vec3) -> Cloth {
     if part == 0 {
-        return arm_left_paint(at.x)
+        return SKIN
     }
     if part == 1 {
-        return arm_right_paint(at.x)
+        return BLACK
+    }
+    if part == 2 {
+        return CHARCOAL
+    }
+    if part == 3 {
+        return LEATHER
     }
     if part == CHARTS + 1 {
         return jacket_paint(rest)
@@ -294,23 +321,6 @@ pub fn chart_cut(part: u32, rest: vec3) -> bool {
         return abs(rest.x + 0.05 * t) - (0.040 + 0.070 * sqrt(t)) < 0.0
     }
     false
-}
-
-/// Where the wrap round his left forearm starts, as a fraction of his arm's path's length.
-pub const WRAP_FROM: f32 = 0.75
-
-/// His left arm's paint by place on its chart (`f` of the way along its path): bare, a charcoal
-/// wrap round his forearm.
-pub fn arm_left_paint(f: f32) -> Cloth {
-    if f > WRAP_FROM { CHARCOAL } else { SKIN }
-}
-
-/// Where the gauntlet over his right forearm starts, as a fraction of his arm's path's length.
-pub const GAUNTLET_FROM: f32 = 0.634
-
-/// His right arm's paint by place on its chart: his jacket's sleeve, then a leather gauntlet.
-pub fn arm_right_paint(f: f32) -> Cloth {
-    if f > GAUNTLET_FROM { LEATHER } else { BLACK }
 }
 
 /// The collar's paint: the jacket's black, standing up round his neck, open in front.
