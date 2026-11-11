@@ -54,20 +54,30 @@ fn sampled_at(l: Lattice, slots: [u32], words: [u32], p: vec3) -> f32 {
     )
 }
 
-/// 1 where a program draws his left arm from its fitted form (content/arm: a sweep whose
-/// numbers were solved against the arm's samples), along the form's own chart where his bones
-/// are each frame, with no mesh of it and no weights (the combat lab's fighters); 0 for its
-/// sampled mesh. An experiment's switch: set here (`--set` reaches only a program's own
-/// constants).
+/// Which of him a program draws along charts (`hakuro::charts`, `engine::chart`: forms made
+/// again where his bones are each frame, with no mesh and no weights), in place of the sampled
+/// meshes here: 0 none, 1 his arms, 2 his arms, legs, trunk, head and jacket (his hands stay
+/// sampled). The combat lab's fighters read it. A switch while the charted forms are judged
+/// against the sampled ones: set here (`--set` reaches only a program's own constants).
 pub const CHARTED: u32 = 0
 
 /// His arm on `side` (0 left, 1 right) realized from its samples and skinned by the reference's
 /// own weights round it.
 pub fn arm(side: u32) -> Mesh {
     if side == 0 {
-        weighted(arm_left_grid::samples(B_UPPER), arm_left_weights::weights(), reach: 1.5, pull: 0.0)
+        weighted(
+            arm_left_grid::samples(B_UPPER),
+            arm_left_weights::weights(),
+            reach: 1.5,
+            pull: 0.0,
+        )
     } else {
-        weighted(arm_right_grid::samples(B_UPPER + 1), arm_right_weights::weights(), reach: 1.5, pull: 0.0)
+        weighted(
+            arm_right_grid::samples(B_UPPER + 1),
+            arm_right_weights::weights(),
+            reach: 1.5,
+            pull: 0.0,
+        )
     }
 }
 
@@ -75,9 +85,19 @@ pub fn arm(side: u32) -> Mesh {
 /// finger's joints weighted as the reference's are.
 pub fn hand(side: u32) -> Mesh {
     if side == 0 {
-        weighted(hand_left_grid::samples(B_HAND), hand_left_weights::weights(), reach: 1.5, pull: 0.0)
+        weighted(
+            hand_left_grid::samples(B_HAND),
+            hand_left_weights::weights(),
+            reach: 1.5,
+            pull: 0.0,
+        )
     } else {
-        weighted(hand_right_grid::samples(B_HAND + 1), hand_right_weights::weights(), reach: 1.5, pull: 0.0)
+        weighted(
+            hand_right_grid::samples(B_HAND + 1),
+            hand_right_weights::weights(),
+            reach: 1.5,
+            pull: 0.0,
+        )
     }
 }
 
@@ -125,9 +145,12 @@ pub fn skin_weighted(
     }
     let e = lattice.cell * reach
     let g = vec3(
-        sampled_at(lattice, slots, words, v.pos + vec3(e, 0.0, 0.0)) - sampled_at(lattice, slots, words, v.pos - vec3(e, 0.0, 0.0)),
-        sampled_at(lattice, slots, words, v.pos + vec3(0.0, e, 0.0)) - sampled_at(lattice, slots, words, v.pos - vec3(0.0, e, 0.0)),
-        sampled_at(lattice, slots, words, v.pos + vec3(0.0, 0.0, e)) - sampled_at(lattice, slots, words, v.pos - vec3(0.0, 0.0, e)),
+        sampled_at(lattice, slots, words, v.pos + vec3(e, 0.0, 0.0)) -
+            sampled_at(lattice, slots, words, v.pos - vec3(e, 0.0, 0.0)),
+        sampled_at(lattice, slots, words, v.pos + vec3(0.0, e, 0.0)) -
+            sampled_at(lattice, slots, words, v.pos - vec3(0.0, e, 0.0)),
+        sampled_at(lattice, slots, words, v.pos + vec3(0.0, 0.0, e)) -
+            sampled_at(lattice, slots, words, v.pos - vec3(0.0, 0.0, e)),
     )
     let normal = if length(g) > 1.0e-6 { normalize(g) } else { v.normal }
     verts[id] = SkinVertex { pos: v.pos, bones, normal, weights, mask: v.mask }
@@ -169,7 +192,6 @@ pub fn jacket() -> Mesh {
     // samples would reach through it to its other face.)
     weighted(jacket_grid::samples(0), body_weights::weights(), reach: 0.8, pull: 0.012)
 }
-
 
 // ---- the tails' drape, worked out on a grid over the cloth's middle -------------------------
 
@@ -323,7 +345,14 @@ pub fn cloth_root(palettes: [mat4], views: u32, stride: u32, out: mut Slots<vec4
 /// The cloth relaxed once: each node pulled toward its neighbours' distances at rest (beside it
 /// and above and below, and two along for its stiffness), then kept off his legs and arms.
 @compute(64)
-pub fn cloth_relax(palettes: [mat4], views: u32, stride: u32, pos: [vec4], out: mut Slots<vec4>, id: GlobalId) {
+pub fn cloth_relax(
+    palettes: [mat4],
+    views: u32,
+    stride: u32,
+    pos: [vec4],
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
     if id.x >= views * DRAPE_NODES {
         return
     }
@@ -335,7 +364,16 @@ pub fn cloth_relax(palettes: [mat4], views: u32, stride: u32, pos: [vec4], out: 
     let base = view * DRAPE_NODES
     var pull = vec3(0.0)
     var weight = 0.0
-    let steps = [vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0), vec2(-2.0, 0.0), vec2(2.0, 0.0), vec2(0.0, -2.0), vec2(0.0, 2.0)]
+    let steps = [
+        vec2(-1.0, 0.0),
+        vec2(1.0, 0.0),
+        vec2(0.0, -1.0),
+        vec2(0.0, 1.0),
+        vec2(-2.0, 0.0),
+        vec2(2.0, 0.0),
+        vec2(0.0, -2.0),
+        vec2(0.0, 2.0),
+    ]
     for k in 0..8 {
         let cc = i32(c) + i32(steps[k].x)
         let rr = i32(r) + i32(steps[k].y)
@@ -389,8 +427,10 @@ pub fn cloth_drape(
     // Its outside now: across the cloth, turned the way its outside was at rest.
     let round = at(c1, r) - at(c0, r)
     let down = at(c, r1) - at(c, r0)
-    let rround = tails_skinned(drape_node(c1, r), palettes, first) - tails_skinned(drape_node(c0, r), palettes, first)
-    let rdown = tails_skinned(drape_node(c, r1), palettes, first) - tails_skinned(drape_node(c, r0), palettes, first)
+    let rround = tails_skinned(drape_node(c1, r), palettes, first) -
+        tails_skinned(drape_node(c0, r), palettes, first)
+    let rdown = tails_skinned(drape_node(c, r1), palettes, first) -
+        tails_skinned(drape_node(c, r0), palettes, first)
     let rn = cross(rround, rdown)
     let sign = if dot(rn, ow) >= 0.0 { 1.0 } else { -1.0 }
     let n = cross(round, down) * sign
@@ -464,27 +504,88 @@ fn cloth_frame(
         groups: groups,
     )
     for _ in 0..RELAXES / 2 {
-        dispatch(cloth_relax.bind(palettes: palettes.items(), views: views, stride: stride, pos: next.items(), out: mut pos), groups: groups)
-        dispatch(cloth_relax.bind(palettes: palettes.items(), views: views, stride: stride, pos: pos.items(), out: mut next), groups: groups)
+        dispatch(
+            cloth_relax.bind(
+                palettes: palettes.items(),
+                views: views,
+                stride: stride,
+                pos: next.items(),
+                out: mut pos,
+            ),
+            groups: groups,
+        )
+        dispatch(
+            cloth_relax.bind(
+                palettes: palettes.items(),
+                views: views,
+                stride: stride,
+                pos: pos.items(),
+                out: mut next,
+            ),
+            groups: groups,
+        )
     }
     dispatch(
-        cloth_drape.bind(palettes: palettes.items(), views: views, stride: stride, pos: next.items(), out: mut out, facing: mut facing),
+        cloth_drape.bind(
+            palettes: palettes.items(),
+            views: views,
+            stride: stride,
+            pos: next.items(),
+            out: mut out,
+            facing: mut facing,
+        ),
         groups: groups,
     )
-    dispatch(cloth_root.bind(palettes: palettes.items(), views: views, stride: stride, out: mut root), groups: (views + 63) / 64)
+    dispatch(
+        cloth_root.bind(palettes: palettes.items(), views: views, stride: stride, out: mut root),
+        groups: (views + 63) / 64,
+    )
 }
 
 impl Drape {
     /// The cloth for `views` views (each view's palette `stride` bones on from the last), moved
     /// on `dt` seconds. (`lagged` is unused: the cloth carries its own swing.)
-    pub fn work(mut self, palettes: GpuBuffer<mat4>, views: u32, stride: u32, lagged: u32, dt: f32) {
+    pub fn work(
+        mut self,
+        palettes: GpuBuffer<mat4>,
+        views: u32,
+        stride: u32,
+        lagged: u32,
+        dt: f32,
+    ) {
         let fresh: u32 = if self.fresh { 1 } else { 0 }
         self.fresh = false
         let step = clamp(dt, 0.0, 1.0 / 20.0)
         if self.flip == 0 {
-            cloth_frame(palettes, views, stride, step, fresh, mut self.pos_a, self.prev_a, mut self.pos_b, mut self.prev_b, mut self.out, mut self.facing, mut self.root)
+            cloth_frame(
+                palettes,
+                views,
+                stride,
+                step,
+                fresh,
+                mut self.pos_a,
+                self.prev_a,
+                mut self.pos_b,
+                mut self.prev_b,
+                mut self.out,
+                mut self.facing,
+                mut self.root,
+            )
         } else {
-            cloth_frame(palettes, views, stride, step, fresh, mut self.pos_b, self.prev_b, mut self.pos_a, mut self.prev_a, mut self.out, mut self.facing, mut self.root)
+            cloth_frame(
+                palettes,
+                views,
+                stride,
+                step,
+                fresh,
+                mut self.pos_b,
+                self.prev_b,
+                mut self.pos_a,
+                mut self.prev_a,
+                mut self.out,
+                mut self.facing,
+                mut self.root,
+            )
         }
         self.flip = 1 - self.flip
     }
@@ -508,7 +609,8 @@ fn off_legs_now(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
     var q = p
     // His middle, between his hips: the cloth hangs outside his legs, out from it.
     let mid = ((palette[first + 18] * vec4(0.114, 0.971, -0.036, 1.0)).xyz +
-        (palette[first + 19] * vec4(-0.114, 0.971, -0.036, 1.0)).xyz) * 0.5
+        (palette[first + 19] * vec4(-0.114, 0.971, -0.036, 1.0)).xyz) *
+        0.5
     for side in 0..2 {
         let sx = if side == 0 { 1.0 } else { -1.0 }
         let hip = (palette[first + 18 + side] * vec4(0.114 * sx, 0.971, -0.036, 1.0)).xyz
@@ -520,15 +622,25 @@ fn off_legs_now(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
         let wrist = (palette[first + 12 + side] * vec4(0.706 * sx, 1.455, -0.065, 1.0)).xyz
         let knuckle = (palette[first + 12 + side] * vec4(0.86 * sx, 1.45, -0.05, 1.0)).xyz
         for k in 0..5 {
-            let a = if k == 0 { hip } else if k == 1 { knee } else if k == 2 { heel } else if k == 3 { elbow } else { wrist }
-            let b = if k == 0 { knee } else if k == 1 { ankle } else if k == 2 { toe } else if k == 3 { wrist } else { knuckle }
-            let ra = if k == 0 { 0.135 } else if k == 1 { 0.13 } else if k == 2 { 0.085 } else if k == 3 { 0.055 } else { 0.042 }
-            let rb = if k == 0 { 0.125 } else if k == 1 { 0.2 } else if k == 2 { 0.075 } else if k == 3 { 0.042 } else { 0.045 }
+            let a = if k == 0 { hip } else if k == 1 { knee } else if k == 2 { heel } else if k ==
+                3 { elbow } else { wrist }
+            let b = if k == 0 { knee } else if k == 1 { ankle } else if k == 2 { toe } else if k ==
+                3 { wrist } else { knuckle }
+            let ra = if k == 0 { 0.135 } else if k == 1 { 0.13 } else if k == 2 {
+                0.085
+            } else if k == 3 { 0.055 } else { 0.042 }
+            let rb = if k == 0 { 0.125 } else if k == 1 { 0.2 } else if k == 2 {
+                0.075
+            } else if k == 3 { 0.042 } else { 0.045 }
             // (How far in the capsule the cloth hangs at rest: legs only, the arms are clear.)
             var inside = 0.0
             if k < 3 {
-                let ar = if k == 0 { vec3(0.114 * sx, 0.971, -0.036) } else if k == 1 { vec3(0.114 * sx, 0.542, -0.036) } else { vec3(0.124 * sx, 0.065, -0.13) }
-                let br = if k == 0 { vec3(0.114 * sx, 0.542, -0.036) } else if k == 1 { vec3(0.114 * sx, 0.086, -0.088) } else { vec3(0.124 * sx, 0.055, 0.14) }
+                let ar = if k == 0 { vec3(0.114 * sx, 0.971, -0.036) } else if k == 1 {
+                    vec3(0.114 * sx, 0.542, -0.036)
+                } else { vec3(0.124 * sx, 0.065, -0.13) }
+                let br = if k == 0 { vec3(0.114 * sx, 0.542, -0.036) } else if k == 1 {
+                    vec3(0.114 * sx, 0.086, -0.088)
+                } else { vec3(0.124 * sx, 0.055, 0.14) }
                 let er = br - ar
                 let hr = clamp(dot(rest - ar, er) / dot(er, er), 0.0, 1.0)
                 inside = max(mix(ra, rb, hr) + 0.02 - length(rest - (ar + er * hr)), 0.0)
@@ -580,7 +692,11 @@ pub fn draped(hung: vec3, rest: vec3, turn: mat3, grid: [vec4], facing: [vec4], 
     let fy = clamp(at.y - f32(r0), 0.0, 1.0)
     let base = view * DRAPE_NODES
     let lerp = |b: [vec4], cc: u32, rr: u32| b[base + rr * DRAPE_COLS + cc].xyz
-    let g = |b: [vec4]| mix(mix(lerp(b, c0, r0), lerp(b, c0 + 1, r0), fx), mix(lerp(b, c0, r0 + 1), lerp(b, c0 + 1, r0 + 1), fx), fy)
+    let g = |b: [vec4]| mix(
+        mix(lerp(b, c0, r0), lerp(b, c0 + 1, r0), fx),
+        mix(lerp(b, c0, r0 + 1), lerp(b, c0 + 1, r0 + 1), fx),
+        fy,
+    )
     // How far out of the cloth's middle it is at rest, and which way (out from the axis).
     let th = tails(rest).1
     let flat = vec3(rest.x - TAILS_AXIS.x, 0.0, rest.z - TAILS_AXIS.z)
@@ -640,7 +756,9 @@ pub fn skin_tails(tally: [Tally], verts: mut Slots<SkinVertex>, id: GlobalId) {
     // (Weighed at the cloth's middle, so its lining and face move alike: weighed each where it
     // is, they turned apart and the lining showed through the face.)
     let rel = vec3(v.pos.x - TAILS_AXIS.x, 0.0, v.pos.z - TAILS_AXIS.z)
-    let mid = v.pos - (if length(rel) > 1.0e-4 { normalize(rel) } else { vec3(0.0, 0.0, -1.0) }) * tails(v.pos).1
+    let mid = v.pos - (if length(rel) > 1.0e-4 { normalize(rel) } else {
+        vec3(0.0, 0.0, -1.0)
+    }) * tails(v.pos).1
     let (bones, weights) = tails_weights(mid)
     verts[id] = SkinVertex { pos: v.pos, bones, normal: v.normal, weights, mask: v.mask }
 }
@@ -676,11 +794,14 @@ pub fn off_legs(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
     // push the middle, and both faces go with it, so the lining is never pushed through the face.
     let th = tails(rest).1
     let rflat = vec3(rest.x - TAILS_AXIS.x, 0.0, rest.z - TAILS_AXIS.z)
-    let rest_mid = rest - (if length(rflat) > 1.0e-4 { normalize(rflat) } else { vec3(0.0, 0.0, -1.0) }) * th
+    let rest_mid = rest - (if length(rflat) > 1.0e-4 { normalize(rflat) } else {
+        vec3(0.0, 0.0, -1.0)
+    }) * th
     let anchor = (palette[first] * vec4(rest.x, TAILS_TOP, rest.z, 1.0)).xyz
     let rod = TAILS_TOP - rest.y
     let mid = ((palette[first + 18] * vec4(0.114, 0.971, -0.036, 1.0)).xyz +
-        (palette[first + 19] * vec4(-0.114, 0.971, -0.036, 1.0)).xyz) * 0.5
+        (palette[first + 19] * vec4(-0.114, 0.971, -0.036, 1.0)).xyz) *
+        0.5
     var hip = [vec3(0.0); 2]
     var knee = [vec3(0.0); 2]
     var ankle = [vec3(0.0); 2]
@@ -737,8 +858,12 @@ pub fn off_legs(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
                 // Less however far in it the point already is at rest, so the capsules can be as
                 // fat as his baggy trousers without pushing the cloth out where it hangs at rest.
                 let sx = if side == 0 { 1.0 } else { -1.0 }
-                let ar = if k == 0 { vec3(0.114 * sx, 0.971, -0.036) } else if k == 1 { vec3(0.114 * sx, 0.542, -0.036) } else { vec3(0.124 * sx, 0.065, -0.13) }
-                let br = if k == 0 { vec3(0.114 * sx, 0.542, -0.036) } else if k == 1 { vec3(0.114 * sx, 0.086, -0.088) } else { vec3(0.124 * sx, 0.055, 0.14) }
+                let ar = if k == 0 { vec3(0.114 * sx, 0.971, -0.036) } else if k == 1 {
+                    vec3(0.114 * sx, 0.542, -0.036)
+                } else { vec3(0.124 * sx, 0.065, -0.13) }
+                let br = if k == 0 { vec3(0.114 * sx, 0.542, -0.036) } else if k == 1 {
+                    vec3(0.114 * sx, 0.086, -0.088)
+                } else { vec3(0.124 * sx, 0.055, 0.14) }
                 let er = br - ar
                 let hr = clamp(dot(rest_mid - ar, er) / dot(er, er), 0.0, 1.0)
                 let dr = length(rest_mid - (ar + er * hr))
