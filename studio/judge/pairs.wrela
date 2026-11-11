@@ -53,61 +53,101 @@ pub fn labelled(img: mut Image, x: u32, y: u32, s: str) {
     img.text(x + LABEL_SCALE, y + LABEL_SCALE, s, LABEL_SCALE, vec3u(255, 255, 255))
 }
 
-/// A shot's frames as one image: `cells` (each `w` × `h`, RGBA8), `across` of them a row, a gap
-/// between, and (where there's more than one) each labelled by its frame's number.
-pub fn laid(cells: [Vec<u8>], w: u32, h: u32, across: u32, numbers: [u32]) -> Image {
-    let n = cells.len()
-    let cols = min(max(across, 1), max(n, 1))
-    let rows = (max(n, 1) + cols - 1) / cols
-    var img = Image::new(cols * w + (cols - 1) * GAP, rows * h + (rows - 1) * GAP)
-    for k in 0..n {
-        let x0 = (k % cols) * (w + GAP)
-        let y0 = (k / cols) * (h + GAP)
-        borrow px = cells[k]
-        for y in 0..h {
-            var from = 4 * (y * w)
-            var to = 3 * ((y0 + y) * img.w + x0)
-            for _ in 0..w {
-                img.px[to] = px[from]
-                img.px[to + 1] = px[from + 1]
-                img.px[to + 2] = px[from + 2]
-                from += 4
-                to += 3
+/// The longest side an image a critic reads may have: a reader shrinks a larger one, and its
+/// detail goes.
+pub const MOST: u32 = 1568
+
+/// `px` (`w` × `h`, RGBA8) drawn into `img` with its top left at (`x0`, `y0`).
+fn drawn(img: mut Image, px: [u8], w: u32, h: u32, x0: u32, y0: u32) {
+    for y in 0..h {
+        var from = 4 * (y * w)
+        var to = 3 * ((y0 + y) * img.w + x0)
+        for _ in 0..w {
+            img.px[to] = px[from]
+            img.px[to + 1] = px[from + 1]
+            img.px[to + 2] = px[from + 2]
+            from += 4
+            to += 3
+        }
+    }
+}
+
+/// How many rows of a strip's pairs (each `h` high) a page holds.
+pub fn rows_a_page(h: u32) -> u32 {
+    max((MOST + GAP) / (h + GAP), 1)
+}
+
+/// A shot's pair as the images a critic reads, both sides in each, named `first` and `second`
+/// at their top lefts. `a` and `b` are the sides' frames (each `w` × `h`, RGBA8), in order.
+/// - A still (one frame): one image, the two side by side or one over the other, whichever
+///   keeps them larger within `MOST` each way.
+/// - A strip (several): a row a frame, `first`'s on the left and `second`'s on the right, the
+///   frame's number on the left one; as many pages as its rows need (`rows_a_page`).
+pub fn pages(
+    a: [Vec<u8>],
+    b: [Vec<u8>],
+    w: u32,
+    h: u32,
+    numbers: [u32],
+    first: str,
+    second: str,
+) -> Vec<Image> {
+    var out: Vec<Image> = Vec::new()
+    let n = min(a.len(), b.len())
+    if n == 1 {
+        // (How much each way of laying them out is shrunk to fit, in thousandths.)
+        let beside = min(min(1000 * MOST / (2 * w + GAP), 1000 * MOST / h), 1000)
+        let over = min(min(1000 * MOST / w, 1000 * MOST / (2 * h + GAP)), 1000)
+        if beside >= over {
+            var img = Image::new(2 * w + GAP, h)
+            drawn(mut img, a[0], w, h, x0: 0, y0: 0)
+            drawn(mut img, b[0], w, h, x0: w + GAP, y0: 0)
+            labelled(mut img, LABEL_AT, LABEL_AT, first)
+            labelled(mut img, w + GAP + LABEL_AT, LABEL_AT, second)
+            out.push(take img)
+        } else {
+            var img = Image::new(w, 2 * h + GAP)
+            drawn(mut img, a[0], w, h, x0: 0, y0: 0)
+            drawn(mut img, b[0], w, h, x0: 0, y0: h + GAP)
+            labelled(mut img, LABEL_AT, LABEL_AT, first)
+            labelled(mut img, LABEL_AT, h + GAP + LABEL_AT, second)
+            out.push(take img)
+        }
+        return out
+    }
+    let rows = rows_a_page(h)
+    var at = 0
+    while at < n {
+        let here = min(rows, n - at)
+        var img = Image::new(2 * w + GAP, here * h + (here - 1) * GAP)
+        for r in 0..here {
+            let y0 = r * (h + GAP)
+            drawn(mut img, a[at + r], w, h, x0: 0, y0: y0)
+            drawn(mut img, b[at + r], w, h, x0: w + GAP, y0: y0)
+            if at + r < numbers.len() {
+                let label = String::from(f"{numbers[at + r]}")
+                labelled(mut img, LABEL_AT, y0 + h - LABEL_AT - 9 * LABEL_SCALE, label.as_str())
             }
         }
-        if n > 1 && k < numbers.len() {
-            let label = String::from(f"{numbers[k]}")
-            labelled(mut img, x0 + LABEL_AT, y0 + LABEL_AT, label.as_str())
-        }
+        labelled(mut img, LABEL_AT, LABEL_AT, first)
+        labelled(mut img, w + GAP + LABEL_AT, LABEL_AT, second)
+        out.push(take img)
+        at += here
     }
-    img
+    out
 }
 
-/// `a` and `b` side by side, a gap between, named `left` and `right` at their tops: the pair
-/// with its sides told, for the sealed directory.
-pub fn beside(a: Image, b: Image, left: str, right: str) -> Image {
-    var img = Image::new(a.w + GAP + b.w, max(a.h, b.h))
-    for y in 0..a.h {
-        for i in 0..3 * a.w {
-            img.px[3 * y * img.w + i] = a.px[3 * y * a.w + i]
-        }
-    }
-    let x0 = a.w + GAP
-    for y in 0..b.h {
-        for i in 0..3 * b.w {
-            img.px[3 * (y * img.w + x0) + i] = b.px[3 * y * b.w + i]
-        }
-    }
-    labelled(mut img, LABEL_AT, LABEL_AT, left)
-    labelled(mut img, x0 + LABEL_AT, LABEL_AT, right)
-    img
+/// The file a shot's page `page` (of `pages`, from 0) is written as: `<shot>.png`, or with more
+/// than one, `<shot>-1.png` on.
+pub fn page_name(shot: str, page: u32, pages: u32) -> String {
+    if pages <= 1 { String::from(f"{shot}.png") } else { String::from(f"{shot}-{page + 1}.png") }
 }
 
-/// Whether shot `k`'s pair is swapped under `seed`: the new shown as A and the base as B (else
-/// the base is A). The same for the same seed and shot; about half of them, by a Lehmer
-/// generator's draw.
-pub fn swapped(seed: u32, k: u32) -> bool {
-    var x: u64 = u64(seed) % 2147483646 + 1
+/// Whether shot `k`'s pair is swapped for critic `critic` under `seed`: the new shown as A and
+/// the base as B (else the base is A). The same for the same seed, critic and shot; about half
+/// of them, by a Lehmer generator's draw.
+pub fn swapped(seed: u32, critic: u32, k: u32) -> bool {
+    var x: u64 = (u64(seed) * 7919 + u64(critic) * 104729) % 2147483646 + 1
     for _ in 0..k + 3 {
         x = (x * 48271) % 2147483647
     }
@@ -146,26 +186,37 @@ pub fn key_of(text: str) -> Vec<Keyed> {
     out
 }
 
-/// The critics' brief: where the pairs are, that the letters are shuffled, what the only
-/// difference is, each shot and what it shows, and the one line a shot they answer with.
-pub fn brief(shots: [Shot], what: str, dir: str) -> String {
+/// The critics' brief: where the images are, that the letters are shuffled, what the only
+/// difference is, each shot with its files (`files`: each shot's, in order) and what it shows,
+/// and the one line a shot they answer with.
+pub fn brief(shots: [Shot], files: [Vec<String>], what: str, dir: str) -> String {
     var out = String::new()
     out.push_str("# A blind comparison\n\n")
     out.push_str(
-        f"Each shot below is in `{dir}` as two PNGs of the same moment, `<shot>-A.png` and `<shot>-B.png`. ",
+        f"Each shot below is an image in `{dir}` that shows the same moment twice, marked A and B at the top left of each. ",
     )
     out.push_str(
         f"The only difference between A and B is {what}. Which letter is which is shuffled shot by shot, so A isn't the same one every time. Nothing else differs.\n\n",
     )
     out.push_str("The shots:\n\n")
-    for s in shots {
-        let kind = if s.frames.len() > 1 { "a strip of frames, each labelled by its number" } else {
+    for k in 0..shots.len() {
+        borrow s = shots[k]
+        var named = String::new()
+        for i in 0..files[k].len() {
+            if i > 0 {
+                named.push_str(", ")
+            }
+            named.push_str(f"`{files[k][i]}`")
+        }
+        let kind = if s.frames.len() > 1 {
+            "a strip: a row a frame, A's on the left and B's on the right, the frame's number at the lower left"
+        } else {
             "a still"
         }
-        out.push_str(f"- `{s.name}`: {s.about} ({kind}).\n")
+        out.push_str(f"- `{s.name}` ({named}): {s.about} ({kind}).\n")
     }
     out.push_str(
-        "\nLook at both images of each shot and judge them as drawings: which reads better as a believable, appealing figure in this style? Look at silhouettes, joints, where one part meets another, the shapes of light and shade, and the ink lines; and for anything broken, lumpy, pinched, hollow or floating.\n\n",
+        "\nJudge A against B in each shot as drawings: which reads better as a believable, appealing figure in this style? Look at silhouettes, joints, where one part meets another, the shapes of light and shade, and the ink lines; and for anything broken, lumpy, pinched, hollow or floating.\n\n",
     )
     out.push_str("Answer with exactly one line a shot, in this form:\n\n")
     out.push_str(
@@ -232,11 +283,18 @@ pub fn votes_of(text: str, names: [String]) -> Vec<Vote> {
                 continue
             }
             let said = after.slice(colon + 1, after.len())
-            let pick = if said.find("no visible difference").is_some() {
+            // The verdict is what comes before the note (` - `): the note's own words (a
+            // highlight, "no visible difference at this size") aren't the pick.
+            let end = match said.find(" - ") {
+                Some(dash) => dash,
+                None => said.len(),
+            }
+            let verdict = said.slice(0, end)
+            let pick = if verdict.find("no visible difference").is_some() {
                 Pick::Same
             } else {
-                let at_a = said.find("a better")
-                let at_b = said.find("b better")
+                let at_a = verdict.find("a better")
+                let at_b = verdict.find("b better")
                 match (at_a, at_b) {
                     (Some(x), Some(y)) => if x < y { Pick::A } else { Pick::B },
                     (Some(_), None) => Pick::A,
@@ -244,11 +302,11 @@ pub fn votes_of(text: str, names: [String]) -> Vec<Vote> {
                     (None, None) => continue,
                 }
             }
-            let sure = if said.find("high").is_some() {
+            let sure = if verdict.find("high").is_some() {
                 3
-            } else if said.find("medium").is_some() {
+            } else if verdict.find("medium").is_some() {
                 2
-            } else if said.find("low").is_some() {
+            } else if verdict.find("low").is_some() {
                 1
             } else {
                 0
@@ -288,51 +346,90 @@ pub fn counted(votes: [Vote], shot: str, new_is_a: bool) -> Count {
     c
 }
 
-/// The tally as a page: a row a shot (the votes for the new, for the base, for neither, and how
-/// sure the new's were), their sum, and under it each critic's line with its letter read
-/// through the key.
-pub fn tally(key: [Keyed], critics: [String], votes: [Vec<Vote>]) -> String {
+/// The chance a fair coin tossed `n` times lands heads `k` times or more: what a tally of `k`
+/// of `n` votes for one side would be if the critics couldn't tell the two apart.
+pub fn by_chance(k: u32, n: u32) -> f64 {
+    if k == 0 {
+        return 1.0
+    }
+    // Each term is C(n, i) / 2^n, from i = 0.
+    var term = 1.0
+    for _ in 0..n {
+        term *= 0.5
+    }
+    var sum = 0.0
+    for i in 0..n + 1 {
+        if i >= k {
+            sum += term
+        }
+        term = term * f64(n - i) / f64(i + 1)
+    }
+    min(sum, 1.0)
+}
+
+/// `x` (0 to 1) in thousandths, as `0.031`.
+pub fn thousandths(x: f64) -> String {
+    let t = min(u32(x * 1000.0 + 0.5), 1000)
+    if t >= 1000 {
+        return String::from("1.000")
+    }
+    String::from(f"0.{t / 100}{(t / 10) % 10}{t % 10}")
+}
+
+/// The tally as a page: a row a shot (the votes for the new, for the base, for neither, how
+/// sure the new's were, and the chance a coin would give the new as many of the votes that
+/// chose a side), their sum, and under it each critic's line with its letter read through that
+/// critic's key (`keys`: each critic's, in `critics`' order; the shots are the first's).
+pub fn tally(keys: [Vec<Keyed>], critics: [String], votes: [Vec<Vote>]) -> String {
     var out = String::new()
     out.push_str("# Tally\n\n")
-    out.push_str(f"{critics.len()} critics, {key.len()} shots.\n\n")
+    if keys.is_empty() {
+        out.push_str("No votes.\n")
+        return out
+    }
+    borrow shots = keys[0]
+    out.push_str(f"{critics.len()} critics, {shots.len()} shots.\n\n")
     out.push_str(
-        "| Shot | For the new | For the base | No difference | The new's votes: low, medium, high |\n",
+        "| Shot | For the new | For the base | No difference | The new's votes: low, medium, high | By chance |\n",
     )
-    out.push_str("|---|---|---|---|---|\n")
+    out.push_str("|---|---|---|---|---|---|\n")
     var all = Count {}
-    for k in key {
+    for s in 0..shots.len() {
         var c = Count {}
-        for vs in votes {
-            let one = counted(vs, k.shot.as_str(), k.new_is_a)
+        for i in 0..critics.len() {
+            let one = counted(votes[i], shots[s].shot.as_str(), keys[i][s].new_is_a)
             c.new += one.new
             c.base += one.base
             c.same += one.same
-            for i in 0..4 {
-                c.sure[i] += one.sure[i]
+            for j in 0..4 {
+                c.sure[j] += one.sure[j]
             }
         }
+        let chance = thousandths(by_chance(c.new, c.new + c.base))
         out.push_str(
-            f"| {k.shot} | {c.new} | {c.base} | {c.same} | {c.sure[1]}, {c.sure[2]}, {c.sure[3]} |\n",
+            f"| {shots[s].shot} | {c.new} | {c.base} | {c.same} | {c.sure[1]}, {c.sure[2]}, {c.sure[3]} | {chance} |\n",
         )
         all.new += c.new
         all.base += c.base
         all.same += c.same
-        for i in 0..4 {
-            all.sure[i] += c.sure[i]
+        for j in 0..4 {
+            all.sure[j] += c.sure[j]
         }
     }
+    let chance = thousandths(by_chance(all.new, all.new + all.base))
     out.push_str(
-        f"| all | {all.new} | {all.base} | {all.same} | {all.sure[1]}, {all.sure[2]}, {all.sure[3]} |\n",
+        f"| all | {all.new} | {all.base} | {all.same} | {all.sure[1]}, {all.sure[2]}, {all.sure[3]} | {chance} |\n",
     )
     out.push_str(f"\n{all.new} of {all.new + all.base + all.same} votes for the new.\n")
-    for k in key {
-        out.push_str(f"\n## {k.shot}\n\n")
-        let (a, b) = if k.new_is_a { ("new", "base") } else { ("base", "new") }
-        out.push_str(f"A is the {a}, B the {b}.\n\n")
+    for s in 0..shots.len() {
+        out.push_str(f"\n## {shots[s].shot}\n\n")
         for i in 0..critics.len() {
+            let side = |new_is: bool| -> Text { if new_is { "the new" } else { "the base" } }
             for v in votes[i] {
-                if v.shot.as_str() == k.shot.as_str() {
-                    out.push_str(f"- {critics[i]}: {v.line}\n")
+                if v.shot.as_str() == shots[s].shot.as_str() {
+                    let a = side(keys[i][s].new_is_a)
+                    let b = side(!keys[i][s].new_is_a)
+                    out.push_str(f"- {critics[i]} (A {a}, B {b}): {v.line}\n")
                 }
             }
         }

@@ -19,22 +19,31 @@
 //
 // **What it writes**, for the list's shots (shots.wrela; `--shots` names a list, `--only` the
 // shots of it to keep), each scene driven on the native host's GPU:
-// - `pairs/<shot>-A.png` and `-B.png`: the shot from each side, which is which decided shot by
-//   shot from `--seed`; and `pairs/brief.md`, what a critic is asked (`--what` says what the
-//   only difference is). A critic is given this directory alone.
-// - `sealed/key.txt`, which letter is which, and `sealed/<shot>.png`, the pair side by side
-//   with its sides named: not for critics.
+// - `pairs/<n>/`, for each of `--critics N` critics (5 unless said): each shot as one image
+//   with both sides in it, marked A and B (a strip as a row a frame, over as many pages as it
+//   needs), which side is which decided for that critic and shot from `--seed`; and
+//   `brief.md`, what the critic is asked (`--what` says what the only difference is). A critic
+//   is given their own directory alone, so no two share a shuffle.
+// - `sealed/key-<n>.txt`, which letter is which for critic `n`, and `sealed/<shot>.png`, the
+//   pair with its sides named: not for critics.
 // - With `--clips`, each scene's clip from each side and the two side by side
 //   (`clips/<scene>-base.mp4`, `-new.mp4`, `-both.mp4`: the base on the left), at the scene's
 //   frame rate, for a person's look at full rate. FFmpeg makes them; it must be on `PATH`.
 //
-// **The votes.** Each critic's answer goes in `votes/` as a text file, a line a shot as the
-// brief asks. `--tally` reads them through the key, prints each shot's votes for the new, for
-// the base and for neither, and writes that with every critic's line as `tally.md`.
+// **The votes.** Critic `n`'s answer goes in `votes/` as a text file whose name starts with
+// `n` (`3.txt`, `3-opus.txt`), a line a shot as the brief asks. `--tally` reads each through
+// its critic's key, prints each shot's votes for the new, for the base and for neither, with
+// the chance a coin would give the new as many, and writes that with every critic's line as
+// `tally.md`. A panel's verdict moves from panel to panel on the same pictures (the charted
+// arms' third round gave them 30 of 30 votes, a later five critics 24 of 35), so a shot is
+// won on a share of a panel of ten or more, not on a clean sweep of five.
 
 use audio_tool::sheet::Image
 use lookbook_tool::shots::shown_path
-use pairs::{Vote, beside, brief, cropped, key_of, key_text, laid, size_of, swapped, tally, votes_of}
+use pairs::{
+    Keyed, Vote, brief, cropped, key_of, key_text, page_name, pages, size_of, swapped, tally,
+    votes_of,
+}
 use shots::{Options, Scene, Shot, WS, chosen, parse_args, scene}
 use std::input::Script
 use std::io::print
@@ -153,10 +162,17 @@ fn among(frames: [u32], f: u32) -> bool {
     false
 }
 
+/// A shot's frames from one side: each cropped and sized (`w` × `h`, RGBA8), in order.
+pub struct Taken: Clone {
+    pub cells: Vec<Vec<u8>>,
+    pub w: u32,
+    pub h: u32,
+}
+
 /// The scene's build at `build` (a root path) driven from its first frame, and each of `shots`
-/// (the scene's) as one image: its frames cropped, sized and laid out. With `clip` (a root
-/// path; empty: none), each frame of the scene's clip is written there as `NNNNN.png`.
-fn sheets(build: str, s: Scene, shots: [Shot], clip: str) -> Result<Vec<Image>, ToolError> {
+/// (the scene's) as its frames, cropped and sized. With `clip` (a root path; empty: none), each
+/// frame of the scene's clip is written there as `NNNNN.png`.
+fn taken(build: str, s: Scene, shots: [Shot], clip: str) -> Result<Vec<Taken>, ToolError> {
     var load = drive::gpu()
     load.width = s.width
     load.height = s.height
@@ -224,7 +240,7 @@ fn sheets(build: str, s: Scene, shots: [Shot], clip: str) -> Result<Vec<Image>, 
         }
     }
     let _ = drive::close(b).wait()
-    var out: Vec<Image> = Vec::new()
+    var out: Vec<Taken> = Vec::new()
     for k in 0..shots.len() {
         borrow shot = shots[k]
         let (w, h) = size_of(shot.crop, s.width, s.height)
@@ -237,7 +253,7 @@ fn sheets(build: str, s: Scene, shots: [Shot], clip: str) -> Result<Vec<Image>, 
         for i in 0..mine.len() {
             fitted.push(sized(replace(mut mine[i], Vec::new()), w, h, to)?)
         }
-        out.push(laid(fitted, to.width, to.height, shot.across, shot.frames))
+        out.push(Taken { cells: fitted, w: to.width, h: to.height })
     }
     Ok(out)
 }
@@ -279,14 +295,16 @@ fn clip_of(frames: str, beside: str, first: u32, fps: f64, to: str) -> Result<()
     ran("ffmpeg", take given)
 }
 
-/// A run: both sides built and driven, the pairs, the key and the brief written.
+/// A run: both sides built and driven, and each critic's pairs, key and brief written.
 fn judged(o: Options) -> Result<(), ToolError> {
     let shots = chosen(o)
     let pairs_dir = String::from(f"{o.out}/pairs")
     let sealed = String::from(f"{o.out}/sealed")
     let _ = files::remove_all(pairs_dir.as_str()).wait()
     let _ = files::remove_all(sealed.as_str()).wait()
-    let _ = files::make_dirs(pairs_dir.as_str()).wait()?
+    for n in 0..o.critics {
+        let _ = files::make_dirs(f"{pairs_dir}/{n + 1}").wait()?
+    }
     let _ = files::make_dirs(sealed.as_str()).wait()?
     let _ = files::make_dirs(f"{o.out}/votes").wait()?
     let base = if o.against.is_empty() { String::from(WS) } else {
@@ -305,11 +323,10 @@ fn judged(o: Options) -> Result<(), ToolError> {
             scenes.push(s.scene)
         }
     }
-    var names: Vec<Text> = Vec::new()
-    var swaps: Vec<bool> = Vec::new()
-    for k in 0..shots.len() {
-        names.push(shots[k].name)
-        swaps.push(swapped(o.seed, k))
+    // Each shot's files, as every critic's directory names them.
+    var named: Vec<Vec<String>> = Vec::new()
+    for _ in shots {
+        named.push(Vec::new())
     }
     for name in scenes {
         let Some(sc) = scene(name) else { panic("a shot's scene is a scene") }
@@ -333,17 +350,38 @@ fn judged(o: Options) -> Result<(), ToolError> {
         let new_frames = if o.clips { String::from(f"{o.out}/clips/{name}-new") } else {
             String::new()
         }
-        let was = sheets(base_build.as_str(), sc, mine, base_frames.as_str())?
-        let now = sheets(new_build.as_str(), sc, mine, new_frames.as_str())?
+        let was = taken(base_build.as_str(), sc, mine, base_frames.as_str())?
+        let now = taken(new_build.as_str(), sc, mine, new_frames.as_str())?
         for i in 0..mine.len() {
             let shot = mine[i].name
-            let (a, b) = if swaps[index[i]] { (now[i].clone(), was[i].clone()) } else {
-                (was[i].clone(), now[i].clone())
+            let (w, h) = (was[i].w, was[i].h)
+            borrow numbers = mine[i].frames
+            let told = pages(
+                was[i].cells,
+                now[i].cells,
+                w,
+                h,
+                numbers,
+                first: "base",
+                second: "new",
+            )
+            for p in 0..told.len() {
+                let file = page_name(shot, p, told.len())
+                write_image(told[p], f"{sealed}/{file}")?
+                named[index[i]].push(take file)
             }
-            write_image(a, f"{pairs_dir}/{shot}-A.png")?
-            write_image(b, f"{pairs_dir}/{shot}-B.png")?
-            write_image(beside(was[i], now[i], "base", "new"), f"{sealed}/{shot}.png")?
-            print(f"{shot} {shown_path(pairs_dir.as_str())}/{shot}-A.png -B.png")
+            for n in 0..o.critics {
+                let made = if swapped(o.seed, n + 1, index[i]) {
+                    pages(now[i].cells, was[i].cells, w, h, numbers, first: "A", second: "B")
+                } else {
+                    pages(was[i].cells, now[i].cells, w, h, numbers, first: "A", second: "B")
+                }
+                for p in 0..made.len() {
+                    let file = page_name(shot, p, made.len())
+                    write_image(made[p], f"{pairs_dir}/{n + 1}/{file}")?
+                }
+            }
+            print(f"{shot} {shown_path(sealed.as_str())}/{page_name(shot, 0, told.len())}")
         }
         if o.clips && sc.clip_last > sc.clip_first {
             let clips = String::from(f"{o.out}/clips")
@@ -359,12 +397,23 @@ fn judged(o: Options) -> Result<(), ToolError> {
             print(f"{name} {shown_path(clips.as_str())}/{name}-both.mp4")
         }
     }
-    let key = key_text(names, swaps)
-    write_file(f"{sealed}/key.txt", chunked(Vec::from(key.as_bytes())))?
-    let asked = brief(shots, o.what.as_str(), shown_path(pairs_dir.as_str()))
-    write_file(f"{pairs_dir}/brief.md", chunked(Vec::from(asked.as_bytes())))?
+    var names: Vec<Text> = Vec::new()
+    for s in shots {
+        names.push(s.name)
+    }
+    for n in 0..o.critics {
+        var swaps: Vec<bool> = Vec::new()
+        for k in 0..shots.len() {
+            swaps.push(swapped(o.seed, n + 1, k))
+        }
+        let key = key_text(names, swaps)
+        write_file(f"{sealed}/key-{n + 1}.txt", chunked(Vec::from(key.as_bytes())))?
+        let dir = String::from(f"{pairs_dir}/{n + 1}")
+        let asked = brief(shots, named, o.what.as_str(), shown_path(dir.as_str()))
+        write_file(f"{dir}/brief.md", chunked(Vec::from(asked.as_bytes())))?
+    }
     print(
-        f"the brief {shown_path(pairs_dir.as_str())}/brief.md; the key {shown_path(sealed.as_str())}/key.txt",
+        f"{o.critics} critics' pairs and briefs in {shown_path(pairs_dir.as_str())}/<n>; the keys in {shown_path(sealed.as_str())}",
     )
     Ok(())
 }
@@ -380,15 +429,18 @@ fn stem(name: str) -> borrow str {
     name.slice(0, dot)
 }
 
-/// The votes in `<out>/votes` tallied through the key: printed, and written as `tally.md`.
-fn tallied(o: Options) -> Result<(), ToolError> {
-    let text = String::from_utf8(read_file(f"{o.out}/sealed/key.txt", "the key")?)
-        .unwrap_or(String::new())
-    let key = key_of(text.as_str())
-    var names: Vec<String> = Vec::new()
-    for k in key {
-        names.push(k.shot.clone())
+/// The number a vote file's name starts with: its critic's.
+fn critic_of(name: str) -> Option<u32> {
+    var end = 0
+    while end < name.len() && name.byte(end) >= 48 && name.byte(end) <= 57 {
+        end += 1
     }
+    name.slice(0, end).parse_u32()
+}
+
+/// The votes in `<out>/votes` tallied, each through its critic's key: printed, and written as
+/// `tally.md`.
+fn tallied(o: Options) -> Result<(), ToolError> {
     var files_in: Vec<String> = Vec::new()
     for e in files::list(f"{o.out}/votes").wait()? {
         if e.kind == files::Kind::File {
@@ -400,16 +452,30 @@ fn tallied(o: Options) -> Result<(), ToolError> {
             files_in.insert(at, e.name.clone())
         }
     }
+    var keys: Vec<Vec<Keyed>> = Vec::new()
     var critics: Vec<String> = Vec::new()
     var votes: Vec<Vec<Vote>> = Vec::new()
     for name in files_in {
+        let Some(n) = critic_of(name.as_str()) else {
+            return Err(
+                ToolError::new(f"votes/{name} doesn't start with its critic's number, as 3.txt"),
+            )
+        }
+        let text = String::from_utf8(read_file(f"{o.out}/sealed/key-{n}.txt", f"critic {n}'s key")?)
+            .unwrap_or(String::new())
+        let key = key_of(text.as_str())
+        var names: Vec<String> = Vec::new()
+        for k in key {
+            names.push(k.shot.clone())
+        }
         let path = String::from(f"{o.out}/votes/{name}")
         let said = String::from_utf8(read_file(path.as_str(), name.as_str())?)
             .unwrap_or(String::new())
         votes.push(votes_of(said.as_str(), names))
+        keys.push(take key)
         critics.push(String::from(stem(name.as_str())))
     }
-    let page = tally(key, critics, votes)
+    let page = tally(keys, critics, votes)
     write_file(f"{o.out}/tally.md", chunked(Vec::from(page.as_bytes())))?
     print(page.as_str())
     Ok(())
