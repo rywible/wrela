@@ -103,18 +103,19 @@ fn a_held_scene_holds_still() {
 
 /// The most each kind's crawl of its own may be under sail: about half as much again as it is,
 /// and a tenth of a pixel in a thousand where it's all but none (an M-series Mac, 2026-11-11):
-/// the cathedral 0.76, the town 0.09, the isle 0.04, the stacks 3.50, the skiff 0.57, the sea
-/// 0.00, the sky 1.58. The target of each is none: these are what's still owed. The stacks'
-/// and the sky's are a near stack's edge a drawing or two behind the stack as it slides, and
-/// the cathedral's its picture's (the vista's) lag behind the camera on the swell.
+/// the cathedral 0.78, the town 0.09, the isle 0.03, the stacks 1.42, the skiff 0.35, the sea
+/// 0.00, the sky 0.66. The target of each is none: these are what's still owed. The stacks'
+/// and the sky's are a near stack's edge as it slides (with `SLID=false`, each pixel waiting
+/// its turn, 3.50 and 1.58: the test fails), and the cathedral's its picture's (the vista's)
+/// lag behind the camera on the swell.
 pub const OWN_MOST: [(Text, f64); 7] = [
     ("cathedral", 1.2),
     ("town", 0.25),
     ("isle", 0.15),
-    ("stacks", 5.3),
-    ("skiff", 0.9),
+    ("stacks", 2.2),
+    ("skiff", 0.6),
     ("sea", 0.05),
-    ("sky", 2.4),
+    ("sky", 1.0),
 ]
 
 /// Under sail, the drawing adds little of its own: each kind's crawl against its settled twin
