@@ -15,6 +15,15 @@
 // square, the size half are under, the size 95% are under and the worst (mm, across the side),
 // and their root mean square by place on the chart, stations along the form's span by sectors
 // round it.
+//
+// ```text
+// wrela tool forms -- --stations <form> ...
+// ```
+//
+// Writes nothing: for each form named it lists where its reference is along its chain's whole
+// path, station by station (how many rays round the path meet it, and the least and the most
+// radius they find). A form's span, how far its reference is read and how its root is tucked
+// are chosen from that list.
 
 use engine::chart
 use engine::chart::{Chain, Radial, Sample}
@@ -28,7 +37,7 @@ use std::tool::files
 use std::tool::files::rooted
 use targets::{Grid, Miss, Reference, SECTORS, STATIONS, miss, rays, triangles_of}
 
-pub const USAGE: Text = "usage: wrela tool forms -- [form ...]"
+pub const USAGE: Text = "usage: wrela tool forms -- [form ...] | --stations <form> ..."
 
 /// A form the tool fits: its name on the command line, its file in the workspace and its
 /// constant there, what the file says it is, the chain it's charted about, the span of the
@@ -514,21 +523,105 @@ fn chosen(wanted: [String], name: Text) -> bool {
     false
 }
 
+/// Where a form's reference is, listed: 24 stations along its chain's whole path, each with
+/// where the path is there, how many of 32 rays round it meet the reference, and the least and
+/// the most radius they find (mm). What a span, a `most` and a `tuck` are chosen from.
+fn stations<T: Reference>(t: T, s: Spec) -> String {
+    let path = s.chain.rest()
+    var out = String::new()
+    out.push_str(
+        f"{s.name}: its path is {path.length():.3} m; a station: how far along, where the path is (m), rays of 32 that meet its reference within {s.most} m, the least and the most radius (mm)\n",
+    )
+    for i in 0..24 {
+        let f = (f32(i) + 0.5) / 24.0
+        let at = path.frame(f * path.length()).at
+        let met = rays(t, path, vec2(f, f + 0.0001), 1, 32, vec2(0.0, 0.0), s.most)
+        var least = 9.0
+        var most = 0.0
+        for k in met {
+            least = min(least, k.r)
+            most = max(most, k.r)
+        }
+        if met.is_empty() {
+            least = 0.0
+        }
+        out.push_str(
+            f"  {f:.3}  at {at.x:.3} {at.y:.3} {at.z:.3}  {met.len()} rays  {least * 1000.0:.0} to {most * 1000.0:.0}\n",
+        )
+    }
+    out
+}
+
+/// The stations of the form named `name` (`stations`), or nothing if no form has the name.
+fn stations_of(name: str) -> Option<String> {
+    let body = |part: u32| {
+        var keep = [false; 6]
+        keep[part] = true
+        triangles_of(HERO.clone(), keep, vec3(-9.0), vec3(9.0))
+    }
+    if name == ARM.name {
+        return Some(stations(body(4), ARM))
+    }
+    if name == LEG.name {
+        return Some(stations(body(2), LEG))
+    }
+    if name == HAKURO_ARM_LEFT.name {
+        return Some(stations(Grid { samples: arm_left_grid::samples(0) }, HAKURO_ARM_LEFT))
+    }
+    if name == HAKURO_ARM_RIGHT.name {
+        return Some(
+            stations(Grid { samples: hakuro::arm_right_grid::samples(0) }, HAKURO_ARM_RIGHT),
+        )
+    }
+    if name == HAKURO_LEG.name {
+        return Some(stations(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_LEG))
+    }
+    if name == HAKURO_TRUNK.name {
+        return Some(stations(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_TRUNK))
+    }
+    if name == HAKURO_JACKET.name {
+        return Some(stations(Grid { samples: hakuro::jacket_grid::samples(0) }, HAKURO_JACKET))
+    }
+    if name == HAKURO_HEAD.name {
+        return Some(stations(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_HEAD))
+    }
+    None
+}
+
 pub fn tool() -> u32 {
     let wanted = args()
+    if wanted.len() >= 1 && wanted[0].as_str() == "--stations" {
+        if wanted.len() < 2 {
+            print(USAGE)
+            return 2
+        }
+        for i in 1..wanted.len() {
+            match stations_of(wanted[i].as_str()) {
+                Some(text) => print(text),
+                None => {
+                    print(f"forms: no form is named {wanted[i]}")
+                    return 2
+                },
+            }
+        }
+        return 0
+    }
     var done = 0
     var results: Vec<Result<String, String>> = Vec::new()
     // (What's fitted over the species' arm is fitted over it as this run has it, so one run
     // writes them all the same whatever was written before.)
-    let species = arm()
-    if chosen(wanted, ARM.name) {
-        results.push(written(ARM, species))
-    }
-    if chosen(wanted, HAKURO_ARM_LEFT.name) {
-        results.push(written(HAKURO_ARM_LEFT, hakuro_arm_left(species.form)))
-    }
-    if chosen(wanted, HAKURO_ARM_RIGHT.name) {
-        results.push(written(HAKURO_ARM_RIGHT, hakuro_arm_right(species.form)))
+    let arms = chosen(wanted, HAKURO_ARM_LEFT.name) || chosen(wanted, HAKURO_ARM_RIGHT.name)
+    if chosen(wanted, ARM.name) || arms {
+        let species = arm()
+        if chosen(wanted, ARM.name) {
+            results.push(written(ARM, species))
+        }
+        if chosen(wanted, HAKURO_ARM_LEFT.name) {
+            results.push(written(HAKURO_ARM_LEFT, hakuro_arm_left(species.form)))
+        }
+        if chosen(wanted, HAKURO_ARM_RIGHT.name) {
+            results.push(written(HAKURO_ARM_RIGHT, hakuro_arm_right(species.form)))
+        }
     }
     if chosen(wanted, "arm-joints") {
         results.push(
@@ -553,12 +646,14 @@ pub fn tool() -> u32 {
     if chosen(wanted, HAKURO_HEAD.name) {
         results.push(written(HAKURO_HEAD, hakuro_head()))
     }
-    let species_leg = leg()
-    if chosen(wanted, LEG.name) {
-        results.push(written(LEG, species_leg))
-    }
-    if chosen(wanted, HAKURO_LEG.name) {
-        results.push(written(HAKURO_LEG, hakuro_leg(species_leg.form)))
+    if chosen(wanted, LEG.name) || chosen(wanted, HAKURO_LEG.name) {
+        let species_leg = leg()
+        if chosen(wanted, LEG.name) {
+            results.push(written(LEG, species_leg))
+        }
+        if chosen(wanted, HAKURO_LEG.name) {
+            results.push(written(HAKURO_LEG, hakuro_leg(species_leg.form)))
+        }
     }
     if chosen(wanted, "leg-joints") {
         results.push(

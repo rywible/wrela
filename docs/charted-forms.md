@@ -14,8 +14,14 @@ The code is `engine/chart.wrela` (the form and how it's posed and drawn), `studi
 
 ## Authoring a part
 
-1. **Write its chain** in `content/figure/chains.wrela`: its joints at rest, from the root's end to the tip, and `up` (angle 0). Start the path a few centimetres inside the part it hangs from, as a first joint that part's bone carries, so the root stays tucked under what covers it. Set `spread` below 1 for a bone whose skin turns with it near its joint (an upper arm, a thigh: about a third).
-2. **Write its spec** in `studio/forms/main.wrela` (`Spec`): the file and constant its numbers go to, the chain, the `span` of the path its reference covers, how far from the path the reference is read (`most`), and how far its root is tucked (`tuck`).
+1. **Write its chain** in `content/figure/chains.wrela`: its joints at rest, from the root's end to the tip, and `up` (angle 0). A chain can also be made from a body's rig where the tool runs (`studio/forms/second.wrela`'s `arm_chain_of`). Start the path a few centimetres inside the part it hangs from, as a first joint that part's bone carries, so the root stays tucked under what covers it. Set `spread` below 1 for a bone whose skin turns with it near its joint (an upper arm, a thigh: about a third).
+2. **Write its spec** in `studio/forms/main.wrela` (`Spec`): the file and constant its numbers go to, three lines saying what it is (`about`), the chain, the `span` of the path its reference covers, how far from the path the reference is read (`most`), and how far its root is tucked (`tuck`). List where the reference is before you choose them:
+
+```bash
+wrela tool forms -- --stations <name>
+```
+
+It prints, station by station along the whole path, where the path is, how many rays round it meet the reference and the least and most radius they find. Start the span where every ray meets it.
 3. **Give it a reference** (`studio/forms/targets.wrela`): `triangles_of` for a body's own triangles by part, or `Grid` for a sampled grid. The tool reads the reference along rays from the form's own path.
 4. **Add its fit** beside the others in `main.wrela` (`fitted`, or `fitted_over` a base for a character's difference) and its line in `tool()`.
 5. **Run the tool** and read what it prints:
@@ -26,7 +32,7 @@ wrela tool forms -- <name>
 
 It writes the file and prints the miss: the root mean square, the size half are under, the size 95% are under and the worst, in millimetres across the side, measured between the places it was fitted at. Then the miss by place: a row a station along the span, a column a sector round from angle 0.
 
-6. **Read the table before changing anything.** A bad row at the span's start or end means the span runs past the reference: shorten it. A bad column means the reference isn't reached that way (`most` too small) or isn't there (an opening: the tool fills it from its neighbours). A miss spread evenly means the form is too small: more control values along for detail along the limb, more terms round for detail round it.
+6. **Read the table before changing anything.** A bad row at the span's start or end means the span runs past the reference: shorten it. A bad column means the reference isn't reached that way (`most` too small; no effect once every ray meets it) or isn't there (an opening: the tool fills it from its neighbours). A miss spread evenly means the form is too small: more control values along for detail along the limb, more terms round for detail round it. A form's control values are spread over its whole path, not its span, so a shorter span adds no detail; a shorter path does (start the chain nearer the part). A joint where the radius changes fast (the back of a knee) is where a limb's miss gathers.
 7. **Declare the part** where the creature is assembled (`figure::limbs::arm` is the pattern): an `engine::chart::Part` with its chain, its bones, its form, its joints' changes, its band and its folds.
 8. **Add its test** in `studio/forms/tests.wrela`: the written file equals a fresh fit, and the miss is under what you state.
 
