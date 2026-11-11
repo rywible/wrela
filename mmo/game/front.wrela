@@ -1080,10 +1080,13 @@ pub fn frame<A: Account>(
     let on_phone = phone(w / k, h / k)
     for e in events() {
         if f.online { break }
-        // (The readout's key, wherever the page is: it's nobody else's.)
+        // (The readout's key, wherever the page is, but not while the account's pages are open:
+        // there it's a character someone may be typing.)
         if let Event::KeyDown { key: Key::Backquote, repeat: false, .. } = e {
-            f.readout.shown = !f.readout.shown
-            continue
+            if !account.shown() {
+                f.readout.shown = !f.readout.shown
+                continue
+            }
         }
         if f.stage == Stage::Rowing {
             match e {
