@@ -5,17 +5,12 @@
 // at the last one heard), corrected each frame as the late input comes, so the bodies show
 // what a rollback's correction looks like.
 //
-// The bots are the fight's own: each step they read the rules' world, walk in, strike when the
-// idol is in reach, chain a combo, and answer its tell (`REACT` frames into its windup) with a
-// parry, or with a dodge to the side when no parry holds it.
+// The bots (`bots`) stand round the idol, each on its own side, and answer its tell `REACT` frames in.
 
 use std::collections::Vec
 use std::string::String
-use std::math::atan2
-use combat::sim::{
-    ATTACK, ATTACKS, DODGE, FISTS, HEAVY, IDLE, LONGSWORD, MOVES, PARRY, RECOVER, Seen, WEAPONS,
-    WINDUP, World, step,
-}
+use bots::bot
+use combat::sim::{FISTS, LONGSWORD, Seen, World, step}
 use mmo::bodies::Ring
 use ui::draw::{DrawList, Renderer}
 use ui::text::{Face, Fonts}
@@ -24,6 +19,8 @@ use ui::text::{Face, Fonts}
 pub const LATE: u32 = 6
 /// How many frames into the idol's windup the bots answer it.
 pub const REACT: u32 = 15
+/// What each bot fights with.
+const WEAPONS_OF: [u32; 2] = [FISTS, LONGSWORD]
 
 pub struct State {
     /// The fight as it is, and each of the last `LATE` frames' worlds before it.
@@ -42,7 +39,7 @@ pub fn init() -> State {
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
     State {
-        truth: World::armed([FISTS, LONGSWORD]),
+        truth: World::armed(WEAPONS_OF),
         past: Vec::new(),
         inputs: Vec::from([Vec::new(), Vec::new()]),
         ring: Ring::new(),
@@ -51,64 +48,6 @@ pub fn init() -> State {
         list: DrawList::new(),
         last: 0.0,
     }
-}
-
-/// The stick toward (`dx`, `dz`) (the rules' units) at speed `speed` (0 to 2): one of the 16
-/// directions, as the rules read it.
-fn stick_to(dx: i32, dz: i32, speed: u32) -> u32 {
-    let a = atan2(f32(dz), f32(dx))
-    let dir = u32(i32(round(a / 0.39269908)) + 16) % 16
-    1 + dir * 3 + speed
-}
-
-/// Bot `i`'s input for the next step of `w`, its last `before`: what it reads of the world, and
-/// what it presses (a press flips its button's bit) when the rules read it.
-fn bot(w: World, i: u32, before: u32) -> u32 {
-    let p = w.player(i)
-    let b = w.boss()
-    let held = before & combat::sim::BUTTON_BITS
-    let reads = w.reads(i)
-    let press = |button: u32| -> u32 { held ^ (button << 6) }
-    let (dx, dz) = (b.x - p.x, b.z - p.z)
-    let d = dist(dx, dz)
-    if p.hp <= 0 {
-        return held
-    }
-    // The idol's tell, answered `REACT` frames in.
-    if b.act == WINDUP && b.move_ < ATTACKS.len() {
-        let a = ATTACKS[b.move_]
-        let into = a.windup - min(b.timer, a.windup)
-        let near = a.near - 32 <= d && d <= a.far + 64
-        if near && into >= REACT && reads & (PARRY << 6) != 0 {
-            if a.parried && b.timer <= 4 {
-                return press(PARRY)
-            }
-            if !a.parried {
-                // Aside, across its reach.
-                return press(DODGE) | stick_to(-dz, dx, 2)
-            }
-        }
-        if near {
-            return held
-        }
-    }
-    let weapon = WEAPONS[if i == 0 { FISTS } else { LONGSWORD }]
-    let reach = MOVES[weapon.light].reach
-    if p.act == RECOVER && reads & (ATTACK << 6) != 0 && d <= reach {
-        return press(ATTACK)
-    }
-    if p.act == IDLE {
-        if d <= reach - 16 {
-            // Every third frame it's free in reach, a heavy one.
-            return if w.frame % 3 == 0 { press(HEAVY) } else { press(ATTACK) }
-        }
-        return held | stick_to(dx, dz, 1)
-    }
-    held
-}
-
-fn dist(dx: i32, dz: i32) -> i32 {
-    i32(sqrt(f32(dx * dx + dz * dz)))
 }
 
 /// The input player `i` gave at frame `f` (before its first, none).
@@ -123,7 +62,7 @@ fn play_to(s: mut State, to: u32) {
         var ins: Vec<u32> = Vec::new()
         for i in 0..2 {
             let before = if f > 0 { input_at(s, i, f - 1) } else { 0 }
-            let x = bot(s.truth, i, before)
+            let x = bot(s.truth, i, before, WEAPONS_OF[i], REACT)
             s.inputs[i].push(x)
             ins.push(x)
         }
@@ -185,7 +124,7 @@ fn the_bots_fight_the_idol() {
     var w = World::armed([FISTS, LONGSWORD])
     var before = [u32(0), 0]
     for _ in 0..3600 {
-        let ins = [bot(w, 0, before[0]), bot(w, 1, before[1])]
+        let ins = [bot(w, 0, before[0], FISTS, REACT), bot(w, 1, before[1], LONGSWORD, REACT)]
         before = ins
         step(mut w, ins)
     }

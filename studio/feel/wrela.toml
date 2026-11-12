@@ -1,0 +1,11 @@
+# The feel bench (`wrela tool feel`): how the fight feels to play, read off its real rules, input
+# path and bodies (main.wrela says what each number is).
+[package]
+name = "feel_tool"
+
+[dependencies]
+engine = { workspace = true }
+humanoid = { workspace = true }
+mmo = { workspace = true }
+combat = { workspace = true }
+watch = { workspace = true }

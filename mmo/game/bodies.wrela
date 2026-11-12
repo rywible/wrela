@@ -34,8 +34,8 @@ use humanoid::look::{SUN, Shot}
 use humanoid::paint::{backdrop, body, ground, paint_backdrop, paint_body, paint_ground}
 use humanoid::solved
 use combat::sim::{
-    ATTACKS, DODGE_FRAMES, DODGING, HZ, IDLE, MAX_PARTY, MOVES, NO_MOVE, PARRYING, STAGGERED, Seen,
-    WINDUP, World,
+    ACTIVE, ATTACKS, DODGE_FRAMES, DODGING, HZ, IDLE, MAX_PARTY, MOVES, NO_MOVE, PARRYING, RECOVER,
+    STAGGERED, Seen, WINDUP, World,
 }
 use ui::draw::Renderer
 
@@ -53,8 +53,10 @@ pub const ACT_PARRY: u32 = 14
 pub const ACT_STRUCK: u32 = 15
 
 /// The solved cross timed to a move's frames, its fist on its contact on the frame the rules
-/// hit (the first active one): `playback::timed` centres the active frames on the strike it's
-/// given, so it's given the contact half of them on.
+/// hit, the first of its active ones: `playback::timed` plays the active frames at the move's
+/// own pace about the strike it's given, so it's given the contact half of them on. (The
+/// boss's rules meet the party a step after its windup ends, so its strikes are timed with a
+/// windup a frame longer and an active window a frame shorter: the same frames in all.)
 fn struck_at(windup: u32, active: u32, recovery: u32) -> Move {
     let hz = f32(HZ)
     playback::timed(
@@ -79,9 +81,11 @@ fn dodged() -> Move {
 pub const ACTS: [Move; 16] = acts()
 
 fn acts() -> [Move; 16] {
-    let m = |i: u32| -> Move { struck_at(MOVES[i].windup, MOVES[i].active, MOVES[i].recovery) }
+    let m = |i: u32| -> Move {
+        struck_at(MOVES[i].windup, MOVES[i].active, MOVES[i].recovery)
+    }
     let b = |i: u32| -> Move {
-        struck_at(ATTACKS[i].windup, ATTACKS[i].active, ATTACKS[i].recovery)
+        struck_at(ATTACKS[i].windup + 1, ATTACKS[i].active - 1, ATTACKS[i].recovery)
     }
     [
         m(0),
@@ -140,7 +144,7 @@ pub const GAITS: Gaits = Gaits {
 
 /// How a fighting body follows its stick: it sets off and stops at once (the rules do), without
 /// the actor's own first and last steps.
-const HOW: Handling = Handling { clips: false }
+const HOW: Handling = Handling { clips: false, act_half: 0.03 }
 
 /// How fast (m/s) a standing body is asked to go the way the rules face it: under what sets it
 /// off, so it turns on the spot to face that way.
@@ -195,19 +199,37 @@ pub fn drawn_at(b: Body) -> vec3 {
     b.mover.place + b.mover.drift
 }
 
+/// The one-off the rules have `seen` timing, and how far into it they are (s): a strike's
+/// (its move's, or `BOSS_STRIKES` on for the boss's), or the dodge's; `NONE` for none.
+pub fn timed_by_rules(boss: bool, seen: Seen) -> (u32, f32) {
+    let hz = f32(HZ)
+    if seen.act == DODGING {
+        return (ACT_DODGE, f32(DODGE_FRAMES - min(seen.timer, DODGE_FRAMES)) / hz)
+    }
+    let striking = seen.act == WINDUP || seen.act == ACTIVE || seen.act == RECOVER
+    if !striking || seen.move_ == NO_MOVE {
+        return (engine::humanoid::NONE, 0.0)
+    }
+    let (act, w, a, r) = if boss {
+        let k = ATTACKS[seen.move_]
+        (BOSS_STRIKES + seen.move_, k.windup, k.active, k.recovery)
+    } else {
+        let k = MOVES[seen.move_]
+        (seen.move_, k.windup, k.active, k.recovery)
+    }
+    let end = if seen.act == WINDUP { w } else if seen.act == ACTIVE { w + a } else { w + a + r }
+    (act, f32(end - min(seen.timer, end)) / hz)
+}
+
 /// The one-off the rules begin as they go from what `b` last saw to `seen`, and how far into it
 /// they are (s): `NONE` for none.
 pub fn begun(b: Body, seen: Seen) -> (u32, f32) {
-    let hz = f32(HZ)
     let fresh = seen.act != b.act || seen.move_ != b.move_
     if seen.act == WINDUP && fresh && seen.move_ != NO_MOVE {
-        let (act, windup) = if b.boss {
-            (BOSS_STRIKES + seen.move_, ATTACKS[seen.move_].windup)
-        } else { (seen.move_, MOVES[seen.move_].windup) }
-        return (act, f32(windup - min(seen.timer, windup)) / hz)
+        return timed_by_rules(b.boss, seen)
     }
     if seen.act == DODGING && b.act != DODGING {
-        return (ACT_DODGE, f32(DODGE_FRAMES - min(seen.timer, DODGE_FRAMES)) / hz)
+        return timed_by_rules(b.boss, seen)
     }
     if seen.act == PARRYING && b.act != PARRYING {
         return (ACT_PARRY, 0.0)
@@ -244,6 +266,13 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
     if act != engine::humanoid::NONE {
         // What the rules begin cuts short what the body was doing.
         b.mover.acting = engine::humanoid::NONE
+    } else if frame > b.frame {
+        // A move under way keeps the rules' time, each frame they step: what's drawn landing
+        // is drawn on the frame they hit, whatever frames the drawing kept.
+        let (going, t) = timed_by_rules(b.boss, seen)
+        if going != engine::humanoid::NONE && going == b.mover.acting {
+            b.mover.act_time = t - dt
+        }
     }
     let pose = playback::step(
         mut b.mover,
@@ -289,6 +318,82 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
     (pose, placed * scale)
 }
 
+/// What a body shows on a drawn frame, as it's drawn (a strike on twos, smeared): its pose, where
+/// it's drawn, its palette, and how kinetic it is and where its strike's force runs.
+pub struct Shown: Copy {
+    pub pose: Pose,
+    pub place: mat4,
+    pub palette: [mat4; 64],
+    pub impact: f32,
+    pub force: anime::Force,
+}
+
+/// One drawn frame of body `b` following `seen` (`follow`), as it's drawn.
+pub fn shown(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> Shown {
+    let (pose, place) = follow(mut b, seen, frame, mask, dt)
+    let d = anime::drawn(
+        mut b.drawer,
+        b.mover,
+        ACTS,
+        LOOKS,
+        HERO.rig,
+        mask,
+        pose,
+        place,
+        Anime { smear: 0.6 },
+        dt,
+    )
+    Shown {
+        pose: d.pose,
+        place: d.place,
+        palette: anime::smeared(palette(HERO.rig, d.pose, d.place), HERO.rig, d.smears),
+        impact: d.impact,
+        force: d.force,
+    }
+}
+
+/// The fight's bodies, the boss's first, then each player's: no GPU, so a tool steps them too.
+pub struct Bodies: Clone {
+    bodies: Vec<Body>,
+    mask: [f32; 64],
+}
+
+impl Bodies {
+    pub fn new() -> Bodies {
+        Bodies { bodies: Vec::new(), mask: playback::upper_body(HERO.rig) }
+    }
+
+    /// Each body stepped `dt` (s) on, following `w`: what each shows, the boss's first. A fight
+    /// begun anew (a body more or fewer, or its first frame) stands them where the rules do.
+    pub fn follow(mut self, w: World, dt: f32) -> Vec<Shown> {
+        let n = w.players() + 1
+        if self.bodies.len() != n || w.frame < self.bodies[0].frame {
+            self.bodies.clear()
+            self.bodies.push(Body::new(w.boss(), boss: true))
+            for i in 0..w.players() {
+                self.bodies.push(Body::new(w.player(i), boss: false))
+            }
+        }
+        var out: Vec<Shown> = Vec::new()
+        for k in 0..n {
+            let seen = if k == 0 { w.boss() } else { w.player(k - 1) }
+            var b = self.bodies[k]
+            out.push(shown(mut b, seen, w.frame, self.mask, dt))
+            self.bodies[k] = b
+        }
+        out
+    }
+
+    /// Body `k`'s (the boss's 0, player `i`'s `i + 1`), as last followed.
+    pub fn body(self, k: u32) -> Body {
+        self.bodies[k]
+    }
+
+    pub fn mask(self) -> [f32; 64] {
+        self.mask
+    }
+}
+
 /// The fight drawn: its bodies, the camera across the line from this player to the boss, and the
 /// textures the paint pass writes and the ink reads.
 pub struct Ring {
@@ -301,15 +406,10 @@ pub struct Ring {
     depth: DepthTexture,
     width: u32,
     height: u32,
-    mask: [f32; 64],
-    /// The boss's body, then each player's.
-    bodies: Vec<Body>,
+    bodies: Bodies,
     /// The camera's eye and where it looks, eased after where they'd be.
     eye: vec3,
     look: vec3,
-    /// How kinetic the moment is, and where a strike's force runs.
-    kinetic: f32,
-    force: anime::Force,
 }
 
 /// The camera sees the fight at three-quarters to the line from this player to the foe: across
@@ -344,53 +444,10 @@ impl Ring {
             depth: depth_texture(width: 640, height: 360),
             width: 640,
             height: 360,
-            mask: playback::upper_body(HERO.rig),
-            bodies: Vec::new(),
+            bodies: Bodies::new(),
             eye: vec3(0.0),
             look: vec3(0.0),
-            kinetic: 0.0,
-            force: anime::Force::none(),
         }
-    }
-
-    /// Each body stepped `dt` (s) on, following `w`: their palettes, the boss's first. A fight
-    /// begun anew (a body more or fewer, or its first frame) stands them where the rules do.
-    pub fn follow(mut self, w: World, dt: f32) -> Vec<[mat4; 64]> {
-        let n = w.players() + 1
-        if self.bodies.len() != n || w.frame < self.bodies[0].frame {
-            self.bodies.clear()
-            self.bodies.push(Body::new(w.boss(), boss: true))
-            for i in 0..w.players() {
-                self.bodies.push(Body::new(w.player(i), boss: false))
-            }
-        }
-        var out: Vec<[mat4; 64]> = Vec::new()
-        self.kinetic = 0.0
-        self.force = anime::Force::none()
-        for k in 0..n {
-            let seen = if k == 0 { w.boss() } else { w.player(k - 1) }
-            var b = self.bodies[k]
-            let (pose, place) = follow(mut b, seen, w.frame, self.mask, dt)
-            let d = anime::drawn(
-                mut b.drawer,
-                b.mover,
-                ACTS,
-                LOOKS,
-                HERO.rig,
-                self.mask,
-                pose,
-                place,
-                Anime { smear: 0.6 },
-                dt,
-            )
-            self.bodies[k] = b
-            self.kinetic = max(self.kinetic, d.impact)
-            if d.force.by > self.force.by {
-                self.force = d.force
-            }
-            out.push(anime::smeared(palette(HERO.rig, d.pose, d.place), HERO.rig, d.smears))
-        }
-        out
     }
 
     /// The fight drawn at `time` (s), `dt` on, from player `me`'s side, at `width` by `height`,
@@ -413,19 +470,28 @@ impl Ring {
             self.width = width
             self.height = height
         }
-        let palettes = self.follow(w, dt)
-        let mine = if me < w.players() { me } else { 0 }
-        let my_at = drawn_at(self.bodies[mine + 1])
-        let boss_at = drawn_at(self.bodies[0])
-        // The middle of every fighter standing, and how far the furthest is from it.
-        var middle = vec3(0.0)
-        for b in self.bodies {
-            middle += drawn_at(b)
+        let shown = self.bodies.follow(w, dt)
+        var kinetic = 0.0
+        var force = anime::Force::none()
+        for d in shown {
+            kinetic = max(kinetic, d.impact)
+            if d.force.by > force.by {
+                force = d.force
+            }
         }
-        middle = middle / f32(self.bodies.len())
+        let mine = if me < w.players() { me } else { 0 }
+        let my_at = drawn_at(self.bodies.body(mine + 1))
+        let boss_at = drawn_at(self.bodies.body(0))
+        // The middle of every fighter standing, and how far the furthest is from it.
+        let n = shown.len()
+        var middle = vec3(0.0)
+        for k in 0..n {
+            middle += drawn_at(self.bodies.body(k))
+        }
+        middle = middle / f32(n)
         var spread = 0.0
-        for b in self.bodies {
-            spread = max(spread, length(drawn_at(b) - middle))
+        for k in 0..n {
+            spread = max(spread, length(drawn_at(self.bodies.body(k)) - middle))
         }
         // Across the line from this player to the foe, a little behind this player, on the side
         // it's on already (at first, the left).
@@ -445,25 +511,25 @@ impl Ring {
         // (The eye eased about where it looks, so the distance eases, not the chord.)
         let off = mix(self.eye - self.look, want_eye - want_look, vec3(k))
         self.eye = self.look + off
-        let left = normalize((palettes[mine + 1][0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
+        let left = normalize((shown[mine + 1].palette[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
         let shot = Shot {
             resolution: vec2(f32(width), f32(height)),
             held: floor(time * 12.0) / 12.0,
-            kinetic: self.kinetic,
+            kinetic,
             cam: first_camera(self.eye, self.look, 0.62, width, height),
             sun: normalize(SUN),
             feet: my_at,
             left,
-            force_from: vec4(self.force.from, if self.force.heavy { 1.0 } else { 0.0 }),
-            force_to: vec4(self.force.to, self.force.by),
+            force_from: vec4(force.from, if force.heavy { 1.0 } else { 0.0 }),
+            force_to: vec4(force.to, force.by),
             tint: vec4(0.0),
             blast: vec4(0.0, 0.0, 0.0, -1.0),
             blast_dir: vec4(0.0),
             pair_a: vec4(my_at.x, 0.0, my_at.z, 2.0),
             pair_b: vec4(boss_at.x, 0.0, boss_at.z, 2.0),
         }
-        for k in 0..palettes.len() {
-            var m = palettes[k]
+        for k in 0..shown.len() {
+            var m = shown[k].palette
             // (Its tint and its own left in the palette's last slot: the idol in stone, the
             // others' bodies in blue, this player's as it is.)
             let tint = if k == 0 { X_STONE } else if k == mine + 1 { vec4(0.0) } else { X_TINT }
@@ -497,7 +563,7 @@ impl Ring {
             vertices: 6,
             depth: engine::view::NEAREST,
         )
-        for k in 0..palettes.len() {
+        for k in 0..shown.len() {
             draw(
                 p,
                 body.bind(verts: self.verts.items(), palette: self.palettes[k].items(), shot: shot),
@@ -518,11 +584,6 @@ impl Ring {
         )
         ui.draw(screen, vec2(f32(width), f32(height)))
         screen.present()
-    }
-
-    /// Body `k`'s (the boss's 0, player `i`'s `i + 1`), as last followed.
-    pub fn body(self, k: u32) -> Body {
-        self.bodies[k]
     }
 }
 
@@ -598,6 +659,8 @@ fn a_strike_begins_when_the_rules_say_and_lands_when_they_hit() {
     }
     for i in 0..ATTACKS.len() {
         let Some(a) = ACTS[BOSS_STRIKES + i].mark(playback::ACTIVE) else { panic("a window") }
-        assert(abs(a.from - f32(ATTACKS[i].windup) / f32(HZ)) < 1.0e-4, "the idol's too")
+        // (Its rules meet the party a step after its windup ends.)
+        let hit = f32(ATTACKS[i].windup + 1) / f32(HZ)
+        assert(abs(a.from - hit) < 1.0e-4, "the idol's too")
     }
 }
