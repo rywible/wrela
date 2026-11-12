@@ -556,14 +556,14 @@ pub fn charts() -> [Part<16, 13>; CHARTS] {
         0,
         [6, 8, 10],
         to: 0.84,
-        under: vec2(0.04, 0.24),
+        under: vec2(0.07, 0.42),
     )
     let right = figure::limbs::arm(
         ARM_RIGHT,
         1,
         [7, 9, 11],
         to: 0.84,
-        under: vec2(0.07, 0.34),
+        under: vec2(0.07, 0.42),
     )
     let over = |arm: Part<16, 13>, from: f32, by: f32| Part {
         form: arm.form.plus(chart::round(by)),
@@ -609,10 +609,11 @@ pub fn charts() -> [Part<16, 13>; CHARTS] {
         },
         // His jacket's collar and its shoulders: each one rigid form on a line his chest
         // carries. His coat is sleeveless: his arm and his collarbone move in its armhole and
-        // under its shoulder, and take none of the coat with them. (On his collarbone, a
-        // shoulder dipped into the jacket's body behind whenever his collarbone turned, and
-        // the line where the two crossed was ragged; and its armhole's edge stepped off the
-        // body's where they met.)
+        // under its shoulder, and take none of the coat with them; the root of his arm is
+        // drawn under his coat (`under`, above), so his shoulder goes under the coat's edge
+        // when it rises and never through it. (On his collarbone, a shoulder sheared against
+        // the jacket's body whenever his collarbone turned: a ragged patch on his shoulder
+        // in his run, a strap standing up in a punch.)
         worn(figure::chains::collar(), [3, 3], COLLAR_FLARED, vec2(0.09, 0.87), 0.0),
         worn(
             figure::chains::yoke_left(),
@@ -1064,10 +1065,11 @@ pub fn armhole(p: vec3) -> f32 {
     if out < 0.12 {
         return 1.0
     }
-    // (It climbs steeply past 16.5 cm out, so it meets the top of his shoulder squarely:
-    // climbing gently, it grazed his shoulder's top, and its binding there was a broad band
-    // of gold.)
-    let middle = 1.40 + 1.2 * max(out - 0.165, 0.0)
+    // (It climbs a little past 16.5 cm out, and stays 3 cm under the top of his shoulder:
+    // the hole's edge over his shoulder is the seam's, below. Climbing to the top of his
+    // shoulder, the tube ran just under the cloth there, and the cloth within a binding's
+    // width of it was gold: a band, then a patch, then specks, as it was moved.)
+    let middle = 1.40 + 0.6 * max(out - 0.165, 0.0)
     let tube = (length(vec2((p.y - middle) / 0.1, (p.z + 0.062) / 0.084)) - 1.0) * 0.09
     // (The seam only over his shoulder's top: from 5 cm under it the cut leans out, off the
     // coat's side. Straight down, it cut a line down the coat's side wherever the side was
@@ -1103,7 +1105,7 @@ const YOKE_TO: f32 = 0.4
 pub fn chart_paint(part: u32, rest: vec3, armhole: f32, inner: bool, px: f32) -> Cloth {
     if part == 0 {
         // (His bare arm in his coat's shade where the shoulder's cap is over it.)
-        let lit = mix(0.3, 1.0, smoothstep(0.215, 0.29, rest.x))
+        let lit = mix(0.3, 1.0, smoothstep(0.17, 0.215, rest.x))
         return Cloth { albedo: SKIN.albedo * lit, ..SKIN }
     }
     if part == 2 {
@@ -1124,8 +1126,11 @@ pub fn chart_paint(part: u32, rest: vec3, armhole: f32, inner: bool, px: f32) ->
             let lit = mix(0.1, 1.0, 1.0 - smoothstep(0.015, 0.09, edge))
             return Cloth { albedo: LINING.albedo * lit, ..LINING }
         }
-        // (Its armholes bound: one loop through its body and its shoulder.)
-        if armhole < BINDING {
+        // (Its armholes bound: one loop through its body and its shoulder. Not the body's
+        // over the top of his shoulder, where a shoulder of his coat lies on it: the two
+        // are nearly one surface there, and the body's binding showed through the
+        // shoulder's black as specks of gold.)
+        if armhole < BINDING && !(part == JACKET_BODY && rest.y > 1.485) {
             return Cloth { relief: 0.0012, ..GOLD }
         }
         if part == JACKET_BODY {
@@ -1192,7 +1197,11 @@ pub fn dressed(part: u32, v: chart::Vertex, n: vec3, from_eye: vec3, covers: [f3
     // by that alone the binding spread into a patch.)
     let hole = if of_jacket(part) { armhole(v.rest) } else { 1.0 }
     let across = length(vec2(dpdx(hole), dpdy(hole))) / max(px, 0.000001)
-    let cloth = chart_paint(part, v.rest, hole / clamp(across, 0.25, 1.5), inner, px)
+    // (A shoulder's edge meets its rule squarely, and is bound by its plain distance: over
+    // the top of his shoulder the cloth's own width was a noisy guess, and the binding there
+    // broke into specks of gold.)
+    let wide = if part == YOKE_LEFT || part == YOKE_RIGHT { 1.0 } else { clamp(across, 0.25, 1.5) }
+    let cloth = chart_paint(part, v.rest, hole / wide, inner, px)
     let normal = engine::character::embossed(n, v.world, cloth.relief)
     Dressed {
         hidden: edge < 0.0 || chart_cut(part, v.rest, v.place),
