@@ -1,5 +1,5 @@
-// What the solved cross (solved.wrela) should measure: the checks `wrela solve
-// content/humanoid --spec` holds its literals to, and reports.
+// What the solved cross (solved.wrela) and the solved lead hook (hook.wrela) should measure:
+// the checks `wrela solve content/humanoid --spec` holds their literals to, and reports.
 //
 // Only what a solve can follow is here: `Written::thrown`'s numbers, each with a derivative by
 // the cross's literals. What the timing sheet reads off the built clip (its chain, its lead,
@@ -102,4 +102,88 @@ pub fn spec<C: Checks>(c: mut C) {
     c.at_most("hips outside the feet (m)", t.outside, 0.0, within: 0.01)
     c.at_least("weight toward the lead foot on contact", t.left, 0.45, within: 0.03)
     c.at_most("weight toward the lead foot on contact", t.left, 0.65, within: 0.03)
+    hook_spec(mut c)
+}
+
+/// How many of a game's frames before its contact the hook is read over: its throw and the beat
+/// before it, not its load. It lands 18 frames from its start, so 18 would read the fist easing
+/// into its load (its wind-up, 0.07 s and the wrist's lag), which slows as any ease does.
+pub const HOOK_STEPS: u32 = 11
+
+/// What the solved lead hook (hook.wrela) should measure. Each bound is set past the brief's
+/// own by its `within`, so a check holds where the brief's number does and no further: the
+/// fist at 10 m/s at least, not 9.5.
+fn hook_spec<C: Checks>(c: mut C) {
+    let m = hook::hook()
+    let t = m.thrown(HERO.rig, hook::CONTACT, HOOK_STEPS)
+    // The fist within 5 mm of its target when the fight says it lands.
+    c.near("hook: fist on its target, across (m)", t.at.x, hook::TARGET.x, within: 0.005)
+    c.near("hook: fist on its target, up (m)", t.at.y, hook::TARGET.y, within: 0.005)
+    c.near("hook: fist on its target, ahead (m)", t.at.z, hook::TARGET.z, within: 0.005)
+    // Between 10 and 24 m/s at its fastest, and fastest as it lands (the step into contact at
+    // least 0.95 of it).
+    c.at_least("hook: fist's fastest (m/s)", t.fastest, 10.5, within: 0.5)
+    c.at_most("hook: fist's fastest (m/s)", t.fastest, 23.5, within: 0.5)
+    c.at_least(
+        "hook: fist's speed into contact, of its fastest",
+        t.into / t.fastest,
+        0.97,
+        within: 0.02,
+    )
+    // Never slowing on its way in (a hundredth of a millimetre a frame is noise).
+    c.at_most("hook: fist slows on its way in (m/s)", t.slows, 0.0, within: 0.05)
+    // All but stopped after: the next step under 0.34 of its fastest.
+    c.at_most(
+        "hook: fist's speed after contact, of its fastest",
+        t.after / t.fastest,
+        0.32,
+        within: 0.02,
+    )
+    // The arm bent on contact: a hook lands with its elbow bent, its reach used 0.55 to 0.80.
+    c.at_least("hook: arm's reach used on contact", t.out, 0.56, within: 0.01)
+    c.at_most("hook: arm's reach used on contact", t.out, 0.79, within: 0.01)
+    // The weight over the feet: the hips never outside them.
+    c.at_most("hook: hips outside the feet (m)", t.outside, 0.0, within: 0.002)
+    // Home slower than it went: at most 0.7 of the strike's fastest.
+    let back = m.fastest(HERO.rig, hook::CONTACT + 0.1, 24)
+    c.at_most(
+        "hook: fist's fastest on its way home, of the strike's",
+        back / t.fastest,
+        0.65,
+        within: 0.05,
+    )
+    // As drawn on twos: by the drawing before the one that lands, the hips have done at least
+    // 0.6 of their turn and the fist still has at least 0.7 of its way to go. A hook's body
+    // carries its fist before its arm sets off, so its way is from the hips' setting off (the
+    // beat's end), not the arm's as the cross's is: the arm's comes after that drawing.
+    let before = anime::drawing_before(hook::CONTACT, Anime {})
+    let loaded = m.end(HERO.rig, m.keys[2].at)
+    let out_left = length(t.at - m.end(HERO.rig, before)) / length(t.at - loaded)
+    c.at_least(
+        "hook: fist's way out left for its contact's drawing, of the whole",
+        out_left,
+        0.73,
+        within: 0.03,
+    )
+    let (h0, h1, h2) = (
+        m.heading(HERO.rig, m.keys[2].at),
+        m.heading(HERO.rig, before),
+        m.heading(HERO.rig, hook::CONTACT),
+    )
+    c.at_least(
+        "hook: hips' turn done a drawing before the contact's, of the whole",
+        (h1 - h0) / (h2 - h0),
+        0.65,
+        within: 0.05,
+    )
+    // Kept sound for the solve (not asked by the brief): the contact key's spot within the
+    // arm's reach, and the striking elbow about its own hinge (`engine::arms` flags 40 degrees).
+    c.at_most(
+        "hook: contact key's spot, of the arm's reach",
+        m.asked(HERO.rig, 3),
+        0.97,
+        within: 0.01,
+    )
+    let off = m.hinge(HERO.rig, hook::CONTACT, REAL.hinge[0])
+    c.at_most("hook: elbow's bend off its hinge on contact (degrees)", off, 25.0, within: 5.0)
 }

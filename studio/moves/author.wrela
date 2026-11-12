@@ -28,8 +28,9 @@ pub struct Solved: Copy {
 }
 
 /// The solved strikes: add a line for a new one.
-pub const SOLVED: [Solved; 1] = [
+pub const SOLVED: [Solved; 2] = [
     Solved { name: "cross-solved", member: "content/humanoid", file: "solved.wrela" },
+    Solved { name: "hook-solved", member: "content/humanoid", file: "hook.wrela" },
 ]
 
 /// The marks a file's solved numbers are between.

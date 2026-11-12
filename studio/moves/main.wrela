@@ -31,11 +31,12 @@ use engine::anime::LIGHT
 use engine::arms
 use engine::playback::Move as Played
 use engine::timing
-use engine::timing::{ANY, RIGHT_ARM, Timing}
+use engine::timing::{ANY, LEFT_ARM, RIGHT_ARM, Timing}
 use chart::chart
 use humanoid::exchange
 use humanoid::fists
 use humanoid::solved
+use humanoid::hook
 use humanoid::accad_fists
 use humanoid::kimodo
 use std::tool::ToolError
@@ -175,9 +176,16 @@ fn exchange_cross(rig: Rig) -> Clip {
 
 /// The strikes the fight plays, each as its move (its marks say when it lands), by its name
 /// among `strikes`: what `--drawn` and `--differ` play as the lab does (thrown out of the
-/// bouncing guard, drawn as an everyday strike is: `anime::LIGHT`). Add a line for a new one.
-pub fn played() -> Vec<(Text, Played)> {
-    Vec::from([("cross", fists::CROSS.clone()), ("cross-solved", solved::CROSS.clone())])
+/// bouncing guard, drawn as an everyday strike is: `anime::LIGHT`), with the arm that strikes
+/// (whose fist `--drawn` follows). Add a line for a new one.
+pub fn played() -> Vec<(Text, Played, u32)> {
+    Vec::from(
+        [
+            ("cross", fists::CROSS.clone(), RIGHT_ARM),
+            ("cross-solved", solved::CROSS.clone(), RIGHT_ARM),
+            ("hook-solved", hook::HOOK.clone(), LEFT_ARM),
+        ],
+    )
 }
 
 /// The strikes: add a line for a new one.
@@ -204,6 +212,13 @@ pub fn strikes(rig: Rig) -> Vec<Strike> {
                 limb: RIGHT_ARM,
                 contact: solved::CONTACT,
                 about: "the solved cross (solved::CROSS, engine::written): goal poses, each part on its own clock, its numbers solved against spec.wrela",
+            },
+            Strike {
+                name: "hook-solved",
+                clip: hook::HOOK.clip.clone(),
+                limb: LEFT_ARM,
+                contact: hook::CONTACT,
+                about: "the solved lead hook (hook::HOOK, engine::written): goal poses, each part on its own clock, its numbers solved against spec.wrela",
             },
             Strike {
                 name: "cross-take",
@@ -396,7 +411,7 @@ pub fn tool() -> u32 {
     if wanted.len() >= 1 && wanted[0].as_str() == "--drawn" {
         // Each played strike as it's drawn, drawing by drawing.
         var done = 0
-        for (name, m) in played() {
+        for (name, m, arm) in played() {
             var chosen = wanted.len() == 1
             for i in 1..wanted.len() {
                 if wanted[i].as_str() == name {
@@ -405,7 +420,8 @@ pub fn tool() -> u32 {
             }
             if chosen {
                 let s = drawn::shown(rig, fists::FIGHT_GAITS, m, LIGHT)
-                print(drawn::drawings(rig, s, rig.find("rightHand"), name).as_str())
+                let hand = if arm == LEFT_ARM { "leftHand" } else { "rightHand" }
+                print(drawn::drawings(rig, s, rig.find(hand), name).as_str())
                 done += 1
             }
         }
@@ -419,7 +435,7 @@ pub fn tool() -> u32 {
         }
         var both: Vec<drawn::Shown> = Vec::new()
         for i in 1..3 {
-            for (name, m) in played() {
+            for (name, m, _) in played() {
                 if wanted[i].as_str() == name {
                     both.push(drawn::shown(rig, fists::FIGHT_GAITS, m, LIGHT))
                 }
