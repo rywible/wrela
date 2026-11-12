@@ -1,0 +1,527 @@
+// The feel bench (`wrela tool feel`): how the fight feels to play, read off the fight's real
+// rules (mmo/combat), its real input path (the client's `Encoder` and look-ahead) and the bodies
+// that draw it (mmo/game's `bodies`), stepped as the client steps them at 60 frames a second,
+// with no GPU. A person feels a fight's lag, its dropped presses, how long a tell warns them and
+// whether what's seen to land is what hits; each is a number here.
+//
+// ```text
+// wrela tool feel -- [<out-dir>]
+// ```
+//
+// It prints the sheet, and writes it as `<out-dir>/feel.md` (a path in the workspace) when one
+// is given. What it reads:
+// - **Press to drawing**: from the step that reads a press to the first drawing in which the
+//   player's body has moved (any joint 5 mm from where it'd be had nothing been pressed). The
+//   target is 1: the drawing right after that step.
+// - **Presses the rules read nothing for**: a script of presses (a player mashing a pattern
+//   every `CADENCE` frames, walking in between) through the client's input path: how many were
+//   read at once, how many waited (its input buffer) and how long, and how many were dropped.
+// - **Each move's windows**: its frames as the rules have them.
+// - **Warning before the idol's hits**: from the first drawing in which its body has moved
+//   (2 cm) toward its hit to the frame the rules hit. The target is at least 14.
+// - **Hit to drawn contact**: from the frame the rules hit to the drawing whose fist is nearest
+//   where the move puts it on its contact. The target is 0.
+// - **Drift**: how far the drawn bodies are from the rules' places in a fight whose second
+//   player is heard `LATE` frames late, so the first's client predicts and corrects.
+// - **Bots**: a bot that answers the idol's tell 12, 15, 18 and 24 frames in, alone against it.
+
+use std::collections::Vec
+use std::string::String
+use std::io::print
+use std::tool::args
+use std::tool::files
+use std::tool::files::rooted
+use engine::humanoid::pose_world
+use watch::bots::{bot, dist, stick_to}
+use combat::codec::{Encoder, LOOK_AHEAD, Pad}
+use combat::sim::{
+    ACTIVE, ATTACK, ATTACKS, BUTTON_BITS, DODGE, FISTS, HEAVY, HZ, IDLE, LONGSWORD, MOVES, NO_MOVE,
+    PARRY, RECOVER, STAGGERED, STICK_BITS, Seen, WEAPONS, WINDUP, World, step,
+}
+use mmo::bodies
+use mmo::bodies::{Bodies, Body, Shown, drawn_at, place_of, shown}
+use humanoid::body::HERO
+
+pub const USAGE: Text = "usage: wrela tool feel -- [<out-dir>]"
+
+/// A drawing's step (s): the client steps the rules and draws once a frame.
+const DT: f32 = 1.0 / 60.0
+/// How far a joint moves before a drawing has moved (m): for a press, and for the idol's tell.
+const MOVED: f32 = 0.005
+const TELL_MOVED: f32 = 0.02
+/// The script: a press every `CADENCE` frames (a person mashing), from `SCRIPT_FROM`, `PRESSES`
+/// of them, in `PATTERN`'s order.
+const CADENCE: u32 = 9
+const SCRIPT_FROM: u32 = 150
+const PRESSES: u32 = 120
+const PATTERN: [u32; 8] = [ATTACK, ATTACK, ATTACK, HEAVY, DODGE, ATTACK, PARRY, ATTACK]
+/// How late the second player is heard in the drift's fight (frames), and how long it runs.
+const LATE: u32 = 6
+const DRIFT_FRAMES: u32 = 1800
+/// The bots' reactions (frames into the idol's windup), and how long each fights at most.
+const REACTIONS: [u32; 4] = [12, 15, 18, 24]
+const BOT_FRAMES: u32 = 10800
+
+// ---- what a drawing shows ------------------------------------------------------------------------
+
+/// Each joint of what `s` shows, where it's drawn (m).
+fn joints(s: Shown) -> [vec3; 64] {
+    let w = pose_world(HERO.rig, s.pose)
+    var out = [vec3(0.0); 64]
+    for b in 0..HERO.rig.bones.len() {
+        out[b] = (s.place * vec4(w[b].t, 1.0)).xyz
+    }
+    out
+}
+
+/// How far apart two drawings are at the joint that's furthest (m).
+fn apart(a: Shown, b: Shown) -> f32 {
+    let (ja, jb) = (joints(a), joints(b))
+    var most = 0.0
+    for i in 0..HERO.rig.bones.len() {
+        most = max(most, length(ja[i] - jb[i]))
+    }
+    most
+}
+
+/// The right fist of `pose`, in the pose's own space (where it's drawn left out).
+fn fist_of(pose: engine::humanoid::Pose) -> vec3 {
+    pose_world(HERO.rig, pose)[HERO.rig.find("rightHand")].t
+}
+
+// ---- press to drawing ----------------------------------------------------------------------------
+
+/// The drawings from the step that reads `input` (pressed from idle with `weapon`) to the first
+/// in which the body has moved; 0 if none does within half a second.
+fn reply(weapon: u32, input: u32) -> u32 {
+    var w = World::armed([weapon])
+    var b = Bodies::new()
+    for _ in 0..40 {
+        step(mut w, [0])
+        let _ = b.follow(w, DT)
+    }
+    var w2 = w.clone()
+    var b2 = b.clone()
+    for k in 1..31 {
+        step(mut w, [input])
+        step(mut w2, [0])
+        let pressed = b.follow(w, DT)
+        let still = b2.follow(w2, DT)
+        if apart(pressed[1], still[1]) > MOVED {
+            return k
+        }
+    }
+    0
+}
+
+fn replies() -> String {
+    var t = String::from(
+        "## Press to drawing\n\nDrawings from the step that reads a press to the first that moves (target 1).\n\n| Press | Drawings |\n|---|---|\n",
+    )
+    let side = stick_to(dx: 1, dz: 0, speed: 2)
+    let rows: [(Text, u32, u32); 6] = [
+        ("Fists, light", FISTS, ATTACK << 6),
+        ("Fists, heavy", FISTS, HEAVY << 6),
+        ("Longsword, light", LONGSWORD, ATTACK << 6),
+        ("Longsword, heavy", LONGSWORD, HEAVY << 6),
+        ("Parry", LONGSWORD, PARRY << 6),
+        ("Dodge", LONGSWORD, (DODGE << 6) | side),
+    ]
+    for (name, weapon, input) in rows {
+        let k = reply(weapon, input)
+        let shown = if k == 0 { String::from("none within 30") } else { String::from(f"{k}") }
+        t.push_str(f"| {name} | {shown} |\n".as_str())
+    }
+    t
+}
+
+// ---- presses the rules read nothing for ----------------------------------------------------------
+
+/// The pad the script holds at frame `f` of `w`: walking to the idol while out of reach, a press
+/// every `CADENCE` frames from `SCRIPT_FROM`, and the stick aside for a dodge.
+fn script_pad(w: World, f: u32) -> Pad {
+    let p = w.player(0)
+    let b = w.boss()
+    let (dx, dz) = (b.x - p.x, b.z - p.z)
+    let d = max(dist(dx, dz), 1)
+    let reach = MOVES[WEAPONS[LONGSWORD].light].reach
+    var pad = Pad { x: 0.0, z: 0.0, held: 0 }
+    if d > reach - 16 {
+        pad.x = f32(dx) / f32(d) * 0.6
+        pad.z = f32(dz) / f32(d) * 0.6
+    }
+    if f >= SCRIPT_FROM &&
+        (f - SCRIPT_FROM) % CADENCE == 0 &&
+        (f - SCRIPT_FROM) / CADENCE < PRESSES {
+        let button = PATTERN[((f - SCRIPT_FROM) / CADENCE) % 8]
+        pad.pressed = button
+        if button == DODGE {
+            pad.x = -f32(dz) / f32(d)
+            pad.z = f32(dx) / f32(d)
+        }
+    }
+    pad
+}
+
+fn presses() -> String {
+    var w = World::armed([LONGSWORD])
+    var enc = Encoder::new()
+    var prev: u32 = 0
+    // Each button's press waiting since (frame), if one is.
+    var since = [u32(0); 4]
+    var waiting = [false; 4]
+    var made = 0
+    var at_once = 0
+    var waited = 0
+    var dropped = 0
+    var waits: Vec<u32> = Vec::new()
+    let end = SCRIPT_FROM + CADENCE * PRESSES + 30
+    var fights = 1
+    for f in 0..end {
+        if w.over {
+            // (The idol won: the script goes on in a fight begun anew.)
+            w = World::armed([LONGSWORD])
+            enc = Encoder::new()
+            prev = 0
+            waiting = [false; 4]
+            fights += 1
+        }
+        let pad = script_pad(w, f)
+        // As the client's `tick`: what's read now, and within the look-ahead.
+        let ready = w.reads(0)
+        var reads = ready
+        if ready & (STICK_BITS | BUTTON_BITS) != (STICK_BITS | BUTTON_BITS) {
+            reads |= w.soon(0, [prev], LOOK_AHEAD)
+        }
+        let input = enc.input(pad, prev: prev, reads: reads, now: ready)
+        let flips = ((input ^ prev) & BUTTON_BITS) >> 6
+        let soon = (reads & BUTTON_BITS) >> 6
+        for k in 0..4 {
+            let bit = u32(1) << k
+            if pad.pressed & bit != 0 {
+                made += 1
+                if flips & bit != 0 {
+                    at_once += 1
+                } else if soon & bit != 0 {
+                    waiting[k] = true
+                    since[k] = f
+                } else {
+                    dropped += 1
+                }
+            } else if waiting[k] && flips & bit != 0 {
+                waited += 1
+                waits.push(f - since[k])
+                waiting[k] = false
+            } else if waiting[k] && soon & bit == 0 {
+                dropped += 1
+                waiting[k] = false
+            }
+        }
+        prev = input
+        step(mut w, [input])
+    }
+    var longest = 0
+    var total = 0
+    for x in waits {
+        longest = max(longest, x)
+        total += x
+    }
+    let mean = if waits.is_empty() { 0.0 } else { f32(total) / f32(waits.len()) }
+    String::from(
+        f"## Presses the rules read nothing for\n\nA press every {CADENCE} frames ({PRESSES} of them: attack, attack, attack, heavy, dodge, attack, parry, attack, over again), walking in to the idol, with the longsword, through the client's input path (its look-ahead is {LOOK_AHEAD} frames); {fights} fights, each begun anew when the idol won.\n\n| Presses | Read at once | Waited, then read | Dropped |\n|---|---|---|---|\n| {made} | {at_once} | {waited} (for {mean:.1} frames on average, {longest} at most) | {dropped} |\n",
+    )
+}
+
+// ---- the windows ---------------------------------------------------------------------------------
+
+fn windows() -> String {
+    var t = String::from(
+        "## Each move's windows\n\nFrames, as the rules have them. A combo's window is the recovery a light press goes on from.\n\n| Move | Windup | Active | Recovery | Combo window | Reach (m) | Damage |\n|---|---|---|---|---|---|---|\n",
+    )
+    let names: [Text; 6] = [
+        "Fists, jab",
+        "Fists, straight",
+        "Longsword, cut 1",
+        "Longsword, cut 2",
+        "Longsword, cut 3",
+        "Longsword, overhead",
+    ]
+    for i in 0..MOVES.len() {
+        let m = MOVES[i]
+        let combo = if m.next != NO_MOVE { m.recovery } else { 0 }
+        t.push_str(
+            f"| {names[i]} | {m.windup} | {m.active} | {m.recovery} | {combo} | {f32(m.reach) / bodies::UNIT:.2} | {m.damage} |\n".as_str(),
+        )
+    }
+    t.push_str(
+        "\n| The idol's | Tell (windup) | Active | Recovery (its opening) | Met by | Reach (m) | Damage |\n|---|---|---|---|---|---|---|\n",
+    )
+    for a in ATTACKS {
+        let met = if a.parried { "a parry or a dodge" } else { "a dodge" }
+        t.push_str(
+            f"| {a.name} | {a.windup} | {a.active} | {a.recovery} | {met} | {f32(a.near) / bodies::UNIT:.2} to {f32(a.far) / bodies::UNIT:.2} | {a.damage} |\n".as_str(),
+        )
+    }
+    t
+}
+
+// ---- a strike drawn against the rules' frames ----------------------------------------------------
+
+/// What the rules say of a fighter `k` frames after they begin strike `m` (the boss's, or a
+/// player's): its timer stepped as `sim` steps it, each step a frame.
+fn striking(boss: bool, m: u32, k: u32) -> Seen {
+    let (w, a, r) = if boss {
+        (ATTACKS[m].windup, ATTACKS[m].active, ATTACKS[m].recovery)
+    } else { (MOVES[m].windup, MOVES[m].active, MOVES[m].recovery) }
+    let (act, timer, move_) = if k < w { (WINDUP, w - k, m) } else if k < w + a {
+        (ACTIVE, w + a - k, m)
+    } else if k < w + a + r { (RECOVER, w + a + r - k, m) } else { (IDLE, 0, NO_MOVE) }
+    Seen { x: 0, z: 0, hp: 100, stamina: 100, act, timer, move_, facing: 4 }
+}
+
+fn still() -> Seen {
+    Seen { x: 0, z: 0, hp: 100, stamina: 100, act: IDLE, timer: 0, move_: NO_MOVE, facing: 4 }
+}
+
+/// A strike drawn as the rules time it, from a body that stood a second: the frame (from when the
+/// rules began it) of its first drawing that moved `moved` from where it'd stand, and of the
+/// drawing whose fist was nearest where the move puts it on its contact.
+fn drawn_strike(boss: bool, m: u32, moved: f32) -> (u32, u32) {
+    var b = Body::new(still(), boss: boss)
+    let mask = Bodies::new().mask()
+    var frame: u32 = 1
+    for _ in 0..60 {
+        let _ = shown(mut b, still(), frame, mask, DT)
+        frame += 1
+    }
+    var idle = b
+    // The move's own fist on its contact, as the rules time it.
+    let act = if boss { bodies::BOSS_STRIKES + m } else { m }
+    let hit = if boss { ATTACKS[m].windup + 1 } else { MOVES[m].windup }
+    let target = fist_of(bodies::ACTS[act].pose(f32(hit) / f32(HZ)))
+    var first: u32 = 0
+    var nearest: u32 = 0
+    var best = 1.0e9
+    let (w, a, r) = if boss {
+        (ATTACKS[m].windup, ATTACKS[m].active, ATTACKS[m].recovery)
+    } else { (MOVES[m].windup, MOVES[m].active, MOVES[m].recovery) }
+    for k in 0..(w + a + r) {
+        let s = shown(mut b, striking(boss, m, k), frame, mask, DT)
+        let i = shown(mut idle, still(), frame, mask, DT)
+        frame += 1
+        if first == 0 && apart(s, i) > moved {
+            first = k
+        }
+        let d = length(fist_of(s.pose) - target)
+        if d < best - 1.0e-5 {
+            best = d
+            nearest = k
+        }
+    }
+    (first, nearest)
+}
+
+fn warnings() -> String {
+    var t = String::from(
+        "## Warning before the idol's hits\n\nFrames from the first drawing in which the idol has moved toward its hit to the frame the rules hit (target at least 14).\n\n| Attack | Tell | Warning |\n|---|---|---|\n",
+    )
+    for i in 0..ATTACKS.len() {
+        let (first, _) = drawn_strike(boss: true, m: i, moved: TELL_MOVED)
+        // (Its rules meet the party a step after its windup ends.)
+        let hit = ATTACKS[i].windup + 1
+        t.push_str(f"| {ATTACKS[i].name} | {ATTACKS[i].windup} | {hit - first} |\n".as_str())
+    }
+    t
+}
+
+fn contacts() -> String {
+    var t = String::from(
+        "## Hit to drawn contact\n\nFrames from the rules' hit to the drawing whose fist is nearest where the move puts it on its contact (target 0; negative: drawn before the hit). The fight draws a strike on twos, a drawing every 5 frames.\n\n| Strike | Rules hit (frame) | Drawn contact (frame) | Off by |\n|---|---|---|---|\n",
+    )
+    for i in 0..MOVES.len() {
+        let (_, near) = drawn_strike(boss: false, m: i, moved: MOVED)
+        let hit = MOVES[i].windup
+        t.push_str(f"| Move {i} | {hit} | {near} | {i32(near) - i32(hit)} |\n".as_str())
+    }
+    for i in 0..ATTACKS.len() {
+        let (_, near) = drawn_strike(boss: true, m: i, moved: MOVED)
+        let hit = ATTACKS[i].windup + 1
+        t.push_str(
+            f"| The idol's {ATTACKS[i].name} | {hit} | {near} | {i32(near) - i32(hit)} |\n".as_str(),
+        )
+    }
+    t
+}
+
+// ---- drift ---------------------------------------------------------------------------------------
+
+fn drift() -> String {
+    let weapons = [FISTS, LONGSWORD]
+    var truth = World::armed(weapons)
+    var past: Vec<World> = Vec::new()
+    var inputs: Vec<Vec<u32>> = Vec::from([Vec::new(), Vec::new()])
+    var b = Bodies::new()
+    // The boss's, then each player's: the most and the sum from the client's rules, and the
+    // most from the true rules.
+    var most = [0.0; 3]
+    var sum = [0.0; 3]
+    var most_true = [0.0; 3]
+    var n = 0
+    for f in 0..DRIFT_FRAMES {
+        if truth.over {
+            break
+        }
+        var ins: Vec<u32> = Vec::new()
+        for i in 0..2 {
+            let before = if f > 0 { inputs[i][f - 1] } else { 0 }
+            let x = bot(truth, i, before, weapons[i], 15)
+            inputs[i].push(x)
+            ins.push(x)
+        }
+        past.push(truth.clone())
+        if past.len() > LATE {
+            past.remove(0)
+        }
+        step(mut truth, ins)
+        // The first player's client: the second's input held at the last it heard.
+        var w = past[0].clone()
+        let heard = if w.frame > 0 { inputs[1][w.frame - 1] } else { 0 }
+        while w.frame < truth.frame {
+            let g = w.frame
+            step(mut w, [inputs[0][g], heard])
+        }
+        let _ = b.follow(w, DT)
+        for k in 0..3 {
+            let (said, real) = if k == 0 { (w.boss(), truth.boss()) } else {
+                (w.player(k - 1), truth.player(k - 1))
+            }
+            let at = drawn_at(b.body(k))
+            let off = length(at - place_of(said))
+            most[k] = max(most[k], off)
+            most_true[k] = max(most_true[k], length(at - place_of(real)))
+            sum[k] += off
+        }
+        n += 1
+    }
+    var t = String::from(
+        f"## Drift\n\nTwo bots against the idol for {n} frames, the second heard {LATE} frames late (the first's client predicts it, and corrects): how far each drawn body is from the place the rules give it (m). A dodge carries a body 3.75 m in 12 frames.\n\n| Body | From the client's rules: most | mean | From the true rules: most |\n|---|---|---|---|\n",
+    )
+    let names: [Text; 3] = ["The idol", "P1 (this client's)", "P2 (heard late)"]
+    for k in 0..3 {
+        t.push_str(
+            f"| {names[k]} | {most[k]:.3} | {sum[k] / f32(max(n, 1)):.3} | {most_true[k]:.3} |\n".as_str(),
+        )
+    }
+    t
+}
+
+// ---- bots ----------------------------------------------------------------------------------------
+
+fn bots() -> String {
+    var t = String::from(
+        "## Bots answering the tell\n\nOne bot with the longsword, alone against the idol, answering its tell this many frames in: what came of the idol's attacks that met it.\n\n| Reaction | Outcome | Frames | Its health | Hit | Parried | Passed by |\n|---|---|---|---|---|---|---|\n",
+    )
+    for react in REACTIONS {
+        var w = World::armed([LONGSWORD])
+        var before: u32 = 0
+        var hit = 0
+        var parried = 0
+        var passed = 0
+        var was = w.boss()
+        var hp = w.player(0).hp
+        for _ in 0..BOT_FRAMES {
+            if w.over {
+                break
+            }
+            let x = bot(w, 0, before, LONGSWORD, react)
+            before = x
+            step(mut w, [x])
+            let b = w.boss()
+            let p = w.player(0)
+            if p.hp < hp {
+                hit += 1
+            }
+            if b.act == STAGGERED && was.act != STAGGERED {
+                parried += 1
+            }
+            // An attack ended whose active frames met neither.
+            if was.act == ACTIVE && b.act != ACTIVE && b.act != STAGGERED && p.hp == hp {
+                passed += 1
+            }
+            hp = p.hp
+            was = b
+        }
+        let outcome = if !w.over { "still going" } else {
+            match w.winner {
+                combat::sim::Winner::Party => "the bot wins",
+                combat::sim::Winner::Boss => "the idol wins",
+                combat::sim::Winner::Draw => "a draw",
+            }
+        }
+        t.push_str(
+            f"| {react} | {outcome} | {w.frame} | {w.player(0).hp} | {hit} | {parried} | {passed} |\n".as_str(),
+        )
+    }
+    t
+}
+
+// ---- the tool ------------------------------------------------------------------------------------
+
+/// The whole sheet.
+pub fn sheet() -> String {
+    var t = String::from("# The feel bench\n\n")
+    for part in [replies(), presses(), windows(), warnings(), contacts(), drift(), bots()] {
+        t.push_str(part.as_str())
+        t.push_str("\n")
+    }
+    t
+}
+
+pub fn tool() -> u32 {
+    let wanted = args()
+    if wanted.len() > 1 {
+        print(USAGE)
+        return 2
+    }
+    let text = sheet()
+    print(text.as_str())
+    if wanted.len() == 1 {
+        let Some(dir) = rooted("ws", wanted[0].as_str()) else {
+            print(f"feel: no path for {wanted[0]}")
+            return 2
+        }
+        if let Err(e) = files::make_dirs(dir.as_str()).wait() {
+            print(f"feel: {e.message()}")
+            return 1
+        }
+        if files::write(f"{dir}/feel.md".as_str(), text.as_bytes()).wait().is_err() {
+            print(f"feel: couldn't write {dir}/feel.md")
+            return 1
+        }
+    }
+    0
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+/// A press shows on the drawing right after the step that reads it, a light one and a heavy one.
+@test
+fn a_press_shows_on_the_next_drawing() {
+    assert(reply(LONGSWORD, ATTACK << 6) == 1, "a light cut")
+    assert(reply(LONGSWORD, HEAVY << 6) == 1, "the overhead")
+}
+
+/// Every strike is drawn landing on the frame the rules hit, and the idol's warn a person for
+/// at least 14 frames.
+@test
+fn strikes_land_when_the_rules_hit_and_the_idol_warns() {
+    for i in 0..MOVES.len() {
+        let (_, near) = drawn_strike(boss: false, m: i, moved: MOVED)
+        assert(near == MOVES[i].windup, "a player's strike lands as the rules hit")
+    }
+    for i in 0..ATTACKS.len() {
+        let (first, near) = drawn_strike(boss: true, m: i, moved: TELL_MOVED)
+        assert(near == ATTACKS[i].windup + 1, "the idol's strike lands as the rules hit")
+        assert(ATTACKS[i].windup + 1 - first >= 14, "it warns for at least 14 frames")
+    }
+}

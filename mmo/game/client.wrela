@@ -21,6 +21,7 @@ use combat::sim::{
     ATTACK, BUTTON_BITS, Change, DODGE, HEAVY, LONGSWORD, MAX_FRAMES, MAX_PARTY, PARRY, STICK_BITS,
     Seen, Winner, World, step,
 }
+use bodies::Ring
 use character::{Character, Stage, Why}
 use island::main::{Card, Island, MAX_STEP}
 use platform::names
@@ -285,6 +286,8 @@ struct Play {
 pub struct Client {
     fonts: Fonts,
     renderer: Renderer,
+    /// The fight's bodies, drawn under its words (`bodies`).
+    ring: Ring,
     list: DrawList,
     island: Option<Log<Island, island::main::Act>>,
     fight: Option<Log<Fight, combat::main::Act>>,
@@ -374,6 +377,7 @@ pub fn init(origin: str) -> Client {
     Client {
         fonts,
         renderer,
+        ring: Ring::new(),
         list: DrawList::new(),
         island: None,
         fight: None,
@@ -1990,11 +1994,14 @@ fn draw<A: Account>(s: mut Client, width: u32, height: u32, account: mut A) {
     let h = f32(height)
     let screen = vec2(w, h)
     s.list.clear(screen)
-    s.list.rect(Rect::new(x: 0.0, y: 0.0, w: w, h: h), BG)
     let size = min(w, h)
     let middle = vec2(w / 2.0, h / 2.0)
-    let fight_on = s.play.is_some()
     let making = maker_open(s)
+    // A fight is drawn as bodies, its words over them (`bodies::Ring`).
+    let fight_on = s.play.is_some() && !making
+    if !fight_on {
+        s.list.rect(Rect::new(x: 0.0, y: 0.0, w: w, h: h), BG)
+    }
     if making {
         // Under the account's pages, the maker waits unseen: they come first.
         if !s.hushed {
@@ -2038,6 +2045,13 @@ fn draw<A: Account>(s: mut Client, width: u32, height: u32, account: mut A) {
     account.draw(mut s.list, s.fonts, width, height)
     s.renderer.fetch(mut s.fonts, s.list)
     s.renderer.upload(s.list)
+    if fight_on {
+        if let Some(p) = s.play {
+            let time = s.time.unwrap_or(0.0)
+            s.ring.draw(p.world, p.slot, time, s.dt, width, height, s.renderer)
+            return
+        }
+    }
     let pass = begin_screen_pass(clear: BG)
     s.renderer.draw(pass, screen)
     pass.present()
@@ -2290,39 +2304,17 @@ fn chevron(list: mut DrawList, r: Rect, back: bool, k: f32, color: vec4) {
     list.line(tip, c + vec2(side * a * 0.6, a), color, w)
 }
 
-fn place(middle: vec2, px: f32, x: i32, z: i32) -> vec2 {
-    middle + vec2(f32(x), -f32(z)) / 64.0 * px
-}
-
-fn fighter_color(seen: Seen, base: vec4) -> vec4 {
-    if seen.hp <= 0 {
-        vec4(0.3, 0.3, 0.32, 1.0)
-    } else if seen.act == 5 {
-        vec4(base.xyz, 0.45)
-    } else if seen.act == 4 {
-        INK
-    } else if seen.act == 6 {
-        vec4(0.5, 0.5, 0.55, 1.0)
-    } else {
-        base
-    }
-}
-
 fn draw_fight(s: mut Client, middle: vec2, size: f32) {
     let (world, slot, settled) = match s.play {
         Some(p) => (p.world.clone(), p.slot, p.settled.clone()),
         None => return,
     }
-    // A metre is this many pixels: the arena is 40 metres across.
-    let px = size / 46.0
-    circle(mut s.list, middle, 20.0 * px, SEA)
+    // The bodies are drawn under these words (`bodies::Ring`): each player's health and
+    // stamina, the boss's health, and its tell.
     let boss = world.boss()
-    let boss_color = if boss.act == 1 { TELL } else { fighter_color(boss, BOSS) }
-    circle(mut s.list, place(middle, px, boss.x, boss.z), 1.2 * px, boss_color)
     for i in 0..world.players() {
         let seen = world.player(i)
         let base = if i == slot { MINE } else { OTHER }
-        circle(mut s.list, place(middle, px, seen.x, seen.z), 0.6 * px, fighter_color(seen, base))
         let line = String::from(f"P{i + 1}  {seen.hp} hp  {seen.stamina} stamina")
         let _ = s.list.text(
             s.fonts,

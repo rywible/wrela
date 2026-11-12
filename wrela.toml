@@ -21,6 +21,7 @@ members = [
     "land/tests/*",
     "mmo/combat",
     "mmo/game",
+    "mmo/watch",
     "mmo/island",
     "platform",
     "studio/audio",
@@ -30,6 +31,7 @@ members = [
     "studio/styles",
     "studio/motion",
     "studio/moves",
+    "studio/feel",
     "studio/serve",
     "studio/steady",
     "studio/release",
@@ -126,6 +128,14 @@ package = "studio/moves"
 write = ["ws=."]
 # (`--solve` runs `wrela solve` on a strike's package, and the sheet again by a fresh build.)
 run = ["wrela"]
+
+# The feel bench (studio/feel): how the fight feels to play (the drawings from a press to the
+# body moving, the presses dropped, each move's windows, the idol's warnings, the hit against the
+# drawn contact, the bodies' drift, bots at a person's reactions), read off its real rules, input
+# path and bodies; its sheet printed, and written where its command line says, in the workspace.
+[tools.feel]
+package = "studio/feel"
+write = ["ws=."]
 
 # The forms tool (studio/forms): each charted form's numbers fitted to its reference (the CC0
 # body's triangles, Hakuro's sampled grids) by one solve, written into content/figure and
