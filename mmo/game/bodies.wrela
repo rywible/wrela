@@ -18,6 +18,7 @@ use std::gpu::{
     Cull, DepthTexture, GpuBuffer, Rgba16Float, Rgba8, Texture, begin_pass3_with_depth,
     begin_screen_pass, buffer_of, depth_texture, draw, texture, write,
 }
+use std::math::{atan2, cos, sin}
 use std::transform::identity
 use engine::anime
 use engine::anime::{Anime, Drawer, LIGHT, Look, PLAIN, STRIKE}
@@ -141,9 +142,17 @@ pub const GAITS: Gaits = Gaits {
 /// the actor's own first and last steps.
 const HOW: Handling = Handling { clips: false }
 
-/// How fast (m/s) a standing body is asked to go toward its foe: under what sets it off, so it
-/// turns on the spot to face it.
+/// How fast (m/s) a standing body is asked to go the way the rules face it: under what sets it
+/// off, so it turns on the spot to face that way.
 const FACE: f32 = 0.1
+
+/// The heading (radians about up, from +z toward +x, as `engine::playback`'s) of the rules'
+/// facing `facing`, one of their 16 directions (`combat::sim::direction`: the first +x, the
+/// fourth +z).
+pub fn heading_of(facing: u32) -> f32 {
+    let a = f32(facing % 16) * 0.39269908
+    atan2(cos(a), sin(a))
+}
 
 /// A fighter's body and what the rules last said of it.
 pub struct Body: Copy {
@@ -166,11 +175,10 @@ pub fn place_of(seen: Seen) -> vec3 {
 }
 
 impl Body {
-    pub fn new(seen: Seen, facing: vec3, boss: bool) -> Body {
+    pub fn new(seen: Seen, boss: bool) -> Body {
         let at = place_of(seen)
-        let d = facing - at
         Body {
-            mover: Mover::standing(at, atan2(d.x, d.z), GAITS),
+            mover: Mover::standing(at, heading_of(seen.facing), GAITS),
             drawer: Drawer::new(),
             act: seen.act,
             move_: seen.move_,
@@ -214,19 +222,13 @@ pub fn begun(b: Body, seen: Seen) -> (u32, f32) {
     (engine::humanoid::NONE, 0.0)
 }
 
-/// One drawn frame of body `b` following `seen` at the rules' frame `frame`, its foe at `foe`,
-/// `dt` (s) on: its pose and where it's drawn.
-pub fn follow(
-    b: mut Body,
-    seen: Seen,
-    frame: u32,
-    foe: vec3,
-    mask: [f32; 64],
-    dt: f32,
-) -> (Pose, mat4) {
+/// One drawn frame of body `b` following `seen` at the rules' frame `frame`, `dt` (s) on: its
+/// pose and where it's drawn. It faces the way the rules face it.
+pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> (Pose, mat4) {
     let at = place_of(seen)
     let (act, into) = begun(b, seen)
-    // Going where the rules took it, as fast as they did; standing (or acting), facing its foe.
+    // Going where the rules took it, as fast as they did; standing, turned the way they face it.
+    let facing = heading_of(seen.facing)
     let steps = if frame > b.frame { f32(frame - b.frame) } else { 0.0 }
     let moved = at - b.at
     var stick = if seen.act == IDLE && steps > 0.0 { moved * (f32(HZ) / steps) } else {
@@ -237,8 +239,7 @@ pub fn follow(
         stick = vec3(0.0)
     }
     if length(stick) < 0.05 {
-        let d = foe - at
-        stick = if length(d) > 0.01 { normalize(vec3(d.x, 0.0, d.z)) * FACE } else { vec3(0.0) }
+        stick = vec3(sin(facing), 0.0, cos(facing)) * FACE
     }
     if act != engine::humanoid::NONE {
         // What the rules begin cuts short what the body was doing.
@@ -259,6 +260,14 @@ pub fn follow(
     if act != engine::humanoid::NONE && into > b.mover.act_time {
         // (Begun on a frame already past, as a rollback finds it: it catches up.)
         b.mover.act_time = into
+    }
+    // Acting, it doesn't steer itself: it turns the way the rules face it (a strike turned as it
+    // begins, the boss tracking its target through its windup), as a standing body turns.
+    if b.mover.acting != engine::humanoid::NONE {
+        let goal = b.mover.heading + playback::wrapped(facing - b.mover.heading)
+        let (h, spin) = playback::sprung(b.mover.heading, b.mover.spin, goal, HOW.turn_half, dt)
+        b.mover.heading = playback::wrapped(h)
+        b.mover.spin = spin
     }
     // Its place is the rules': what it's off by is drift, which dies away.
     let off = at - b.mover.place
@@ -348,23 +357,11 @@ impl Ring {
     /// begun anew (a body more or fewer, or its first frame) stands them where the rules do.
     pub fn follow(mut self, w: World, dt: f32) -> Vec<[mat4; 64]> {
         let n = w.players() + 1
-        let boss_at = place_of(w.boss())
         if self.bodies.len() != n || w.frame < self.bodies[0].frame {
             self.bodies.clear()
-            self.bodies.push(Body::new(w.boss(), place_of(w.player(0)), boss: true))
+            self.bodies.push(Body::new(w.boss(), boss: true))
             for i in 0..w.players() {
-                self.bodies.push(Body::new(w.player(i), boss_at, boss: false))
-            }
-        }
-        // The boss faces the nearest player standing.
-        var near = place_of(w.player(0))
-        var best = 1.0e9
-        for i in 0..w.players() {
-            let p = w.player(i)
-            let d = length(place_of(p) - boss_at)
-            if p.hp > 0 && d < best {
-                best = d
-                near = place_of(p)
+                self.bodies.push(Body::new(w.player(i), boss: false))
             }
         }
         var out: Vec<[mat4; 64]> = Vec::new()
@@ -372,9 +369,8 @@ impl Ring {
         self.force = anime::Force::none()
         for k in 0..n {
             let seen = if k == 0 { w.boss() } else { w.player(k - 1) }
-            let foe = if k == 0 { near } else { boss_at }
             var b = self.bodies[k]
-            let (pose, place) = follow(mut b, seen, w.frame, foe, self.mask, dt)
+            let (pose, place) = follow(mut b, seen, w.frame, self.mask, dt)
             let d = anime::drawn(
                 mut b.drawer,
                 b.mover,
@@ -534,7 +530,7 @@ impl Ring {
 
 /// A fighter `x` units along, doing `act`.
 fn seen_at(x: i32, act: u32, timer: u32, move_: u32) -> Seen {
-    Seen { x, z: 0, hp: 100, stamina: 100, act, timer, move_ }
+    Seen { x, z: 0, hp: 100, stamina: 100, act, timer, move_, facing: 4 }
 }
 
 /// A rollback that moves a fighter a metre moves its body there by drift: the drawn place
@@ -542,15 +538,13 @@ fn seen_at(x: i32, act: u32, timer: u32, move_: u32) -> Seen {
 @test
 fn a_rollbacks_jump_is_eased_not_drawn() {
     let mask = playback::upper_body(HERO.rig)
-    let foe = vec3(0.0, 0.0, 6.0)
-    var b = Body::new(seen_at(0, act: IDLE, timer: 0, move_: NO_MOVE), foe, boss: false)
-    let _ = follow(mut b, seen_at(0, act: IDLE, timer: 0, move_: NO_MOVE), 1, foe, mask, 1.0 / 60.0)
+    var b = Body::new(seen_at(0, act: IDLE, timer: 0, move_: NO_MOVE), boss: false)
+    let _ = follow(mut b, seen_at(0, act: IDLE, timer: 0, move_: NO_MOVE), 1, mask, 1.0 / 60.0)
     let before = drawn_at(b)
     let _ = follow(
         mut b,
         seen_at(64, act: IDLE, timer: 0, move_: NO_MOVE),
         2,
-        foe,
         mask,
         1.0 / 60.0,
     )
@@ -560,7 +554,6 @@ fn a_rollbacks_jump_is_eased_not_drawn() {
             mut b,
             seen_at(64, act: IDLE, timer: 0, move_: NO_MOVE),
             f,
-            foe,
             mask,
             1.0 / 60.0,
         )
@@ -573,13 +566,11 @@ fn a_rollbacks_jump_is_eased_not_drawn() {
 @test
 fn a_strike_begins_when_the_rules_say_and_lands_when_they_hit() {
     let mask = playback::upper_body(HERO.rig)
-    let foe = vec3(0.0, 0.0, 3.0)
-    var b = Body::new(seen_at(0, act: IDLE, timer: 0, move_: NO_MOVE), foe, boss: false)
+    var b = Body::new(seen_at(0, act: IDLE, timer: 0, move_: NO_MOVE), boss: false)
     let _ = follow(
         mut b,
         seen_at(0, act: PARRYING, timer: 8, move_: NO_MOVE),
         1,
-        foe,
         mask,
         1.0 / 60.0,
     )
@@ -588,11 +579,19 @@ fn a_strike_begins_when_the_rules_say_and_lands_when_they_hit() {
         mut b,
         seen_at(0, act: WINDUP, timer: MOVES[1].windup, move_: 1),
         2,
-        foe,
         mask,
         1.0 / 60.0,
     )
     assert(b.mover.acting == 1, "the strike cuts the parry short")
+    // The rules turn it as it strikes (its stick pressed the other way): it turns that way.
+    var turned = seen_at(0, act: WINDUP, timer: MOVES[1].windup - 1, move_: 1)
+    turned.facing = 0
+    for f in 3..33 {
+        let _ = follow(mut b, turned, f, mask, 1.0 / 60.0)
+        turned.timer = max(turned.timer, 2) - 1
+    }
+    let off = playback::wrapped(b.mover.heading - heading_of(0))
+    assert(abs(off) < 0.05, "it faces the way the rules face it")
     for i in 0..MOVES.len() {
         let Some(a) = ACTS[i].mark(playback::ACTIVE) else { panic("a strike has its window") }
         assert(abs(a.from - f32(MOVES[i].windup) / f32(HZ)) < 1.0e-4, "it lands as the rules hit")
