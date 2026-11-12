@@ -25,6 +25,8 @@
 //   where the move puts it on its contact. The target is 0.
 // - **Drift**: how far the drawn bodies are from the rules' places in a fight whose second
 //   player is heard `LATE` frames late, so the first's client predicts and corrects.
+// - **Chains**: each weapon's chain struck at the idol standing still: whether each strike lands
+//   after the one before pushed it (`sim::push_of`), and whether it would had it been a man.
 // - **Bots**: a bot that answers the idol's tell 12, 15, 18 and 24 frames in, alone against it.
 
 use std::collections::Vec
@@ -521,6 +523,80 @@ fn drift() -> String {
     t
 }
 
+// ---- chains --------------------------------------------------------------------------------------
+
+/// Each weapon's chain (its light attack and each combo's next, pressed every frame) struck at the
+/// idol standing still (`World::standing_still`), from just inside the first's reach: whether
+/// each hit lands, and how far the idol is at each (its pushes, `sim::push_of`, carry it off).
+/// Its last column is how far it would be had each strike before pushed it as far as a man (the
+/// idol takes a quarter, `sim::IDOL_TAKES`), against the move's reach.
+fn chains() -> String {
+    var t = String::from(
+        "## Each weapon's chain against a foe standing still\n\nThe chain pressed every frame at the idol standing still, from 16 units inside the first strike's reach: each strike, whether it landed, the idol's distance as it struck (m), how far it had been pushed (m), and the distance had each strike before pushed it as far as a man (m), against the strike's reach (m).\n\n| Weapon | Strike | Landed | Distance | Pushed so far | Had it been a man | Reach |\n|---|---|---|---|---|---|---|\n",
+    )
+    let names = ["Fists", "Longsword"]
+    for weapon in [FISTS, LONGSWORD] {
+        var w = World::armed([weapon]).standing_still()
+        let first = MOVES[WEAPONS[weapon].light]
+        var input: u32 = 0
+        // Walk in, to just inside the first strike's reach.
+        for _ in 0..900 {
+            let p = w.player(0)
+            let b = w.boss()
+            let (dx, dz) = (b.x - p.x, b.z - p.z)
+            if dist(dx, dz) <= first.reach - 16 {
+                break
+            }
+            input = (input & BUTTON_BITS) | stick_to(dx, dz, 1)
+            step(mut w, [input])
+        }
+        // Face it, then strike, pressing every frame, till the chain's done.
+        let p = w.player(0)
+        let b = w.boss()
+        input = (input & BUTTON_BITS) | stick_to(b.x - p.x, b.z - p.z, 0)
+        step(mut w, [input])
+        let start = w.boss()
+        var hp = w.boss().hp
+        var m = WEAPONS[weapon].light
+        var k = 0
+        var begun = false
+        var man = 0
+        for _ in 0..400 {
+            input = (input ^ (ATTACK << 6)) & BUTTON_BITS
+            let was = w.player(0)
+            step(mut w, [input])
+            let now = w.player(0)
+            if now.act == WINDUP && (was.act != WINDUP || was.move_ != now.move_) {
+                if begun {
+                    // (A strike begun that never landed.)
+                    t.push_str(
+                        f"| {names[weapon]} | {k + 1} | no | | | | {f32(MOVES[m].reach) / bodies::UNIT:.2} |\n".as_str(),
+                    )
+                    k += 1
+                }
+                begun = true
+                m = now.move_
+            }
+            let b = w.boss()
+            if b.hp < hp {
+                let d = f32(dist(b.x - now.x, b.z - now.z)) / bodies::UNIT
+                let pushed = f32(dist(b.x - start.x, b.z - start.z)) / bodies::UNIT
+                t.push_str(
+                    f"| {names[weapon]} | {k + 1} | yes | {d:.2} | {pushed:.3} | {d - pushed + f32(man) / bodies::UNIT:.2} | {f32(MOVES[m].reach) / bodies::UNIT:.2} |\n".as_str(),
+                )
+                man += combat::sim::push_of(combat::sim::hold_of(MOVES[m].damage))
+                k += 1
+                begun = false
+                hp = b.hp
+            }
+            if was.act != IDLE && now.act == IDLE && MOVES[m].next == NO_MOVE {
+                break
+            }
+        }
+    }
+    t
+}
+
 // ---- bots ----------------------------------------------------------------------------------------
 
 fn bots() -> String {
@@ -584,6 +660,7 @@ pub fn sheet() -> String {
         warnings(),
         contacts(),
         drift(),
+        chains(),
         bots(),
     ] {
         t.push_str(part.as_str())
