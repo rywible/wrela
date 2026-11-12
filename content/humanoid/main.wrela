@@ -118,12 +118,8 @@ const FIGHT_ACTS: [Move; 7] = [
 /// cross at the fight's attack frames (`Written::played`), and the roll (content/moves).
 @fuel(2 ** 40)
 const ACTS_CODE: [Move; 2] = [
-    solved::cross().played(
-        HERO.rig,
-        solved::CONTACT,
+    solved::cross_at(
         Beats::of_frames(body::ATTACK_WINDUP, body::ATTACK_ACTIVE, body::ATTACK_RECOVERY, body::HZ),
-        fps: 60.0,
-        fist: 2.0,
     ),
     body::ROLL_CODE.clone(),
 ]

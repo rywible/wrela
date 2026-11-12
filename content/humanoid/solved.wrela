@@ -21,10 +21,10 @@ use std::lift::Report
 use engine::arms
 use engine::keys
 use engine::keys::{Key, SETTLE, SMOOTH, SNAP}
-use engine::playback::{ACTIVE, CANCEL, Mark, Move, RECOVER, WINDUP}
+use engine::playback::Move
 use engine::review
 use engine::timing::{RIGHT_ARM, timing}
-use engine::written::{Chain, Taste, Written}
+use engine::written::{Beats, Chain, Taste, Written}
 use taste::taste
 use body::HERO
 use fists::guard
@@ -127,34 +127,24 @@ pub fn cross() -> Written<8> {
     Written { keys: [rest, load, beat, contact, driven, held, home, back], taste: taste(), arm: 1 }
 }
 
-/// A clip as a move that stays where it stands (as `fists`' keyed moves do).
-fn in_place(c: engine::humanoid::Clip) -> Move {
-    let n = c.frames
-    Move {
-        clip: c.clone(),
-        root: Vec::filled(n, vec3(0.0)),
-        heading: Vec::filled(n, 0.0),
-        marks: Vec::new(),
-        speed: 0.0,
-        stride: 0.0,
-    }
+/// The solved cross as a game plays it at `beats` (`engine::written::Written::played`): at 60
+/// a second, fists clenched, in place, its fist on its contact on the frame the rules hit, its
+/// windows marked. The one way the cross is played: the lab's (`CROSS`), the game's (mmo/game's
+/// `bodies`).
+pub fn cross_at(beats: Beats) -> Move {
+    cross().played(HERO.rig, CONTACT, beats, fps: 60.0, fist: 2.0)
 }
 
-/// The solved cross as a game plays it: at 60 a second, fists clenched, in place, its windows
-/// marked with its windows.
+/// The solved cross at its own beats, as written: its contact at `CONTACT`, active till
+/// `CONTACT_TILL`, recovering to its end.
 @fuel(2 ** 40)
-pub const CROSS: Move = cross_move()
-
-fn cross_move() -> Move {
-    var m = in_place(cross().clip(HERO.rig, fps: 60.0, fist: 2.0))
-    let end = m.clip.length()
-    m.marks = Vec::new()
-    m.marks.push(Mark { kind: WINDUP, from: 0.0, till: CONTACT })
-    m.marks.push(Mark { kind: ACTIVE, from: CONTACT, till: CONTACT_TILL })
-    m.marks.push(Mark { kind: RECOVER, from: CONTACT_TILL, till: end })
-    m.marks.push(Mark { kind: CANCEL, from: end - 0.15, till: end })
-    m
-}
+pub const CROSS: Move = cross_at(
+    Beats {
+        windup: CONTACT,
+        active: CONTACT_TILL - CONTACT,
+        recovery: cross().length() - CONTACT_TILL,
+    },
+)
 
 /// The solved cross holds its spec: every check, as `wrela solve --spec` reports them.
 @test

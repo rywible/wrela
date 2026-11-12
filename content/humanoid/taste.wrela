@@ -1,7 +1,9 @@
 // The lab's fighter's taste (`engine::written::Taste`): his habits, true of every move he makes,
 // as a player's are true of every piece. How his body follows his hips is his, not a move's:
-// the cross and the lead hook (solved.wrela, hook.wrela) are written with it, and solved with
-// it against both their specs at once (spec.wrela).
+// the cross and the lead hook (solved.wrela, hook.wrela) are written with it. It's the hook's own
+// chain, which the hook held every check with; the cross was solved again with it (`wrela tool
+// moves -- --solve build/sheets cross-solved`). A solve of the taste and both strikes at once
+// (21 numbers) was tried and stopped: its first step took 14 minutes.
 
 use engine::written::{Chain, Taste}
 

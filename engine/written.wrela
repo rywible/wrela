@@ -39,8 +39,8 @@ use timing::RATE
 const DEG: f32 = 0.017453292
 
 /// The most steps a read over a stretch of a move takes (`Written::thrown_from`,
-/// `Written::halfway`): a second's worth, more than any throw.
-pub const MOST_STEPS: u32 = 60
+/// `Written::halfway`): a second's worth at `RATE`, more than any throw.
+pub const MOST_STEPS: u32 = u32(RATE)
 
 /// How many steps of 1 / `RATE` s a read over `span` s takes (`round` added before it's a whole
 /// number): one at least, `MOST_STEPS` at most. A solve may try a span below nothing (a throw
@@ -240,27 +240,33 @@ impl<const N: u32> Written<N> {
         curled_hands(c, rig, fist)
     }
 
-    /// The move with its keys at the fight's beats: what's before its own contact (`contact`, s
-    /// from its start, when its strike lands) squeezed or stretched over the windup, its contact
-    /// on the frame the rules hit, what's within the active frames after it at its own pace, and
-    /// the rest over the recovery, less the latest part's lag, so the move ends with the rules'.
-    /// The taste's lags are the fighter's, and stay as they are.
+    /// The move with its keys at the fight's beats, its striking fist on its contact on the
+    /// frame the rules hit. The fist plays the keys a wrist's lag after the hips do (`Chain`), so
+    /// it reaches the key it lands on (the last before its contact, `contact` s into the move as
+    /// written) a lag after that key: the key goes to the windup less the lag, and what's before
+    /// it is squeezed or stretched over that. What's within the active frames after it plays at
+    /// its own pace, and the rest goes over the recovery, less the latest part's lag, so the move
+    /// ends with the rules'. The taste's lags are the fighter's, and stay as they are. A windup
+    /// shorter than the wrist's lag puts the key at the move's start, and the fist lands the
+    /// lag after it: late by what the windup's short of the lag.
     pub fn at_beats(self, contact: f32, beats: Beats) -> Written<N> {
         var most = 0.0
         for l in self.lag() {
             most = max(most, l)
         }
+        let lag = self.taste.chain.wrist
+        // The key the fist lands on, as written and as played.
+        let key = contact - lag
+        let key_at = max(beats.windup - lag, 0.0)
         let last = self.keys[N - 1].at
-        let held = contact + beats.active
-        let rest = max(beats.recovery - most, 1.0e-3)
+        let held = key + beats.active
+        let rest = max(beats.recovery - most + lag, 1.0e-3)
         var out = self
         for i in 0..N {
             let t = self.keys[i].at
-            out.keys[i].at = if t <= contact {
-                t * beats.windup / max(contact, 1.0e-4)
-            } else if t <= held { beats.windup + (t - contact) } else {
-                beats.windup + beats.active + (t - held) * rest / max(last - held, 1.0e-4)
-            }
+            out.keys[i].at = if t <= key { t * key_at / max(key, 1.0e-4) } else if t <= held {
+                key_at + (t - key)
+            } else { key_at + beats.active + (t - held) * rest / max(last - held, 1.0e-4) }
         }
         out
     }

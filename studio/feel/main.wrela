@@ -44,6 +44,7 @@ use combat::sim::{
 use mmo::bodies
 use mmo::bodies::{Bodies, Body, Shown, drawn_at, place_of, shown}
 use humanoid::body::HERO
+use humanoid::solved
 
 pub const USAGE: Text = "usage: wrela tool feel -- [<out-dir>]"
 
@@ -384,7 +385,7 @@ fn still() -> Seen {
 /// A strike drawn as the rules time it, from a body that stood a second: the frame (from when the
 /// rules began it) of its first drawing that moved `moved` from where it'd stand, and of the
 /// drawing whose fist was nearest where the move puts it on its contact.
-fn drawn_strike(boss: bool, m: u32, moved: f32) -> (u32, u32) {
+fn drawn_strike(boss: bool, m: u32, moved: f32) -> (u32, u32, f32) {
     var b = Body::new(still(), boss: boss)
     let mask = Bodies::new().mask()
     var frame: u32 = 1
@@ -393,10 +394,12 @@ fn drawn_strike(boss: bool, m: u32, moved: f32) -> (u32, u32) {
         frame += 1
     }
     var idle = b
-    // The move's own fist on its contact, as the rules time it.
-    let act = if boss { bodies::BOSS_STRIKES + m } else { m }
+    // Where the written strike puts its fist on its contact, as written (not the played move's
+    // own pose on the hit frame, which is wherever the fist is then): every strike the game plays
+    // is the solved cross (mmo/game's `bodies`).
     let hit = if boss { ATTACKS[m].windup + 1 } else { MOVES[m].windup }
-    let target = fist_of(bodies::ACTS[act].pose(f32(hit) / f32(HZ)))
+    let target = solved::cross().end(HERO.rig, solved::CONTACT)
+    var on_hit = 0.0
     var first: u32 = 0
     var nearest: u32 = 0
     var best = 1.0e9
@@ -411,12 +414,15 @@ fn drawn_strike(boss: bool, m: u32, moved: f32) -> (u32, u32) {
             first = k
         }
         let d = length(fist_of(s.pose) - target)
+        if k == hit {
+            on_hit = d
+        }
         if d < best - 1.0e-5 {
             best = d
             nearest = k
         }
     }
-    (first, nearest)
+    (first, nearest, on_hit)
 }
 
 fn warnings() -> String {
@@ -424,7 +430,7 @@ fn warnings() -> String {
         "## Warning before the idol's hits\n\nFrames from the first drawing in which the idol has moved toward its hit to the frame the rules hit (target at least 14).\n\n| Attack | Tell | Warning |\n|---|---|---|\n",
     )
     for i in 0..ATTACKS.len() {
-        let (first, _) = drawn_strike(boss: true, m: i, moved: TELL_MOVED)
+        let (first, _, _) = drawn_strike(boss: true, m: i, moved: TELL_MOVED)
         // (Its rules meet the party a step after its windup ends.)
         let hit = ATTACKS[i].windup + 1
         t.push_str(f"| {ATTACKS[i].name} | {ATTACKS[i].windup} | {hit - first} |\n".as_str())
@@ -434,18 +440,20 @@ fn warnings() -> String {
 
 fn contacts() -> String {
     var t = String::from(
-        "## Hit to drawn contact\n\nFrames from the rules' hit to the drawing whose fist is nearest where the move puts it on its contact (target 0; negative: drawn before the hit). The fight draws a strike on twos, a drawing every 5 frames.\n\n| Strike | Rules hit (frame) | Drawn contact (frame) | Off by |\n|---|---|---|---|\n",
+        "## Hit to drawn contact\n\nFrames from the rules' hit to the drawing whose fist is nearest where the written cross puts it on its contact, and how far it is from there on the hit frame (target 0; negative: drawn before the hit). The fight draws a strike on twos, a drawing every 5 frames.\n\n| Strike | Rules hit (frame) | Drawn contact (frame) | Off by | Fist from its contact on the hit frame (cm) |\n|---|---|---|---|---|\n",
     )
     for i in 0..MOVES.len() {
-        let (_, near) = drawn_strike(boss: false, m: i, moved: MOVED)
+        let (_, near, off) = drawn_strike(boss: false, m: i, moved: MOVED)
         let hit = MOVES[i].windup
-        t.push_str(f"| Move {i} | {hit} | {near} | {i32(near) - i32(hit)} |\n".as_str())
+        t.push_str(
+            f"| Move {i} | {hit} | {near} | {i32(near) - i32(hit)} | {off * 100.0:.1} |\n".as_str(),
+        )
     }
     for i in 0..ATTACKS.len() {
-        let (_, near) = drawn_strike(boss: true, m: i, moved: MOVED)
+        let (_, near, off) = drawn_strike(boss: true, m: i, moved: MOVED)
         let hit = ATTACKS[i].windup + 1
         t.push_str(
-            f"| The idol's {ATTACKS[i].name} | {hit} | {near} | {i32(near) - i32(hit)} |\n".as_str(),
+            f"| The idol's {ATTACKS[i].name} | {hit} | {near} | {i32(near) - i32(hit)} | {off * 100.0:.1} |\n".as_str(),
         )
     }
     t
@@ -623,11 +631,13 @@ fn a_press_shows_on_the_next_drawing() {
 @test
 fn strikes_land_when_the_rules_hit_and_the_idol_warns() {
     for i in 0..MOVES.len() {
-        let (_, near) = drawn_strike(boss: false, m: i, moved: MOVED)
+        let (_, near, off) = drawn_strike(boss: false, m: i, moved: MOVED)
+        assert(off < 0.02, "on the hit frame the fist is on its contact")
         assert(near == MOVES[i].windup, "a player's strike lands as the rules hit")
     }
     for i in 0..ATTACKS.len() {
-        let (first, near) = drawn_strike(boss: true, m: i, moved: TELL_MOVED)
+        let (first, near, off) = drawn_strike(boss: true, m: i, moved: TELL_MOVED)
+        assert(off < 0.02, "the idol's fist is on its contact on the hit frame")
         assert(near == ATTACKS[i].windup + 1, "the idol's strike lands as the rules hit")
         assert(ATTACKS[i].windup + 1 - first >= 14, "it warns for at least 14 frames")
     }
