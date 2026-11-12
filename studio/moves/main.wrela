@@ -49,7 +49,7 @@ use std::tool::args
 use std::tool::files
 use std::tool::files::rooted
 
-pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --sheet <out-dir> [strike ...] | --solve <out-dir> <strike> | --drawn [strike ...] | --differ <strike> <strike>"
+pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --sheet <out-dir> [strike ...] | --solve <out-dir> <strike> | --read <out-dir> <strike> | --drawn [strike ...] | --differ <strike> <strike>"
 
 /// A move: its name on the command line, its file in content/moves and its constant there, the
 /// clip it's fitted to (a looped one as a cycle, a one-off as a shot), and what the file says it
@@ -449,14 +449,18 @@ pub fn tool() -> u32 {
         print(drawn::differ(rig, both[0].clone(), both[1].clone(), names.as_str()).as_str())
         return 0
     }
-    if wanted.len() >= 1 && wanted[0].as_str() == "--solve" {
+    let solving = wanted.len() >= 1 && wanted[0].as_str() == "--solve"
+    if solving || (wanted.len() >= 1 && wanted[0].as_str() == "--read") {
         if wanted.len() != 3 {
             print(USAGE)
             return 2
         }
         for s in author::SOLVED {
             if s.name == wanted[2].as_str() {
-                return match author::solve(s, wanted[1].as_str()) {
+                let done = if solving { author::solve(s, wanted[1].as_str()) } else {
+                    author::read(s, wanted[1].as_str())
+                }
+                return match done {
                     Ok(code) => code,
                     Err(e) => {
                         print(f"moves: {e.message()}")
