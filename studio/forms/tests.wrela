@@ -113,13 +113,19 @@ fn hakuros_written_trunk_and_head_are_his_body_fitted() {
     )
     let t = trunk.miss.spread
     assert(t.rms < 1.8 && t.most < 4.0 && t.worst < 13.0, f"his trunk misses by {t.rms} mm rms")
-    // His head is under his mask and his hair: within 3 mm rms.
+    // His head is under his mask and his hair: within 3 mm rms. His neck, within 2.
     let head = hakuro_head()
     assert(
         apart(head.form, hakuro::head_form::HEAD) < 0.000011,
         "content/hakuro/head_form.wrela is stale",
     )
     assert(head.miss.spread.rms < 3.0, f"his head misses by {head.miss.spread.rms} mm rms")
+    let neck = main::hakuro_neck()
+    assert(
+        apart(neck.form, hakuro::neck_form::NECK) < 0.000011,
+        "content/hakuro/neck_form.wrela is stale",
+    )
+    assert(neck.miss.spread.rms < 2.0, f"his neck misses by {neck.miss.spread.rms} mm rms")
 }
 
 @test

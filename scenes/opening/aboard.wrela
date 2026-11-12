@@ -9,13 +9,14 @@
 // as fine as his fields, however coarse his mesh. He's lit as the skiff is (`paint::lit_solid`,
 // its sea bounce and its rim), shadowed by the rig and the clouds.
 
-use hakuro::arms::{Drape, drape_room, draped, follow_legs, hand, jacket, sampled_body}
+use hakuro::arms::{Drape, drape_room, draped, follow_legs, hand, jacket}
 use hakuro::hakuro::{
-    ARM_CHARTS, Cloth, FINGER_JOINTS, SHADED_DETAIL, arm_charts, body_paint, chart_paint, coat,
-    head, hero, jacket_paint,
+    CHARTS, COVERED, Charted, Cloth, FINGER_JOINTS, WIDE_CHARTS, body_paint, chart_cut, chart_paint,
+    charted_as, charted_at_rest, charted_now, charts, coat, head, hero, jacket_paint, sampled_now,
+    shaded, shaded_wide, wide_charts,
 }
 use engine::chart
-use engine::chart::{Grids, Limb, Radial}
+use engine::chart::{Grids, Limb, Part, Radial}
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
 use engine::character::skin_matrix
 use engine::look::CreatureLook
@@ -34,7 +35,7 @@ use skiff::vessel_shadow
 use std::gpu::{
     ClipPosition, DepthTexture, Flat, FragCoord, GpuBuffer, Rgba16Float, Rgba8, Sampler, Targets3,
     Texture, Texture3d, VertexIndex, begin_pass3, begin_pass3_with_depth, buffer, depth_texture,
-    Cull, GlobalId, Slots, discard, dispatch, draw, texture, write,
+    Cull, GlobalId, RenderPass, Slots, discard, dispatch, draw, texture, write,
 }
 use std::math::PI
 
@@ -59,12 +60,13 @@ pub struct Aboard {
     body: Mesh,
     head: Mesh,
     coat: Mesh,
-    // (His sampled meshes: his body, his jacket and his hands.)
-    sampled: [Mesh; 4],
-    // (His arms, and the wrap and the gauntlet over them, as his pose has them this drawing:
-    // drawn along their charts, `hakuro::arm_charts`, on the grids charted forms are drawn on.)
-    arms: [Limb<16, 13>; ARM_CHARTS],
+    // (His sampled meshes: his jacket and his hands.)
+    sampled: [Mesh; 3],
+    // (His charted parts as his pose has them this drawing, `hakuro::Charted`; the grids
+    // charted forms are drawn on; and where his jacket is on its chart.)
+    charted: Charted,
     grids: Grids,
+    cover: GpuBuffer<u32>,
     palette: GpuBuffer<mat4>,
     // (The sky's light from his three fixed directions, once a frame: `hero_skies`.)
     skies: GpuBuffer<vec4>,
@@ -103,20 +105,15 @@ const FINER: u32 = 2
 
 /// Hakuro realized from his fields.
 pub fn aboard() -> Aboard {
-    let parts = arm_charts()
-    var arms = [parts[0].rest(); ARM_CHARTS]
-    for a in 0..ARM_CHARTS {
-        arms[a] = parts[a].rest()
-    }
     Aboard {
         body: realize_once(hero(), BODY),
         head: realize_once(head(), HEAD),
         coat: follow_legs(realize_once(coat(), COAT)),
-        // (His body, jacket and hands are sampled from the reference's own surface:
-        // `hakuro::arms`.)
-        sampled: [sampled_body(), jacket(), hand(0), hand(1)],
-        arms,
+        // (His jacket and hands are sampled from the reference's own surface: `hakuro::arms`.)
+        sampled: [jacket(), hand(0), hand(1)],
+        charted: charted_at_rest(),
         grids: chart::grids(),
+        cover: hakuro::jacket_cover::JACKET_COVER.upload(),
         palette: buffer(2 * MAX_BONES),
         skies: buffer(SKIES),
         lagged: [mat4(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0)); 64],
@@ -339,7 +336,10 @@ pub fn bones(s: Shot, give: vec3) -> [mat4; 64] {
     // shoulders further out on straighter arms, then eases back in. Drawn toward the boom
     // instead, it read as a lunge at it.)
     let trim = trimming(s.held)
-    let reach = length(HAND - UPPER) * 0.92 + 0.1 + 0.08 * clamp(s.gust - 1.0, -0.5, 1.0) + 0.08 * trim
+    let reach = length(HAND - UPPER) * 0.92 +
+        0.1 +
+        0.08 * clamp(s.gust - 1.0, -0.5, 1.0) +
+        0.08 * trim
     let back = vec3(neck_at.x - mid.x, 0.0, neck_at.z - mid.z)
     let back_dir = back / max(length(back), 1.0e-4)
     let lay = normalize(back_dir * 0.375 + normalize(mix(up, plumb, 0.7)) * 0.927)
@@ -365,7 +365,12 @@ pub fn bones(s: Shot, give: vec3) -> [mat4; 64] {
     let spine = normalize(neck_at - hips)
     // (The pelvis kept nearer upright than the chest: tipped as far, it swung the coat's tails
     // out behind him like a seat.)
-    let r_pelvis = aim(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), normalize(up * 3.0 + spine), facing)
+    let r_pelvis = aim(
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        normalize(up * 3.0 + spine),
+        facing,
+    )
     let r_chest = aim(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0), spine, facing)
     let r_spine1 = aim(
         vec3(0.0, 1.0, 0.0),
@@ -459,11 +464,12 @@ pub fn bones(s: Shot, give: vec3) -> [mat4; 64] {
         let sure = smoothstep(0.1, 0.3, length(across) / length(palm_raw))
         let palm_want = across / max(length(across), 1.0e-4)
         let palm_now = palm_at
-        let twist = sure * clamp(
-            atan2(dot(cross(palm_now, palm_want), fore_axis), dot(palm_now, palm_want)),
-            -1.7,
-            1.7,
-        )
+        let twist = sure *
+            clamp(
+                atan2(dot(cross(palm_now, palm_want), fore_axis), dot(palm_now, palm_want)),
+                -1.7,
+                1.7,
+            )
         let r_fore = about(fore_axis, twist * 0.5) * r_fold
         let r_hand = about(fore_axis, twist) * r_fold
         let i = u32(k)
@@ -481,7 +487,9 @@ pub fn bones(s: Shot, give: vec3) -> [mat4; 64] {
             var at = wrist + r_hand * (mirrored(FINGER_JOINTS[f * 4], side) - mirrored(HAND, side))
             for j in 0..3 {
                 let bend = if f == 4 { THUMB_GRIP[j] } else { GRIP[j] }
-                let axis = if f == 4 { mirrored_axis(THUMB_AXIS, side) } else { vec3(0.0, 0.0, 1.0) }
+                let axis = if f == 4 { mirrored_axis(THUMB_AXIS, side) } else {
+                    vec3(0.0, 0.0, 1.0)
+                }
                 r = r * about(axis, -bend * side)
                 let rest = mirrored(FINGER_JOINTS[f * 4 + j], side)
                 m[B_DIGITS + 2 * (f * 3 + j) + i] = placed(r, at, rest)
@@ -573,7 +581,14 @@ pub fn hero_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: S
 /// His coat's tails' vertex: as `hero_vertex`, hanging as the tails' cloth does this frame
 /// (`hakuro::arms::draped`).
 @vertex
-pub fn coat_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], grid: [vec4], facing: [vec4], shot: Shot) -> HeroVertex {
+pub fn coat_vertex(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    palette: [mat4],
+    grid: [vec4],
+    facing: [vec4],
+    shot: Shot,
+) -> HeroVertex {
     var h = hero_at(v, verts, palette, shot)
     h.world = draped(h.world, h.rest, mat3(h.tx, h.ty, h.tz), grid, facing, 0)
     h.clip = ClipPosition { position: clip_of(shot, h.world) }
@@ -643,7 +658,24 @@ pub fn hero_pixel<F: Parts<Cloth>>(
         hidden += max(step - e, 0.0) / step * (if i == 1 { 1.0 } else { 0.6 })
     }
     let ao = clamp(1.0 - hidden * 0.6, 0.0, 1.0)
-    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, skies, overhead(once), v.world, n, d, t, c, ao)
+    lit_hero(
+        s,
+        light,
+        clouds,
+        view,
+        aerial,
+        dome,
+        cloud,
+        smp,
+        skies,
+        overhead(once),
+        v.world,
+        n,
+        d,
+        t,
+        c,
+        ao,
+    )
 }
 
 /// What the scene is seen with, for a charted form (`engine::chart::vertex`): its own cast.
@@ -657,14 +689,16 @@ impl chart::Seen for Shot {
     }
 }
 
-/// His charted arms' pixel (`hakuro::arm_charts`): as `arm_pixel`, its normal read from the
-/// form at the pixel's own place (`chart::Vertex::normal_from`; `along`: its path's length) and
-/// its paint the part's.
+/// His charted parts' pixel (`hakuro::charts`, `hakuro::wide_charts`): as `arm_pixel`, its
+/// normal read from the form at the pixel's own place (`chart::Vertex::normal_from`; `along`:
+/// its path's length) and its paint the part's. Nothing where the part isn't (`cover`: his
+/// jacket's front and armholes) or is cut away.
 @fragment
 pub fn charted_pixel<const A: u32, const R: u32>(
     v: chart::Vertex,
     shade: Radial<A, R>,
     along: f32,
+    cover: [u32],
     shot: Shot,
     light: Light,
     clouds: Clouds,
@@ -679,6 +713,12 @@ pub fn charted_pixel<const A: u32, const R: u32>(
     part: u32,
     pixel: FragCoord,
 ) -> Targets3<vec4, vec4, vec4> {
+    if part == COVERED && chart::covered(cover, v.place.x, v.place.y) < 0.5 {
+        discard()
+    }
+    if chart_cut(part, v.rest) {
+        discard()
+    }
     let s = shot
     let t = length(v.world - s.eye)
     let behind = painted.load(u32(pixel.position.x) / FINER, u32(pixel.position.y) / FINER)
@@ -691,7 +731,24 @@ pub fn charted_pixel<const A: u32, const R: u32>(
         n = normalize(n - d * (dot(n, d) + 0.05))
     }
     let c = chart_paint(part, v.rest)
-    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, skies, overhead(once), v.world, n, d, t, c, 0.9)
+    lit_hero(
+        s,
+        light,
+        clouds,
+        view,
+        aerial,
+        dome,
+        cloud,
+        smp,
+        skies,
+        overhead(once),
+        v.world,
+        n,
+        d,
+        t,
+        c,
+        0.9,
+    )
 }
 
 /// His sampled meshes' pixel (his body, jacket and hands): as `hero_pixel`, but with no fields
@@ -726,7 +783,24 @@ pub fn arm_pixel(
     }
     // (1 for his jacket, whose paint carries on down over his trousers: `jacket_paint`.)
     let c = if jacket == 1 { jacket_paint(v.rest) } else { body_paint(v.rest) }
-    lit_hero(s, light, clouds, view, aerial, dome, cloud, smp, skies, overhead(once), v.world, n, d, t, c, 0.9)
+    lit_hero(
+        s,
+        light,
+        clouds,
+        view,
+        aerial,
+        dome,
+        cloud,
+        smp,
+        skies,
+        overhead(once),
+        v.world,
+        n,
+        d,
+        t,
+        c,
+        0.9,
+    )
 }
 
 /// His light, illustrated: the world's own sky and sun, but the sky's light taken from fixed
@@ -867,11 +941,23 @@ fn lit_hero(
         // A narrow band with a hard edge, as an illustrator lays it: his blacks stay deep inside.
         let edge = 1.0 - max(dot(n, -d), 0.0)
         let band = clamp((edge - mix(0.62, 0.78, HERO_POP)) / mix(0.08, 0.05, HERO_POP), 0.0, 1.0)
-        let sky = storm_sky(view, light, normalize(vec3(0.0, 0.6, 0.0) + n), dome, smp, disc: false).rgb
+        let sky = storm_sky(
+            view,
+            light,
+            normalize(vec3(0.0, 0.6, 0.0) + n),
+            dome,
+            smp,
+            disc: false,
+        ).rgb
         // (Not on his bare skin: its muscles turn from the eye inside his outline, and the band
         // drew their contours in squiggles there.)
         let cloth = if c.albedo.r > 0.3 && c.metal < 0.5 { 0.0 } else { 1.0 }
-        col += sky * mix(vec3(1.0), vec3(0.85, 0.95, 1.2), HERO_POP) * band * (0.45 + 0.35 * max(n.y, 0.0)) * mix(0.45, 1.8, HERO_POP) * cloth
+        col += sky *
+            mix(vec3(1.0), vec3(0.85, 0.95, 1.2), HERO_POP) *
+            band *
+            (0.45 + 0.35 * max(n.y, 0.0)) *
+            mix(0.45, 1.8, HERO_POP) *
+            cloth
         // His gold's trim kept bright under the storm.
         col += c.albedo * c.metal * 0.05
     }
@@ -940,8 +1026,12 @@ pub fn laid(
             if here.y != 0.0 {
                 // (Three finer samples out, eight ways: a line about a pixel and a half wide.)
                 for j in 0..8 {
-                    let ox = if j == 0 || j == 4 || j == 5 { 3 } else if j == 1 || j == 6 || j == 7 { -3 } else { 0 }
-                    let oy = if j == 2 || j == 4 || j == 6 { 3 } else if j == 3 || j == 5 || j == 7 { -3 } else { 0 }
+                    let ox = if j == 0 || j == 4 || j == 5 { 3 } else if j == 1 ||
+                        j == 6 ||
+                        j == 7 { -3 } else { 0 }
+                    let oy = if j == 2 || j == 4 || j == 6 { 3 } else if j == 3 ||
+                        j == 5 ||
+                        j == 7 { -3 } else { 0 }
                     let o = marks.load(u32(max(sx + ox, 0)), u32(max(sy + oy, 0)))
                     if o.y == 0.0 || o.x - here.x > 0.03 {
                         ink += 1.0
@@ -961,6 +1051,61 @@ pub fn laid(
     }
 }
 
+/// Charted part `index` (`part`; at rest, `rest`) drawn as his pose has it (`form`; its pixels'
+/// normals read from `shade`), on the grid its size on screen calls for (`grids`), where it's
+/// nearer than what `marks` holds.
+fn chart_drawn<P: RenderPass, const A: u32, const R: u32, const S: u32>(
+    p: P,
+    grids: Grids,
+    cover: GpuBuffer<u32>,
+    skies: GpuBuffer<vec4>,
+    part: Part<A, R>,
+    rest: Limb<A, R>,
+    form: Limb<A, R>,
+    shade: Radial<A, S>,
+    index: u32,
+    shot: Shot,
+    hv: Heavens,
+    once: GpuBuffer<vec4>,
+    marks: Texture<Rgba16Float>,
+    height: u32,
+) {
+    let level = form.level(shot.eye, f32(height * FINER), 1.0 / shot.focal)
+    let span = chart::level_span(level)
+    draw(
+        p,
+        chart::vertex.bind(
+            rest: rest,
+            form: form,
+            band: part.band,
+            under: part.sunk,
+            level: level,
+            seen: shot,
+        ),
+        charted_pixel.bind(
+            shade: shade,
+            along: form.path.length(),
+            cover: cover.items(),
+            shot: shot,
+            light: hv.light,
+            clouds: hv.clouds,
+            view: hv.tables.view,
+            aerial: hv.tables.aerial,
+            dome: hv.sky.dome,
+            cloud: hv.sky.shadow,
+            smp: hv.linear,
+            skies: skies.items(),
+            once: once.items(),
+            painted: marks,
+            part: index,
+        ),
+        indices: grids.indices,
+        first_index: span.x,
+        index_count: span.y,
+        cull: Cull::Front,
+    )
+}
+
 impl Aboard {
     /// His ride, stepped by `dt` (s) of the drawing's time: the hull's lurches (its acceleration
     /// in the world, felt in its own frame, as he stands on it) press his hips the other way on
@@ -970,14 +1115,18 @@ impl Aboard {
         // (Started afresh after a jump: the time run back or skipped on, or the hull put down
         // somewhere else, as the live page does restoring a saved spot. Felt as a lurch, that
         // threw his hips to their limits for a second.)
-        if dt < 0.0 || dt > 0.25 || (self.rode >= 2 && length(s.boat - self.last_boat) > 15.0 * max(dt, 1.0 / 60.0)) {
+        if dt < 0.0 ||
+            dt > 0.25 ||
+            (self.rode >= 2 && length(s.boat - self.last_boat) > 15.0 * max(dt, 1.0 / 60.0)) {
             self.rode = 0
             self.give = vec3(0.0)
             self.give_v = vec3(0.0)
         }
         if self.rode < 2 || dt <= 0.0 {
             // (A start, or a held drawing: nothing felt yet.)
-            let v = if self.rode == 0 || dt <= 0.0 { vec3(0.0) } else { (s.boat - self.last_boat) / dt }
+            let v = if self.rode == 0 || dt <= 0.0 { vec3(0.0) } else {
+                (s.boat - self.last_boat) / dt
+            }
             if dt > 0.0 || self.rode == 0 {
                 self.last_v = v
                 self.last_boat = s.boat
@@ -999,7 +1148,8 @@ impl Aboard {
         let tip = vec2(s.boat_z.y, s.boat_x.y)
         let tipping = (tip - self.last_tip) / dt
         self.last_tip = tip
-        let push = -felt * vec3(0.014, 0.035, 0.012) + vec3(-tipping.y * 0.7, -abs(tipping.x) * 0.8 - tipping.x * 0.5, 0.0)
+        let push = -felt * vec3(0.014, 0.035, 0.012) +
+            vec3(-tipping.y * 0.7, -abs(tipping.x) * 0.8 - tipping.x * 0.5, 0.0)
         self.give_v = self.give_v + (push * k - self.give * k - self.give_v * c) * dt
         self.give = self.give + self.give_v * dt
         self.give = clamp(self.give, vec3(-0.09, -0.12, -0.08), vec3(0.09, 0.04, 0.08))
@@ -1039,22 +1189,29 @@ impl Aboard {
             self.ride(shot, moved)
             let now = bones(shot, self.give)
             write(mut self.palette, 0, now)
-            let parts = arm_charts()
-            for a in 0..ARM_CHARTS {
-                self.arms[a] = parts[a].posed(now)
-            }
+            self.charted = charted_as(now)
             // (About a tenth of a second behind: 0.16 of the way each 60th of a second.)
             let ease = 1.0 - pow(0.84, clamp(moved, 0.0, 0.1) * 60.0)
             for k in 0..64 {
-                self.lagged[k] = if self.fresh { now[k] } else { self.lagged[k] + (now[k] - self.lagged[k]) * ease }
+                self.lagged[k] = if self.fresh { now[k] } else {
+                    self.lagged[k] + (now[k] - self.lagged[k]) * ease
+                }
             }
             write(mut self.palette, MAX_BONES, self.lagged)
-            self.drape.work(self.palette, 1, MAX_BONES, MAX_BONES, if self.fresh { 1.0 / 60.0 } else { moved })
+            self.drape.work(self.palette, 1, MAX_BONES, MAX_BONES, if self.fresh {
+                1.0 / 60.0
+            } else { moved })
             self.fresh = false
             self.held = shot.held
         }
         dispatch(
-            hero_skies.bind(light: hv.light, view: hv.tables.view, dome: hv.sky.dome, smp: hv.linear, out: mut self.skies),
+            hero_skies.bind(
+                light: hv.light,
+                view: hv.tables.view,
+                dome: hv.sky.dome,
+                smp: hv.linear,
+                out: mut self.skies,
+            ),
             groups: 1,
         )
         let p = begin_pass3_with_depth(
@@ -1146,7 +1303,10 @@ impl Aboard {
             indirect: self.coat.draw.items(),
             cull: Cull::Front,
         )
-        for a in 0..4 {
+        for a in 0..3 {
+            if !sampled_now(a) {
+                continue
+            }
             draw(
                 p,
                 hero_vertex.bind(
@@ -1166,51 +1326,57 @@ impl Aboard {
                     skies: self.skies.items(),
                     once: once.items(),
                     painted: marks,
-                    jacket: if a == 1 { 1 } else { 0 },
+                    jacket: if a == 0 { 1 } else { 0 },
                 ),
                 indices: self.sampled[a].quads.items(),
                 indirect: self.sampled[a].draw.items(),
                 cull: Cull::Front,
             )
         }
-        // His arms, and the wrap and the gauntlet over them, along their charts: no mesh, each
-        // form made again where his bones are.
-        let parts = arm_charts()
-        for a in 0..ARM_CHARTS {
-            let form = self.arms[a]
-            let level = form.level(shot.eye, f32(height * FINER), 1.0 / shot.focal)
-            let span = chart::level_span(level)
-            draw(
-                p,
-                chart::vertex.bind(
-                    rest: parts[a].rest(),
-                    form: form,
-                    band: parts[a].band,
-                    under: parts[a].sunk,
-                    level: level,
-                    seen: shot,
-                ),
-                charted_pixel.bind(
-                    shade: form.form.softened(SHADED_DETAIL),
-                    along: form.path.length(),
-                    shot: shot,
-                    light: hv.light,
-                    clouds: hv.clouds,
-                    view: hv.tables.view,
-                    aerial: hv.tables.aerial,
-                    dome: hv.sky.dome,
-                    cloud: hv.sky.shadow,
-                    smp: hv.linear,
-                    skies: self.skies.items(),
-                    once: once.items(),
-                    painted: marks,
-                    part: a,
-                ),
-                indices: self.grids.indices,
-                first_index: span.x,
-                index_count: span.y,
-                cull: Cull::Front,
-            )
+        // What of him is drawn along its chart (`hakuro::charted_now`): no mesh, each form made
+        // again where his bones are.
+        let limbs = charts()
+        let wide = wide_charts()
+        let rest = charted_at_rest()
+        for a in 0..CHARTS {
+            if charted_now(a) {
+                chart_drawn(
+                    p,
+                    self.grids,
+                    self.cover,
+                    self.skies,
+                    limbs[a],
+                    rest.limbs[a],
+                    self.charted.limbs[a],
+                    shaded(self.charted.limbs[a].form),
+                    a,
+                    shot,
+                    hv,
+                    once,
+                    marks,
+                    height,
+                )
+            }
+        }
+        for a in 0..WIDE_CHARTS {
+            if charted_now(CHARTS + a) {
+                chart_drawn(
+                    p,
+                    self.grids,
+                    self.cover,
+                    self.skies,
+                    wide[a],
+                    rest.wide[a],
+                    self.charted.wide[a],
+                    shaded_wide(self.charted.wide[a].form),
+                    CHARTS + a,
+                    shot,
+                    hv,
+                    once,
+                    marks,
+                    height,
+                )
+            }
         }
         p.end()
         let c = begin_pass3(

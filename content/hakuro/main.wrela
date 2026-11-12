@@ -2,13 +2,14 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use arms::{Drape, drape_room, draped, follow_legs, hand, jacket, sampled_body}
+use arms::{Drape, drape_room, draped, follow_legs, hand, jacket}
 use hakuro::{
-    ARM_CHARTS, Cloth, SHADED_DETAIL, arm_charts, body_paint, chart_paint, coat, hands, head, hero,
-    jacket_paint, skeleton,
+    CHARTS, COVERED, Charted, Cloth, WIDE_CHARTS, body_paint, chart_cut, chart_paint, charted_as,
+    charted_at_rest, charted_now, charts, coat, hands, head, hero, jacket_paint, sampled_now,
+    shaded, shaded_wide, skeleton, wide_charts,
 }
 use engine::chart
-use engine::chart::{Grids, Limb, Radial}
+use engine::chart::{Grids, Limb, Part, Radial}
 use engine::character::{ByChannels, colours}
 use engine::character::skin_matrix
 use engine::creature::{Bone, Creature, MAX_BONES, PartMask, Parts, Skeleton}
@@ -17,8 +18,9 @@ use engine::look::Mesh as Tolerance
 use engine::plain::{LIGHTS, Lights, View, unlit_shadow, view}
 use engine::realize::{Mesh, SkinVertex, Tally, realize_once}
 use std::gpu::{
-    ClipPosition, ComparisonSampler, Cull, DepthTexture, Flat, GpuBuffer, Unorm8x4, VertexIndex,
-    begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, draw, read, write,
+    ClipPosition, ComparisonSampler, Cull, DepthTexture, Flat, GpuBuffer, RenderPass, Unorm8x4,
+    VertexIndex, begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, discard,
+    draw, read, write,
 }
 use std::io::{Pending, print}
 use std::transform::{rotate_y, translate}
@@ -198,22 +200,13 @@ const HIP_CURL = [
 /// The sheet's five views: front, three-quarter, side, back, the other side.
 const TURNS = [0.0, -0.7853982, -1.5707963, 3.1415927, 1.5707963]
 
-/// His arms' charted parts as `m` poses them.
-fn arms_as(m: [mat4; 64]) -> [Limb<16, 13>; ARM_CHARTS] {
-    let parts = arm_charts()
-    var out = [parts[0].rest(); ARM_CHARTS]
-    for a in 0..ARM_CHARTS {
-        out[a] = parts[a].posed(m)
-    }
-    out
-}
-
 pub struct State {
-    meshes: [Mesh; 8],
-    /// Each view's arms as its pose has them, drawn along their charts, and the grids charted
-    /// forms are drawn on.
-    arms: [[Limb<16, 13>; ARM_CHARTS]; 5],
+    meshes: [Mesh; 7],
+    /// Each view's charted parts as its pose has them (`hakuro::Charted`), the grids charted
+    /// forms are drawn on, and where his jacket is on its chart.
+    charted: [Charted; 5],
     grids: Grids,
+    cover: GpuBuffer<u32>,
     colours: [GpuBuffer<Unorm8x4>; 4],
     palettes: GpuBuffer<mat4>,
     drape: Drape,
@@ -239,14 +232,14 @@ pub fn init() -> State {
     let pose = posed()
     // (Each view's palette, then each one's a moment ago: `LAGGED`.)
     var palettes: GpuBuffer<mat4> = buffer(10 * MAX_BONES)
-    var arms = [arms_as(pose); 5]
+    var charted = [charted_at_rest(); 5]
     for v in 0..5 {
         let place = translate(vec3(f32(v) * 1.15 - 2.3, 0.0, 0.0)) * rotate_y(TURNS[v])
         var m = pose
         for k in 0..64 {
             m[k] = place * pose[k]
         }
-        arms[v] = arms_as(m)
+        charted[v] = charted_as(m)
         write(mut palettes, v * MAX_BONES, m)
         write(mut palettes, v * MAX_BONES + LAGGED, m)
     }
@@ -255,12 +248,11 @@ pub fn init() -> State {
     tallies.push(read(head_mesh.tally.items()))
     tallies.push(read(coat_mesh.tally.items()))
     tallies.push(read(hands_mesh.tally.items()))
-    let skin = sampled_body()
-    tallies.push(read(skin.tally.items()))
     State {
-        meshes: [body, head_mesh, coat_mesh, hands_mesh, skin, jacket(), hand(0), hand(1)],
-        arms,
+        meshes: [body, head_mesh, coat_mesh, hands_mesh, jacket(), hand(0), hand(1)],
+        charted,
         grids: chart::grids(),
+        cover: jacket_cover::JACKET_COVER.upload(),
         colours: [c0, c1, c2, c3],
         palettes,
         drape: drape_room(5),
@@ -283,7 +275,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                 m[k] = place * pose[k]
                 b[k] = place * before[k]
             }
-            s.arms[v] = arms_as(m)
+            s.charted[v] = charted_as(m)
             write(mut s.palettes, v * MAX_BONES, m)
             write(mut s.palettes, v * MAX_BONES + LAGGED, b)
         }
@@ -376,9 +368,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         )
     }
     // (His hands, the old fitted ones (`meshes[3]`), are no longer drawn: `hand` samples them.)
-    // (His body, jacket and hands, sampled from the reference: no fields to read, so their own
+    // (His jacket and hands, sampled from the reference: no fields to read, so their own
     // normals and his body's paint at their place at rest.)
-    for m in 4..8 {
+    for m in 4..7 {
+        if !sampled_now(m - 4) {
+            continue
+        }
         for k in 0..5 {
             draw(
                 pass,
@@ -393,7 +388,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                     lights: LIGHTS,
                     shadow: s.shadow,
                     shadow_sampler: s.smp,
-                    jacket: if m == 5 { 1 } else { 0 },
+                    jacket: if m == 4 { 1 } else { 0 },
                 ),
                 indices: s.meshes[m].quads.items(),
                 indirect: s.meshes[m].draw.items(),
@@ -401,41 +396,78 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             )
         }
     }
-    // His arms, and the wrap and the gauntlet over them, along their charts: no mesh, each form
-    // made again where his bones are.
-    let parts = arm_charts()
+    // What of him is drawn along its chart (`hakuro::charted_now`): no mesh, each form made again
+    // where his bones are.
+    let limbs = charts()
+    let wide = wide_charts()
+    let rest = charted_at_rest()
     for k in 0..5 {
-        for a in 0..ARM_CHARTS {
-            let form = s.arms[k][a]
-            let level = form.level(v.eye, f32(height), tan(0.5 * FOV))
-            let span = chart::level_span(level)
-            draw(
-                pass,
-                chart::vertex.bind(
-                    rest: parts[a].rest(),
-                    form: form,
-                    band: parts[a].band,
-                    under: parts[a].sunk,
-                    level: level,
-                    seen: v,
-                ),
-                charted_pixel.bind(
-                    shade: form.form.softened(SHADED_DETAIL),
-                    length: form.path.length(),
-                    view: v,
-                    lights: LIGHTS,
-                    shadow: s.shadow,
-                    shadow_sampler: s.smp,
-                    part: a,
-                ),
-                indices: s.grids.indices,
-                first_index: span.x,
-                index_count: span.y,
-                cull: Cull::Back,
-            )
+        for a in 0..CHARTS {
+            if charted_now(a) {
+                let c = s.charted[k].limbs[a]
+                chart_drawn(pass, s, limbs[a], rest.limbs[a], c, shaded(c.form), v, height, a)
+            }
+        }
+        for a in 0..WIDE_CHARTS {
+            if charted_now(CHARTS + a) {
+                let c = s.charted[k].wide[a]
+                chart_drawn(
+                    pass,
+                    s,
+                    wide[a],
+                    rest.wide[a],
+                    c,
+                    shaded_wide(c.form),
+                    v,
+                    height,
+                    CHARTS + a,
+                )
+            }
         }
     }
     pass.present()
+}
+
+/// Charted part `index` (`part`; at rest, `rest`) drawn as a pose has it (`form`; its pixels'
+/// normals read from `shade`), on the grid its size on screen calls for.
+fn chart_drawn<P: RenderPass, const A: u32, const R: u32, const S: u32>(
+    pass: P,
+    s: State,
+    part: Part<A, R>,
+    rest: Limb<A, R>,
+    form: Limb<A, R>,
+    shade: Radial<A, S>,
+    v: View,
+    height: u32,
+    index: u32,
+) {
+    let level = form.level(v.eye, f32(height), tan(0.5 * FOV))
+    let span = chart::level_span(level)
+    draw(
+        pass,
+        chart::vertex.bind(
+            rest: rest,
+            form: form,
+            band: part.band,
+            under: part.sunk,
+            level: level,
+            seen: v,
+        ),
+        charted_pixel.bind(
+            shade: shade,
+            length: form.path.length(),
+            cover: s.cover.items(),
+            view: v,
+            lights: LIGHTS,
+            shadow: s.shadow,
+            shadow_sampler: s.smp,
+            part: index,
+        ),
+        indices: s.grids.indices,
+        first_index: span.x,
+        index_count: span.y,
+        cull: Cull::Back,
+    )
 }
 
 /// The camera's field of view, top to bottom (radians).
@@ -556,20 +588,28 @@ pub fn painted_pixel(
     vec4(lights.light(c.albedo, c.rough, n, v.world, view, lit), 1.0)
 }
 
-/// A pixel of a part drawn along its chart (his arms: `hakuro::arm_charts`), in plain light: its
-/// normal read from the form at the pixel's own place (`chart::Vertex::normal_from`), and the
-/// part's paint.
+/// A pixel of a part drawn along its chart (`hakuro::charts`, `hakuro::wide_charts`), in plain
+/// light: its normal read from the form at the pixel's own place
+/// (`chart::Vertex::normal_from`), and the part's paint. Nothing where the part isn't (`cover`:
+/// his jacket's front and armholes) or is cut away.
 @fragment
 pub fn charted_pixel<const A: u32, const R: u32>(
     v: chart::Vertex,
     shade: Radial<A, R>,
     length: f32,
+    cover: [u32],
     view: View,
     lights: Lights,
     shadow: DepthTexture,
     shadow_sampler: ComparisonSampler,
     part: u32,
 ) -> vec4 {
+    if part == COVERED && chart::covered(cover, v.place.x, v.place.y) < 0.5 {
+        discard()
+    }
+    if chart_cut(part, v.rest) {
+        discard()
+    }
     let c = chart_paint(part, v.rest)
     var n = v.normal_from(shade, length)
     let d = normalize(v.world - view.eye)

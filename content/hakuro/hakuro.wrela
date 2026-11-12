@@ -9,7 +9,7 @@
 // skeleton are its template's.)
 
 use engine::chart
-use engine::chart::{Band, JOINTS, Part, Radial}
+use engine::chart::{Band, JOINTS, Limb, Part, Radial}
 use std::math::TAU
 use engine::creature::{Bone, Creature, Skeleton, creature, hard, smooth, split}
 use engine::character::Shaded
@@ -224,7 +224,7 @@ pub const LEG_LEFT: figure::limbs::Form = figure::leg::LEG.plus(leg_form::LEG_OV
 
 /// How many of his parts are drawn along their charts as limbs are, how many of those are his
 /// arms' (the first of them), and how many are drawn as his trunk is (a larger form).
-pub const CHARTS: u32 = 7
+pub const CHARTS: u32 = 8
 pub const ARM_CHARTS: u32 = 4
 pub const WIDE_CHARTS: u32 = 2
 
@@ -240,8 +240,11 @@ pub const GAUNTLET_OVER: f32 = 0.0035
 /// jacket. The wrap round his left forearm and the gauntlet over his right: each a layer over
 /// its arm's own form, a little off it, on the arm's chain and bones, so it goes where the arm
 /// goes and its edge is a real step. His legs, in his trousers, each drawn to inside his boot,
-/// its root under his trousers' seat. And his neck and head, under his mask and his hair, to
-/// his crown.
+/// its root 6 cm under his trousers' seat (further under than his trunk is, `TRUNK_UNDER`:
+/// the root keeps its whole width inside his hip, and nearer than his trunk it showed as a
+/// patch at his belt). His neck, its root under his collar. And his head, under
+/// his mask and his hair, to his crown: one rigid form on his head's bone, closed under his
+/// chin.
 pub fn charts() -> [Part<16, 13>; CHARTS] {
     let left = figure::limbs::arm(ARM_LEFT, 0, [6, 8, 10], to: 0.84, under: vec2(0.04, 0.24))
     let right = figure::limbs::arm(ARM_RIGHT, 1, [7, 9, 11], to: 0.84, under: vec2(0.07, 0.34))
@@ -256,46 +259,155 @@ pub fn charts() -> [Part<16, 13>; CHARTS] {
         right,
         over(left, WRAP_FROM, WRAP_OVER),
         over(right, GAUNTLET_FROM, GAUNTLET_OVER),
-        figure::limbs::leg(LEG_LEFT, 0, [0, 18, 20], to: 0.78, under: 0.02),
-        figure::limbs::leg(LEG_LEFT.mirrored(), 1, [0, 19, 21], to: 0.78, under: 0.02),
+        figure::limbs::leg(LEG_LEFT, 0, [0, 18, 20], to: 0.78, under: 0.06),
+        figure::limbs::leg(LEG_LEFT.mirrored(), 1, [0, 19, 21], to: 0.78, under: 0.06),
         Part {
             chain: figure::chains::neck(),
             bones: [3, 4, 5, 0, 0, 0, 0, 0],
             root: 3,
+            form: neck_form::NECK,
+            changes: [chart::unchanged(); JOINTS],
+            band: Band { f: vec2(0.0, 0.9), theta: vec2(0.0, TAU) },
+            sunk: vec2(0.03, 0.3),
+        },
+        Part {
+            chain: figure::chains::head(),
+            bones: [5, 0, 0, 0, 0, 0, 0, 0],
+            root: 5,
             form: head_form::HEAD,
             changes: [chart::unchanged(); JOINTS],
             band: Band { f: vec2(0.0, 0.93), theta: vec2(0.0, TAU) },
             sunk: vec2(0.0, 0.1),
+            caps: vec2(HEAD_CAP, 0.0),
         },
     ]
 }
 
+/// How far up his head's path its form closes under his chin (of the path's length): to where
+/// the forms tool starts reading his head (`studio/forms`' `HAKURO_HEAD`).
+pub const HEAD_CAP: f32 = 0.18
+
+/// How far up his trunk's path its form closes at the fork of his legs.
+pub const FORK_CAP: f32 = 0.08
+
+/// How far up its path his trunk is drawn: to its end, inside his neck.
+pub const TRUNK_TO: f32 = 1.0
+
+/// How far before its path's end his trunk starts to close (of the path's length): from the
+/// root of his neck, where his neck's own form has taken over. Left open, its rim stood out
+/// from his throat when his head went back, and from his collar's front in his run.
+pub const NECK_CAP: f32 = 0.12
+
+/// How far under what he wears his trunk is drawn (m): his jacket is skinned and his trunk is
+/// charted, the two don't bend alike, and without this his trunk came through his jacket at
+/// his chest and his hip when he leant back from a blow.
+pub const TRUNK_UNDER: f32 = 0.04
+
 /// His charted trunk and the jacket over it, both about his spine (`figure::chains::trunk`),
-/// so the jacket goes where his trunk goes and can't pass through it.
+/// so the charted jacket goes where his trunk goes and can't pass through it. His trunk closes
+/// at the fork of his legs and is drawn under what's worn over it.
 pub fn wide_charts() -> [Part<24, 21>; WIDE_CHARTS] {
-    let on_spine = |form: Radial<24, 21>, from: f32| Part {
+    let on_spine = |form: Radial<24, 21>, band: vec2, cap: vec2, under: f32, coarser: u32| Part {
         chain: figure::chains::trunk(),
         bones: [0, 1, 2, 3, 0, 0, 0, 0],
         root: 0,
         form,
         changes: [chart::unchanged(); JOINTS],
-        band: Band { f: vec2(from, 1.0), theta: vec2(0.0, TAU) },
-        sunk: vec2(0.0, 0.1),
+        band: Band { f: band, theta: vec2(0.0, TAU) },
+        // (Under what's worn over it the whole way up, not at its root alone.)
+        sunk: vec2(under, 3.0),
+        caps: cap,
+        coarser,
     }
-    [on_spine(trunk_form::TRUNK, 0.0), on_spine(jacket_form::JACKET, 0.03)]
+    [
+        // (His trunk is under what he wears the whole way: no outline of its own to draw
+        // finely.)
+        on_spine(
+            trunk_form::TRUNK,
+            vec2(0.0, TRUNK_TO),
+            vec2(FORK_CAP, NECK_CAP),
+            TRUNK_UNDER,
+            2,
+        ),
+        on_spine(jacket_form::JACKET, vec2(0.03, 1.0), vec2(0.0, 0.0), 0.0, 0),
+    ]
 }
 
-/// His arms' charted parts (`charts`' first `ARM_CHARTS`): his arms, then the wrap and the
-/// gauntlet over them. Every program that draws him draws these along their charts.
-pub fn arm_charts() -> [Part<16, 13>; ARM_CHARTS] {
-    let all = charts()
-    [all[0], all[1], all[2], all[3]]
+/// Whether his jacket is drawn along its chart, in place of its sampled mesh. His arms, his
+/// legs, his trunk, his neck and his head are drawn along theirs always (`charts`,
+/// `wide_charts`: forms made again where his bones are each frame, with no mesh and no
+/// weights); his hands stay sampled. A switch while his charted jacket is judged against his
+/// sampled one: set here (`--set` reaches only a program's own constants).
+pub const JACKET_CHARTED: bool = false
+
+/// Whether charted part `part` (`charts`' order, then `wide_charts`') is drawn.
+pub fn charted_now(part: u32) -> bool {
+    part != CHARTS + 1 || JACKET_CHARTED
+}
+
+/// Whether sampled mesh `k` (`arms::jacket`, then his hands) is drawn: not where a charted
+/// part is drawn in its place.
+pub fn sampled_now(k: u32) -> bool {
+    !(k == 0 && JACKET_CHARTED)
+}
+
+/// His charted parts as a pose has them: his limbs and his head (`charts`' order), and his
+/// trunk and his jacket (`wide_charts`').
+pub struct Charted: Copy {
+    pub limbs: [Limb<16, 13>; CHARTS],
+    pub wide: [Limb<24, 21>; WIDE_CHARTS],
+}
+
+/// His charted parts at rest.
+pub fn charted_at_rest() -> Charted {
+    let limbs = charts()
+    let wide = wide_charts()
+    var out = Charted { limbs: [limbs[0].rest(); CHARTS], wide: [wide[0].rest(); WIDE_CHARTS] }
+    for k in 0..CHARTS {
+        out.limbs[k] = limbs[k].rest()
+    }
+    for k in 0..WIDE_CHARTS {
+        out.wide[k] = wide[k].rest()
+    }
+    out
+}
+
+/// His charted parts as `palette` poses them (each of his bones' matrices, from him at rest to
+/// where the pose has him): those `charted_now` says are drawn; the others stay at rest.
+pub fn charted_as(palette: [mat4; 64]) -> Charted {
+    let limbs = charts()
+    let wide = wide_charts()
+    var out = charted_at_rest()
+    for k in 0..CHARTS {
+        if charted_now(k) {
+            out.limbs[k] = limbs[k].posed(palette)
+        }
+    }
+    for k in 0..WIDE_CHARTS {
+        if charted_now(CHARTS + k) {
+            out.wide[k] = wide[k].posed(palette)
+        }
+    }
+    out
 }
 
 /// How fine the detail round a charted part's path its shading keeps (harmonics): his light's
 /// bands are read off his forms without the ripples finer than this (`Radial::softened`). More
 /// kept, and dark spots stand inside a highlight.
 pub const SHADED_DETAIL: f32 = 3.5
+
+/// What a limb-sized part's pixels read their normals from: its posed form, softened
+/// (`SHADED_DETAIL`) and kept to its first 4 harmonics of 6. What's dropped is a twentieth of
+/// what it was before softening or less, and a pixel pays for every term.
+pub fn shaded(form: Radial<16, 13>) -> Radial<16, 9> {
+    form.softened(SHADED_DETAIL).kept()
+}
+
+/// What his trunk's and his jacket's pixels read their normals from: the posed form softened,
+/// kept to its first 5 harmonics of 10.
+pub fn shaded_wide(form: Radial<24, 21>) -> Radial<24, 11> {
+    form.softened(SHADED_DETAIL).kept()
+}
 
 /// His paint on charted part `part` (`charts`' order, then `wide_charts`'): his arms and what's
 /// over them each one cloth, the others by where the place is on him at rest (`rest`), as his
