@@ -27,6 +27,15 @@ pub struct Anime: Copy {
     pub smear_from: f32 = 2.5,
 }
 
+/// When the last drawing before a contact is put down (s into a move drawn on twos, its
+/// contact at `contact` s): drawings come every 1 / `drawings` s from the move's start, and one
+/// more on the contact itself. What the body shows then and on its contact is all the eye
+/// gets of a strike's last stretch, so a move's spec reads it at these two moments.
+pub fn drawing_before(contact: f32, how: Anime) -> f32 {
+    let period = 1.0 / max(how.drawings, 1.0)
+    floor((contact - 1.0e-4) / period) * period
+}
+
 /// How one move's drawn: on twos (else smooth, every frame), whether its contact flashes, and
 /// whether its fast limbs smear.
 pub struct Look: Copy {

@@ -298,6 +298,35 @@ impl Rigid {
     }
 }
 
+/// A body's bones in the body's space, to read and to set: a `Vec<Rigid>`, or a `[Rigid; 64]`.
+/// Code that poses a body is written once over either. The array is the one a derivation
+/// follows (`std::lift::gradient`, as `wrela solve` runs it): it can't follow values kept in a
+/// `Vec`, so a pose made in one comes out with no derivative by the literals it was made from.
+pub trait Frames {
+    fn frame(self, b: u32) -> Rigid
+    fn set_frame(mut self, b: u32, r: Rigid)
+}
+
+impl Frames for Vec<Rigid> {
+    fn frame(self, b: u32) -> Rigid {
+        self[b]
+    }
+
+    fn set_frame(mut self, b: u32, r: Rigid) {
+        self[b] = r
+    }
+}
+
+impl Frames for [Rigid; 64] {
+    fn frame(self, b: u32) -> Rigid {
+        self[b]
+    }
+
+    fn set_frame(mut self, b: u32, r: Rigid) {
+        self[b] = r
+    }
+}
+
 /// The shortest turn taking direction `a` onto `b` (both nonzero).
 pub fn arc(a: vec3, b: vec3) -> Quat {
     let (u, v) = (normalize(a), normalize(b))
@@ -345,6 +374,38 @@ impl Rig {
             let p = self.bones[b].parent
             let up = if p == NONE { self.base } else { out[p] }
             out.push(up.then(self.bones[b].rest))
+        }
+        out
+    }
+
+    /// `rest_world` in an array (a bone the rig lacks unturned at the origin): what code a
+    /// derivation follows reads. A derived function takes no float out of a `Vec`, so it's
+    /// handed the rest pose as a value (`Frames`).
+    pub fn rest_frames(self) -> [Rigid; 64] {
+        var out = [Rigid::identity(); 64]
+        for b in 0..self.bones.len() {
+            let p = self.bones[b].parent
+            let up = if p == NONE { self.base } else { out[p] }
+            out[b] = up.then(self.bones[b].rest)
+        }
+        out
+    }
+
+    /// Each bone's parent, in an array (as `rest_frames`): `NONE` for the hips and past the
+    /// rig's last bone.
+    pub fn parents(self) -> [u32; 64] {
+        var out = [NONE; 64]
+        for b in 0..self.bones.len() {
+            out[b] = self.bones[b].parent
+        }
+        out
+    }
+
+    /// Each bone's place in its parent at rest, in an array (as `rest_frames`).
+    pub fn rests(self) -> [Rigid; 64] {
+        var out = [Rigid::identity(); 64]
+        for b in 0..self.bones.len() {
+            out[b] = self.bones[b].rest
         }
         out
     }
@@ -1155,6 +1216,24 @@ pub fn frame_world(rig: Rig, turns: [Quat], f: u32, hips: vec3) -> Vec<Rigid> {
             out[b] = Rigid { q: rig.base.q.mul(q), t: hips }
         } else {
             out[b] = out[rb.parent].then(Rigid { q, t: rb.rest.t })
+        }
+    }
+    out
+}
+
+/// Each bone of `pose` in the body's space, in an array (`frame_world` of one pose, which a
+/// derivation follows: `Frames`).
+pub fn pose_world(rig: Rig, pose: Pose) -> [Rigid; 64] {
+    let rest = rig.rests()
+    let parents = rig.parents()
+    var out = [Rigid::identity(); 64]
+    for b in 0..rig.bones.len() {
+        let up = parents[b]
+        let q = pose.turns[b]
+        if up == NONE {
+            out[b] = Rigid { q: rig.base.q.mul(q), t: rig.base.t + rig.base.q.rotate(pose.hips) }
+        } else {
+            out[b] = out[up].then(Rigid { q, t: rest[b].t })
         }
     }
     out

@@ -86,6 +86,26 @@ fn shape(w: [Rigid], a: [u32; 4], c: [u32; 3]) -> (vec3, vec3) {
     )
 }
 
+/// One frame's three numbers for arm `a` (side `s`): how far its elbow's bend is off a real
+/// one's (degrees; 0 where it isn't bent past `BENT`), how far its hand is into the head (m, 0
+/// where it's clear), and how far its shape is from the nearest real arm's (degrees).
+fn measured(w: [Rigid], a: [u32; 4], ch: [u32; 3], centre: vec3, r: Real, s: u32) -> [f32; 3] {
+    let (angle, axis) = bend(w, a)
+    let off = if angle > BENT { acos(clamp(dot(axis, r.hinge[s]), -1.0, 1.0)) / DEG } else { 0.0 }
+    var into = 0.0
+    for b in [a[2], a[3]] {
+        into = max(into, HEAD_R - length(w[b].t - centre))
+    }
+    let (u, v) = shape(w, a, ch)
+    var best = 1.0e9
+    for k in 0..r.upper[s].len() {
+        let d = acos(clamp(dot(u, r.upper[s][k]), -1.0, 1.0)) +
+            acos(clamp(dot(v, r.fore[s][k]), -1.0, 1.0))
+        best = min(best, d)
+    }
+    [off, into, best / DEG]
+}
+
 /// What real arms did: each elbow's usual bend axis, and the arm shapes real people made, by side
 /// (0 the left).
 pub struct Real: Clone {
@@ -182,34 +202,19 @@ pub fn checked(rig: Rig, c: Clip, r: Real) -> Checked {
         let w = world(rig, c, f)
         let centre = w[head].t + w[head].q.rotate(middle)
         for s in 0..2 {
-            let a = arms[s]
-            let (angle, axis) = bend(w, a)
-            if angle > BENT {
-                let off = acos(clamp(dot(axis, r.hinge[s]), -1.0, 1.0)) / DEG
-                if off > out.hinge_off {
-                    out.hinge_off = off
-                    out.hinge_at = t
-                    sides[0] = s
-                }
+            let m = measured(w, arms[s], ch, centre, r, s)
+            if m[0] > out.hinge_off {
+                out.hinge_off = m[0]
+                out.hinge_at = t
+                sides[0] = s
             }
-            for b in [a[2], a[3]] {
-                let into = HEAD_R - length(w[b].t - centre)
-                if into > out.head_in {
-                    out.head_in = into
-                    out.head_at = t
-                    sides[1] = s
-                }
+            if m[1] > out.head_in {
+                out.head_in = m[1]
+                out.head_at = t
+                sides[1] = s
             }
-            let (u, v) = shape(w, a, ch)
-            var best = 1.0e9
-            for k in 0..r.upper[s].len() {
-                let d = acos(clamp(dot(u, r.upper[s][k]), -1.0, 1.0)) +
-                    acos(clamp(dot(v, r.fore[s][k]), -1.0, 1.0))
-                best = min(best, d)
-            }
-            best = best / DEG
-            if best > out.unreal {
-                out.unreal = best
+            if m[2] > out.unreal {
+                out.unreal = m[2]
                 out.unreal_at = t
                 sides[2] = s
             }
@@ -230,6 +235,66 @@ pub fn checked(rig: Rig, c: Clip, r: Real) -> Checked {
         out.flags.push(
             f"the {name(sides[2])} arm is {out.unreal:.0} degrees from any arm a person made, at {out.unreal_at:.2} s",
         )
+    }
+    out
+}
+
+/// Every arm fault in `c`, not the worst alone (`checked`): for each check and each arm, each
+/// stretch of the clip that's past its limit, from when to when, and its worst and when. An
+/// author mends a move a stretch at a time, and the worst frame hides the next worst behind it.
+/// Nothing for a clip with no fault.
+pub fn report(rig: Rig, c: Clip, r: Real) -> Vec<String> {
+    let arms = [arm(rig, 0), arm(rig, 1)]
+    let ch = chest(rig)
+    let head = rig.find("head")
+    let rw = rig.rest_world()
+    let middle = rw[head].q.inverse().rotate(vec3(0.0, HEAD_UP, HEAD_AHEAD))
+    let limits = [HINGE_OFF, HEAD_IN, UNREAL]
+    var out: Vec<String> = Vec::new()
+    // Each check of each arm: where its open stretch began (the clip's frames past its end
+    // where none is open), its worst so far and when.
+    var from = [c.frames; 6]
+    var worst = [0.0; 6]
+    var at = [0.0; 6]
+    for f in 0..c.frames + 1 {
+        let t = f32(f) / c.fps
+        var m = [[0.0; 3]; 2]
+        if f < c.frames {
+            let w = world(rig, c, f)
+            let centre = w[head].t + w[head].q.rotate(middle)
+            for s in 0..2 {
+                m[s] = measured(w, arms[s], ch, centre, r, s)
+            }
+        }
+        for s in 0..2 {
+            for k in 0..3 {
+                let i = s * 3 + k
+                let over = f < c.frames && m[s][k] > limits[k]
+                if over {
+                    if from[i] == c.frames {
+                        from[i] = f
+                        worst[i] = 0.0
+                    }
+                    if m[s][k] > worst[i] {
+                        worst[i] = m[s][k]
+                        at[i] = t
+                    }
+                } else if from[i] != c.frames {
+                    let side = if s == 0 { "left" } else { "right" }
+                    let span = f"{f32(from[i]) / c.fps:.2} to {f32(f - 1) / c.fps:.2} s"
+                    out.push(
+                        if k == 0 {
+                            f"{span}: the {side} elbow bends across its hinge, {worst[i]:.0} degrees at worst ({at[i]:.2} s)"
+                        } else if k == 1 {
+                            f"{span}: the {side} hand is inside the head, {worst[i] * 100.0:.1} cm at worst ({at[i]:.2} s)"
+                        } else {
+                            f"{span}: the {side} arm is like no arm a person made, {worst[i]:.0} degrees off at worst ({at[i]:.2} s)"
+                        },
+                    )
+                    from[i] = c.frames
+                }
+            }
+        }
     }
     out
 }

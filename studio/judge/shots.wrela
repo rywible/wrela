@@ -19,6 +19,9 @@ pub struct Scene: Clone {
     pub fps: f64,
     pub clip_first: u32 = 0,
     pub clip_last: u32 = 0,
+    /// Where its figure is on the screen: what the look made for a person's eye is cropped to
+    /// (`look_of` in main.wrela); nothing (no width) for a scene with no such look.
+    pub look: Crop = Crop { x0: 0, y0: 0, x1: 0, y1: 0 },
 }
 
 /// A crop of the screen: from (`x0`, `y0`) up to (`x1`, `y1`), in pixels.
@@ -58,8 +61,9 @@ pub fn set_of(s: str) -> Option<Set> {
 }
 
 /// The scenes' names.
-pub const SCENES: [Text; 7] = [
+pub const SCENES: [Text; 8] = [
     "exchange",
+    "played",
     "rider",
     "rider-quarter",
     "turnaround",
@@ -72,6 +76,9 @@ pub const SCENES: [Text; 7] = [
 /// - `exchange`: the combat lab's exchange (content/humanoid, `SHOW=28`): Hakuro and his double
 ///   in their guards, a step in, the cross thrown and landed, and the recovery, at 30 frames a
 ///   second; its clip is the four seconds the cross is in.
+/// - `played`: the lab's fight as it's played (`SHOW=12`): the body bounces in its guard, steps
+///   in and throws its cross, at 60 frames a second; its clip is the cross, from the step in
+///   to the fist home.
 /// - `rider`: the opening (scenes/opening) with its traveller close (`VIEW=8`): Hakuro aboard
 ///   the skiff, a hand to the sail's boom, riding the swell, at 60 frames a second; seven
 ///   seconds in, the sky and the sea have settled. Its clip is the two seconds round that.
@@ -92,6 +99,23 @@ pub fn scene(name: str) -> Option<Scene> {
                 fps: 30.0,
                 clip_first: 96,
                 clip_last: 216,
+            },
+        )
+    }
+    if name == "played" {
+        // (The lab's fight as it's played, `SHOW=12`: its own script steps in at 1.2 s and
+        // throws the cross at 1.62 s. At a game's 60 frames a second, for a look at full rate.)
+        return Some(
+            Scene {
+                name: "played",
+                program: "content/humanoid",
+                sets: Vec::from([set("SHOW", "12")]),
+                width: 1600,
+                height: 900,
+                fps: 60.0,
+                clip_first: 84,
+                clip_last: 156,
+                look: Crop { x0: 400, y0: 50, x1: 1200, y1: 850 },
             },
         )
     }
@@ -148,7 +172,7 @@ pub fn scene(name: str) -> Option<Scene> {
 }
 
 /// The lists' names.
-pub const LISTS: [Text; 5] = ["arms", "rider", "body", "hands", "strike"]
+pub const LISTS: [Text; 6] = ["arms", "rider", "body", "hands", "strike", "played"]
 
 /// The frames from `first` to `last`, every `every`th.
 pub fn every(first: u32, last: u32, every: u32) -> Vec<u32> {
@@ -251,6 +275,38 @@ pub fn list(name: str) -> Option<Vec<Shot>> {
                     drawing("contact", 203, "the contact drawing"),
                     drawing("landed", 204, "the cross landed"),
                     drawing("held", 206, "the cross held on the face"),
+                ],
+            ),
+        )
+    }
+    if name == "played" {
+        // The played cross's beats, one by one, and the whole of it: thrown at 1.62 s (frame
+        // 98 at 60 a second), landing 0.40 s on (its contact's drawing is up by frame 123).
+        let whole = Crop { x0: 0, y0: 0, x1: 1600, y1: 900 }
+        let drawing = |name: Text, frame: u32, about: Text| Shot {
+            name,
+            scene: "played",
+            frames: Vec::from([frame]),
+            crop: whole,
+            down: 2,
+            about,
+        }
+        return Some(
+            Vec::from(
+                [
+                    drawing("load", 108, "the cross loaded, before it's thrown"),
+                    drawing("going-in", 120, "the cross going in"),
+                    drawing("contact", 123, "the cross as it lands"),
+                    drawing("held", 127, "the cross held on its contact"),
+                    drawing("home", 138, "the fist on its way home"),
+                    Shot {
+                        name: "cross",
+                        scene: "played",
+                        frames: every(first: 100, last: 148, every: 4),
+                        crop: whole,
+                        down: 4,
+                        about: "the whole cross, a frame in four",
+                    },
                 ],
             ),
         )

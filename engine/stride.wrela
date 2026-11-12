@@ -22,7 +22,7 @@
 //   while it's down. The legs reach the feet by two-bone IK.
 
 use std::collections::Vec
-use humanoid::{Clip, NONE, Rig, Rigid, arc, frame_world}
+use humanoid::{Clip, Frames, NONE, Rig, Rigid, arc, frame_world}
 
 /// How a walk is made human (`humanised`).
 pub struct Gait: Copy {
@@ -417,16 +417,24 @@ fn smoothed_only(xs: Vec<f32>) -> Vec<f32> {
 
 // ---- a frame's bones in the body's space ---------------------------------------------------
 
-/// Bone `b` and everything below it turned by `r` about the bone's place.
-pub fn turn_below(rig: Rig, w: mut Vec<Rigid>, b: u32, r: Quat) {
-    let nb = rig.bones.len()
-    let p = w[b].t
-    var below: Vec<bool> = Vec::filled(nb, value: false)
+/// Bone `b` and everything below it turned by `r` about the bone's place. The bones are a
+/// `Vec` or an array (`humanoid::Frames`).
+pub fn turn_below<W: Frames>(rig: Rig, w: mut W, b: u32, r: Quat) {
+    turn_under(rig.parents(), rig.bones.len(), mut w, b, r)
+}
+
+/// `turn_below` by the bones' parents alone (`Rig::parents`, of `nb` bones): what code that
+/// turns many bones of one rig hands in once, and what a derivation follows (it reads no
+/// rig's `Vec`).
+pub fn turn_under<W: Frames>(parents: [u32; 64], nb: u32, w: mut W, b: u32, r: Quat) {
+    let p = w.frame(b).t
+    var below = [false; 64]
     for d in b..nb {
-        let up = rig.bones[d].parent
+        let up = parents[d]
         if d == b || (up != NONE && below[up]) {
             below[d] = true
-            w[d] = Rigid { q: r.mul(w[d].q), t: p + r.rotate(w[d].t - p) }
+            let was = w.frame(d)
+            w.set_frame(d, Rigid { q: r.mul(was.q), t: p + r.rotate(was.t - p) })
         }
     }
 }

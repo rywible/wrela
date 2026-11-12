@@ -85,6 +85,31 @@ pub const PROBE_FIST: u32 = 0
 /// and held, fists and feet smeared): `--set ANIME=0` draws them smooth.
 pub const ANIME: u32 = 1
 
+/// How far back a fast fist or foot is smeared in the fight's moves (`engine::anime::Anime`'s
+/// `smear`: of its travel since the last drawing): `--set SMEAR=0` draws them unsmeared.
+pub const SMEAR: f32 = 0.6
+
+/// `SHOW=12`'s cross: the hand-keyed one (`fists::CROSS`), or with `--set SOLVED=1` the solved
+/// one (`solved::CROSS`: goal poses, each part of the body on its own clock, its numbers solved
+/// against spec.wrela). A trial: the two are judged side by side before either goes.
+pub const SOLVED: u32 = 0
+
+/// The fight's moves (`fists::ACTS`), their cross as `SOLVED` says.
+@fuel(2 ** 40)
+const FIGHT_ACTS: [Move; 7] = fight_acts()
+
+fn fight_acts() -> [Move; 7] {
+    [
+        fists::ACTS[0].clone(),
+        fists::ACTS[1].clone(),
+        if SOLVED == 1 { solved::CROSS.clone() } else { fists::ACTS[ACT_CROSS].clone() },
+        fists::ACTS[3].clone(),
+        fists::ACTS[4].clone(),
+        fists::ACTS[5].clone(),
+        fists::ACTS[6].clone(),
+    ]
+}
+
 /// How kinetic the moment is (0 quiet): `--set KINETIC=0.6` frays the ink.
 pub const KINETIC: f32 = 0.0
 
@@ -313,7 +338,7 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
         playback::step(
             mut s.mover,
             FIGHT_GAITS,
-            fists::ACTS,
+            FIGHT_ACTS,
             HERO.rig,
             s.mask,
             stick,
@@ -641,13 +666,13 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             anime::drawn(
                 mut s.drawer,
                 s.mover,
-                fists::ACTS,
+                FIGHT_ACTS,
                 LOOKS,
                 HERO.rig,
                 s.mask,
                 pose,
                 place,
-                Anime {},
+                Anime { smear: SMEAR },
                 dt,
             )
         }

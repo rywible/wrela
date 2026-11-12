@@ -1,0 +1,318 @@
+// A written move: a strike as a function of time, made of a few goal poses (`engine::keys`) and
+// of how long after the hips each part of the body plays them. Any moment gives a pose
+// (`Written::pose`), so the move is read at any rate, and its numbers are plain literals a
+// solve can move (`wrela solve --spec`, std::lift).
+//
+// A key holds the whole body at one moment, so a move keyed alone moves every part on one
+// curve: the hips, the chest and the fist set off together and stop together, which is what
+// `engine::timing` flags as "all at once". A struck or thrown blow goes from the middle of the
+// body outward, each part a little after the one before (Putnam 1993), and parts don't start
+// and stop together (overlapping action: Lasseter 1987). Here that's by construction: each part
+// of the chain plays the same keys on its own clock, later by its lag (`Chain`), so a lag
+// written is a lag drawn; and the body eases into a pose the fist is stopped dead by.
+//
+// - The hips, the legs and the feet keep the keys' own time: a planted foot stays where its key
+//   puts it.
+// - The trunk (the spine's bones, the neck and head, and the arm that doesn't strike) turns
+//   above the hips as the keys had it `Chain::trunk` earlier.
+// - The striking arm's collar, its upper arm, its forearm and its hand each turn in the bone
+//   they hang from as the keys had them their own lag earlier.
+//
+// A part's turn is its turn in its parent, so a late arm is carried by the body that has
+// already gone: the fist rides the trunk's turn before the arm opens. What a late part does to
+// where the fist ends up is not written anywhere: it's read (`Written::thrown`) and solved for.
+//
+// Everything a solve reads is posed in arrays, not `Vec`s (`humanoid::Frames`): std::lift's
+// derivation follows an array alone.
+
+use humanoid::{Clip, NONE, Pose, Rig, pose_world}
+use keys::{Key, key_in, posed, shifted}
+use std::collections::Vec
+use stride::curled_hands
+use timing::RATE
+
+const DEG: f32 = 0.017453292
+
+/// How each part of the body follows the hips.
+///
+/// Its lag: how long after the hips it plays the keys (s), for the trunk, then the striking
+/// arm's collar, its shoulder (the upper arm), its elbow (the forearm) and its wrist (the
+/// hand).
+///
+/// Its snap: how much of a `keys::SNAP` key's snap the body (the hips and legs) and the trunk
+/// keep. 1 is all of it: the part gathers speed all the way to the key and is stopped dead by
+/// it. 0 is none: it eases into the key, fastest half way. The arm keeps all of it. A body
+/// that eases in while the fist snaps is fastest before the fist is, which is the chain's
+/// order again, and it doesn't check the fist by stopping under it.
+///
+/// Every lag 0 and every snap 1 is the keys alone, every part on one curve.
+pub struct Chain: Copy {
+    pub trunk: f32 = 0.0,
+    pub collar: f32 = 0.0,
+    pub shoulder: f32 = 0.0,
+    pub elbow: f32 = 0.0,
+    pub wrist: f32 = 0.0,
+    pub body_snap: f32 = 1.0,
+    pub trunk_snap: f32 = 1.0,
+}
+
+/// The clocks a body's bones are on: the keys' own time, then one for each of `Chain`'s parts.
+const BODY: u32 = 0
+const TRUNK: u32 = 1
+const COLLAR: u32 = 2
+const SHOULDER: u32 = 3
+const ELBOW: u32 = 4
+const WRIST: u32 = 5
+const CLOCKS: u32 = 6
+
+/// A written move: its keys in time order (`N` of them, their times the hips'), how the body
+/// follows the hips, and the arm that strikes (0 the left, 1 the right, as `engine::timing`
+/// counts limbs).
+pub struct Written<const N: u32>: Copy {
+    pub keys: [Key; N],
+    pub chain: Chain,
+    pub arm: u32,
+}
+
+/// What a solve can follow of a written strike: each a number with a derivative by the move's
+/// literals. Read as `engine::timing` reads a clip, `RATE` times a second, over the steps that
+/// end on its contact (`Written::thrown`).
+pub struct Thrown: Copy {
+    /// Where the striking wrist is on contact (the body's space, m).
+    pub at: vec3,
+    /// Its speed over the step that ends on the contact, its fastest step of those read, and
+    /// its speed over the step after the contact (m/s).
+    pub into: f32,
+    pub fastest: f32,
+    pub after: f32,
+    /// The most it slows from one step to the next on its way to the contact (m/s): 0 for a
+    /// fist that gathers speed all the way, its spacing opening frame by frame.
+    pub slows: f32,
+    /// How far out the arm is on contact: the wrist from the shoulder, of the arm's length.
+    pub out: f32,
+    /// The share of the way from the right foot to the left the hips are over on contact, and
+    /// how far outside the feet they get at most over the steps read (m).
+    pub left: f32,
+    pub outside: f32,
+}
+
+/// The striking arm's bones: its collar, upper arm, forearm and hand.
+fn arm_of(rig: Rig, arm: u32) -> [u32; 4] {
+    let names = if arm == 0 {
+        ["leftShoulder", "leftUpperArm", "leftLowerArm", "leftHand"]
+    } else {
+        ["rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand"]
+    }
+    [rig.find(names[0]), rig.find(names[1]), rig.find(names[2]), rig.find(names[3])]
+}
+
+/// The clock each of `rig`'s bones is on: its own where it's one of the chain's, else the one
+/// its parent is on (a finger its hand's, the head its trunk's, a leg the hips').
+fn clocks(rig: Rig, arm: u32) -> [u32; 64] {
+    let a = arm_of(rig, arm)
+    let spine = rig.find("spine")
+    var out = [BODY; 64]
+    for b in 0..rig.bones.len() {
+        let up = rig.bones[b].parent
+        var c = if up == NONE { BODY } else { out[up] }
+        if b == spine {
+            c = TRUNK
+        } else if b == a[0] {
+            c = COLLAR
+        } else if b == a[1] {
+            c = SHOULDER
+        } else if b == a[2] {
+            c = ELBOW
+        } else if b == a[3] {
+            c = WRIST
+        }
+        out[b] = c
+    }
+    out
+}
+
+impl<const N: u32> Written<N> {
+    /// Each clock's lag (s), in the clocks' order.
+    fn lag(self) -> [f32; 6] {
+        let l = self.chain
+        [0.0, l.trunk, l.collar, l.shoulder, l.elbow, l.wrist]
+    }
+
+    /// How much of a snap each clock keeps, in the clocks' order.
+    fn snap(self) -> [f32; 6] {
+        [self.chain.body_snap, self.chain.trunk_snap, 1.0, 1.0, 1.0, 1.0]
+    }
+
+    /// How long the move lasts (s): its last key, and the latest part's lag after it.
+    pub fn length(self) -> f32 {
+        var most = 0.0
+        for l in self.lag() {
+            most = max(most, l)
+        }
+        self.keys[N - 1].at + most
+    }
+
+    /// The body at `time` (s from the move's start), about its root (each key's travel taken
+    /// off: gameplay carries that): each bone's turn in its parent as the keys have it on the
+    /// bone's own clock.
+    pub fn pose(self, rig: Rig, time: f32) -> Pose {
+        let on = clocks(rig, self.arm)
+        let lag = self.lag()
+        let snap = self.snap()
+        let nb = rig.bones.len()
+        var out = Pose { turns: [Quat::identity(); 64], hips: vec3(0.0) }
+        for c in 0..CLOCKS {
+            let k = key_in(self.keys, time - lag[c], snap[c])
+            let p = posed(rig, shifted(k, -k.travel))
+            for b in 0..nb {
+                if on[b] == c {
+                    out.turns[b] = p.turns[b]
+                }
+            }
+            if c == BODY {
+                out.hips = p.hips
+            }
+        }
+        out
+    }
+
+    /// The move as a clip at `fps`, its hands made fists (`fist`, as `stride::curled_hands`).
+    pub fn clip(self, rig: Rig, fps: f32, fist: f32) -> Clip {
+        let nb = rig.bones.len()
+        let n = u32(self.length() * fps + 0.5) + 1
+        var c = humanoid::rest_clip(rig)
+        c.frames = n
+        c.looped = false
+        c.fps = fps
+        c.turns = Vec::with_capacity(n * nb)
+        c.hips = Vec::with_capacity(n)
+        for f in 0..n {
+            let p = self.pose(rig, f32(f) / fps)
+            for b in 0..nb {
+                c.turns.push(p.turns[b])
+            }
+            c.hips.push(p.hips)
+        }
+        curled_hands(c, rig, fist)
+    }
+
+    /// Where the striking wrist is at `time` (the body's space, m).
+    pub fn end(self, rig: Rig, time: f32) -> vec3 {
+        let wrist = arm_of(rig, self.arm)[3]
+        pose_world(rig, self.pose(rig, time))[wrist].t
+    }
+
+    /// Which way the hips face at `time` (degrees about up, toward the left; by where their
+    /// left points, as `engine::timing` reads a heading).
+    pub fn heading(self, rig: Rig, time: f32) -> f32 {
+        let hips = rig.find("hips")
+        let left = rig.rest_frames()[hips].q.inverse().rotate(vec3(1.0, 0.0, 0.0))
+        let d = pose_world(rig, self.pose(rig, time))[hips].q.rotate(left)
+        atan2(-d.z, d.x) / DEG
+    }
+
+    /// How far out key `key` asks the striking arm: its fist's spot from the shoulder as the
+    /// key poses it, of the arm's length. Past 1 the spot is out of reach, where the arm
+    /// straightens toward it and a solve has no slope left to bring it back by.
+    pub fn asked(self, rig: Rig, key: u32) -> f32 {
+        let a = arm_of(rig, self.arm)
+        let (shoulder, elbow, wrist) = (a[1], a[2], a[3])
+        let k = shifted(self.keys[key], -self.keys[key].travel)
+        let w = pose_world(rig, posed(rig, k))
+        let whole = length(w[elbow].t - w[shoulder].t) + length(w[wrist].t - w[elbow].t)
+        let spot = if self.arm == 0 { k.fists[0] } else { k.fists[1] }
+        length(spot - w[shoulder].t) / max(whole, 1.0e-5)
+    }
+
+    /// How far the striking elbow's bend is off its hinge at `time` (degrees): the axis it
+    /// bends about, in the upper arm's own frame, against `real`, the way real elbows bend
+    /// there (`engine::arms::Real::hinge`). `engine::arms` flags one far off, an arm twisted
+    /// or bent the wrong way; this is the same number where a solve can follow it.
+    pub fn hinge(self, rig: Rig, time: f32, real: vec3) -> f32 {
+        self.hinge_of(rig, time, real, self.arm)
+    }
+
+    /// `hinge` for either arm (0 the left, 1 the right): the arm that doesn't strike bends
+    /// about its hinge too.
+    pub fn hinge_of(self, rig: Rig, time: f32, real: vec3, arm: u32) -> f32 {
+        let a = arm_of(rig, arm)
+        let (shoulder, elbow, wrist) = (a[1], a[2], a[3])
+        let w = pose_world(rig, self.pose(rig, time))
+        let up = normalize(w[elbow].t - w[shoulder].t)
+        let fore = normalize(w[wrist].t - w[elbow].t)
+        let axis = w[shoulder].q.inverse().rotate(normalize(cross(up, fore)))
+        acos(clamp(dot(axis, real), -1.0, 1.0)) / DEG
+    }
+
+    /// The striking wrist's fastest step (m/s) of `steps` steps of 1 / `RATE` s from `from`
+    /// (s from the move's start): how fast it comes home, read after its contact.
+    pub fn fastest(self, rig: Rig, from: f32, steps: u32) -> f32 {
+        let wrist = arm_of(rig, self.arm)[3]
+        var last = pose_world(rig, self.pose(rig, from))[wrist].t
+        var most = 0.0
+        for i in 1..steps + 1 {
+            let p = pose_world(rig, self.pose(rig, from + f32(i) / RATE))[wrist].t
+            most = max(most, length(p - last) * RATE)
+            last = p
+        }
+        most
+    }
+
+    /// The strike as a solve reads it: `steps` steps of 1 / `RATE` s that end on `contact` (s
+    /// from the move's start, when the fight says it lands).
+    pub fn thrown(self, rig: Rig, contact: f32, steps: u32) -> Thrown {
+        let a = arm_of(rig, self.arm)
+        let hips = rig.find("hips")
+        let left = if rig.find("leftToes") != NONE { rig.find("leftToes") } else {
+            rig.find("leftFoot")
+        }
+        let right = if rig.find("rightToes") != NONE { rig.find("rightToes") } else {
+            rig.find("rightFoot")
+        }
+        let (shoulder, elbow, wrist) = (a[1], a[2], a[3])
+        var t = Thrown {
+            at: vec3(0.0),
+            into: 0.0,
+            fastest: 0.0,
+            after: 0.0,
+            slows: 0.0,
+            out: 0.0,
+            left: 0.0,
+            outside: 0.0,
+        }
+        // (Back from the step past the contact: `next` is the wrist a step later.)
+        var next = pose_world(rig, self.pose(rig, contact + 1.0 / RATE))[wrist].t
+        var later = 0.0
+        for i in 0..steps + 1 {
+            let w = pose_world(rig, self.pose(rig, contact - f32(i) / RATE))
+            let p = w[wrist].t
+            // The hips between the feet, along the floor.
+            let (lf, rf, h) = (w[left].t, w[right].t, w[hips].t)
+            let span = vec2(lf.x - rf.x, lf.z - rf.z)
+            let d = max(length(span), 1.0e-4)
+            let share = dot(vec2(h.x - rf.x, h.z - rf.z), span) / (d * d)
+            t.outside = max(t.outside, max(max(-share, share - 1.0), 0.0) * d)
+            if i == 0 {
+                t.at = p
+                t.after = length(next - p) * RATE
+                // (The arm's length off the posed bones, which keep it: an index that comes
+                // of the move's own `arm` reads an array under a derivation, never a `Vec`.)
+                let whole = length(w[elbow].t - w[shoulder].t) + length(p - w[elbow].t)
+                t.out = length(p - w[shoulder].t) / max(whole, 1.0e-5)
+                t.left = share
+            } else {
+                let v = length(next - p) * RATE
+                if i == 1 {
+                    t.into = v
+                } else {
+                    // (This step is the one before `later`: slower then is a fist slowing.)
+                    t.slows = max(t.slows, v - later)
+                }
+                t.fastest = max(t.fastest, v)
+                later = v
+            }
+            next = p
+        }
+        t
+    }
+}

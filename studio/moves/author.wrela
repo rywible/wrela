@@ -1,0 +1,213 @@
+// The author's loop for a written, solved strike, as one command (`wrela tool moves -- --solve
+// <out-dir> <strike>`): solve its numbers against its spec, write them only if every check
+// holds, then read the new move's sheet, its chart and its arms, and say what changed.
+//
+// By hand the loop is three commands a round (`wrela solve`, the sheet, the tests), with the
+// lines of the numbers to free counted again after every edit, and a `--write` that writes a
+// solve wherever it stopped. Here the numbers are found by name: each `let <name> = <number>`
+// between the two marks in the strike's file (`FROM`, `TILL`), one a line. A solve that leaves
+// a check missed is reported and not written.
+//
+// The sheet is read by a fresh run of this tool: this one was built with the numbers as they
+// were, and a move is a constant made when its package is built.
+
+use std::collections::Vec
+use std::io::print
+use std::string::String
+use std::tool::ToolError
+use std::tool::files::rooted
+use std::tool::run
+use toolkit::whole::{data_bytes, joined, read_file}
+
+/// A strike a solve can move: its name on the command line (a strike of `strikes`), the
+/// workspace member its spec is in, and the file there that holds its numbers.
+pub struct Solved: Copy {
+    pub name: Text,
+    pub member: Text,
+    pub file: Text,
+}
+
+/// The solved strikes: add a line for a new one.
+pub const SOLVED: [Solved; 1] = [
+    Solved { name: "cross-solved", member: "content/humanoid", file: "solved.wrela" },
+]
+
+/// The marks a file's solved numbers are between.
+pub const FROM: Text = "// ---- What the solve finds"
+pub const TILL: Text = "// ---- The rest is written by hand"
+
+/// How long a solve or a sheet may take (s).
+const TIMEOUT: f64 = 600.0
+
+/// The numbers of `text` a solve finds: for each `let <name> = <number>` between the marks,
+/// its line (from 1) and its name.
+pub fn free_lines(text: str) -> Vec<(u32, String)> {
+    var out: Vec<(u32, String)> = Vec::new()
+    var within = false
+    var n = 0
+    for (a, b) in text.lines() {
+        n += 1
+        let line = text.slice(a, b).trim()
+        if line.starts_with(FROM) {
+            within = true
+        } else if line.starts_with(TILL) {
+            within = false
+        } else if within && line.starts_with("let ") {
+            if let Some(eq) = line.find(" = ") {
+                if line.slice(eq + 3, line.len()).trim().parse_f32().is_some() {
+                    out.push((n, line.slice(4, eq).trim().to_string()))
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Runs `wrela` in the workspace with `given`: how it ended, and all it said.
+fn wrela(given: take Vec<String>) -> Result<(i32, String), ToolError> {
+    var c = run::command("wrela", "ws")
+    c.args = take given
+    c.timeout = TIMEOUT
+    let r = run::run(c).wait()?
+    var said = String::from_utf8(joined(data_bytes(r.stdout.clone())?)).unwrap_or(String::new())
+    let err = String::from_utf8(joined(data_bytes(r.stderr.clone())?)).unwrap_or(String::new())
+    said.push_str(err.as_str())
+    Ok((r.status, said))
+}
+
+/// How many of a solve's checks hold, of how many, from what it said (`the spec: 20 of 21
+/// hold`); nothing where it didn't say.
+fn held(said: str) -> Option<(u32, u32)> {
+    for (a, b) in said.lines() {
+        let line = said.slice(a, b).trim()
+        if line.starts_with("the spec: ") && line.ends_with(" hold") {
+            let words = line.slice(10, line.len() - 5)
+            let of = words.find(" of ")?
+            return Some(
+                (words.slice(0, of).parse_u32()?, words.slice(of + 4, words.len()).parse_u32()?),
+            )
+        }
+    }
+    None
+}
+
+/// What a solve said, for an author: each number by its name with how it moved, the checks
+/// that miss, and how many hold.
+fn told(said: str, s: Solved, names: [(u32, String)]) {
+    let at = f"{s.file}:"
+    for (a, b) in said.lines() {
+        let line = said.slice(a, b).trim()
+        if line.starts_with(at.as_str()) {
+            let rest = line.slice(at.len(), line.len())
+            let Some(gap) = rest.find(" ") else { continue }
+            let Some(n) = rest.slice(0, gap).parse_u32() else { continue }
+            for (l, name) in names {
+                if l == n {
+                    print(f"  {name}: {rest.slice(gap, rest.len()).trim()}")
+                }
+            }
+        } else if line.starts_with("misses ") ||
+            line.starts_with("the spec: ") ||
+            line.starts_with("error") {
+            print(f"  {line}")
+        }
+    }
+}
+
+/// The text of the file at `path` in the workspace, or nothing.
+fn text_of(path: str) -> Option<String> {
+    let at = rooted("ws", path)?
+    let bytes = read_file(at.as_str(), path).ok()?
+    String::from_utf8(take bytes)
+}
+
+/// The loop for `s`, its sheet under `dir` (a path in the workspace): the tool's exit code. 1
+/// where the solve left a check missed (nothing written).
+pub fn solve(s: Solved, dir: str) -> Result<u32, ToolError> {
+    let path = f"{s.member}/{s.file}"
+    let Some(text) = text_of(path.as_str()) else {
+        return Err(ToolError::new(f"can't read {path}"))
+    }
+    let names = free_lines(text.as_str())
+    if names.is_empty() {
+        return Err(ToolError::new(f"{path} has no numbers between its marks (`{FROM}`)"))
+    }
+    var given: Vec<String> = Vec::from(
+        [String::from("solve"), String::from(s.member), String::from("--spec")],
+    )
+    for (line, _) in names {
+        given.push(String::from("--free"))
+        given.push(String::from(f"{s.file}:{line}"))
+    }
+    print(f"{s.name}: solving {names.len()} numbers of {path}")
+    let (_, tried) = wrela(given.clone())?
+    told(tried.as_str(), s, names)
+    let Some((holds, of)) = held(tried.as_str()) else {
+        print(tried.as_str())
+        return Err(ToolError::new("the solve said nothing of its checks"))
+    }
+    if holds < of {
+        print(
+            f"  not written: {of - holds} of its checks miss. Change a target or a start, and go again.",
+        )
+        return Ok(1)
+    }
+    given.push(String::from("--write"))
+    let (_, wrote) = wrela(take given)?
+    match held(wrote.as_str()) {
+        Some((h, o)) if h == o => print(f"  written: all {o} checks hold"),
+        _ => {
+            print(wrote.as_str())
+            return Err(ToolError::new("the solve that was to be written didn't hold"))
+        },
+    }
+    // The sheet as it was, then as a fresh build reads it.
+    let sheet = f"{dir}/{s.name}.txt"
+    let was = text_of(sheet.as_str()).unwrap_or(String::new())
+    let (status, said) = wrela(
+        Vec::from(
+            [
+                String::from("tool"),
+                String::from("moves"),
+                String::from("--"),
+                String::from("--sheet"),
+                String::from(dir),
+                String::from(s.name),
+            ],
+        ),
+    )?
+    if status != 0 {
+        print(said.as_str())
+        return Err(ToolError::new("the sheet's run failed"))
+    }
+    let now = text_of(sheet.as_str()).unwrap_or(String::new())
+    print(now.as_str())
+    if !was.is_empty() && was.as_str() != now.as_str() {
+        print("what changed on the sheet:")
+        let (old, new) = (was.as_str().lines(), now.as_str().lines())
+        for i in 0..max(old.len(), new.len()) {
+            let a = if i < old.len() { was.as_str().slice(old[i].0, old[i].1).to_string() } else {
+                String::new()
+            }
+            let b = if i < new.len() { now.as_str().slice(new[i].0, new[i].1).to_string() } else {
+                String::new()
+            }
+            if a.as_str() != b.as_str() {
+                print(f"  was {a.as_str().trim()}")
+                print(f"  now {b.as_str().trim()}")
+            }
+        }
+    }
+    Ok(0)
+}
+
+@test
+fn the_solved_numbers_are_found_by_name() {
+    let text = "let before = 1.0\n    // ---- What the solve finds (spec.wrela) ----\n    // When.\n    let sets_off = 0.140\n    let drive = 0.1\n    let named = other\n    // ---- The rest is written by hand. ----\n    let after = 2.0\n"
+    let found = free_lines(text)
+    assert(found.len() == 2, "the two numbers between the marks")
+    assert(found[0].0 == 4 && found[0].1.as_str() == "sets_off")
+    assert(found[1].0 == 5 && found[1].1.as_str() == "drive")
+    let said = "spec::spec: 1 -> 0\n  solved.wrela:4  0.14 -> 0.144\nthe spec: 20 of 21 hold\n  misses a check\n"
+    assert(held(said) == Some((20, 21)))
+}
