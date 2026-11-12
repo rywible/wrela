@@ -127,10 +127,10 @@ pub const HAIR_PIVOT: vec3 = vec3(0.0, 1.7, -0.01)
 pub const HAIR_MASS: vec3 = vec3(0.0, 1.85, -0.07)
 
 /// His hair's spring (`engine::sway`): it swings three times a second and is most of the way
-/// still in half a second, and its mass goes no more than 3 cm from where his head holds it
-/// (a turn of a little over a tenth of a radian: further, and its spikes passed through his
-/// mask's ears).
-pub const HAIR_SPRING: sway::Spring = sway::Spring { rate: 3.0, damping: 0.28, most: 0.03 }
+/// still in half a second, and its mass goes no more than 5 cm from where his head holds it.
+/// (His hair is rooted in his scalp, `arms::rooted_hair`: only its spikes go that far. While
+/// it turned in one piece 3 cm was the most, or it passed through his mask's ears.)
+pub const HAIR_SPRING: sway::Spring = sway::Spring { rate: 3.0, damping: 0.28, most: 0.05 }
 
 /// Where his head holds his hair's mass as `palette` poses him: what `sway::Sway::step` is
 /// given.
@@ -139,9 +139,9 @@ pub fn hair_held(palette: [mat4; 64]) -> vec3 {
 }
 
 /// How far the air he's in pushes his hair's mass back for its speed squared (m for each
-/// (m/s)²), and how far at most (m): at a sprint's 5.2 m/s, 2 cm, his spikes swept back.
-pub const HAIR_BLOWN: f32 = 0.0007
-pub const HAIR_BLOWN_MOST: f32 = 0.02
+/// (m/s)²), and how far at most (m): at a sprint's 5.2 m/s, 3 cm, his spikes swept back.
+pub const HAIR_BLOWN: f32 = 0.0012
+pub const HAIR_BLOWN_MOST: f32 = 0.034
 
 /// Where his hair's mass is from where his head holds it, swaying `sway` (m: `Sway::step`'s
 /// answer) in air that meets him at `going` m/s from ahead (as `palette` poses him): its sway
@@ -606,31 +606,27 @@ pub fn charts() -> [Part<16, 13>; CHARTS] {
             sunk: vec2(0.0, 0.1),
             caps: vec2(HEAD_CAP, 0.0),
         },
-        // His jacket's collar: one rigid form on a line his chest carries. Its shoulders: each
-        // on his collarbone and his upper arm, so it goes where his arm goes.
+        // His jacket's collar and its shoulders: each one rigid form on a line his chest
+        // carries. His coat is sleeveless: his arm and his collarbone move in its armhole and
+        // under its shoulder, and take none of the coat with them. (On his collarbone, a
+        // shoulder dipped into the jacket's body behind whenever his collarbone turned, and
+        // the line where the two crossed was ragged; and its armhole's edge stepped off the
+        // body's where they met.)
         worn(figure::chains::collar(), [3, 3], COLLAR_FLARED, vec2(0.09, 0.87), 0.0),
-        Part {
-            stays_with: 3,
-            stays: YOKE_STAYS,
-            ..worn(
-                figure::chains::yoke_left(),
-                [6, 8],
-                yoke_left_form::YOKE_LEFT,
-                vec2(0.07, CAP_TO),
-                YOKE_OVER,
-            ),
-        },
-        Part {
-            stays_with: 3,
-            stays: YOKE_STAYS,
-            ..worn(
-                figure::chains::yoke_right(),
-                [7, 9],
-                yoke_right_form::YOKE_RIGHT,
-                vec2(0.07, CAP_TO),
-                YOKE_OVER,
-            ),
-        },
+        worn(
+            figure::chains::yoke_left(),
+            [3, 3],
+            yoke_left_form::YOKE_LEFT,
+            vec2(0.07, YOKE_TO),
+            YOKE_OVER,
+        ),
+        worn(
+            figure::chains::yoke_right(),
+            [3, 3],
+            yoke_right_form::YOKE_RIGHT,
+            vec2(0.07, YOKE_TO),
+            YOKE_OVER,
+        ),
         hand_piece(0, 0),
         hand_piece(0, 1),
         hand_piece(0, 2),
@@ -783,18 +779,6 @@ pub const YOKE_LEFT: u32 = 9
 pub const YOKE_RIGHT: u32 = 10
 pub const JACKET_BODY: u32 = CHARTS + 1
 
-/// What of each of his coat's shoulders stays on his chest (`chart::Stay`): its top, within
-/// 1.1 radians of straight up, rides his collarbone and his arm, so the cap's arch goes
-/// over his arm wherever it is; from 1.4 radians off that, where its edge runs into the
-/// jacket's body's at the armhole, it lies where his chest has it, so the armhole's binding
-/// is one loop however his arm swings. (All of it with his arm, the cap's ends came away
-/// from the armhole's loop in his run and the gold line broke there.)
-pub const YOKE_STAYS: chart::Stay = chart::Stay {
-    by: chart::NO_STAY.by,
-    round: vec3(0.0, 1.1, 1.4),
-    along: vec2(-2.0, -1.0),
-}
-
 /// His neck's radius about its line (`figure::chains::neck`: from inside his chest, through
 /// his neck's joint and his head's, into his skull), `f` of the way up it and `theta` round
 /// (0 his front, a half turn his nape; m). It tapers the whole way: 12 cm across under his
@@ -879,9 +863,10 @@ fn collar_flare(f: f32, theta: f32) -> f32 {
 @fuel(2 ** 36)
 pub const COLLAR_FLARED: Radial<16, 13> = collar_form::COLLAR.plus(chart::of(collar_flare))
 
-/// How far his jacket's shoulders stand off their fitted face (m): they lie over its body's
-/// top, and a little off it the step between the two is the shoulders' edge and not a crack.
-pub const YOKE_OVER: f32 = 0.0015
+/// How far his jacket's shoulders stand off their fitted face (m): 8 mm inside it. They
+/// were fitted to a cap that stood out over his arm; a sleeveless coat's shoulder lies on
+/// his own, and at its fitted height it stood over the armhole as a stiff tab.
+pub const YOKE_OVER: f32 = -0.008
 
 /// How far up his head's path its form closes (of the path's length): its first centimetre
 /// and a half, the foot of the stub under his jaw, inside his neck.
@@ -1040,64 +1025,53 @@ fn wrap_at(rest: vec3, px: f32) -> Cloth {
 /// How wide the gold binding of his coat's armholes is (m).
 pub const BINDING: f32 = 0.009
 
+/// Where his coat's shoulder seam is, out from his middle (m, on him at rest): just past
+/// his shoulder's joint. His coat has no sleeves: its shoulders end here.
+pub const SHOULDER_SEAM: f32 = 0.226
+
 /// How far outside his coat's armhole a point of him at rest is (m, about; negative: in the
 /// armhole). One loop for each arm, cut through the jacket's body and its shoulder alike:
 /// where the coat meets a slanted oval tube about his arm's line, 19 cm high and 17 deep at
-/// the jacket's side (deeper, it grazed the jacket's back and its edge there was a smear) and
-/// rising as it goes out along his arm, so the shoulder's cap ends in an arch over
-/// the top of his arm. (Each piece's own edge as its cover had it, the cap's rim and the
-/// body's armhole were two ragged edges that didn't meet.)
+/// the jacket's side (deeper, it grazed the jacket's back and its edge there was a smear),
+/// which crosses the top of his shoulder at its seam; and nothing of the coat is past the
+/// seam (`SHOULDER_SEAM`). (Each piece's own edge as its
+/// cover had it, the shoulder's rim and the body's armhole were two ragged edges that didn't
+/// meet. Then the shoulder ran on 2 cm past the seam as an arch over the top of his arm, on
+/// his arm's bone: with his arm down it stood off his arm as a stiff little cap sleeve,
+/// ragged behind.)
 pub fn armhole(p: vec3) -> f32 {
     let out = abs(p.x)
     if out < 0.12 {
         return 1.0
     }
-    let middle = 1.40 + 0.39 * max(out - 0.19, 0.0)
-    (length(vec2((p.y - middle) / 0.096, (p.z + 0.062) / 0.084)) - 1.0) * 0.09
+    // (The tube climbs as it goes out, steeply: by his shoulder's seam its top is over the
+    // top of his shoulder, so the hole's edge crosses his shoulder there in an arch, one
+    // smooth loop with its sides. Climbing gently, its top stayed under the cloth, and the
+    // edge ran up the tube's side, out along its top and over at the seam: a loop with a
+    // step in it.)
+    let middle = 1.40 + 1.2 * max(out - 0.19, 0.0)
+    let tube = (length(vec2((p.y - middle) / 0.096, (p.z + 0.062) / 0.084)) - 1.0) * 0.09
+    // (The seam only over his shoulder's top: from 5 cm under it the cut leans out, off the
+    // coat's side. Straight down, it cut a line down the coat's side wherever the side was
+    // as far out as the seam.)
+    let seam = SHOULDER_SEAM + 2.0 * max(1.47 - p.y, 0.0) - out
+    min(tube, seam * 0.447)
 }
 
 /// How low a shoulder of his coat comes down his chest and his back (rest height): under
-/// this it's the jacket's body.
-pub const YOKE_FOOT: f32 = 1.42
+/// this it's the jacket's body. Over the armhole's sides, so each side of its edge is the
+/// body's alone: lower, the edge passed from the body to the shoulder halfway up its side,
+/// and stepped out there by the centimetre the shoulder stands off the body.
+pub const YOKE_FOOT: f32 = 1.475
 
-/// Where along a shoulder's path its cap starts to narrow, and where it ends (of the path's
-/// length: his shoulder's joint is 0.33 of the way); how far round from straight up the cap
-/// reaches where it starts (radians); and a shoulder's radius about its path, about (m).
-const CAP_FROM: f32 = 0.325
-const CAP_TO: f32 = 0.385
-const CAP_ROUND: f32 = 1.35
-const CAP_RADIUS: f32 = 0.075
-
-/// How far inside his coat's armhole's edge a point of charted part `part` is (m, about;
-/// under 0: in the armhole, cut away), `rest` where it is on him at rest and `place` on its
-/// chart. The jacket's body is cut where `armhole` has it. A shoulder ends just past his
-/// shoulder's joint, in an arch over the top of his arm, drawn on its own chart: the angle
-/// round its path it reaches narrows from `CAP_ROUND` to nothing between `CAP_FROM` and
-/// `CAP_TO` of the way along. (Cut by the same tube as the body, which runs nearly along a
-/// shoulder's side, its edge was a row of steps; and 6 cm out over his arm, as it was
-/// sculpted, the cap stood off his arm as a stiff tab whenever the arm moved.)
-pub fn armhole_edge(part: u32, rest: vec3, place: vec3) -> f32 {
-    if part == JACKET_BODY {
-        return armhole(rest)
-    }
-    if part != YOKE_LEFT && part != YOKE_RIGHT {
-        return 1.0
-    }
-    if place.x <= CAP_FROM {
-        return armhole(rest)
-    }
-    let along = saturate((place.x - CAP_FROM) / (CAP_TO - CAP_FROM))
-    let reach = CAP_ROUND * sqrt(1.0 - along * along)
-    min(
-        (reach - abs(chart::wrapped(place.y))) * CAP_RADIUS,
-        (CAP_TO - place.x) * 0.373,
-    )
-}
+/// How far along a shoulder's path it's drawn (of the path's length: his shoulder's joint is
+/// 0.33 of the way, its seam a little past it).
+const YOKE_TO: f32 = 0.4
 
 /// What charted part `part` is made of at a point of it (`charts`' order, then
 /// `wide_charts`'): `rest` is where the point is on him at rest and `place` where it is on the
 /// part's chart; `armhole` how far inside his coat's armhole's edge it is
-/// (`armhole_edge`); `inner` whether it's the inside of a piece of his coat that's
+/// (`armhole`); `inner` whether it's the inside of a piece of his coat that's
 /// seen; `px` how much of him a pixel covers there (m). His bare arm, the wrap and the gauntlet on his forearms, his hands; his
 /// coat's pieces (their outside its cloth, bound in gold at every edge; their inside its
 /// lining); and what he wears under it (`worn_under`).
@@ -1191,7 +1165,7 @@ pub fn dressed(part: u32, v: chart::Vertex, n: vec3, from_eye: vec3, covers: [f3
     // (How far inside its armhole's edge, in the cloth's own width: where the cloth runs
     // nearly along the armhole's tube the distance from the tube grows slowly across it, and
     // by that alone the binding spread into a patch.)
-    let hole = armhole_edge(part, v.rest, v.place)
+    let hole = if of_jacket(part) { armhole(v.rest) } else { 1.0 }
     let across = length(vec2(dpdx(hole), dpdy(hole))) / max(px, 0.000001)
     let cloth = chart_paint(part, v.rest, hole / clamp(across, 0.25, 1.5), inner, px)
     let normal = engine::character::embossed(n, v.world, cloth.relief)
@@ -1230,7 +1204,7 @@ pub fn jacket_covers() -> std::gpu::GpuBuffer<f32> {
             let front = at.z > 0.0 && at.y < 1.47 && abs(at.x) < 0.17
             // (And its sides whole up to where its shoulders take over: its armholes are cut
             // where `armhole` has them.)
-            let side = abs(at.x) > 0.1 && at.y < 1.45
+            let side = abs(at.x) > 0.1 && at.y < 1.5
             marks.push(front || side || jacket_cover::JACKET_COVER.at(i, j))
         }
     }
@@ -1262,7 +1236,7 @@ pub fn chart_cut(part: u32, rest: vec3, place: vec3) -> bool {
         return opening(rest) < 0.0 || rest.y > collar_top(rest)
     }
     if part == YOKE_LEFT || part == YOKE_RIGHT {
-        return armhole_edge(part, rest, place) < 0.0 || rest.y < YOKE_FOOT
+        return armhole(rest) < 0.0 || rest.y < YOKE_FOOT
     }
     part == JACKET_BODY && (opening(rest) < 0.0 || rest.y < COAT_SEAM || armhole(rest) < 0.0)
 }
@@ -1379,12 +1353,13 @@ impl Surface for Hair {
 
     fn distance(self, p: vec3) -> f32 {
         let q = unscaled(p + HEAD_JOINT)
-        hair(q, shapes::cranium(q)) * HEAD_SCALE
+        hair(q, shapes::skull(q)) * HEAD_SCALE
     }
 
-    /// Flattened cones (each scaled back by its flattening) and an ellipsoid, by smooth extrema.
+    /// Flattened cones (each scaled back by its flattening) and his skull, by smooth extrema,
+    /// and his locks' rise and fall on it (as steep as 1 in 1 at a lock's tip).
     fn lipschitz(self, near: f32) -> f32 {
-        1.5
+        2.1
     }
 }
 
@@ -1593,19 +1568,26 @@ fn his_coats_front_edge_is_one_line_from_its_collar_into_its_tails() {
 
 @test
 fn his_coats_armhole_is_one_loop_through_its_body_and_its_shoulder() {
-    // Where a shoulder takes over from the jacket's body, both are cut by the same rule: a
-    // point of his rest space is in the armhole of both or of neither.
-    for i in 0..12 {
-        let p = vec3(0.17 + 0.004 * f32(i), YOKE_FOOT, -0.065 + 0.01 * f32(i))
-        let place = vec3(0.2, 1.0, 0.0)
-        assert(armhole_edge(JACKET_BODY, p, place) == armhole_edge(YOKE_LEFT, p, place))
+    // The jacket's body and its shoulder are cut by one rule of where a point is on him at
+    // rest, so where the one takes over from the other (`YOKE_FOOT`) their edges meet.
+    // Round under his arm it's the tube's edge: in the hole beside his arm's line, cloth
+    // well in front of it.
+    assert(armhole(vec3(0.2, 1.40, -0.062)) < 0.0)
+    assert(armhole(vec3(0.2, 1.40, 0.06)) > 0.0)
+    // Over the top of his shoulder the hole's edge crosses just inside the seam: cloth on
+    // the top of his shoulder 3 cm in from it, none at it or past it. His coat has no
+    // sleeve: nothing of it is out over his arm.
+    assert(armhole(vec3(SHOULDER_SEAM - 0.03, 1.53, -0.065)) > 0.0)
+    for z in [-0.12, -0.065, 0.0] {
+        assert(armhole(vec3(SHOULDER_SEAM + 0.005, 1.535, z)) < 0.0, f"cloth past the seam at {z}")
     }
-    // A shoulder ends past his shoulder's joint in an arch over the top of his arm: there at
-    // its top, gone at its sides, and gone altogether past `CAP_TO`.
-    let over = vec3(0.24, 1.53, -0.065)
-    assert(armhole_edge(YOKE_LEFT, over, vec3(0.36, 0.0, 0.0)) > 0.0)
-    assert(armhole_edge(YOKE_LEFT, over, vec3(0.36, 1.3, 0.0)) < 0.0)
-    assert(armhole_edge(YOKE_LEFT, over, vec3(CAP_TO + 0.01, 0.0, 0.0)) < 0.0)
+    // Down the coat's side, under his arm, there's no cut: the seam is only over his shoulder.
+    for y in [1.0, 1.1, 1.2, 1.28] {
+        assert(armhole(vec3(0.24, y, -0.03)) > 0.0, f"the coat's side is cut at {y}")
+    }
+    assert(armhole(vec3(0.3, 1.52, -0.065)) < 0.0)
+    // And both sides alike.
+    assert(armhole(vec3(-0.2, 1.40, -0.062)) == armhole(vec3(0.2, 1.40, -0.062)))
 }
 
 @test

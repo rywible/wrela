@@ -2,7 +2,7 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use arms::{Drape, drape_room, draped, follow_legs}
+use arms::{Drape, drape_room, draped, follow_legs, rooted_hair}
 use engine::sway
 use engine::sway::Sway
 use hakuro::{
@@ -233,7 +233,7 @@ pub fn init() -> State {
     let body = realize_once(h, HOW)
     let c0 = colours(body, h.field(), ByChannels {}, cell: 0.005)
     let hd = head()
-    let head_mesh = realize_once(hd, HOW_HEAD)
+    let head_mesh = rooted_hair(realize_once(hd, HOW_HEAD))
     let c1 = colours(head_mesh, hd.field(), ByChannels {}, cell: 0.002)
     let ct = coat()
     let coat_mesh = follow_legs(realize_once(ct, HOW_COAT))

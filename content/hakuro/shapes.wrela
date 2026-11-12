@@ -339,40 +339,118 @@ const CLUMPS: [(vec3, vec3, f32, f32); 15] = [
 /// The hair's centre, which each spike's flat side faces.
 const HAIR_CENTRE = vec3(0.0, 1.70, -0.01)
 
+/// How far `p` is from the curve from `a` to `c` bent toward `b` (a quadratic Bézier), and
+/// how far along the curve the nearest point is (0 at `a`, 1 at `c`). The curve's nearest
+/// point is a cubic's root, solved in closed form.
+fn to_curve(p: vec3, a: vec3, b: vec3, c: vec3) -> vec2 {
+    let aa = b - a
+    let bb = a - b * 2.0 + c
+    let cc = aa * 2.0
+    let dd = a - p
+    let kk = 1.0 / max(dot(bb, bb), 1.0e-9)
+    let kx = kk * dot(aa, bb)
+    let ky = kk * (2.0 * dot(aa, aa) + dot(dd, bb)) / 3.0
+    let kz = kk * dot(dd, aa)
+    let pp = ky - kx * kx
+    let q = kx * (2.0 * kx * kx - 3.0 * ky) + kz
+    let h = q * q + 4.0 * pp * pp * pp
+    if h >= 0.0 {
+        let r = sqrt(h)
+        let (x0, x1) = ((r - q) * 0.5, (-r - q) * 0.5)
+        let t = clamp(
+            sign(x0) * pow(abs(x0), 1.0 / 3.0) + sign(x1) * pow(abs(x1), 1.0 / 3.0) - kx,
+            0.0,
+            1.0,
+        )
+        return vec2(length(dd + (cc + bb * t) * t), t)
+    }
+    let z = sqrt(-pp)
+    let v = acos(clamp(q / (pp * z * 2.0), -1.0, 1.0)) / 3.0
+    let (m, n) = (cos(v), sin(v) * 1.7320508)
+    let t0 = clamp((m + m) * z - kx, 0.0, 1.0)
+    let t1 = clamp((-n - m) * z - kx, 0.0, 1.0)
+    let (q0, q1) = (dd + (cc + bb * t0) * t0, dd + (cc + bb * t1) * t1)
+    if dot(q0, q0) < dot(q1, q1) { vec2(length(q0), t0) } else { vec2(length(q1), t1) }
+}
+
 /// A spike from `a` toward `b` (the design's, shortened to 0.64 of its length), arcing up by
-/// `arc`, `r0` thick at its base and flattened 2:1 across its sweep.
+/// `arc`, `r0` thick at its base and flattened 2:1 across its sweep: one curve, its
+/// thickness falling evenly to a point. (Five straight lengths joined end to end, it was
+/// ringed at each joint, a horn's and not a lock of hair's: a crease where they met, a
+/// bulge where they were run together.)
 fn blade(p: vec3, a: vec3, b0: vec3, r0: f32, arc: f32) -> f32 {
     let flat = 2.0
     let b = a + (b0 - a) * 0.64
     let r = r0 * 0.82
-    let up = arc * 0.7
+    // (At least a little arc: a straight line is no curve to solve for.)
+    let up = max(arc * 0.7, 0.008)
     let t = normalize(a - HAIR_CENTRE)
-    let q = p + t * ((flat - 1.0) * dot(p - a, t))
+    // (Flattened: the space stretched across the spike's sweep, and the spike round in it.)
+    let wide = |x: vec3| x + t * ((flat - 1.0) * dot(x - a, t))
     let ctrl = (a + b) * 0.5 + vec3(0.0, up, 0.0)
-    var d = 1.0e9
-    var last = a
-    var rl = r + 0.002
-    for i in 1..6 {
-        let s = f32(i) / 5.0
-        let pt = a * ((1.0 - s) * (1.0 - s)) + ctrl * (2.0 * (1.0 - s) * s) + b * (s * s)
-        let ri = r * pow(1.0 - s, 0.8) + 0.002
-        let pa = a + (last - a) + t * ((flat - 1.0) * dot(last - a, t))
-        let pb = a + (pt - a) + t * ((flat - 1.0) * dot(pt - a, t))
-        // (Each length run smoothly into the last: joined at a crease, a spike was a stack
-        // of rings, a horn's and not a lock of hair's.)
-        d = smin(d, cone(q, pa, pb, rl * flat, ri * flat) / flat, 0.006)
-        last = pt
-        rl = ri
-    }
-    d
+    let near = to_curve(wide(p), a, wide(ctrl), wide(b))
+    (near.x - (r * pow(1.0 - near.y, 0.8) + 0.002) * flat) / flat
 }
 
-/// The hair, in the unscaled head's space: a cap over the skull behind the mask, and fifteen
-/// separate spikes fanned back from it. `skull` is the skull's distance there.
-pub fn hair(p: vec3, skull: f32) -> f32 {
-    var cap = skull - 0.012
-    cap = smax(cap, -(p.y - 1.690), 0.01)
-    cap = smax(cap, p.z - 0.005, 0.01)
+/// How far off his scalp his hair's body stands at its least (m), and how much further a
+/// lock's tip stands off it. (A shell 12 mm off his scalp, smooth, read as hair pressed flat
+/// and glued down wherever it wasn't a spike.)
+const HAIR_DEEP: f32 = 0.015
+const LOCK_HIGH: f32 = 0.014
+
+/// How many locks lie side by side round his head, and how long a lock is (radians of his
+/// head's round).
+const LOCKS_ROUND: f32 = 11.0
+const LOCK_LONG: f32 = 0.36
+
+/// Where his hair runs from, and which way is straight back from there: from his crown, a
+/// little forward of the top of his head, down and back all round. (From over his brow, its
+/// rows met again at his nape, where his locks drew in to a point as a star.)
+const HAIR_FROM: vec3 = vec3(0.0, 0.9404, 0.3401)
+const HAIR_OVER: vec3 = vec3(0.0, 0.3401, -0.9404)
+
+/// How far along his hair's run a point of his head is (radians from his crown, toward the
+/// foot of his skull), and how far round it (radians from the middle of the back of his head).
+fn combed(p: vec3) -> vec2 {
+    // (Never divided by less than 2 cm: no hair is that near his head's middle, and a bound
+    // worked out over a box that holds the middle would divide by nothing.)
+    let from = p - HAIR_CENTRE
+    let d = from / max(length(from), 0.02)
+    vec2(acos(clamp(dot(d, HAIR_FROM), -1.0, 1.0)), atan2(d.x, dot(d, HAIR_OVER)))
+}
+
+/// How far a lock stands off his hair's body at `p` (m): his hair lies in locks, each a
+/// tongue that rises from its root to its tip and narrows to a point, a row of them lapping
+/// over the roots of the next, each row set half a lock round from the last.
+fn locks(p: vec3) -> f32 {
+    let at = combed(p)
+    let row = at.x / LOCK_LONG
+    let t = fract(row)
+    let half = 0.5 * (floor(row) - 2.0 * floor(0.5 * floor(row)))
+    let across = abs(fract(at.y * LOCKS_ROUND / 6.2831853 + half) - 0.5)
+    // (Its width, narrowing to its tip; its height, rising to its tip and rounded off there.)
+    let wide = 0.5 * (1.0 - 0.65 * t)
+    let round = saturate(1.0 - (across / wide) * (across / wide))
+    // (None by his crown, where the rows draw in.)
+    let grown = smoothstep(0.3, 0.6, at.x) * (1.0 - smoothstep(2.6, 2.9, at.x))
+    LOCK_HIGH * round * smoothstep(0.0, 0.6, t) * (1.0 - smoothstep(0.6, 1.0, t)) * grown
+}
+
+/// How low his hair grows at a point round his head (the unscaled head's space): to the tops
+/// of his ears at his temples, and down behind them to the foot of his skull, its edge in
+/// points, a lock's width each.
+pub fn hairline(p: vec3) -> f32 {
+    let at = combed(p)
+    let point = abs(fract(at.y * LOCKS_ROUND / 6.2831853) - 0.5)
+    1.704 - 0.066 * smoothstep(-0.025, -0.075, p.z) + 0.02 * (point - 0.25)
+}
+
+/// His hair, in the unscaled head's space, `scalp` how far `p` is from his skull
+/// (`skull`): its body, locks lying on one another back over his whole head from his mask's
+/// rim to its hairline, and its spikes, swept back out of it.
+pub fn hair(p: vec3, scalp: f32) -> f32 {
+    var cap = scalp - (HAIR_DEEP + locks(p))
+    cap = smax(cap, hairline(p) - p.y, 0.008)
     // (Far from every spike's reach, the cap alone: the spikes are evaluated near the head.)
     if length(p - vec3(0.0, 1.76, -0.12)) < 0.32 {
         for c in CLUMPS {
@@ -386,7 +464,12 @@ pub fn hair(p: vec3, skull: f32) -> f32 {
             }
         }
     }
-    smax(cap, p.z + 0.012, 0.008)
+    // (Behind his mask: a centimetre and a half behind its ears, which lean back, so they
+    // stand clear of it; between them a forelock comes forward to the mask's rim.)
+    let behind_ears = 0.004 - 0.14 * (p.y - 1.772)
+    let to_rim = 0.022 - 1.5 * p.x * p.x
+    let front = mix(to_rim, behind_ears, smoothstep(0.016, 0.03, abs(p.x)))
+    smax(cap, p.z - front, 0.016)
 }
 
 // ---- the boots ------------------------------------------------------------------------------

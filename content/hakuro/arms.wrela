@@ -819,6 +819,53 @@ pub fn skin_tails(tally: [Tally], verts: mut Slots<SkinVertex>, id: GlobalId) {
     verts[id] = SkinVertex { pos: v.pos, bones, normal: v.normal, weights, mask: v.mask }
 }
 
+/// How far off his skull (m, on him at rest) his hair is still his head's own, and how far
+/// off it's all its own bone's (`hakuro::HAIR_BONE`): between, a share of each.
+const HAIR_ROOTED: vec2 = vec2(0.016, 0.12)
+
+/// How much of a point of his hair (on him at rest) goes with his hair's bone, the rest with
+/// his head: none at his scalp, all of it out at a spike's tip.
+pub fn hair_share(p: vec3) -> f32 {
+    let off = shapes::skull(shapes::unscaled(p)) * shapes::HEAD_SCALE
+    smoothstep(HAIR_ROOTED.x, HAIR_ROOTED.y, off)
+}
+
+@compute(64)
+pub fn skin_hair(tally: [Tally], verts: mut Slots<SkinVertex>, id: GlobalId) {
+    if id.x >= tally[0].vertices {
+        return
+    }
+    let v = verts[id]
+    // How much of it is on his hair's bone now (his head's mesh is on that and his head's).
+    var on_hair = 0
+    for slot in 0..4 {
+        if ((v.bones >> (8 * slot)) & 255) == 56 {
+            on_hair += (v.weights >> (8 * slot)) & 255
+        }
+    }
+    let own = min(u32(round(f32(on_hair) * hair_share(v.pos))), 255)
+    verts[id] = SkinVertex {
+        pos: v.pos,
+        bones: 56 | (5 << 8),
+        normal: v.normal,
+        weights: own | ((255 - own) << 8),
+        mask: v.mask,
+    }
+}
+
+/// His head's mesh (`hakuro::head`, realized) with his hair rooted in his scalp
+/// (`hair_share`): what sways it bends it from its roots, its tips the furthest. (All of it
+/// on its own bone, his hair turned about the middle of his skull in one piece, sliding over
+/// his scalp as a wig does.)
+pub fn rooted_hair(mesh: take Mesh) -> Mesh {
+    var m = take mesh
+    dispatch(
+        skin_hair.bind(tally: m.tally.items(), verts: m.verts.items_mut()),
+        groups: m.skin.items(),
+    )
+    m
+}
+
 /// His coat's tails (`hakuro::coat`, realized) made to follow his legs (`tails_weights`).
 pub fn follow_legs(mesh: take Mesh) -> Mesh {
     var m = take mesh

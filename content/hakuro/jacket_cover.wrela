@@ -4,7 +4,7 @@
 // this): kept as it is, for the jacket's neck and where its body stops under its shoulders. Its
 // front, its armholes and its hem are cut by rule now (`hakuro::opening`, `hakuro::armhole`,
 // `hakuro::COAT_SEAM`), and its collar and its shoulders have no cover: their edges are rules
-// too (`hakuro::collar_top`, `hakuro::armhole_edge`). A cover made again is written from marks
+// too (`hakuro::collar_top`, `hakuro::armhole`). A cover made again is written from marks
 // with `engine::chart::cover_source`.
 
 use engine::chart::Cover

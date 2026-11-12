@@ -8,7 +8,7 @@
 
 use engine::chart
 use engine::chart::{Band, Grids, Grown, Limb, Part, Radial}
-use hakuro::arms::{Drape, drape_room, draped, follow_legs}
+use hakuro::arms::{Drape, drape_room, draped, follow_legs, rooted_hair}
 use hakuro::clear::fists_off_mask
 use hakuro::fingers::{FIST_CURL, curled}
 use hakuro::hakuro::{
@@ -75,7 +75,7 @@ pub fn fighters(shown: u32) -> Fighters {
     Fighters {
         shown: min(shown, FIGHTERS),
         body: realize_once(hero(), HOW_BODY),
-        head: realize_once(head(), HOW_HEAD),
+        head: rooted_hair(realize_once(head(), HOW_HEAD)),
         coat: follow_legs(realize_once(coat(), HOW_COAT)),
         palettes: buffer(2 * FIGHTERS * MAX_BONES),
         drape: drape_room(FIGHTERS),
