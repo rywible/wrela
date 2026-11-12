@@ -1,11 +1,10 @@
 // Hakuro's sampled pieces, made as the idol's parts are: the reference body's own surface sampled
-// into distance grids (his hands, body and jacket: `*_grid`, engine::sampled), so the fingers
+// into distance grids (his hands and his jacket: `*_grid`, engine::sampled), so the fingers
 // and the muscle between are the sculpt's, not pieces fitted to it. Each is realized from its
 // samples, then skinned by the reference rig's own weights round it (`*_weights`, `skinning`),
-// every finger joint, so he bends where and as it does. His arms aren't among them: they're
-// drawn along their charts (`hakuro::arm_charts`).
+// every finger joint, so he bends where and as it does. His arms, his legs, his trunk, his
+// neck and his head aren't among them: they're drawn along their charts (`hakuro::charts`).
 
-use body_grid
 use body_weights
 use hand_left_grid
 use hand_left_weights
@@ -50,14 +49,6 @@ fn sampled_at(l: Lattice, slots: [u32], words: [u32], p: vec3) -> f32 {
         f.z,
     )
 }
-
-/// How much of him a program draws along charts (`hakuro::charts`, `engine::chart`: forms made
-/// again where his bones are each frame, with no mesh and no weights), in place of the sampled
-/// meshes here: 1 his arms, as every program draws them; 2 his legs, trunk, head and jacket
-/// too (his hands stay sampled). The combat lab's fighters read it. A switch while the rest of
-/// him is judged against his sampled body: set here (`--set` reaches only a program's own
-/// constants).
-pub const CHARTED: u32 = 1
 
 /// His hand on `side`, from inside the forearm's wrap to the fingertips: sampled finer, each
 /// finger's joints weighted as the reference's are.
@@ -157,14 +148,9 @@ fn weighted(samples: Samples, tables: WeightTables, reach: f32, pull: f32) -> Me
     mesh
 }
 
-// ---- his body ------------------------------------------------------------------------------
+// ---- his jacket ----------------------------------------------------------------------------
 
-/// His trunk, legs and head (`body_grid`) realized from their samples and skinned.
-pub fn sampled_body() -> Mesh {
-    weighted(body_grid::samples(0), body_weights::weights(), reach: 1.5, pull: 0.0)
-}
-
-/// His jacket (`jacket_grid`): its own shell over his shirt, skinned as his body is.
+/// His jacket (`jacket_grid`): its own shell over his shirt, skinned by his body's weights.
 pub fn jacket() -> Mesh {
     // (Its normal taken nearer: the shell is only a cell or two thick, and further off the
     // samples would reach through it to its other face.)

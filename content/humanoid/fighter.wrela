@@ -7,12 +7,13 @@
 
 use engine::chart
 use engine::chart::{Band, Grids, Limb, Part, Radial}
-use hakuro::arms::{Drape, CHARTED, drape_room, draped, follow_legs, hand, jacket, sampled_body}
+use hakuro::arms::{Drape, drape_room, draped, follow_legs, hand, jacket}
 use hakuro::clear::fists_off_mask
 use hakuro::fingers::{FIST_CURL, curled}
 use hakuro::hakuro::{
-    ARM_CHARTS, CHARTS, COVERED, Cloth, SHADED_DETAIL, WIDE_CHARTS, body_paint, chart_cut,
-    chart_paint, charts, coat, head, hero, jacket_paint, wide_charts,
+    CHARTS, COVERED, Charted, Cloth, WIDE_CHARTS, body_paint, chart_cut, chart_paint, charted_as,
+    charted_at_rest, charted_now, charts, coat, head, hero, jacket_paint, sampled_now, shaded,
+    shaded_wide, wide_charts,
 }
 use hakuro::reference_rig::HAKURO_BONE
 use engine::character::skin_matrix
@@ -50,53 +51,16 @@ pub struct Fighters {
     body: Mesh,
     head: Mesh,
     coat: Mesh,
-    /// His sampled meshes: his body, his jacket and his hands.
-    sampled: [Mesh; 4],
+    /// His sampled meshes: his jacket and his hands.
+    sampled: [Mesh; 3],
     palettes: GpuBuffer<mat4>,
     drape: Drape,
-    /// Each fighter's charted parts (`hakuro::charts`: his limbs and his head; then
-    /// `hakuro::wide_charts`: his trunk and his jacket) as his bones pose them this frame, and
-    /// the grids charted forms are drawn on. His arms are drawn along their charts always; the
-    /// rest of him as `CHARTED` says, in place of his sampled body and jacket.
-    charted: [[Charted; CHARTS]; FIGHTERS],
-    wide: [[Limb<24, 21>; WIDE_CHARTS]; FIGHTERS],
+    /// Each fighter's charted parts as his bones pose them this frame (`hakuro::Charted`), and
+    /// the grids charted forms are drawn on.
+    charted: [Charted; FIGHTERS],
     grids: Grids,
     /// Where his jacket is on its chart (`hakuro::jacket_cover`), for its pixels to read.
     cover: GpuBuffer<u32>,
-}
-
-/// A charted part's form: its radius about the line of its joints.
-type Charted = Limb<16, 13>
-
-/// Whether charted part `part` (`hakuro::charts`' order, then `hakuro::wide_charts`') is drawn:
-/// his arms and what's over them from `CHARTED` 1, the rest of him from 2.
-fn charted_now(part: u32) -> bool {
-    CHARTED >= (if part < ARM_CHARTS { 1 } else { 2 })
-}
-
-/// Whether sampled mesh `k` (`Fighters::sampled`: his body, his jacket, his hands) has charted
-/// parts drawn in its place.
-fn in_place_of(k: u32) -> bool {
-    k < 2 && CHARTED >= 2
-}
-
-/// His charted parts at rest.
-fn charts_at_rest() -> [Charted; CHARTS] {
-    let parts = charts()
-    var out = [parts[0].rest(); CHARTS]
-    for k in 0..CHARTS {
-        out[k] = parts[k].rest()
-    }
-    out
-}
-
-fn wide_at_rest() -> [Limb<24, 21>; WIDE_CHARTS] {
-    let parts = wide_charts()
-    var out = [parts[0].rest(); WIDE_CHARTS]
-    for k in 0..WIDE_CHARTS {
-        out[k] = parts[k].rest()
-    }
-    out
 }
 
 pub fn fighters() -> Fighters {
@@ -104,11 +68,10 @@ pub fn fighters() -> Fighters {
         body: realize_once(hero(), HOW_BODY),
         head: realize_once(head(), HOW_HEAD),
         coat: follow_legs(realize_once(coat(), HOW_COAT)),
-        sampled: [sampled_body(), jacket(), hand(0), hand(1)],
+        sampled: [jacket(), hand(0), hand(1)],
         palettes: buffer(2 * FIGHTERS * MAX_BONES),
         drape: drape_room(FIGHTERS),
-        charted: [charts_at_rest(); FIGHTERS],
-        wide: [wide_at_rest(); FIGHTERS],
+        charted: [charted_at_rest(); FIGHTERS],
         cover: hakuro::jacket_cover::JACKET_COVER.upload(),
         grids: chart::grids(),
     }
@@ -187,18 +150,7 @@ impl Fighters {
     pub fn pose(mut self, who: u32, m: [mat4; 64]) {
         write(mut self.palettes, who * MAX_BONES, m)
         write(mut self.palettes, (FIGHTERS + who) * MAX_BONES, m)
-        let parts = charts()
-        for k in 0..CHARTS {
-            if charted_now(k) {
-                self.charted[who][k] = parts[k].posed(m)
-            }
-        }
-        let wide = wide_charts()
-        for k in 0..WIDE_CHARTS {
-            if charted_now(CHARTS + k) {
-                self.wide[who][k] = wide[k].posed(m)
-            }
-        }
+        self.charted[who] = charted_as(m)
     }
 
     /// Their coats' tails moved on `dt` seconds (0 through a hit-stop: the cloth holds with them).
@@ -219,17 +171,17 @@ impl Fighters {
             let parts = charts()
             for k in 0..CHARTS {
                 if charted_now(k) {
-                    chart_shadow(p, self.grids, self.charted[who][k], parts[k].band, shot)
+                    chart_shadow(p, self.grids, self.charted[who].limbs[k], parts[k].band, shot)
                 }
             }
             let wide = wide_charts()
             for k in 0..WIDE_CHARTS {
                 if charted_now(CHARTS + k) {
-                    chart_shadow(p, self.grids, self.wide[who][k], wide[k].band, shot)
+                    chart_shadow(p, self.grids, self.charted[who].wide[k], wide[k].band, shot)
                 }
             }
-            for k in 0..4 {
-                if in_place_of(k) {
+            for k in 0..3 {
+                if !sampled_now(k) {
                     continue
                 }
                 shadow_of(p, self.sampled[k], self.palettes, first, shot)
@@ -298,44 +250,10 @@ impl Fighters {
                 cull: Cull::Back,
                 depth: engine::view::NEAREST,
             )
-            let rest = charts_at_rest()
-            for k in 0..CHARTS {
-                if charted_now(k) {
-                    let c = self.charted[who][k]
-                    chart_drawn(
-                        p,
-                        self.grids,
-                        self.cover,
-                        rest[k],
-                        c,
-                        parts[k].band,
-                        parts[k].sunk,
-                        shot,
-                        who,
-                        k,
-                    )
-                }
-            }
-            let wide_rest = wide_at_rest()
-            for k in 0..WIDE_CHARTS {
-                if charted_now(CHARTS + k) {
-                    let c = self.wide[who][k]
-                    chart_drawn(
-                        p,
-                        self.grids,
-                        self.cover,
-                        wide_rest[k],
-                        c,
-                        wide[k].band,
-                        wide[k].sunk,
-                        shot,
-                        who,
-                        CHARTS + k,
-                    )
-                }
-            }
-            for k in 0..4 {
-                if in_place_of(k) {
+            // (His sampled meshes before his charted parts: what's under his jacket is then
+            // behind it already when its pixels come.)
+            for k in 0..3 {
+                if !sampled_now(k) {
                     continue
                 }
                 draw(
@@ -346,12 +264,49 @@ impl Fighters {
                         first: who * MAX_BONES,
                         shot: shot,
                     ),
-                    sampled_pixel.bind(shot: shot, who: who, jacket: if k == 1 { 1 } else { 0 }),
+                    sampled_pixel.bind(shot: shot, who: who, jacket: if k == 0 { 1 } else { 0 }),
                     indices: self.sampled[k].quads.items(),
                     indirect: self.sampled[k].draw.items(),
                     cull: Cull::Back,
                     depth: engine::view::NEAREST,
                 )
+            }
+            let rest = charted_at_rest()
+            for k in 0..CHARTS {
+                if charted_now(k) {
+                    let c = self.charted[who].limbs[k]
+                    chart_drawn(
+                        p,
+                        self.grids,
+                        self.cover,
+                        rest.limbs[k],
+                        c,
+                        shaded(c.form),
+                        parts[k].band,
+                        parts[k].sunk,
+                        shot,
+                        who,
+                        k,
+                    )
+                }
+            }
+            for k in 0..WIDE_CHARTS {
+                if charted_now(CHARTS + k) {
+                    let c = self.charted[who].wide[k]
+                    chart_drawn(
+                        p,
+                        self.grids,
+                        self.cover,
+                        rest.wide[k],
+                        c,
+                        shaded_wide(c.form),
+                        wide[k].band,
+                        wide[k].sunk,
+                        shot,
+                        who,
+                        CHARTS + k,
+                    )
+                }
             }
         }
     }
@@ -400,12 +355,13 @@ pub fn coat_vertex(
 }
 
 /// A charted part drawn into the paint's targets: on the grid its size on screen calls for.
-fn chart_drawn<P: RenderPass, const A: u32, const R: u32>(
+fn chart_drawn<P: RenderPass, const A: u32, const R: u32, const S: u32>(
     p: P,
     grids: Grids,
     cover: GpuBuffer<u32>,
     rest: Limb<A, R>,
     form: Limb<A, R>,
+    shade: Radial<A, S>,
     band: Band,
     sunk: vec2,
     shot: Shot,
@@ -425,7 +381,7 @@ fn chart_drawn<P: RenderPass, const A: u32, const R: u32>(
             seen: shot.cam,
         ),
         charted_pixel.bind(
-            shade: form.form.softened(SHADED_DETAIL),
+            shade: shade,
             length: form.path.length(),
             cover: cover.items(),
             shot: shot,

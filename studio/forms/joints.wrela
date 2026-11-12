@@ -382,7 +382,12 @@ fn the_arm_as_its_drawn_against_the_posed_reference() {
 /// the arm's chain cutting a bent joint's corner by `cut`: solved on every other pose, measured
 /// on the rest (mm rms).
 fn left_cutting(cut: f32) -> f32 {
-    let limb = Limb { chain: engine::chart::Chain { cut, ..ARM_LEFT.chain }, ..ARM_LEFT }
+    left_cutting_of(ARM_LEFT, cut)
+}
+
+/// `left_cutting`, for limb `whole`.
+fn left_cutting_of(whole: Limb, cut: f32) -> f32 {
+    let limb = Limb { chain: engine::chart::Chain { cut, ..whole.chain }, ..whole }
     let at_rest = posed::rest_rays(limb, vec2(FROM, 1.0), 44, 24, vec2(0.0, 0.0))
     let between = posed::rest_rays(limb, vec2(FROM, 1.0), 44, 24, vec2(0.5, 0.5))
     let all = poses()
@@ -396,6 +401,14 @@ fn left_cutting(cut: f32) -> f32 {
         }
     }
     left_over(solved(fit, [1, 2]), [1, 2], held).x
+}
+
+@test
+fn a_leg_whose_path_cuts_its_knees_corner_is_no_further_from_the_posed_reference() {
+    let through = left_cutting_of(posed::LEG_LEFT, 0.0)
+    let cutting = left_cutting_of(posed::LEG_LEFT, 1.0)
+    std::io::print(f"leg: through the joint {through} mm rms, cutting {cutting}")
+    assert(cutting < through + 0.1, f"cutting leaves {cutting} mm rms, through the joint {through}")
 }
 
 @test

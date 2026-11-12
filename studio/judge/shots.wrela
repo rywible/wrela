@@ -58,7 +58,7 @@ pub fn set_of(s: str) -> Option<Set> {
 }
 
 /// The scenes' names.
-pub const SCENES: [Text; 3] = ["exchange", "rider", "rider-quarter"]
+pub const SCENES: [Text; 6] = ["exchange", "rider", "rider-quarter", "turnaround", "run", "roll"]
 
 /// The scene named `name`, if there is one.
 /// - `exchange`: the combat lab's exchange (content/humanoid, `SHOW=28`): Hakuro and his double
@@ -68,6 +68,10 @@ pub const SCENES: [Text; 3] = ["exchange", "rider", "rider-quarter"]
 ///   the skiff, a hand to the sail's boom, riding the swell, at 60 frames a second; seven
 ///   seconds in, the sky and the sea have settled. Its clip is the two seconds round that.
 /// - `rider-quarter`: the same from off the starboard quarter (`VIEW=9`).
+/// - `turnaround`: Hakuro's own viewer (content/hakuro) in plain light: the sheet's pose drawn
+///   five times round, front, three-quarter, side, back and the other side.
+/// - `run` and `roll`: the same five views with his run and his roll played in place (`MOVE=5`,
+///   `MOVE=7`), at 60 frames a second; each one's clip is its first two seconds.
 pub fn scene(name: str) -> Option<Scene> {
     if name == "exchange" {
         return Some(
@@ -80,6 +84,25 @@ pub fn scene(name: str) -> Option<Scene> {
                 fps: 30.0,
                 clip_first: 96,
                 clip_last: 216,
+            },
+        )
+    }
+    if name == "turnaround" || name == "run" || name == "roll" {
+        let (scene, mv) = if name == "turnaround" { ("turnaround", "0") } else if name == "run" {
+            ("run", "5")
+        } else {
+            ("roll", "7")
+        }
+        return Some(
+            Scene {
+                name: scene,
+                program: "content/hakuro",
+                sets: Vec::from([set("MOVE", mv)]),
+                width: 1600,
+                height: 900,
+                fps: 60.0,
+                clip_first: if name == "turnaround" { 0 } else { 1 },
+                clip_last: if name == "turnaround" { 0 } else { 120 },
             },
         )
     }
@@ -101,7 +124,7 @@ pub fn scene(name: str) -> Option<Scene> {
 }
 
 /// The lists' names.
-pub const LISTS: [Text; 2] = ["arms", "rider"]
+pub const LISTS: [Text; 3] = ["arms", "rider", "body"]
 
 /// The frames from `first` to `last`, every `every`th.
 pub fn every(first: u32, last: u32, every: u32) -> Vec<u32> {
@@ -120,6 +143,10 @@ pub fn every(first: u32, last: u32, every: u32) -> Vec<u32> {
 ///   recovery), each a still of the fighters' arms, and the cross as a strip of frames.
 /// - `rider`: the opening's traveller aboard his skiff, close and from off the quarter, at two
 ///   moments of the swell each.
+/// - `body`: the whole of him. In plain light, from his viewer: his turnaround's front, side
+///   and back, two moments of his run from the side and one from three-quarters, and his roll
+///   upside down and coming up. And in the combat lab's ink, head to foot: the guard, the
+///   follow-through and the recovery.
 pub fn list(name: str) -> Option<Vec<Shot>> {
     if name == "arms" {
         let near = Crop { x0: 560, y0: 130, x1: 1160, y1: 560 }
@@ -179,6 +206,122 @@ pub fn list(name: str) -> Option<Vec<Shot>> {
                         down: 2,
                         about: "the whole cross, a frame in six",
                     },
+                ],
+            ),
+        )
+    }
+    if name == "body" {
+        let still = |name: Text, scene: Text, frame: u32, crop: Crop, up: u32, down: u32, about: Text| Shot {
+            name,
+            scene,
+            frames: Vec::from([frame]),
+            crop,
+            up,
+            down,
+            about,
+        }
+        return Some(
+            Vec::from(
+                [
+                    still(
+                        "turn-front",
+                        "turnaround",
+                        30,
+                        Crop { x0: 30, y0: 130, x1: 330, y1: 740 },
+                        2,
+                        1,
+                        "standing, from the front",
+                    ),
+                    still(
+                        "turn-side",
+                        "turnaround",
+                        30,
+                        Crop { x0: 655, y0: 130, x1: 955, y1: 740 },
+                        2,
+                        1,
+                        "standing, from the side",
+                    ),
+                    still(
+                        "turn-back",
+                        "turnaround",
+                        30,
+                        Crop { x0: 980, y0: 130, x1: 1280, y1: 740 },
+                        2,
+                        1,
+                        "standing, from the back",
+                    ),
+                    still(
+                        "run-side",
+                        "run",
+                        20,
+                        Crop { x0: 620, y0: 130, x1: 1040, y1: 740 },
+                        2,
+                        1,
+                        "running, from the side",
+                    ),
+                    still(
+                        "run-side-later",
+                        "run",
+                        40,
+                        Crop { x0: 620, y0: 130, x1: 1040, y1: 740 },
+                        2,
+                        1,
+                        "running, a third of a second on",
+                    ),
+                    still(
+                        "run-quarter",
+                        "run",
+                        20,
+                        Crop { x0: 330, y0: 130, x1: 660, y1: 740 },
+                        2,
+                        1,
+                        "running, from three-quarters",
+                    ),
+                    still(
+                        "roll-over",
+                        "roll",
+                        40,
+                        Crop { x0: 300, y0: 400, x1: 1000, y1: 880 },
+                        2,
+                        1,
+                        "the roll, upside down, from two sides",
+                    ),
+                    still(
+                        "roll-up",
+                        "roll",
+                        60,
+                        Crop { x0: 0, y0: 250, x1: 920, y1: 740 },
+                        3,
+                        2,
+                        "coming up out of the roll, from three sides",
+                    ),
+                    still(
+                        "guard-whole",
+                        "exchange",
+                        99,
+                        Crop { x0: 250, y0: 60, x1: 1350, y1: 900 },
+                        1,
+                        1,
+                        "both fighters in their guards, head to foot",
+                    ),
+                    still(
+                        "follow-whole",
+                        "exchange",
+                        210,
+                        Crop { x0: 100, y0: 0, x1: 1600, y1: 900 },
+                        1,
+                        1,
+                        "the follow-through, head to foot",
+                    ),
+                    still(
+                        "recover-whole",
+                        "exchange",
+                        216,
+                        Crop { x0: 250, y0: 0, x1: 1500, y1: 900 },
+                        1,
+                        1,
+                        "the recovery, head to foot",
+                    ),
                 ],
             ),
         )
@@ -282,7 +425,7 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
             if list(next.as_str()).is_none() {
                 return Err(
                     String::from(
-                        f"no list of shots {next}: the lists are {LISTS[0]} and {LISTS[1]}",
+                        f"no list of shots {next}: the lists are {LISTS[0]}, {LISTS[1]} and {LISTS[2]}",
                     ),
                 )
             }

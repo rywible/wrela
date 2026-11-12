@@ -855,6 +855,24 @@ impl<const A: u32, const R: u32> Radial<A, R> {
         fit(samples, from: self.from, to: self.to, smooth: 0.0)
     }
 
+    /// It with only its first `R2` terms round (`R2` no more than `R`, and odd: whole
+    /// harmonics). A form softened for shading has next to nothing in its finer harmonics, and
+    /// a pixel that reads it pays for every term: kept to what's left, it's the same light for
+    /// less.
+    pub fn kept<const R2: u32>(self) -> Radial<A, R2> {
+        assert(
+            R2 <= R && R2 % 2 == 1,
+            "kept takes an odd count of terms, no more than the form has",
+        )
+        var out: Radial<A, R2> = Radial { from: self.from, to: self.to, coef: [[0.0; R2]; A] }
+        for i in 0..A {
+            for k in 0..R2 {
+                out.coef[i][k] = self.coef[i][k]
+            }
+        }
+        out
+    }
+
     /// It with its finer detail round the path damped: each harmonic kept by
     /// 1 / (1 + (h / `detail`)⁸), so those under `detail` stay and those over it go.
     /// A form's shading reads its normal from this (`normal_at`): the small ripples a fit
@@ -944,6 +962,30 @@ pub struct Limb<const A: u32, const R: u32>: Copy + GpuData {
     pub path: Path,
     pub form: Radial<A, R>,
     pub folds: [Fold; FOLDS] = [NO_FOLD; FOLDS],
+    /// Where it closes to a point: over this much of its path from its start, and over this
+    /// much before its end (of the path's length; 0: open, a tube's cut end). A form whose
+    /// end shows (a trunk's fork, a head's underside, a fingertip) closes there (`closed`).
+    pub caps: vec2 = vec2(0.0, 0.0),
+    /// How many levels coarser than its size on screen calls for it's drawn (`level`). A form
+    /// that's under another the whole way shows no outline of its own, and needs none drawn
+    /// finely.
+    pub coarser: u32 = 0,
+}
+
+/// How much of its radius a form with `caps` keeps `f` of the way along its path: all of it
+/// between its caps, and inside one a quarter circle's worth, from none at the path's end to
+/// all where the cap ends, so the end is round and meets the form's side without a crease.
+pub fn closed(caps: vec2, f: f32) -> f32 {
+    var keep = 1.0
+    if caps.x > 0.0 {
+        let a = saturate(f / caps.x)
+        keep *= sqrt(a * (2.0 - a))
+    }
+    if caps.y > 0.0 {
+        let b = saturate((1.0 - f) / caps.y)
+        keep *= sqrt(b * (2.0 - b))
+    }
+    keep
 }
 
 impl<const A: u32, const R: u32> Limb<A, R> {
@@ -961,16 +1003,18 @@ impl<const A: u32, const R: u32> Limb<A, R> {
             let h = saturate(0.5 + 0.5 * (most - r) / 0.004)
             r = mix(most, r, h) - 0.004 * h * (1.0 - h)
         }
+        r *= closed(self.caps, x)
         fr.at + (fr.up * cos(theta) + fr.left * sin(theta)) * r
     }
 
     /// Whether a folded hinge holds its side in at a place on its chart (1 where its radius is
-    /// the fold's, 0 where it is its form's own): where it does, the side's normal is the
-    /// fold's, not what the form's slopes say (`normal_at`).
+    /// the fold's, 0 where it is its form's own), or a cap closes it there: where either does,
+    /// the side's normal is its own across its points, not what the form's slopes say
+    /// (`normal_at`).
     pub fn folded(self, f: f32, theta: f32) -> f32 {
         let x = saturate(f)
         let r = self.form.radius(x, theta)
-        var held = 0.0
+        var held = if closed(self.caps, x) < 0.999 { 1.0 } else { 0.0 }
         for k in 0..FOLDS {
             held = max(held, saturate(0.5 - 0.5 * (self.folds[k].most(x, theta) - r) / 0.004))
         }
@@ -1137,6 +1181,10 @@ pub struct Part<const A: u32, const R: u32>: Copy {
     /// Which of its joints are hinges it folds at (`Fold`: an elbow, a knee), by their place in
     /// its chain; 0 for none.
     pub folds: [u32; FOLDS] = [0; FOLDS],
+    /// Where it closes to a point, at its path's start and at its end (`Limb::caps`).
+    pub caps: vec2 = vec2(0.0, 0.0),
+    /// How many levels coarser than its size on screen calls for it's drawn (`Limb::coarser`).
+    pub coarser: u32 = 0,
 }
 
 /// No change at a joint.
@@ -1147,7 +1195,7 @@ pub fn unchanged<const A: u32, const R: u32>() -> Change<A, R> {
 impl<const A: u32, const R: u32> Part<A, R> {
     /// It at rest.
     pub fn rest(self) -> Limb<A, R> {
-        Limb { path: self.chain.rest(), form: self.form }
+        Limb { path: self.chain.rest(), form: self.form, caps: self.caps, coarser: self.coarser }
     }
 
     /// It as a pose has it (`palette`: each of the creature's bones' matrices, from the body at
@@ -1179,7 +1227,7 @@ impl<const A: u32, const R: u32> Part<A, R> {
                 }
             }
         }
-        Limb { path, form, folds }
+        Limb { path, form, folds, caps: self.caps, coarser: self.coarser }
     }
 
     /// How far under what covers it its side is drawn, `f` of the way along its path (m).
@@ -1196,16 +1244,18 @@ pub fn sunk_by(sunk: vec2, f: f32) -> f32 {
 
 impl<const A: u32, const R: u32> Limb<A, R> {
     /// The level it's drawn at, seen from `eye` by a camera whose picture is `pixels` high over
-    /// `tan_half` (`level_for`, by its length and its radius halfway along).
+    /// `tan_half` (`level_for`, by its length and its radius halfway along), and as many
+    /// levels coarser as it asks to be (`coarser`).
     pub fn level(self, eye: vec3, pixels: f32, tan_half: f32) -> u32 {
         let len = self.path.length()
-        level_for(
+        let level = level_for(
             length: len,
             radius: self.form.radius(f: 0.5, theta: 0.0),
             distance: length(self.path.frame(0.5 * len).at - eye),
             pixels: pixels,
             tan_half: tan_half,
         )
+        min(level + self.coarser, LEVELS - 1)
     }
 }
 
@@ -1433,16 +1483,19 @@ pub fn place_of(v: u32, level: u32, band: Band) -> vec2 {
     )
 }
 
+/// How many pixels a drawn quad may span, along and round.
+pub const QUAD_PIXELS: f32 = 6.0
+
 /// The level a form `length` long and `radius` thick is drawn at, `distance` from the eye of a
 /// camera whose picture is `pixels` high over `tan_half` (the tangent of half its field of
-/// view): the coarsest whose quads are 6 pixels or less along and round.
+/// view): the coarsest whose quads are `QUAD_PIXELS` or less along and round.
 pub fn level_for(length: f32, radius: f32, distance: f32, pixels: f32, tan_half: f32) -> u32 {
     let scale = pixels / (2.0 * tan_half * max(distance, 0.01))
     let along = length * scale
     let about = TAU * radius * scale
     var level = 0
     for l in 1..LEVELS {
-        if along <= 6.0 * f32(QUADS[l].x) && about <= 6.0 * f32(QUADS[l].y) {
+        if along <= QUAD_PIXELS * f32(QUADS[l].x) && about <= QUAD_PIXELS * f32(QUADS[l].y) {
             level = l
         }
     }
@@ -1533,6 +1586,65 @@ impl Vertex {
 }
 
 // ---- tests --------------------------------------------------------------------------------------
+
+@test
+fn a_softened_form_kept_to_its_coarser_terms_is_the_same_light() {
+    // A leg's form, softened until its third harmonic is next to nothing, then kept to its
+    // first two: its radius and its slopes are what they were, within a tenth of a millimetre
+    // and a thousandth.
+    let soft = leg_form().softened(1.5)
+    let kept: Radial<8, 5> = soft.kept()
+    for i in 0..10 {
+        let f = 0.05 + 0.09 * f32(i)
+        let theta = 0.6 * f32(i)
+        let a = soft.radius_and_slopes(f, theta)
+        let b = kept.radius_and_slopes(f, theta)
+        assert(
+            abs(a.x - b.x) < 0.0001 && abs(a.y - b.y) < 0.001 && abs(a.z - b.z) < 0.001,
+            f"at {f}",
+        )
+    }
+}
+
+@test
+fn a_form_that_asks_to_be_coarser_is_drawn_that_many_levels_down_and_no_further_than_the_last() {
+    let fine: Limb<8, 7> = Limb {
+        path: path([vec3(0.0, 0.0, 0.0), vec3(0.0, 0.8, 0.0)], vec3(z: 1.0)),
+        form: round(0.15),
+    }
+    var coarse = fine
+    coarse.coarser = 2
+    var coarsest = fine
+    coarsest.coarser = 9
+    let eye = vec3(0.0, 0.4, 1.5)
+    let level = fine.level(eye, pixels: 900.0, tan_half: 0.4)
+    assert(level == 0, f"{level}")
+    assert(coarse.level(eye, pixels: 900.0, tan_half: 0.4) == 2)
+    assert(coarsest.level(eye, pixels: 900.0, tan_half: 0.4) == LEVELS - 1)
+}
+
+@test
+fn a_capped_form_closes_to_a_point_at_its_end_and_keeps_its_side_between() {
+    let l: Limb<8, 7> = Limb {
+        path: path([vec3(0.0, 0.0, 0.0), vec3(0.0, 0.5, 0.0)], vec3(z: 1.0)),
+        form: round(0.05),
+        caps: vec2(0.2, 0.0),
+    }
+    // At its start every angle is the path's own point; where the cap ends, and at its open
+    // end, the side is the form's.
+    for j in 0..6 {
+        let theta = f32(j)
+        assert(length(l.side(f: 0.0, theta: theta) - vec3(0.0, 0.0, 0.0)) < 1.0e-5)
+        assert(abs(length(l.side(f: 0.2, theta: theta) - vec3(0.0, 0.1, 0.0)) - 0.05) < 1.0e-4)
+        assert(abs(length(l.side(f: 1.0, theta: theta) - vec3(0.0, 0.5, 0.0)) - 0.05) < 1.0e-4)
+    }
+    // Halfway through the cap the radius is a quarter circle's: √(0.5 × 1.5) of the form's.
+    let half = length(l.side(f: 0.1, theta: 1.0) - vec3(0.0, 0.05, 0.0))
+    assert(abs(half - 0.05 * sqrt(0.75)) < 1.0e-4, f"{half}")
+    assert(closed(vec2(0.2, 0.1), 0.5) == 1.0 && closed(vec2(0.0, 0.1), 1.0) == 0.0)
+    // Inside the cap a pixel takes the side's own normal; outside, the form's.
+    assert(l.folded(f: 0.1, theta: 0.0) == 1.0 && l.folded(f: 0.5, theta: 0.0) == 0.0)
+}
 
 /// A leg's path: down from a hip, bending back at a knee and forward at an ankle to a paw.
 fn leg_path() -> Path {

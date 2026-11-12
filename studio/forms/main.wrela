@@ -108,7 +108,10 @@ pub const HAKURO_ARM_RIGHT: Spec = Spec {
 }
 
 /// The species' left leg: the reference body's own, bare, from where it leaves his trunk to
-/// his ankle.
+/// his ankle. Its root keeps its whole width up to its path's start inside his hip (`tuck` 1):
+/// narrowed there, a hip folded deep (a crouch, a roll) swung the narrowed stretch into sight
+/// and the thigh thinned where it left his trunk. A creature draws the root under its trunk
+/// (`Part::sunk`).
 pub const LEG: Spec = Spec {
     name: "leg",
     file: "content/figure/leg.wrela",
@@ -121,7 +124,7 @@ pub const LEG: Spec = Spec {
     chain: chains::leg_left(),
     span: vec2(0.17, 1.0),
     most: 0.16,
-    tuck: 0.6,
+    tuck: 1.0,
 }
 
 /// What Hakuro's left leg is over the species': his trousers, as his sampled body has them,
@@ -175,21 +178,38 @@ pub const HAKURO_JACKET: Spec = Spec {
     tuck: 1.0,
 }
 
-/// Hakuro's neck and head under his mask and his hair: his sampled body's, from the root of
-/// his neck to his crown.
+/// Hakuro's head under his mask and his hair: his sampled body's, from under his chin to his
+/// crown, about a line his head carries whole.
 pub const HAKURO_HEAD: Spec = Spec {
     name: "hakuro-head",
     file: "content/hakuro/head_form.wrela",
     constant: "HEAD",
     about: [
-        "Hakuro's neck and head, under his mask and his hair: his sampled body's surface",
-        "(`body_grid`), read along rays from the line through his neck's and his head's joints",
-        "(`figure::chains::neck`) and fitted by the forms tool.",
+        "Hakuro's head, under his mask and his hair: his sampled body's surface (`body_grid`), read",
+        "along rays from a line straight up through his head (`figure::chains::head`) and fitted",
+        "by the forms tool. It closes under his chin (`hakuro::charts`).",
+    ],
+    chain: chains::head(),
+    span: vec2(0.18, 0.93),
+    most: 0.135,
+    tuck: 1.0,
+}
+
+/// Hakuro's neck: his sampled body's, from inside his collar to under his jaw. His jaw is past
+/// how far the reference is read (`most`), so the neck runs on smoothly behind it.
+pub const HAKURO_NECK: Spec = Spec {
+    name: "hakuro-neck",
+    file: "content/hakuro/neck_form.wrela",
+    constant: "NECK",
+    about: [
+        "Hakuro's neck: his sampled body's surface (`body_grid`), read along rays from the line",
+        "through his neck's and his head's joints (`figure::chains::neck`), no further out than",
+        "his throat, and fitted by the forms tool.",
     ],
     chain: chains::neck(),
-    span: vec2(0.12, 0.93),
-    most: 0.2,
-    tuck: 0.8,
+    span: vec2(0.3, 0.8),
+    most: 0.095,
+    tuck: 0.9,
 }
 
 /// A form fitted: its numbers as written, how far it is from its reference where it wasn't
@@ -382,9 +402,14 @@ pub fn hakuro_jacket() -> Fitted<24, 21> {
     fitted(Grid { samples: hakuro::jacket_grid::samples(0) }, HAKURO_JACKET)
 }
 
-/// Hakuro's neck and head, fitted.
+/// Hakuro's head, fitted.
 pub fn hakuro_head() -> Fitted<16, 13> {
     fitted(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_HEAD)
+}
+
+/// Hakuro's neck, fitted.
+pub fn hakuro_neck() -> Fitted<16, 13> {
+    fitted(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_NECK)
 }
 
 /// What's said of a fitted form: its misses' spread, and their size by place.
@@ -613,6 +638,9 @@ fn stations_of(name: str) -> Option<String> {
     if name == HAKURO_HEAD.name {
         return Some(stations(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_HEAD))
     }
+    if name == HAKURO_NECK.name {
+        return Some(stations(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_NECK))
+    }
     None
 }
 
@@ -669,6 +697,9 @@ pub fn tool() -> u32 {
     }
     if chosen(wanted, "hakuro-jacket-cover") {
         results.push(jacket_cover_written())
+    }
+    if chosen(wanted, HAKURO_NECK.name) {
+        results.push(written(HAKURO_NECK, hakuro_neck()))
     }
     if chosen(wanted, HAKURO_HEAD.name) {
         results.push(written(HAKURO_HEAD, hakuro_head()))
