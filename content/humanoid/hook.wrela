@@ -1,0 +1,209 @@
+// The lead hook, written (`engine::written`): the left fist thrown from the standing guard
+// (`fists::guard`), swung round from the left and landing on the jaw line with the arm bent,
+// the body going first: the hips, then the chest, then the arm. Shaped as the solved cross is
+// (solved.wrela): a few goal poses, each part of the body on its own clock, and its numbers
+// solved against the package's spec (spec.wrela) where they depend on the body's shape.
+//
+// What's written by hand: the poses (the guard, the load onto the lead side, the contact, the
+// drive across it, the hold, the way home), when the hips reach each, and how each part
+// follows the hips (`Chain`). What's solved (`wrela tool moves -- --solve build/sheets
+// hook-solved`, the numbers at the top of `hook`): where the contact key puts the fist, how
+// far the hips have turned, which way the elbow points and when the throw sets off, so that
+// the fist is on its target when the fight says it lands, fastest as it lands, the arm bent.
+// The sheet's own reads (the chain's order and its lead) give a solve nothing to follow: the
+// chain's lags and snaps are tuned by hand for them, and the test reads them back.
+//
+// A hook's fist is carried by the body more than thrown by its arm, and a part on a later clock
+// reaches for the same spot the body's own keys put it, so what the hips carry early the arm
+// gives back late: a fist that slows between them. So the lags are short and the order comes
+// of the eases (the hips eased in, the chest half snapped, the arm snapped), the chest turns
+// further past the hips than the hips turn, and the load leaves the arm work of its own.
+
+use std::collections::Vec
+use std::io::print
+use engine::arms
+use engine::keys::{Key, SETTLE, SMOOTH, SNAP}
+use engine::playback::{ACTIVE, CANCEL, Mark, Move, RECOVER, WINDUP}
+use engine::review
+use engine::timing::{LEFT_ARM, timing}
+use engine::written::{Chain, Written}
+use body::HERO
+use fists::guard
+
+/// When the hook lands, and till when it hits (s from its start, at the fight's 60 frames a
+/// second: 18 of wind-up).
+pub const CONTACT: f32 = 0.30
+pub const CONTACT_TILL: f32 = 0.36
+
+/// Where the fist lands (the body's space, m): the jaw line, just right of the centre line.
+pub const TARGET: vec3 = vec3(0.02, 1.46, 0.48)
+
+/// The hook's goal poses, in the hips' time (s from its start).
+pub fn hook() -> Written<8> {
+    let rest = guard()
+    // ---- What the solve finds (spec.wrela): each number alone on its line. ----
+    // When the throw sets off (the beat's end, s).
+    let sets_off = 0.205
+    // How far the hips have turned on contact (degrees toward the left: the hook turns them
+    // to the right).
+    let hips_yaw = -33.9
+    // Where the contact key puts the fist: not the target, since the arm gets there late.
+    let spot_x = 0.046
+    let spot_y = 1.4628
+    let spot_z = 0.476
+    // How far up out to the left the striking elbow points on contact (degrees from straight
+    // down): a hook's elbow comes up near level with its fist.
+    let elbow_up = 83.2
+    // ---- The rest is written by hand. ----
+    // How the body follows the hips: the chest, then the striking arm's collar, shoulder,
+    // elbow and wrist, each a little later. The lags are short (longer ones check the fist
+    // between the hips' carry and the arm's snap) and the order comes of the eases: the hips
+    // ease into the contact, the chest keeps a little over half its snap, and the arm, stopped
+    // dead by it, all of it. Tuned by hand against the sheet's lead, which no solve can follow.
+    let chain = Chain {
+        trunk: 0.015,
+        collar: 0.020,
+        shoulder: 0.025,
+        elbow: 0.025,
+        wrist: 0.025,
+        body_snap: 0.0,
+        trunk_snap: 0.6,
+    }
+    // The load: the weight onto the lead side and sunk, the hips and chest opened a little to
+    // the left (against the way they'll turn), the lead fist dropped a hair and out, its elbow
+    // out from the ribs.
+    var load = rest
+    load.at = 0.07
+    load.ease = SMOOTH
+    load.hips = vec3(0.01, -0.10, 0.02)
+    load.hips_turn = vec3(0.0, -14.0, 0.0)
+    load.trunk = vec3(8.0, 4.0, -4.0)
+    load.look = vec3(0.0, 1.45, 3.0)
+    load.fists = [vec3(0.13, 1.34, 0.21), vec3(-0.09, 1.42, 0.13)]
+    load.elbows = [vec3(0.7, -1.0, -0.1), vec3(-0.5, -1.0, -0.2)]
+    load.feet[0] = vec4(0.10, 0.22, -15.0, 6.0)
+    // The beat: settling a hair further in, till the throw sets off.
+    var beat = load
+    beat.at = sets_off
+    beat.ease = SETTLE
+    beat.hips = vec3(0.012, -0.105, 0.022)
+    beat.hips_turn = vec3(0.0, -12.0, 0.0)
+    beat.trunk = vec3(8.5, 5.0, -4.0)
+    // Contact: the hips turned hard to the right, the chest on past them, the lead heel up and
+    // its foot pivoted in; the fist come round on the jaw line, its elbow up and out, the arm
+    // bent; the rear fist tight at the chin. The hips are there early by the wrist's lag, so
+    // the fist is when the fight says it lands.
+    var contact = beat
+    contact.at = CONTACT - chain.wrist
+    contact.ease = SNAP
+    contact.hips = vec3(-0.02, -0.085, 0.0)
+    contact.hips_turn = vec3(0.0, hips_yaw, 0.0)
+    contact.trunk = vec3(8.0, -22.0, 4.0)
+    contact.collars = [vec3(0.0, -6.0, 8.0), vec3(0.0)]
+    contact.fists = [vec3(spot_x, spot_y, spot_z), vec3(-0.07, 1.43, 0.13)]
+    let up = elbow_up * 0.017453292
+    contact.elbows = [vec3(sin(up), -cos(up), 0.0), vec3(-0.5, -1.0, -0.2)]
+    contact.feet[0] = vec4(0.10, 0.22, -45.0, 26.0)
+    contact.feet[1] = vec4(-0.17, -0.20, -40.0, 10.0)
+    // The impact: driven on across the jaw a little past contact.
+    var driven = contact
+    driven.at = contact.at + 0.04
+    driven.ease = SETTLE
+    driven.hips_turn = contact.hips_turn + vec3(0.0, -2.0, 0.0)
+    driven.trunk = contact.trunk + vec3(0.0, -2.0, 0.0)
+    driven.fists[0] = contact.fists[0] + vec3(-0.03, 0.0, 0.005)
+    // The hold on the hit: all but still.
+    var held = driven
+    held.at = contact.at + 0.12
+    held.ease = SETTLE
+    held.hips_turn = driven.hips_turn + vec3(0.0, -0.5, 0.0)
+    held.trunk = driven.trunk + vec3(0.0, -0.5, 0.0)
+    // The pull home: slower than it went, the fist most of the way back to its guard, the hips
+    // turning back.
+    var home = held
+    home.at = contact.at + 0.28
+    home.ease = SETTLE
+    home.hips = vec3(-0.01, -0.07, 0.0)
+    home.hips_turn = vec3(0.0, -32.0, 0.0)
+    home.trunk = vec3(6.0, -8.0, 0.0)
+    home.collars = [vec3(0.0, -2.0, 2.0), vec3(0.0)]
+    home.fists = [vec3(0.10, 1.41, 0.30), vec3(-0.10, 1.41, 0.12)]
+    home.elbows = [vec3(0.6, -1.0, -0.2), vec3(-0.5, -1.0, -0.2)]
+    home.feet[0] = vec4(0.10, 0.22, -22.0, 14.0)
+    home.feet[1] = vec4(-0.17, -0.20, -40.0, 16.0)
+    // Back in the guard, the move over by 0.75 s.
+    var back = rest
+    back.at = 0.75 - chain.wrist
+    back.ease = SMOOTH
+    Written { keys: [rest, load, beat, contact, driven, held, home, back], chain, arm: 0 }
+}
+
+/// A clip as a move that stays where it stands (as `fists`' keyed moves do).
+fn in_place(c: engine::humanoid::Clip) -> Move {
+    let n = c.frames
+    Move {
+        clip: c.clone(),
+        root: Vec::filled(n, vec3(0.0)),
+        heading: Vec::filled(n, 0.0),
+        marks: Vec::new(),
+        speed: 0.0,
+        stride: 0.0,
+    }
+}
+
+/// The solved hook as a game plays it: at 60 a second, fists clenched, in place, its windows
+/// marked.
+@fuel(2 ** 40)
+pub const HOOK: Move = hook_move()
+
+fn hook_move() -> Move {
+    var m = in_place(hook().clip(HERO.rig, fps: 60.0, fist: 2.0))
+    let end = m.clip.length()
+    m.marks = Vec::new()
+    m.marks.push(Mark { kind: WINDUP, from: 0.0, till: CONTACT })
+    m.marks.push(Mark { kind: ACTIVE, from: CONTACT, till: CONTACT_TILL })
+    m.marks.push(Mark { kind: RECOVER, from: CONTACT_TILL, till: end })
+    m.marks.push(Mark { kind: CANCEL, from: end - 0.15, till: end })
+    m
+}
+
+/// The sheet reads the built hook as a strike with nothing flagged, which no solve can follow
+/// and the chain makes by construction (`spec` holds the rest): the hips getting going 0.06
+/// to 0.12 s before the arm's joints, the chain in order, the fist fastest as it lands, at 10 to
+/// 24 m/s, its spacing opening frame by frame and all but stopped by its contact, the arm bent,
+/// the hips never outside the feet, and home slower than it went. Its review finds its feet and
+/// knees sound, and its arms are ones a person makes.
+@test
+fn the_solved_hook_reads_as_a_strike() {
+    borrow rig = HERO.rig
+    let t = timing(HOOK.clip, rig, LEFT_ARM, CONTACT)
+    print(t.text("the solved hook"))
+    assert(t.found && t.flags().len() == 0, "the sheet flags nothing")
+    assert(t.in_order(), "the chain goes from the hips out")
+    assert(t.lead() >= 0.06 && t.lead() <= 0.12, f"the hips go {t.lead()} s before the arm")
+    assert(t.fastest >= 10.0 && t.fastest <= 24.0, f"the fist goes {t.fastest} m/s")
+    assert(abs(t.fastest_at - t.contact) <= 0.034, f"fastest at {t.fastest_at} s, not as it lands")
+    assert(t.into >= 0.95 * t.fastest, f"{t.into} m/s into its contact: not its fastest")
+    assert(t.out >= 0.55 && t.out <= 0.80, f"the arm's {t.out} out on contact: not bent")
+    assert(t.after < 0.34 * t.fastest, f"{t.after} m/s after its contact: not stopped by it")
+    assert(t.outside <= 0.001, f"the hips get {t.outside} m outside the feet")
+    assert(t.back <= 0.7 * t.fastest, f"home at {t.back} m/s: faster than it went")
+    for i in 1..t.spacing_before {
+        assert(
+            t.spacing[i] >= t.spacing[i - 1] - 0.001,
+            f"the fist checks at step {i} of its way in",
+        )
+    }
+    let r = review::review_as(HOOK.clip, rig, review::STRIKE)
+    for flag in r.flags.clone() {
+        print(f"  review: {flag}")
+    }
+    assert(r.flags.len() == 0, f"{r.flags.len()} review flags")
+    // Its arms: no hand in the head, no shape unlike any real arm's, each elbow about its own
+    // hinge.
+    let faults = arms::report(rig, HOOK.clip, accad_fists::REAL)
+    for fault in faults.clone() {
+        print(f"  arms: {fault}")
+    }
+    assert(faults.len() == 0, f"{faults.len()} arm faults")
+}
