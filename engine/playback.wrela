@@ -1128,6 +1128,9 @@ pub struct Planted: Copy {
     pub yaw: f32,
     /// How far (rad) the move has turned the foot from how it's held.
     pub twist: f32,
+    /// The lowest (m, the body's own height) the move has put the ankle lately, let rise at
+    /// `FLOOR_RISE`: the floor a stance up on the balls of its feet (a fighter's bounce) stands on.
+    pub floor: f32,
 }
 
 impl Planted {
@@ -1145,16 +1148,19 @@ impl Planted {
             yaw_from: 0.0,
             yaw: 0.0,
             twist: 0.0,
+            floor: 1.0e6,
         }
     }
 }
 
-/// When a foot is down: its ankle within `PLANT_LOW` (m) of its height at rest and going slower
+/// When a foot is down: its ankle within `PLANT_LOW` (m) of its height at rest, or of the lowest
+/// its move has put it lately (`Planted::floor`, let rise at `FLOOR_RISE` m/s), and going slower
 /// than `PLANT_SLOW` (m/s) along the floor (one down already, `PLANT_KEEP`, while the move's
 /// pulled it less than `KEEP_FAR` (m) from where it's held); how quickly (s) a hold takes, and lets go as the foot
 /// lifts (`HOLD_OUT_PACE` over the body's speed, between `HOLD_OUT_LEAST` and `HOLD_OUT`); and
 /// the furthest (m) the animation may pull from where the foot's held, past which it's dragged.
 const PLANT_LOW: f32 = 0.025
+const FLOOR_RISE: f32 = 0.03
 const PLANT_SLOW: f32 = 0.6
 const PLANT_KEEP: f32 = 1.6
 const KEEP_FAR: f32 = 0.15
@@ -1239,7 +1245,10 @@ pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pos
         let carried_on = m.pushed > 0.0
         // A foot already down stays down until it lifts or truly sweeps away: the move's foot
         // drifts as a run's mixed into a walk, which is no step.
-        let low = said.y - rest_y < PLANT_LOW
+        // (Up on the balls of its feet, a stance's ankles ride over their height at rest: they're
+        // down on the lowest the move's put them lately.)
+        p.floor = min(said.y, p.floor + FLOOR_RISE * dt)
+        let low = said.y - rest_y < PLANT_LOW || said.y - p.floor < PLANT_LOW
         let kept = p.down && speed < PLANT_KEEP && p.gap < KEEP_FAR
         let down = low && (speed < PLANT_SLOW || kept) && !carried_on
         if p.hold == 0.0 {

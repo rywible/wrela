@@ -1,14 +1,18 @@
 // A blow's contact, as both bodies take it, laid into their inertia (`engine::playback`). A hit
 // lands (`Hit`: where, which way, how heavy, how long both are held), and:
-// - while it's held, the striking fist stays on what it struck (`pinned`);
-// - as the hold breaks, the one struck is knocked along the blow (`taken`): its head, neck and
-//   chest tipped back from it and its hips pushed, each a spin or a speed laid into its inertia,
-//   which the inertia's springs rise into and let die (`playback::decay`): a reaction that comes
-//   of the blow, how heavy and which way, with no clip to play;
-// - the blow runs back up the striking arm the way it came (`recoiled`): the forearm, the upper
-//   arm, the collar and the chest each checked back from it, each less, likewise;
+// - while it's held, both bodies are held at it (`paced`), and the striking fist stays on what it
+//   struck (`pinned`);
+// - as the hold breaks, the one struck is knocked along the blow (`taken`): its whole body
+//   driven back (its drift, so its own planted feet step back to catch it and step home again
+//   as it comes back, `playback::planted`), its head, neck, chest and spine tipped back, arching,
+//   and its guard knocked open; each laid into its inertia, which rises into it and lets it die
+//   (`playback::decay`), the heavier the blow the further and the slower; a body held reeling
+//   (a stagger) is kept out there for as long as it's held (`reeling`);
+// - the blow runs back up the striking arm the way it came, a joint at a time (`Shock`): the
+//   forearm, then the upper arm, the collar and the chest, each checked back from it, each less;
 // - and the camera's kicked along it (`Kick`).
-// What content/humanoid's exchange did by hand for one punch, for any blow on any body.
+// What content/humanoid's exchange did by hand for one punch, for any blow on any body: a
+// reaction that comes of the blow, how heavy and which way, with no clip to play.
 
 use humanoid::{NONE, Pose, Rig, Rigid, pose_world}
 use keys::arm_to
@@ -17,6 +21,10 @@ use std::collections::Vec
 use std::transform::inverse
 
 const UP: vec3 = vec3(0.0, 1.0, 0.0)
+
+/// How far along the floor a body's moved in the playback step a held one takes (s): not 0, as a
+/// step reads its speeds over it.
+const STILL: f32 = 1.0e-4
 
 /// A blow: where it lands (the world), the way it goes (the world, any length), how heavy it is
 /// (0 a touch, 1 the heaviest a fight has), and how long both bodies are held at it (s).
@@ -27,23 +35,58 @@ pub struct Hit: Copy {
     pub hold: f32,
 }
 
-/// How a body takes blows and gives them, at a blow of weight 1: how fast its head is tipped back
-/// (rad/s) and how much of that its neck, chest and spine take; how fast its hips are pushed
-/// along the blow (m/s); how fast the blow runs back up a striking forearm (rad/s), and how much
-/// of that its upper arm, collar and chest take; how long what's laid in takes to die (its
-/// inertia's half-life, s); and how fast the camera's kicked along it (m/s).
+/// How a body takes blows and gives them, each at its most for a blow of weight 1 (a lighter one
+/// gives less, `size_of`): how far its whole body's knocked back along the blow (m); how far its
+/// head's tipped back (rad) and how much of that its neck, chest and spine take; how far each of
+/// its upper arms is knocked open off its guard (rad), and how much of that its forearms take;
+/// how far a striking forearm's checked back by the blow (rad), how much of that its upper arm,
+/// collar and chest take, how long the shock takes from one joint to the next (s) and how long
+/// it takes to die (its half-life, s); how long what's laid into one struck takes to die (its
+/// inertia's half-life, s): a touch's, and how much longer a blow of weight 1's; how long while
+/// it's held reeling; and how fast the camera's kicked along it (m/s).
 pub struct Give: Copy {
-    pub knock: f32 = 7.0,
+    pub back: f32 = 0.68,
+    pub tip: f32 = 0.45,
     pub neck: f32 = 0.5,
     pub chest: f32 = 0.3,
-    pub spine: f32 = 0.15,
-    pub push: f32 = 1.4,
-    pub shock: f32 = 5.0,
+    pub spine: f32 = 0.2,
+    pub open: f32 = 0.7,
+    pub fore: f32 = 0.4,
+    pub shock: f32 = 0.35,
     pub upper: f32 = 0.5,
     pub collar: f32 = 0.3,
     pub trunk: f32 = 0.2,
+    pub shock_step: f32 = 0.017,
+    pub shock_half: f32 = 0.12,
     pub half: f32 = 0.14,
+    pub heavy: f32 = 0.8,
+    pub reel: f32 = 2.0,
     pub kick: f32 = 0.9,
+}
+
+/// How far a blow of `weight` knocks the one it struck, of how far one of weight 1 does: light
+/// blows stay light (a quarter's an eighth as far), heavy ones throw him.
+pub fn size_of(weight: f32) -> f32 {
+    let w = clamp(weight, 0.0, 1.0)
+    w * sqrt(w)
+}
+
+/// How long what a blow of `weight` lays into the one it struck takes to die (s): the heavier,
+/// the longer.
+pub fn half_of(give: Give, weight: f32) -> f32 {
+    give.half + give.heavy * clamp(weight, 0.0, 1.0)
+}
+
+/// The speed to lay into a critically damped spring of half-life `half` (s) for it to rise to
+/// `most` at its farthest (`playback::decayed`: set going at `v`, it goes `v` over its rate and e).
+fn rising_to(most: f32, half: f32) -> f32 {
+    most * 2.7182818 * 1.3862944 / max(half, 1.0e-4)
+}
+
+/// `dt` (s) as a body held at a blow steps it: still (`hold` held, `grind` none), or slowed to
+/// `grind` of its pace (a striker driving on in). The one way both bodies are held at a blow.
+pub fn paced(dt: f32, held: bool, grind: f32) -> f32 {
+    if held { max(dt * grind, STILL) } else { dt }
 }
 
 /// `way` (the world) as body `m` has it: its heading taken off.
@@ -66,19 +109,38 @@ fn spun(m: mut Mover, rig: Rig, w: [Rigid; 64], b: u32, axis: vec3, rate: f32) {
     m.inertia.spins[b] += parent_frame(rig, w, b).inverse().rotate(normalize(axis)) * rate
 }
 
-/// Body `m` (on `rig`) struck by `hit`, as it gives (`give`): its head tipped back along the blow
-/// and its neck, chest and spine after it, its hips pushed; each laid into its inertia, which
-/// rises into it and lets it die over `give.half`.
+/// Bone `name` of `m` (from `w`) spun so its far end (`end`) swings toward `toward` (the body's
+/// space), at `rate`.
+fn swung(m: mut Mover, rig: Rig, w: [Rigid; 64], name: str, end: str, toward: vec3, rate: f32) {
+    let (b, e) = (rig.find(name), rig.find(end))
+    if b == NONE || e == NONE {
+        return
+    }
+    spun(mut m, rig, w, b, cross(w[e].t - w[b].t, toward), rate)
+}
+
+/// Body `m` (on `rig`) struck by `hit`, as it gives (`give`): its whole body driven back along
+/// the blow (its feet step to catch it, and home again), its head tipped back and its neck,
+/// chest and spine after it, and its guard knocked open; each laid into its inertia, which rises
+/// into it and lets it die, the heavier the blow the further and the slower.
 pub fn taken(m: mut Mover, rig: Rig, hit: Hit, give: Give) {
     let way = into_body(m, hit.way)
     let flat = vec3(way.x, 0.0, way.z)
     if length(flat) < 1.0e-6 {
         return
     }
+    let along = normalize(flat)
+    let weight = size_of(hit.weight)
+    let half = half_of(give, hit.weight)
     let w = pose_world(rig, m.shown)
-    // (About this, a bone's top goes the way the blow does.)
-    let tip = cross(UP, normalize(flat))
-    let k = give.knock * hit.weight
+    // The whole body, driven back: its drift off gameplay's place, which its planted feet hold
+    // until they're pulled far enough to step.
+    let world_way = normalize(vec3(hit.way.x, 0.0, hit.way.z))
+    m.drift_speed += world_way * rising_to(give.back * weight, half)
+    // Its head tipped back and its trunk arched after it (about this, a bone's top goes the way
+    // the blow does).
+    let tip = cross(UP, along)
+    let k = rising_to(give.tip * weight, half)
     for (name, share) in [
         ("head", 1.0),
         ("neck", give.neck),
@@ -88,40 +150,126 @@ pub fn taken(m: mut Mover, rig: Rig, hit: Hit, give: Give) {
     ] {
         spun(mut m, rig, w, rig.find(name), tip, k * share)
     }
-    m.inertia.hips_speed += rig.base.q.inverse().rotate(normalize(flat)) * give.push * hit.weight
-    m.half = give.half
-}
-
-/// Body `m` (on `rig`) having struck `hit` with its `arm` (0 the left, 1 the right), as it gives
-/// (`give`): the blow back up the arm the way it came, each part turned so its far end goes back
-/// against the blow: the forearm most, then the upper arm, the collar and the chest; laid into
-/// its inertia, dying over `give.half`.
-pub fn recoiled(m: mut Mover, rig: Rig, hit: Hit, arm: u32, give: Give) {
-    let back = -normalize(into_body(m, hit.way))
-    let w = pose_world(rig, m.shown)
-    let side = if arm == 0 { "left" } else { "right" }
-    let parts = [
-        (f"{side}LowerArm", f"{side}Hand", 1.0),
-        (f"{side}UpperArm", f"{side}LowerArm", give.upper),
-        (f"{side}Shoulder", f"{side}UpperArm", give.collar),
-    ]
-    let k = give.shock * hit.weight
-    for (name, end, share) in parts {
-        let (b, e) = (rig.find(name.as_str()), rig.find(end.as_str()))
-        if b == NONE || e == NONE {
+    // Its guard knocked open: each arm flung out to its own side, back along the blow and down.
+    let chest = rig.find("upperChest")
+    let o = rising_to(give.open * weight, half)
+    for side in ["left", "right"] {
+        let shoulder = rig.find(f"{side}UpperArm".as_str())
+        if chest == NONE || shoulder == NONE {
             continue
         }
-        spun(mut m, rig, w, b, cross(w[e].t - w[b].t, back), k * share)
-    }
-    // (The chest turned about up, its striking shoulder going back.)
-    let chest = rig.find("upperChest")
-    let shoulder = rig.find(f"{side}UpperArm".as_str())
-    if chest != NONE && shoulder != NONE {
         let out = w[shoulder].t - w[chest].t
-        let turn = if dot(cross(UP, out), back) > 0.0 { 1.0 } else { -1.0 }
-        spun(mut m, rig, w, chest, UP * turn, k * give.trunk)
+        let aside = normalize(
+            vec3(out.x, 0.0, out.z) - along * dot(out, along) + vec3(1.0e-6, 0.0, 0.0),
+        )
+        let toward = normalize(aside + along * 0.6 - UP * 0.4)
+        swung(mut m, rig, w, f"{side}UpperArm".as_str(), f"{side}Hand".as_str(), toward, o)
+        swung(
+            mut m,
+            rig,
+            w,
+            f"{side}LowerArm".as_str(),
+            f"{side}Hand".as_str(),
+            toward,
+            o * give.fore,
+        )
     }
-    m.half = give.half
+    m.half = half
+}
+
+/// Body `m` held reeling (a stagger the fight holds it in) after blow `hit`, or let go of it
+/// (`held` false): while it's held, what the blow laid in is kept out there, dying over
+/// `give.reel`; let go, it comes home as fast as the blow says.
+pub fn reeling(m: mut Mover, hit: Hit, held: bool, give: Give) {
+    m.half = reel_half(give, hit.weight, held)
+}
+
+/// How long what a blow of `weight` laid in takes to die while its body's held reeling (`held`)
+/// or let go (s).
+fn reel_half(give: Give, weight: f32, held: bool) -> f32 {
+    let half = half_of(give, weight)
+    if held { max(give.reel, half) } else { half }
+}
+
+/// A blow running back up the arm that struck it, a joint at a time: the blow, the arm (0 the
+/// left, 1 the right), how long since the hold broke (s; below 0 none to run), and how many of
+/// the arm's joints it's reached.
+pub struct Shock: Copy {
+    pub hit: Hit,
+    pub arm: u32,
+    pub since: f32,
+    pub laid: u32,
+}
+
+/// The joints a shock runs up, in turn: each bone, its far end, and how much of the shock it
+/// takes (`give`'s shares; the chest's is its turn about up).
+const SHOCKED: u32 = 4
+
+impl Shock {
+    pub fn none() -> Shock {
+        Shock {
+            hit: Hit { at: vec3(0.0), way: vec3(0.0, 0.0, 1.0), weight: 0.0, hold: 0.0 },
+            arm: 1,
+            since: -1.0,
+            laid: SHOCKED,
+        }
+    }
+
+    /// Blow `hit`, struck with `arm`, its hold broken now: to run up the arm.
+    pub fn struck(hit: Hit, arm: u32) -> Shock {
+        Shock { hit, arm, since: 0.0, laid: 0 }
+    }
+
+    /// `dt` (s) on, on body `m` (on `rig`), as it gives (`give`): each joint the shock's reached
+    /// laid into its inertia, the forearm first, `give.shock_step` s a joint, each checked back
+    /// against the blow.
+    pub fn step(mut self, m: mut Mover, rig: Rig, give: Give, dt: f32) {
+        if self.laid >= SHOCKED {
+            return
+        }
+        let back = -normalize(into_body(m, self.hit.way))
+        let w = pose_world(rig, m.shown)
+        let side = if self.arm == 0 { "left" } else { "right" }
+        let k = rising_to(give.shock * clamp(self.hit.weight, 0.0, 1.0), give.shock_half)
+        while self.laid < SHOCKED && self.since >= f32(self.laid) * give.shock_step {
+            let j = self.laid
+            if j == 0 {
+                swung(mut m, rig, w, f"{side}LowerArm".as_str(), f"{side}Hand".as_str(), back, k)
+            } else if j == 1 {
+                swung(
+                    mut m,
+                    rig,
+                    w,
+                    f"{side}UpperArm".as_str(),
+                    f"{side}LowerArm".as_str(),
+                    back,
+                    k * give.upper,
+                )
+            } else if j == 2 {
+                swung(
+                    mut m,
+                    rig,
+                    w,
+                    f"{side}Shoulder".as_str(),
+                    f"{side}UpperArm".as_str(),
+                    back,
+                    k * give.collar,
+                )
+            } else {
+                // (The chest turned about up, its striking shoulder going back.)
+                let chest = rig.find("upperChest")
+                let shoulder = rig.find(f"{side}UpperArm".as_str())
+                if chest != NONE && shoulder != NONE {
+                    let out = w[shoulder].t - w[chest].t
+                    let turn = if dot(cross(UP, out), back) > 0.0 { 1.0 } else { -1.0 }
+                    spun(mut m, rig, w, chest, UP * turn, k * give.trunk)
+                }
+            }
+            self.laid += 1
+            m.half = give.shock_half
+        }
+        self.since += dt
+    }
 }
 
 /// `pose` (drawn at `place`) with its `arm`'s fist on `at` (the world): what it struck, held
@@ -194,4 +342,39 @@ fn a_spin_laid_in_rises_and_dies() {
     }
     assert(abs(x.x) < 0.01 * x1.x + 1.0e-4, "and a second on it's all but gone")
     assert(weight_of(hold: 0.1, most: 0.133) > 0.7 && weight_of(hold: 1.0, most: 0.133) == 1.0)
+}
+
+/// What's laid in rises to what it's laid in for, at its farthest, whatever the half-life: a
+/// heavier blow's reaction goes further and lasts longer, not just one or the other.
+@test
+fn a_heavier_blow_goes_further_and_lasts_longer() {
+    let give = Give {}
+    let most = |weight: f32| -> (f32, f32) {
+        let half = half_of(give, weight)
+        var x = vec3(0.0)
+        var v = vec3(rising_to(give.back * size_of(weight), half), 0.0, 0.0)
+        var far = 0.0
+        var home = 0.0
+        for i in 0..600 {
+            let (a, b) = decayed(x, v, half, dt: 1.0 / 120.0)
+            x = a
+            v = b
+            far = max(far, x.x)
+            if x.x > 0.01 {
+                home = f32(i + 1) / 120.0
+            }
+        }
+        (far, home)
+    }
+    let (light, light_home) = most(0.25)
+    let (heavy, heavy_home) = most(1.0)
+    assert(abs(heavy - give.back) < 0.01, f"weight 1 goes {heavy} m")
+    assert(abs(light - give.back * 0.125) < 0.01, f"weight 0.25 goes {light} m")
+    assert(heavy_home > 2.0 * light_home, f"home at {light_home} s and {heavy_home} s")
+    assert(reel_half(give, 0.25, held: true) >= give.reel, "held reeling, it stays out there")
+    assert(reel_half(give, 0.25, held: false) == half_of(give, 0.25), "let go, it comes home")
+    assert(
+        paced(0.016, held: true, grind: 0.0) == STILL &&
+            paced(0.016, held: false, grind: 0.0) == 0.016,
+    )
 }

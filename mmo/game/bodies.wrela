@@ -28,7 +28,7 @@ use engine::humanoid::{Pose, palette}
 use engine::playback
 use engine::playback::{Gaits, Handling, Move, Mover}
 use engine::contact
-use engine::contact::{Give, Hit, Kick}
+use engine::contact::{Give, Hit, Kick, Shock}
 use engine::humanoid::pose_world
 use engine::view::first_camera
 use engine::written::Beats
@@ -166,10 +166,14 @@ pub struct Body: Copy {
     /// The boss's (its strikes are `BOSS_STRIKES` on, and it's drawn larger).
     pub boss: bool,
     /// The rules' hold on it as last seen, and a blow it struck or took that it gives to as the
-    /// hold breaks (`STRUCK` or `STRIKER` in `role`; `NOTHING` none).
+    /// hold breaks (`STRUCK` or `STRIKER` in `role`; `NOTHING` none); whether it's still reeling
+    /// from one it took (kept out there while the rules hold it staggered); and the shock of one
+    /// it struck, running up its arm.
     pub hold: u32,
     pub hit: Hit,
     pub role: u32,
+    pub reeling: bool,
+    pub shock: Shock,
 }
 
 /// What a body's pending blow is to it (`Body::role`).
@@ -204,6 +208,8 @@ impl Body {
             hold: 0,
             hit: Hit { at: vec3(0.0), way: vec3(0.0, 0.0, 1.0), weight: 0.0, hold: 0.0 },
             role: NOTHING,
+            reeling: false,
+            shock: Shock::none(),
         }
     }
 }
@@ -286,11 +292,19 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
     if !held && b.role != NOTHING {
         if b.role == STRUCK {
             contact::taken(mut b.mover, HERO.rig, b.hit, GIVE)
+            b.reeling = true
         } else {
-            contact::recoiled(mut b.mover, HERO.rig, b.hit, arm: 1, give: GIVE)
+            b.shock = Shock::struck(b.hit, arm: 1)
         }
         b.role = NOTHING
     }
+    // Reeling, it's kept out there for as long as the rules hold it staggered.
+    if b.reeling {
+        let staggered = seen.act == STAGGERED
+        contact::reeling(mut b.mover, b.hit, held: staggered, give: GIVE)
+        b.reeling = staggered
+    }
+    b.shock.step(mut b.mover, HERO.rig, GIVE, if held { 0.0 } else { dt })
     let pose = playback::step(
         mut b.mover,
         GAITS,
@@ -301,7 +315,7 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
         act,
         upper: false,
         how: HOW,
-        dt: if held { 1.0e-4 } else { dt },
+        dt: contact::paced(dt, held: held, grind: 0.0),
     )
     if act != engine::humanoid::NONE && into > b.mover.act_time {
         // (Begun on a frame already past, as a rollback finds it: it catches up.)
