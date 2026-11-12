@@ -147,13 +147,13 @@ pub const FISTS: u32 = 0
 pub const LONGSWORD: u32 = 1
 // A parry: its window, then its recovery; a boss hit it meets staggers the boss.
 const PARRY_COST: i32 = 10
-const PARRY_WINDOW: u32 = 8
+pub const PARRY_WINDOW: u32 = 8
 const PARRY_RECOVERY: u32 = 12
 /// A parry meets a blow from the half ahead of the one parrying.
 const PARRY_ARC: i32 = 0
 // A dodge: invulnerable while it lasts, moving fast.
 const DODGE_COST: i32 = 20
-const DODGE_FRAMES: u32 = 12
+pub const DODGE_FRAMES: u32 = 12
 const DODGE_SPEED: i32 = 20
 
 // ---- bosses, as data -----------------------------------------------------------------------------
@@ -314,13 +314,13 @@ pub const BOSSES: [Boss; 1] = [
 pub const THE_IDOL: u32 = 0
 
 /// What a fighter is doing.
-const IDLE: u32 = 0
-const WINDUP: u32 = 1
-const ACTIVE: u32 = 2
-const RECOVER: u32 = 3
-const PARRYING: u32 = 4
-const DODGING: u32 = 5
-const STAGGERED: u32 = 6
+pub const IDLE: u32 = 0
+pub const WINDUP: u32 = 1
+pub const ACTIVE: u32 = 2
+pub const RECOVER: u32 = 3
+pub const PARRYING: u32 = 4
+pub const DODGING: u32 = 5
+pub const STAGGERED: u32 = 6
 
 /// A player's input changed at `frame` to `input`.
 pub struct Change: Clone + Pack + Eq {
@@ -483,6 +483,8 @@ pub struct Seen: Copy {
     pub stamina: i32,
     /// 0 idle, 1 winding up, 2 striking, 3 recovering, 4 parrying, 5 dodging, 6 staggered.
     pub act: u32,
+    /// The frames left of what it's doing, so a client draws how far into it it is.
+    pub timer: u32,
     /// The move it's making (a player's in `MOVES`, the boss's in `ATTACKS`; `NO_MOVE`: none), so
     /// a client draws which it is.
     pub move_: u32,
@@ -601,6 +603,7 @@ fn seen(f: Fighter) -> Seen {
         hp: f.hp,
         stamina: f.stamina,
         act: f.act,
+        timer: f.timer,
         move_: f.move_,
         facing: f.facing,
     }

@@ -1,0 +1,194 @@
+// A fight played and watched (`wrela build mmo/watch`): two bots against the idol through the
+// fight's real rules (mmo/combat's `sim`), drawn as the game draws a fight (mmo/game's
+// `bodies::Ring`), from the first player's side. The second player is heard `LATE` frames late,
+// as over a network: what's drawn is the first's client's prediction (the second's input held
+// at the last one heard), corrected each frame as the late input comes, so the bodies show
+// what a rollback's correction looks like.
+//
+// The bots are the fight's own: each step they read the rules' world, walk in, strike when the
+// idol is in reach, chain a combo, and answer its tell (`REACT` frames into its windup) with a
+// parry, or with a dodge to the side when no parry holds it.
+
+use std::collections::Vec
+use std::string::String
+use std::math::atan2
+use combat::sim::{
+    ATTACK, ATTACKS, DODGE, FISTS, HEAVY, IDLE, LONGSWORD, MOVES, PARRY, RECOVER, Seen, WEAPONS,
+    WINDUP, World, step,
+}
+use mmo::bodies::Ring
+use ui::draw::{DrawList, Renderer}
+use ui::text::{Face, Fonts}
+
+/// How many frames late the second player is heard.
+pub const LATE: u32 = 6
+/// How many frames into the idol's windup the bots answer it.
+pub const REACT: u32 = 15
+
+pub struct State {
+    /// The fight as it is, and each of the last `LATE` frames' worlds before it.
+    truth: World,
+    past: Vec<World>,
+    /// Each player's input, frame by frame.
+    inputs: Vec<Vec<u32>>,
+    ring: Ring,
+    fonts: Fonts,
+    renderer: Renderer,
+    list: DrawList,
+    last: f32,
+}
+
+pub fn init() -> State {
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    State {
+        truth: World::armed([FISTS, LONGSWORD]),
+        past: Vec::new(),
+        inputs: Vec::from([Vec::new(), Vec::new()]),
+        ring: Ring::new(),
+        fonts,
+        renderer,
+        list: DrawList::new(),
+        last: 0.0,
+    }
+}
+
+/// The stick toward (`dx`, `dz`) (the rules' units) at speed `speed` (0 to 2): one of the 16
+/// directions, as the rules read it.
+fn stick_to(dx: i32, dz: i32, speed: u32) -> u32 {
+    let a = atan2(f32(dz), f32(dx))
+    let dir = u32(i32(round(a / 0.39269908)) + 16) % 16
+    1 + dir * 3 + speed
+}
+
+/// Bot `i`'s input for the next step of `w`, its last `before`: what it reads of the world, and
+/// what it presses (a press flips its button's bit) when the rules read it.
+fn bot(w: World, i: u32, before: u32) -> u32 {
+    let p = w.player(i)
+    let b = w.boss()
+    let held = before & combat::sim::BUTTON_BITS
+    let reads = w.reads(i)
+    let press = |button: u32| -> u32 { held ^ (button << 6) }
+    let (dx, dz) = (b.x - p.x, b.z - p.z)
+    let d = dist(dx, dz)
+    if p.hp <= 0 {
+        return held
+    }
+    // The idol's tell, answered `REACT` frames in.
+    if b.act == WINDUP && b.move_ < ATTACKS.len() {
+        let a = ATTACKS[b.move_]
+        let into = a.windup - min(b.timer, a.windup)
+        let near = a.near - 32 <= d && d <= a.far + 64
+        if near && into >= REACT && reads & (PARRY << 6) != 0 {
+            if a.parried && b.timer <= 4 {
+                return press(PARRY)
+            }
+            if !a.parried {
+                // Aside, across its reach.
+                return press(DODGE) | stick_to(-dz, dx, 2)
+            }
+        }
+        if near {
+            return held
+        }
+    }
+    let weapon = WEAPONS[if i == 0 { FISTS } else { LONGSWORD }]
+    let reach = MOVES[weapon.light].reach
+    if p.act == RECOVER && reads & (ATTACK << 6) != 0 && d <= reach {
+        return press(ATTACK)
+    }
+    if p.act == IDLE {
+        if d <= reach - 16 {
+            // Every third frame it's free in reach, a heavy one.
+            return if w.frame % 3 == 0 { press(HEAVY) } else { press(ATTACK) }
+        }
+        return held | stick_to(dx, dz, 1)
+    }
+    held
+}
+
+fn dist(dx: i32, dz: i32) -> i32 {
+    i32(sqrt(f32(dx * dx + dz * dz)))
+}
+
+/// The input player `i` gave at frame `f` (before its first, none).
+fn input_at(s: State, i: u32, f: u32) -> u32 {
+    if f < s.inputs[i].len() { s.inputs[i][f] } else { 0 }
+}
+
+/// The fight stepped on to frame `to`, the bots choosing as it goes.
+fn play_to(s: mut State, to: u32) {
+    while s.truth.frame < to && !s.truth.over {
+        let f = s.truth.frame
+        var ins: Vec<u32> = Vec::new()
+        for i in 0..2 {
+            let before = if f > 0 { input_at(s, i, f - 1) } else { 0 }
+            let x = bot(s.truth, i, before)
+            s.inputs[i].push(x)
+            ins.push(x)
+        }
+        s.past.push(s.truth.clone())
+        if s.past.len() > LATE {
+            s.past.remove(0)
+        }
+        step(mut s.truth, ins)
+    }
+}
+
+/// What the first player's client shows: the fight from `LATE` frames back, the second's input
+/// held at the last it heard.
+fn predicted(s: State) -> World {
+    if s.past.len() < LATE {
+        return s.truth.clone()
+    }
+    var w = s.past[0].clone()
+    let from = w.frame
+    let heard = if from > 0 { input_at(s, 1, from - 1) } else { 0 }
+    while w.frame < s.truth.frame {
+        let f = w.frame
+        step(mut w, [input_at(s, 0, f), heard])
+    }
+    w
+}
+
+fn line(s: mut State, text: str, y: f32) {
+    let _ = s.list.text(s.fonts, Face::Mono, text, 15.0, vec2(24.0, y), vec4(0.1, 0.1, 0.12, 1.0))
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let dt = clamp(time - s.last, 1.0e-4, 0.1)
+    s.last = time
+    play_to(mut s, u32(time * 60.0))
+    let shown = predicted(s)
+    s.list.clear(vec2(f32(width), f32(height)))
+    for i in 0..shown.players() {
+        let p: Seen = shown.player(i)
+        line(
+            mut s,
+            String::from(f"P{i + 1}  {p.hp} hp  {p.stamina} stamina").as_str(),
+            24.0 + 20.0 * f32(i),
+        )
+    }
+    let b = shown.boss()
+    line(mut s, String::from(f"Idol  {b.hp} hp").as_str(), 74.0)
+    s.renderer.fetch(mut s.fonts, s.list)
+    s.renderer.upload(s.list)
+    s.ring.draw(shown, 0, time, dt, width, height, s.renderer)
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+/// The bots fight: in a minute of the real rules they wear the idol down, and the second, heard
+/// late, still lands what the first's client predicts once its input comes.
+@test
+fn the_bots_fight_the_idol() {
+    var w = World::armed([FISTS, LONGSWORD])
+    var before = [u32(0), 0]
+    for _ in 0..3600 {
+        let ins = [bot(w, 0, before[0]), bot(w, 1, before[1])]
+        before = ins
+        step(mut w, ins)
+    }
+    let o = w.outcome()
+    assert(o.dealt[0] > 0 && o.dealt[1] > 0, "both bots land blows")
+}

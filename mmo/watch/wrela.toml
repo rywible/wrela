@@ -1,0 +1,10 @@
+# A fight played and watched: two bots against the idol through the fight's real rules
+# (mmo/combat), the second heard a few frames late as over a network, so the first's client
+# predicts it and corrects; drawn as the game draws a fight (mmo/game's `bodies`).
+[package]
+name = "watch"
+
+[dependencies]
+mmo = { workspace = true }
+combat = { workspace = true }
+ui = { workspace = true }
