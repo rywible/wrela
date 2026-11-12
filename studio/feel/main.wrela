@@ -13,9 +13,11 @@
 // - **Press to drawing**: from the step that reads a press to the first drawing in which the
 //   player's body has moved (any joint 5 mm from where it'd be had nothing been pressed). The
 //   target is 1: the drawing right after that step.
-// - **Presses the rules read nothing for**: a script of presses (a player mashing a pattern
-//   every `CADENCE` frames, walking in between) through the client's input path: how many were
-//   read at once, how many waited (its input buffer) and how long, and how many were dropped.
+// - **Presses**: a script of presses (a player mashing a pattern every `CADENCE` frames,
+//   walking in between) through the client's input path, at each of `BUFFERS` frames of the
+//   rules' input buffer: how many an action began from and how long after, how many the rules
+//   kept and nothing began from, and how many were dropped and how early each was.
+// - **Packets**: the changes, packets and bytes each player sends over the relay in a fight.
 // - **Each move's windows**: its frames as the rules have them.
 // - **Warning before the idol's hits**: from the first drawing in which its body has moved
 //   (2 cm) toward its hit to the frame the rules hit. The target is at least 14.
@@ -33,10 +35,11 @@ use std::tool::files
 use std::tool::files::rooted
 use engine::humanoid::pose_world
 use watch::bots::{bot, dist, stick_to}
-use combat::codec::{Encoder, LOOK_AHEAD, Pad}
+use combat::codec::{Encoder, LOOK_AHEAD, Link, Pad}
 use combat::sim::{
-    ACTIVE, ATTACK, ATTACKS, BUTTON_BITS, DODGE, FISTS, HEAVY, HZ, IDLE, LONGSWORD, MOVES, NO_MOVE,
-    PARRY, RECOVER, STAGGERED, STICK_BITS, Seen, WEAPONS, WINDUP, World, step,
+    ACTIVE, ATTACK, ATTACKS, BUTTON_BITS, DODGE, DODGING, PARRYING, FISTS, HEAVY, HZ, IDLE,
+    LONGSWORD, MOVES, NO_MOVE, PARRY, RECOVER, STAGGERED, STICK_BITS, Seen, WEAPONS, WINDUP, World,
+    step,
 }
 use mmo::bodies
 use mmo::bodies::{Bodies, Body, Shown, drawn_at, place_of, shown}
@@ -163,27 +166,62 @@ fn script_pad(w: World, f: u32) -> Pad {
     pad
 }
 
-fn presses() -> String {
-    var w = World::armed([LONGSWORD])
+/// The lengths of the rules' input buffer the presses are read at (frames).
+const BUFFERS: [u32; 4] = [6, 8, 10, 12]
+
+/// Whether `w` shows player 0 beginning an action as it goes on from `was`: what press it began
+/// from (`ATTACK` and the rest; 0 for none).
+fn begun_by(was: Seen, now: Seen) -> u32 {
+    let fresh = now.act != was.act || now.move_ != was.move_
+    if now.act == WINDUP && fresh && now.move_ != NO_MOVE {
+        // (The longsword's light cuts, its combo, are 2 to 4; its heavy, the overhead, 5.)
+        return if now.move_ == WEAPONS[LONGSWORD].heavy { HEAVY } else { ATTACK }
+    }
+    if now.act == PARRYING && was.act != PARRYING {
+        return PARRY
+    }
+    if now.act == DODGING && was.act != DODGING {
+        return DODGE
+    }
+    0
+}
+
+/// How many frames on from `w` player 0 can act on `button`, its input held at `input`: when the
+/// rules, keeping nothing, would read it.
+fn frames_till(w: World, button: u32, input: u32) -> u32 {
+    var c = w.buffered(0)
+    for k in 0..240 {
+        if c.reads(0) & (button << 6) != 0 || c.over {
+            return k
+        }
+        step(mut c, [input])
+    }
+    240
+}
+
+/// The script's presses at a buffer of `buffer` frames: the row of the sheet.
+fn presses_at(buffer: u32) -> String {
+    let fresh = || -> World { World::armed([LONGSWORD]).buffered(buffer) }
+    var w = fresh()
     var enc = Encoder::new()
     var prev: u32 = 0
-    // Each button's press waiting since (frame), if one is.
-    var since = [u32(0); 4]
-    var waiting = [false; 4]
+    // The presses the rules read and haven't acted on yet: (frame, button).
+    var pending: Vec<(u32, u32)> = Vec::new()
     var made = 0
-    var at_once = 0
-    var waited = 0
-    var dropped = 0
+    var acted = 0
     var waits: Vec<u32> = Vec::new()
+    var unused = 0
+    var early: Vec<u32> = Vec::new()
     let end = SCRIPT_FROM + CADENCE * PRESSES + 30
     var fights = 1
     for f in 0..end {
         if w.over {
             // (The idol won: the script goes on in a fight begun anew.)
-            w = World::armed([LONGSWORD])
+            w = fresh()
             enc = Encoder::new()
             prev = 0
-            waiting = [false; 4]
+            unused += pending.len()
+            pending.clear()
             fights += 1
         }
         let pad = script_pad(w, f)
@@ -195,30 +233,33 @@ fn presses() -> String {
         }
         let input = enc.input(pad, prev: prev, reads: reads, now: ready)
         let flips = ((input ^ prev) & BUTTON_BITS) >> 6
-        let soon = (reads & BUTTON_BITS) >> 6
         for k in 0..4 {
             let bit = u32(1) << k
             if pad.pressed & bit != 0 {
                 made += 1
                 if flips & bit != 0 {
-                    at_once += 1
-                } else if soon & bit != 0 {
-                    waiting[k] = true
-                    since[k] = f
+                    // (A later press replaces the one the rules kept.)
+                    unused += pending.len()
+                    pending.clear()
+                    pending.push((f, bit))
                 } else {
-                    dropped += 1
+                    early.push(frames_till(w, bit, prev))
                 }
-            } else if waiting[k] && flips & bit != 0 {
-                waited += 1
-                waits.push(f - since[k])
-                waiting[k] = false
-            } else if waiting[k] && soon & bit == 0 {
-                dropped += 1
-                waiting[k] = false
             }
         }
+        let was = w.player(0)
         prev = input
         step(mut w, [input])
+        let by = begun_by(was, w.player(0))
+        if by != 0 && !pending.is_empty() && pending[0].1 == by {
+            acted += 1
+            waits.push(f - pending[0].0)
+            pending.clear()
+        }
+        if !pending.is_empty() && f - pending[0].0 > buffer + 2 {
+            unused += 1
+            pending.clear()
+        }
     }
     var longest = 0
     var total = 0
@@ -227,8 +268,65 @@ fn presses() -> String {
         total += x
     }
     let mean = if waits.is_empty() { 0.0 } else { f32(total) / f32(waits.len()) }
+    // How early the dropped ones were: within the buffer and a frame of it, a little more, and
+    // far too early (a fifth of a second and more).
+    var near = 0
+    var some = 0
+    var far = 0
+    for e in early {
+        if e <= buffer + 1 { near += 1 } else if e < 12 + buffer { some += 1 } else { far += 1 }
+    }
     String::from(
-        f"## Presses the rules read nothing for\n\nA press every {CADENCE} frames ({PRESSES} of them: attack, attack, attack, heavy, dodge, attack, parry, attack, over again), walking in to the idol, with the longsword, through the client's input path (its look-ahead is {LOOK_AHEAD} frames); {fights} fights, each begun anew when the idol won.\n\n| Presses | Read at once | Waited, then read | Dropped |\n|---|---|---|---|\n| {made} | {at_once} | {waited} (for {mean:.1} frames on average, {longest} at most) | {dropped} |\n",
+        f"| {buffer} | {made} | {acted} (after {mean:.1} frames on average, {longest} at most) | {unused} | {early.len()}: {near} within the buffer, {some} up to 11 frames before it, {far} further ({fights} fights) |\n",
+    )
+}
+
+fn presses() -> String {
+    var t = String::from(
+        f"## Presses\n\nA press every {CADENCE} frames ({PRESSES} of them: attack, attack, attack, heavy, dodge, attack, parry, attack, over again), walking in to the idol, with the longsword, through the client's input path, at each length of the rules' input buffer (`sim::BUFFER`; the rules read a button from that many frames before its fighter can act on it, and keep its press till then). A fight begins anew when the idol wins. Acted on: an action began from it. Read, not acted on: the rules kept it and nothing began (too little stamina, or a later press replaced it). Dropped: the rules read nothing then; how early each was is how many frames before its fighter could act on it.\n\n| Buffer | Presses | Acted on | Read, not acted on | Dropped: how early |\n|---|---|---|---|---|\n",
+    )
+    for b in BUFFERS {
+        t.push_str(presses_at(b).as_str())
+    }
+    t
+}
+
+/// The packets each player sends over the relay in the two bots' fight (`drift`'s, each heard
+/// at once), and their bytes.
+fn packets() -> String {
+    let weapons = [FISTS, LONGSWORD]
+    var w = World::armed(weapons)
+    var a = Link::new(me: 0, party: 2)
+    var b = Link::new(me: 1, party: 2)
+    var before = [u32(0), 0]
+    var sent = 0
+    var bytes = 0
+    var changes = 0
+    for f in 0..DRIFT_FRAMES {
+        if w.over {
+            break
+        }
+        let ins = [bot(w, 0, before[0], weapons[0], 15), bot(w, 1, before[1], weapons[1], 15)]
+        for i in 0..2 {
+            if ins[i] != before[i] {
+                changes += 1
+            }
+        }
+        if let Some(p) = a.send(f, ins[0]) {
+            sent += 1
+            bytes += p.len()
+            let _ = b.heard(0, p, f)
+        }
+        if let Some(p) = b.send(f, ins[1]) {
+            sent += 1
+            bytes += p.len()
+            let _ = a.heard(1, p, f)
+        }
+        before = ins
+        step(mut w, ins)
+    }
+    String::from(
+        f"## Packets\n\nThe two bots' fight ({DRIFT_FRAMES} frames at most), each player's input over the relay, each packet heard at once: {changes} changes of input, {sent} packets, {bytes} bytes.\n",
     )
 }
 
@@ -470,7 +568,16 @@ fn bots() -> String {
 /// The whole sheet.
 pub fn sheet() -> String {
     var t = String::from("# The feel bench\n\n")
-    for part in [replies(), presses(), windows(), warnings(), contacts(), drift(), bots()] {
+    for part in [
+        replies(),
+        presses(),
+        packets(),
+        windows(),
+        warnings(),
+        contacts(),
+        drift(),
+        bots(),
+    ] {
         t.push_str(part.as_str())
         t.push_str("\n")
     }

@@ -149,6 +149,16 @@ pub const LONGSWORD: u32 = 1
 const PARRY_COST: i32 = 10
 pub const PARRY_WINDOW: u32 = 8
 const PARRY_RECOVERY: u32 = 12
+/// How long a press a fighter can't act on yet is kept for it (frames): the rules read a button
+/// from this many frames before the fighter can act on it (`World::reads`).
+pub const BUFFER: u32 = 10
+
+/// How long a blow of `damage` holds the one who struck it and the one struck, still at the
+/// contact (frames): a jab 3, a cut 3 or 4, the overhead 6, the idol's slam the most, 8.
+pub fn hold_of(damage: i32) -> u32 {
+    min(2 + u32(max(damage, 0)) / 6, 8)
+}
+
 /// A parry meets a blow from the half ahead of the one parrying.
 const PARRY_ARC: i32 = 0
 // A dodge: invulnerable while it lasts, moving fast.
@@ -367,6 +377,11 @@ struct Fighter: Clone + Eq {
     dealt: u32,
     /// The way it faces: one of the 16 directions (`DIR_X`, `DIR_Z`).
     facing: u32,
+    /// The frames it's held still at a contact (`hold_of`), and a press it couldn't act on yet
+    /// (buttons, as `ATTACK`), kept `kept` frames more (`BUFFER`).
+    hold: u32,
+    buffered: u32,
+    kept: u32,
 }
 
 impl Fighter {
@@ -385,6 +400,9 @@ impl Fighter {
             dz: 0,
             dealt: 0,
             facing,
+            hold: 0,
+            buffered: 0,
+            kept: 0,
         }
     }
 }
@@ -471,6 +489,9 @@ pub struct World: Clone + Eq {
     made: u32,
     /// Each player's buttons as of the frame before.
     before: Vec<u32>,
+    /// How long a press a player can't act on yet is kept (`BUFFER`, unless a bench asks another:
+    /// `World::buffered`).
+    buffer: u32,
     pub over: bool,
     pub winner: Winner,
 }
@@ -490,6 +511,8 @@ pub struct Seen: Copy {
     pub move_: u32,
     /// The way it faces: one of the 16 directions (`direction`).
     pub facing: u32,
+    /// The frames it's held still at a contact (`hold_of`).
+    pub hold: u32 = 0,
 }
 
 impl World {
@@ -522,9 +545,15 @@ impl World {
             full: BOSSES[THE_IDOL].hp_each * i32(n),
             made: 0,
             before,
+            buffer: BUFFER,
             over: false,
             winner: Winner::Draw,
         }
+    }
+
+    /// `self` with presses kept `frames` long instead of `BUFFER`: for a bench to try lengths.
+    pub fn buffered(self, frames: u32) -> World {
+        World { buffer: frames, ..self.clone() }
     }
 
     pub fn players(self) -> u32 {
@@ -560,14 +589,19 @@ impl World {
         }
         let p = self.party[i].clone()
         if p.hp <= 0 {
-            0
-        } else if p.act == IDLE {
-            STICK_BITS | BUTTON_BITS
-        } else if chains(p) {
-            CHAIN_BITS
-        } else {
-            0
+            return 0
         }
+        if p.act == IDLE && p.hold == 0 {
+            return STICK_BITS | BUTTON_BITS
+        }
+        // A button it can act on within the buffer's frames, kept till then.
+        var read: u32 = 0
+        for b in [ATTACK, PARRY, DODGE, HEAVY] {
+            if until(p, b) <= self.buffer {
+                read |= b << 6
+            }
+        }
+        read
     }
 
     /// What the rules will read of player `i`'s input `frames` steps from now, if every input
@@ -606,7 +640,23 @@ fn seen(f: Fighter) -> Seen {
         timer: f.timer,
         move_: f.move_,
         facing: f.facing,
+        hold: f.hold,
     }
+}
+
+/// How many frames until `p` can act on button `b` (`ATTACK` and the rest): a light press in an
+/// attack that a combo goes on from, at its recovery; anything else once it's free.
+fn until(p: Fighter, b: u32) -> u32 {
+    let striking = p.move_ != NO_MOVE && (p.act == WINDUP || p.act == ACTIVE || p.act == RECOVER)
+    let combo = b == ATTACK && striking && MOVES[p.move_].next != NO_MOVE
+    let left = if p.act == IDLE { 0 } else if p.act == WINDUP {
+        p.timer + MOVES[p.move_].active + if combo { 0 } else { MOVES[p.move_].recovery }
+    } else if p.act == ACTIVE {
+        p.timer + if combo { 0 } else { MOVES[p.move_].recovery }
+    } else if p.act == RECOVER { if combo { 0 } else { p.timer } } else if p.act == PARRYING {
+        p.timer + PARRY_RECOVERY
+    } else { p.timer }
+    left + p.hold
 }
 
 /// Whether `p` is in an attack's recovery that a combo goes on from.
@@ -622,6 +672,9 @@ pub fn step(w: mut World, inputs: [u32]) {
     if w.over {
         return
     }
+    // The hold the party's blows put on the boss, from after its own step (as theirs is), so a
+    // hold of `n` is `n` frames still.
+    var boss_hold: u32 = 0
     for i in 0..w.party.len() {
         // Buttons are toggles: zeroing an omitted input would press every button whose last
         // toggle was one. Missing input only releases the stick, leaving button toggles alone.
@@ -636,7 +689,7 @@ pub fn step(w: mut World, inputs: [u32]) {
         if p.hp <= 0 {
             continue
         }
-        step_player(mut p, stick, pressed)
+        step_player(mut p, stick, pressed, w.buffer)
         if p.act == ACTIVE && !p.landed && w.boss.hp > 0 {
             let m = MOVES[p.move_]
             let (dx, dz) = (w.boss.x - p.x, w.boss.z - p.z)
@@ -644,11 +697,18 @@ pub fn step(w: mut World, inputs: [u32]) {
                 p.landed = true
                 w.boss.hp -= m.damage
                 p.dealt += u32(m.damage)
+                // Both held at the contact; the boss not while it winds up or strikes, so a
+                // party can't hold its blows off.
+                p.hold = hold_of(m.damage)
+                if w.boss.act != WINDUP && w.boss.act != ACTIVE {
+                    boss_hold = max(boss_hold, hold_of(m.damage))
+                }
             }
         }
         w.party[i] = take p
     }
     step_boss(BOSSES[w.foe], w.full, mut w.made, mut w.boss, mut w.party)
+    w.boss.hold = max(w.boss.hold, boss_hold)
     w.frame += 1
     if w.boss.hp <= 0 {
         w.winner = Winner::Party
@@ -720,13 +780,32 @@ fn begin(p: mut Fighter, m: u32) -> bool {
 }
 
 @deterministic
-fn step_player(p: mut Fighter, stick: u32, pressed: u32) {
+fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32) {
+    // A press it can't act on yet is kept (`buffer` frames), the latest over any before it: one
+    // slot, which a combo's next cut is taken from as any other press is.
+    if fresh != 0 {
+        p.buffered = fresh
+        p.kept = buffer
+    } else if p.kept > 0 {
+        p.kept -= 1
+        if p.kept == 0 {
+            p.buffered = 0
+        }
+    }
+    // Held at a contact, it's still, and keeps its press.
+    if p.hold > 0 {
+        p.hold -= 1
+        return
+    }
+    let pressed = p.buffered
     // An action runs its frames out; a new one starts from idle, or a combo's next cut from the
     // recovery of the one before.
     if p.act != IDLE {
         if chains(p) && pressed & ATTACK != 0 {
             let next = MOVES[p.move_].next
             if begin(mut p, next) {
+                p.buffered = 0
+                p.kept = 0
                 return
             }
         }
@@ -769,6 +848,9 @@ fn step_player(p: mut Fighter, stick: u32, pressed: u32) {
             p.dx = DIR_X[dir] * DODGE_SPEED / 64
             p.dz = DIR_Z[dir] * DODGE_SPEED / 64
         }
+        // Free, it acts on a press at once or not at all.
+        p.buffered = 0
+        p.kept = 0
     }
     if p.act == IDLE {
         if p.stamina < STAMINA {
@@ -828,6 +910,11 @@ fn step_boss(b: Boss, full: i32, made: mut u32, boss: mut Fighter, party: mut Ve
             }
         }
     }
+    // Held at a contact, it's still.
+    if boss.hold > 0 {
+        boss.hold -= 1
+        return
+    }
     if boss.act != IDLE {
         if boss.timer > 0 {
             boss.timer -= 1
@@ -841,6 +928,7 @@ fn step_boss(b: Boss, full: i32, made: mut u32, boss: mut Fighter, party: mut Ve
             // It meets every player where it reaches and within its arc, once: a parry staggers
             // it, if a parry meets it at all and the one parrying faces it; a dodge passes it.
             var parried = false
+            var struck = false
             for i in 0..party.len() {
                 var p = party[i].clone()
                 let d = reach(boss.x, boss.z, p.x, p.z)
@@ -852,13 +940,22 @@ fn step_boss(b: Boss, full: i32, made: mut u32, boss: mut Fighter, party: mut Ve
                     let facing_it = within(p.facing, -dx, -dz, PARRY_ARC)
                     if p.act == PARRYING && attack.parried && facing_it {
                         parried = true
+                        p.hold = hold_of(attack.damage)
                     } else if p.act != DODGING {
                         p.hp -= attack.damage
+                        p.hold = hold_of(attack.damage)
+                        // Struck, what it pressed is lost.
+                        p.buffered = 0
+                        p.kept = 0
+                        struck = true
                     }
                     party[i] = take p
                 }
             }
             boss.landed = true
+            if struck || parried {
+                boss.hold = hold_of(attack.damage)
+            }
             if parried {
                 boss.act = STAGGERED
                 boss.timer = attack.stagger
@@ -1057,7 +1154,8 @@ fn hold(w: mut World, input: u32, frames: u32) {
 fn a_missing_input_stops_the_stick_without_pressing_a_button() {
     var w = at_the_boss(LONGSWORD)
     let first = MOVES[WEAPONS[LONGSWORD].light]
-    hold(mut w, input: ATTACK << 6, frames: 2 + first.windup + first.active + first.recovery)
+    let frames = 2 + first.windup + first.active + first.recovery + hold_of(first.damage)
+    hold(mut w, input: ATTACK << 6, frames: frames)
     assert(w.party[0].act == IDLE, "the previous press has finished")
     step(mut w, [ATTACK << 6 | 3])
     let hp = w.boss.hp
@@ -1074,7 +1172,8 @@ fn a_light_press_in_a_cuts_recovery_goes_on_to_the_combos_next() {
     // The first cut: pressed, then held through its windup and strike.
     hold(mut w, input: ATTACK << 6, frames: 1)
     let first = MOVES[2]
-    hold(mut w, input: ATTACK << 6, frames: first.windup + first.active)
+    // (Each held at its contact, `hold_of`.)
+    hold(mut w, input: ATTACK << 6, frames: first.windup + first.active + hold_of(first.damage))
     assert(w.party[0].act == RECOVER && w.party[0].move_ == 2, "the first cut recovers")
     assert(w.reads(0) == CHAIN_BITS, "its recovery reads only the attacks")
     assert(w.boss.hp == hp - first.damage, "it landed")
@@ -1082,11 +1181,11 @@ fn a_light_press_in_a_cuts_recovery_goes_on_to_the_combos_next() {
     hold(mut w, input: 0, frames: 1)
     assert(w.party[0].act == WINDUP && w.party[0].move_ == 3, "the second cut")
     let second = MOVES[3]
-    hold(mut w, input: 0, frames: second.windup + second.active)
+    hold(mut w, input: 0, frames: second.windup + second.active + hold_of(second.damage))
     hold(mut w, input: ATTACK << 6, frames: 1)
     assert(w.party[0].move_ == 4, "the third")
     let third = MOVES[4]
-    hold(mut w, input: ATTACK << 6, frames: third.windup + third.active)
+    hold(mut w, input: ATTACK << 6, frames: third.windup + third.active + hold_of(third.damage))
     assert(w.boss.hp == hp - first.damage - second.damage - third.damage, "all three land")
     assert(w.reads(0) == 0, "the combo's last cut goes on to nothing")
     hold(mut w, input: ATTACK << 6, frames: third.recovery + 1)
@@ -1106,7 +1205,8 @@ fn each_weapon_fights_with_its_own_moves() {
     }
     // A light press in a fists' jab's recovery starts nothing: its combo is one jab.
     var f = at_the_boss(FISTS)
-    hold(mut f, input: ATTACK << 6, frames: 1 + MOVES[0].windup + MOVES[0].active)
+    let jab = MOVES[0]
+    hold(mut f, input: ATTACK << 6, frames: 1 + jab.windup + jab.active + hold_of(jab.damage))
     hold(mut f, input: 0, frames: 1)
     assert(f.party[0].act == RECOVER, "no next jab")
     // A weapon that isn't one is fists, so any party is a fight.
@@ -1356,4 +1456,68 @@ fn the_idol_misses_who_steps_out_of_its_arc_once_it_turns_no_more() {
     step(mut w, [0])
     step(mut w, [0])
     assert(w.party[0].hp == PLAYER_HP - ATTACKS[0].damage, "a parry turned away doesn't meet it")
+}
+
+@test
+fn a_blow_holds_both_at_its_contact_by_its_weight() {
+    assert(hold_of(8) == 3 && hold_of(26) == 6 && hold_of(44) == 8, "heavier holds longer")
+    let cut = MOVES[WEAPONS[LONGSWORD].light]
+    var w = at_the_boss(LONGSWORD)
+    w.boss.act = RECOVER
+    w.boss.move_ = 0
+    w.boss.timer = 60
+    let pressed = 1 + cut.windup
+    for _ in 0..pressed {
+        step(mut w, [ATTACK << 6])
+    }
+    assert(w.party[0].act == ACTIVE && w.party[0].hold == hold_of(cut.damage), "the cut's held")
+    assert(w.boss.hold == hold_of(cut.damage), "and so is what it struck")
+    let (timer, boss_timer) = (w.party[0].timer, w.boss.timer)
+    step(mut w, [ATTACK << 6])
+    assert(w.party[0].timer == timer && w.boss.timer == boss_timer, "held, neither's clock runs")
+    // A boss winding up isn't held: a party can't hold its blows off.
+    var up = at_the_boss(LONGSWORD)
+    up.boss.act = WINDUP
+    up.boss.move_ = 2
+    up.boss.timer = 40
+    for _ in 0..pressed {
+        step(mut up, [ATTACK << 6])
+    }
+    assert(up.party[0].hold > 0 && up.boss.hold == 0, "its windup runs on")
+}
+
+@test
+fn a_press_made_a_little_early_is_kept_till_it_can_be_acted_on() {
+    let jab = MOVES[0]
+    let heavy = MOVES[WEAPONS[FISTS].heavy]
+    let busy = jab.windup + jab.active + hold_of(jab.damage) + jab.recovery
+    // A heavy pressed `early` frames before the jab's done.
+    let early_heavy = |early: u32| -> World {
+        var w = at_the_boss(FISTS)
+        hold(mut w, input: ATTACK << 6, frames: 1 + busy - early)
+        hold(mut w, input: (ATTACK | HEAVY) << 6, frames: early + 1)
+        take w
+    }
+    let kept = early_heavy(BUFFER - 2)
+    assert(kept.party[0].act == WINDUP && kept.party[0].move_ == WEAPONS[FISTS].heavy, "kept")
+    assert(kept.party[0].timer == heavy.windup, "begun the frame it could be")
+    let lost = early_heavy(BUFFER + 6)
+    assert(lost.party[0].act == IDLE, "too early, it isn't read: the rules read nothing then")
+}
+
+@test
+fn a_kept_press_is_lost_when_its_fighter_is_struck() {
+    var w = at_the_boss(LONGSWORD)
+    // Recovering from a parry, a heavy pressed and kept; then the sweep lands.
+    w.party[0].act = RECOVER
+    w.party[0].timer = 6
+    step(mut w, [HEAVY << 6])
+    assert(w.party[0].buffered == HEAVY && w.party[0].kept > 0, "kept")
+    w.boss.act = WINDUP
+    w.boss.move_ = 0
+    w.boss.timer = 1
+    step(mut w, [HEAVY << 6])
+    step(mut w, [HEAVY << 6])
+    assert(w.party[0].hp == PLAYER_HP - ATTACKS[0].damage, "struck")
+    assert(w.party[0].buffered == 0 && w.party[0].kept == 0, "and the press is lost")
 }
