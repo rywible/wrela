@@ -18,6 +18,10 @@
 // - The striking arm's collar, its upper arm, its forearm and its hand each turn in the bone
 //   they hang from as the keys had them their own lag earlier.
 //
+// How the parts follow the hips is the fighter's (`Taste`), not a move's: every move he makes is
+// written with his taste. And a fight plays a move at its own beats (`Beats`, `Written::played`):
+// the rules own a move's timing, and its keys are laid over the frames they give it.
+//
 // A part's turn is its turn in its parent, so a late arm is carried by the body that has
 // already gone: the fist rides the trunk's turn before the arm opens. What a late part does to
 // where the fist ends up is not written anywhere: it's read (`Written::thrown`) and solved for.
@@ -26,12 +30,25 @@
 // derivation follows an array alone.
 
 use humanoid::{Clip, NONE, Pose, Rig, pose_world}
+use playback::{ACTIVE, CANCEL, Mark, Move, RECOVER, WINDUP}
 use keys::{Key, key_in, posed, shifted}
 use std::collections::Vec
 use stride::curled_hands
 use timing::RATE
 
 const DEG: f32 = 0.017453292
+
+/// The most steps a read over a stretch of a move takes (`Written::thrown_from`,
+/// `Written::halfway`): a second's worth, more than any throw.
+pub const MOST_STEPS: u32 = 60
+
+/// How many steps of 1 / `RATE` s a read over `span` s takes (`round` added before it's a whole
+/// number): one at least, `MOST_STEPS` at most. A solve may try a span below nothing (a throw
+/// set off after its contact), which as a whole number would overflow, or far longer than any
+/// move (a step that moves a time by thousands of seconds), which would be millions of steps.
+fn steps_over(span: f32, round: f32) -> u32 {
+    u32(clamp(span * RATE + round, 1.0, f32(MOST_STEPS)))
+}
 
 /// How each part of the body follows the hips.
 ///
@@ -65,12 +82,39 @@ const ELBOW: u32 = 4
 const WRIST: u32 = 5
 const CLOCKS: u32 = 6
 
-/// A written move: its keys in time order (`N` of them, their times the hips'), how the body
-/// follows the hips, and the arm that strikes (0 the left, 1 the right, as `engine::timing`
-/// counts limbs).
+/// A fighter's taste: its habits, true of every move it makes, as a player's taste is true of
+/// any piece (`engine::perform::Taste`). How its body follows its hips (`Chain`) is a fighter's,
+/// not a move's: each of its moves is written with it.
+pub struct Taste: Copy {
+    pub chain: Chain,
+}
+
+/// A move's beats, as the fight's rules have them (s): its windup (to the frame the rules hit),
+/// its active frames and its recovery. The rules own a move's timing and the move bends to it
+/// (`Written::played`).
+pub struct Beats: Copy {
+    pub windup: f32,
+    pub active: f32,
+    pub recovery: f32,
+}
+
+impl Beats {
+    /// A move's beats from its frames at `hz` a second.
+    pub fn of_frames(windup: u32, active: u32, recovery: u32, hz: f32) -> Beats {
+        Beats { windup: f32(windup) / hz, active: f32(active) / hz, recovery: f32(recovery) / hz }
+    }
+
+    pub fn length(self) -> f32 {
+        self.windup + self.active + self.recovery
+    }
+}
+
+/// A written move: its keys in time order (`N` of them, their times the hips'), its fighter's
+/// taste (how the body follows the hips), and the arm that strikes (0 the left, 1 the right, as
+/// `engine::timing` counts limbs).
 pub struct Written<const N: u32>: Copy {
     pub keys: [Key; N],
-    pub chain: Chain,
+    pub taste: Taste,
     pub arm: u32,
 }
 
@@ -134,13 +178,13 @@ fn clocks(rig: Rig, arm: u32) -> [u32; 64] {
 impl<const N: u32> Written<N> {
     /// Each clock's lag (s), in the clocks' order.
     fn lag(self) -> [f32; 6] {
-        let l = self.chain
+        let l = self.taste.chain
         [0.0, l.trunk, l.collar, l.shoulder, l.elbow, l.wrist]
     }
 
     /// How much of a snap each clock keeps, in the clocks' order.
     fn snap(self) -> [f32; 6] {
-        [self.chain.body_snap, self.chain.trunk_snap, 1.0, 1.0, 1.0, 1.0]
+        [self.taste.chain.body_snap, self.taste.chain.trunk_snap, 1.0, 1.0, 1.0, 1.0]
     }
 
     /// How long the move lasts (s): its last key, and the latest part's lag after it.
@@ -196,6 +240,54 @@ impl<const N: u32> Written<N> {
         curled_hands(c, rig, fist)
     }
 
+    /// The move with its keys at the fight's beats: what's before its own contact (`contact`, s
+    /// from its start, when its strike lands) squeezed or stretched over the windup, its contact
+    /// on the frame the rules hit, what's within the active frames after it at its own pace, and
+    /// the rest over the recovery, less the latest part's lag, so the move ends with the rules'.
+    /// The taste's lags are the fighter's, and stay as they are.
+    pub fn at_beats(self, contact: f32, beats: Beats) -> Written<N> {
+        var most = 0.0
+        for l in self.lag() {
+            most = max(most, l)
+        }
+        let last = self.keys[N - 1].at
+        let held = contact + beats.active
+        let rest = max(beats.recovery - most, 1.0e-3)
+        var out = self
+        for i in 0..N {
+            let t = self.keys[i].at
+            out.keys[i].at = if t <= contact {
+                t * beats.windup / max(contact, 1.0e-4)
+            } else if t <= held { beats.windup + (t - contact) } else {
+                beats.windup + beats.active + (t - held) * rest / max(last - held, 1.0e-4)
+            }
+        }
+        out
+    }
+
+    /// The move as a fight plays it (`engine::playback`): at the fight's beats (`at_beats`), its
+    /// contact `contact` s into it as written, sampled at `fps` with its hands made fists, in
+    /// place, and marked with its windows (`WINDUP` to the hit, `ACTIVE`, `RECOVER`, and
+    /// `CANCEL` over the last third of the recovery).
+    pub fn played(self, rig: Rig, contact: f32, beats: Beats, fps: f32, fist: f32) -> Move {
+        let c = self.at_beats(contact, beats).clip(rig, fps, fist)
+        let n = c.frames
+        let (w, a, total) = (beats.windup, beats.active, beats.length())
+        var marks: Vec<Mark> = Vec::new()
+        marks.push(Mark { kind: WINDUP, from: 0.0, till: w })
+        marks.push(Mark { kind: ACTIVE, from: w, till: w + a })
+        marks.push(Mark { kind: RECOVER, from: w + a, till: total })
+        marks.push(Mark { kind: CANCEL, from: total - beats.recovery / 3.0, till: total })
+        Move {
+            clip: c,
+            root: Vec::filled(n, vec3(0.0)),
+            heading: Vec::filled(n, 0.0),
+            marks,
+            speed: 0.0,
+            stride: 0.0,
+        }
+    }
+
     /// When bone `bone` (a VRM name) is half way through its own turn (in the bone it hangs
     /// from, as each part of the chain plays its clock) from `from` to `to` (s from the move's
     /// start), read at `RATE` a second: the first step it's turned half as far as it will be,
@@ -204,13 +296,13 @@ impl<const N: u32> Written<N> {
     /// that before its forearm) can be a spec's check.
     pub fn halfway(self, rig: Rig, bone: str, from: f32, to: f32) -> f32 {
         let b = rig.find(bone)
-        let start = self.pose(rig, from).turns[b]
+        let start = self.own_turn(rig, b, from)
         let turned = |time: f32| -> f32 {
-            let q = self.pose(rig, time).turns[b].mul(start.inverse())
+            let q = self.own_turn(rig, b, time).mul(start.inverse())
             2.0 * atan2(length(q.v.xyz), abs(q.v.w))
         }
         let whole = turned(to)
-        let steps = max(u32((to - from) * RATE + 0.5), 1)
+        let steps = steps_over(to - from, 0.5)
         let dt = (to - from) / f32(steps)
         var was = 0.0
         for i in 1..steps + 1 {
@@ -222,6 +314,14 @@ impl<const N: u32> Written<N> {
             was = now
         }
         to
+    }
+
+    /// Bone `b`'s turn in its parent at `time`: its own clock's key's, the rest of the body not
+    /// posed.
+    fn own_turn(self, rig: Rig, b: u32, time: f32) -> Quat {
+        let c = clocks(rig, self.arm)[b]
+        let k = key_in(self.keys, time - self.lag()[c], self.snap()[c])
+        posed(rig, shifted(k, -k.travel)).turns[b]
     }
 
     /// Where the striking wrist is at `time` (the body's space, m).
@@ -291,7 +391,7 @@ impl<const N: u32> Written<N> {
     /// throw sets off, not a count of steps back, so a fist easing into its load before then
     /// isn't read as slowing on its way in.
     pub fn thrown_from(self, rig: Rig, contact: f32, from: f32) -> Thrown {
-        self.thrown(rig, contact, max(u32((contact - from) * RATE + 1.0e-3), 1))
+        self.thrown(rig, contact, steps_over(contact - from, 1.0e-3))
     }
 
     /// The strike as a solve reads it: `steps` steps of 1 / `RATE` s that end on `contact` (s

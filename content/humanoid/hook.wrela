@@ -26,7 +26,8 @@ use engine::keys::{Key, SETTLE, SMOOTH, SNAP}
 use engine::playback::{ACTIVE, CANCEL, Mark, Move, RECOVER, WINDUP}
 use engine::review
 use engine::timing::{LEFT_ARM, timing}
-use engine::written::{Chain, Written}
+use engine::written::{Chain, Taste, Written}
+use taste::taste
 use body::HERO
 use fists::guard
 
@@ -54,21 +55,8 @@ pub fn hook() -> Written<8> {
     // How far up out to the left the striking elbow points on contact (degrees from straight
     // down): a hook's elbow comes up near level with its fist.
     let elbow_up = 83.2
-    // ---- The rest is written by hand. ----
-    // How the body follows the hips: the chest, then the striking arm's collar, shoulder,
-    // elbow and wrist, each a little later. The lags are short (longer ones check the fist
-    // between the hips' carry and the arm's snap) and the order comes of the eases: the hips
-    // ease into the contact, the chest keeps a little over half its snap, and the arm, stopped
-    // dead by it, all of it. Tuned by hand against the sheet's lead, which no solve can follow.
-    let chain = Chain {
-        trunk: 0.015,
-        collar: 0.020,
-        shoulder: 0.025,
-        elbow: 0.025,
-        wrist: 0.025,
-        body_snap: 0.0,
-        trunk_snap: 0.6,
-    }
+    // How the body follows the hips: the fighter's (`taste`), as every move of his is.
+    let chain = taste().chain
     // The load: the weight onto the lead side and sunk, the hips and chest opened a little to
     // the left (against the way they'll turn), the lead fist dropped a hair and out, its elbow
     // out from the ribs.
@@ -135,7 +123,7 @@ pub fn hook() -> Written<8> {
     var back = rest
     back.at = 0.75 - chain.wrist
     back.ease = SMOOTH
-    Written { keys: [rest, load, beat, contact, driven, held, home, back], chain, arm: 0 }
+    Written { keys: [rest, load, beat, contact, driven, held, home, back], taste: taste(), arm: 0 }
 }
 
 /// A clip as a move that stays where it stands (as `fists`' keyed moves do).
@@ -206,4 +194,18 @@ fn the_solved_hook_reads_as_a_strike() {
         print(f"  arms: {fault}")
     }
     assert(faults.len() == 0, f"{faults.len()} arm faults")
+}
+
+/// A throw set off after its contact, or far before it (as a solve's step may try), is read
+/// without a trap and in bounded steps (`engine::written::MOST_STEPS`).
+@test
+fn a_throw_set_off_after_its_contact_or_far_before_it_is_read_in_bounded_steps() {
+    for at in [CONTACT + 0.2, -164000.0] {
+        var m = hook()
+        m.keys[2].at = at
+        let t = m.thrown_from(HERO.rig, CONTACT, at)
+        assert(t.fastest >= 0.0 && t.fastest < 1.0e6, f"read from {at}")
+        let h = m.halfway(HERO.rig, "hips", at, CONTACT)
+        assert(h == h, f"half way from {at}")
+    }
 }

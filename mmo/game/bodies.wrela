@@ -26,7 +26,8 @@ use engine::humanoid::{Pose, palette}
 use engine::playback
 use engine::playback::{Gaits, Handling, Move, Mover}
 use engine::view::first_camera
-use humanoid::body::{ACTS_CODE, GAITS_CODE, HERO}
+use engine::written::Beats
+use humanoid::body::{GAITS_CODE, HERO, ROLL_CODE}
 use humanoid::exchange::{X_STONE, X_TINT}
 use humanoid::fists::{GUARD, REEL, STEP_OUT}
 use humanoid::ink::ink
@@ -52,27 +53,24 @@ pub const ACT_DODGE: u32 = 13
 pub const ACT_PARRY: u32 = 14
 pub const ACT_STRUCK: u32 = 15
 
-/// The solved cross timed to a move's frames, its fist on its contact on the frame the rules
-/// hit, the first of its active ones: `playback::timed` plays the active frames at the move's
-/// own pace about the strike it's given, so it's given the contact half of them on. (The
-/// boss's rules meet the party a step after its windup ends, so its strikes are timed with a
+/// The solved cross at a move's beats (`engine::written::Written::played`): its keys laid on
+/// the move's frames, its contact on the frame the rules hit, the first of its active ones. (The
+/// boss's rules meet the party a step after its windup ends, so its strikes are played with a
 /// windup a frame longer and an active window a frame shorter: the same frames in all.)
 fn struck_at(windup: u32, active: u32, recovery: u32) -> Move {
-    let hz = f32(HZ)
-    playback::timed(
-        solved::CROSS.clone(),
-        solved::CONTACT + 0.5 * f32(active) / hz,
-        windup,
-        active,
-        recovery,
-        hz,
+    solved::cross().played(
+        HERO.rig,
+        solved::CONTACT,
+        Beats::of_frames(windup, active, recovery, f32(HZ)),
+        fps: 60.0,
+        fist: 2.0,
     )
 }
 
 /// The roll squeezed to the dodge's frames and as many again to get up: the rules carry the
 /// body (`DODGE_FRAMES` of them), and the body's on its feet soon after.
 fn dodged() -> Move {
-    let roll = ACTS_CODE[1].clone()
+    let roll = ROLL_CODE.clone()
     let len = roll.length()
     playback::timed(roll, 0.5 * len, DODGE_FRAMES, 0, DODGE_FRAMES, hz: f32(HZ))
 }

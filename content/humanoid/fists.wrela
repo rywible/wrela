@@ -1,11 +1,7 @@
-// The body's fists, hand-posed (`engine::keys`): each punch an animator's keys, timed for weight
-// and read, not a take's frames retimed. The first: a cross thrown from where the body stands.
-//
-// A cross from an orthodox stance (left foot and fist ahead): the body sinks and coils back onto
-// its rear foot (the tell), holds that a beat (the eye reads it), then snaps through in four
-// frames, the rear heel pivoting up and the hips and trunk turning the fist out to full reach,
-// the lead fist pulled back to the chin; it drives a little past its contact (the impact), holds
-// there, then pulls the fist home faster than it threw it and settles back into its guard.
+// The fighter's footwork and guard, hand-posed (`engine::keys`): the guard he stands in and
+// bounces in, his steps, and the reel of a body struck. His strikes are written moves, each
+// part of the body on its own clock and their numbers solved (solved.wrela, hook.wrela,
+// `engine::written`); a strike keyed alone, every part on one curve, is gone.
 
 use std::collections::Vec
 use engine::humanoid
@@ -36,76 +32,6 @@ pub fn guard() -> Key {
     }
 }
 
-/// The cross's keys (s from its start).
-pub fn cross_keys() -> Vec<Key> {
-    var out: Vec<Key> = Vec::new()
-    var k = guard()
-    out.push(k)
-    // The load: sunk and coiled onto the rear foot, the rear fist drawn back a hand's width,
-    // the rear heel down to drive off.
-    k.at = 0.2
-    k.ease = SMOOTH
-    k.hips = vec3(-0.05, -0.115, -0.05)
-    k.hips_turn = vec3(0.0, -47.0, 0.0)
-    k.trunk = vec3(12.0, -20.0, 0.0)
-    k.look = vec3(0.0, 1.40, 3.0)
-    k.fists = [vec3(0.13, 1.39, 0.38), vec3(-0.18, 1.34, -0.02)]
-    k.elbows = [vec3(0.5, -1.0, -0.2), vec3(-0.6, -1.0, -0.4)]
-    k.feet[1] = vec4(-0.17, -0.20, -40.0, 0.0)
-    out.push(k)
-    // The beat: held, settling a hair further in.
-    k.at = 0.34
-    k.ease = SETTLE
-    k.hips = vec3(-0.055, -0.12, -0.055)
-    k.hips_turn = vec3(0.0, -49.0, 0.0)
-    k.trunk = vec3(13.0, -21.0, 0.0)
-    out.push(k)
-    // Contact: snapped through in four frames, the hips and trunk turned square and past, the
-    // rear heel up and pivoted, the fist at full reach at chin height on the centre line, its
-    // shoulder up over the chin; the lead fist pulled back to guard the face.
-    k.at = 0.40
-    k.ease = SNAP
-    k.hips = vec3(0.0, -0.08, 0.06)
-    k.hips_turn = vec3(0.0, 18.0, 0.0)
-    k.trunk = vec3(12.0, 26.0, 0.0)
-    k.collars = [vec3(0.0), vec3(0.0, 10.0, -8.0)]
-    k.fists = [vec3(0.07, 1.43, 0.18), vec3(-0.02, 1.46, 0.74)]
-    k.elbows = [vec3(0.6, -1.0, 0.0), vec3(-0.3, -1.0, 0.0)]
-    k.feet[1] = vec4(-0.17, -0.20, -5.0, 32.0)
-    out.push(k)
-    // The impact: driven on past contact, the weight over the lead foot.
-    k.at = 0.43
-    k.ease = SETTLE
-    k.hips = vec3(0.005, -0.085, 0.08)
-    k.hips_turn = vec3(0.0, 22.0, 0.0)
-    k.trunk = vec3(15.0, 30.0, 0.0)
-    out.push(k)
-    // The hold on the hit: barely drifting.
-    k.at = 0.50
-    k.ease = SETTLE
-    k.hips = vec3(0.0, -0.083, 0.075)
-    k.hips_turn = vec3(0.0, 20.0, 0.0)
-    k.trunk = vec3(14.0, 28.0, 0.0)
-    out.push(k)
-    // The pull home: faster than it went, the fist most of the way back, the hips turning back.
-    k.at = 0.60
-    k.ease = SETTLE
-    k.hips = vec3(-0.01, -0.07, 0.02)
-    k.hips_turn = vec3(0.0, -10.0, 0.0)
-    k.trunk = vec3(7.0, 5.0, 0.0)
-    k.collars = [vec3(0.0), vec3(0.0, 3.0, -2.0)]
-    k.fists = [vec3(0.09, 1.41, 0.26), vec3(-0.07, 1.41, 0.20)]
-    k.elbows = [vec3(0.5, -1.0, -0.2), vec3(-0.5, -1.0, -0.2)]
-    k.feet[1] = vec4(-0.17, -0.20, -30.0, 14.0)
-    out.push(k)
-    // Back in the guard.
-    var g = guard()
-    g.at = 0.90
-    g.ease = SMOOTH
-    out.push(g)
-    out
-}
-
 /// A keyed clip as a move that stays where it stands: no root path to carry, no heading to
 /// turn (its hips' turns are the pose's, not the body's).
 fn in_place(c: Clip) -> Move {
@@ -119,30 +45,6 @@ fn in_place(c: Clip) -> Move {
         stride: 0.0,
     }
 }
-
-/// The cross's frames in the fight, at 60 a second: its tell (the load and the beat, to the
-/// snap's start), when it hits (from contact through the drive past it), and its recovery.
-pub const CROSS_HIT: f32 = 0.40
-pub const CROSS_HIT_TILL: f32 = 0.46
-
-/// The cross as a game plays it: its keys at 60 a second, fists clenched, in place, its windows
-/// marked.
-@fuel(2 ** 40)
-pub const CROSS: Move = cross_move()
-
-fn cross_move() -> Move {
-    let keys = cross_keys()
-    var m = in_place(keys::keyed(HERO.rig, keys, fps: 60.0, fist: 2.0))
-    let end = m.clip.length()
-    m.marks = Vec::new()
-    m.marks.push(Mark { kind: WINDUP, from: 0.0, till: CROSS_HIT })
-    m.marks.push(Mark { kind: ACTIVE, from: CROSS_HIT, till: CROSS_HIT_TILL })
-    m.marks.push(Mark { kind: RECOVER, from: CROSS_HIT_TILL, till: end })
-    m.marks.push(Mark { kind: CANCEL, from: end - 0.15, till: end })
-    m
-}
-
-// ---- footwork ---------------------------------------------------------------------------
 
 /// A step of a fighter's footwork, `by` along the floor (m, in the body's space: +z toward the
 /// foe, +x its left), in the guard and facing the foe all the while: the foot nearest the way it
@@ -265,24 +167,15 @@ pub const STEP_LEFT: Move = step_move(vec3(STEP * 0.85, 0.0, 0.0))
 @fuel(2 ** 40)
 pub const STEP_RIGHT: Move = step_move(vec3(-STEP * 0.85, 0.0, 0.0))
 
-/// The one-offs a body acts, by index: the running punch (`body::ACT_PUNCH`), the roll
-/// (`body::ACT_ROLL`) and the standing cross (`ACT_CROSS`); and how each is drawn (`LOOKS`): the
-/// strikes as strikes, the roll as it plays.
+/// The one-offs the lab's fighter acts (main.wrela's `FIGHT_ACTS`), by index: the running
+/// punch (`body::ACT_PUNCH`), the roll (`body::ACT_ROLL`), the standing cross (the solved one,
+/// `ACT_CROSS`) and the steps; and how each is drawn (`LOOKS`): the strikes as strikes, the rest
+/// as they play.
 pub const ACT_CROSS: u32 = 2
 pub const ACT_STEP_IN: u32 = 3
 pub const ACT_STEP_OUT: u32 = 4
 pub const ACT_STEP_LEFT: u32 = 5
 pub const ACT_STEP_RIGHT: u32 = 6
-@fuel(2 ** 40)
-pub const ACTS: [Move; 7] = [
-    body::PUNCH.clone(),
-    body::ROLL.clone(),
-    CROSS.clone(),
-    STEP_IN.clone(),
-    STEP_OUT.clone(),
-    STEP_LEFT.clone(),
-    STEP_RIGHT.clone(),
-]
 pub const LOOKS: [Look; 7] = [STRIKE, PLAIN, LIGHT, PLAIN, PLAIN, PLAIN, PLAIN]
 
 /// Each bounce: how long (s), how high (of the most), and where the weight is (1 on the lead
@@ -366,41 +259,4 @@ pub const FIGHT_GAITS: Gaits = Gaits {
     stop: GAITS.stop.clone(),
     start_exit: GAITS.start_exit,
     stop_entry: GAITS.stop_entry,
-}
-
-/// The cross reaches: its fist out to near full stretch on contact, there fastest just before
-/// and all but stopped just after (snapped into, then driven on a little), and its lead foot
-/// staying put through it.
-@test
-fn the_cross_snaps_out_to_its_contact_on_planted_feet() {
-    borrow rig = HERO.rig
-    let rw = rig.rest_world()
-    let (u, h) = (rig.find("rightUpperArm"), rig.find("rightHand"))
-    let reach = length(rw[h].t - rw[u].t)
-    let at = |t: f32| -> (vec3, vec3, vec3) {
-        let w = engine::stride::worlds(rig, CROSS.clip, u32(t * 60.0 + 0.5))
-        let (root, _) = CROSS.root_at(t)
-        (w[u].t, w[h].t, w[rig.find("leftToes")].t + root)
-    }
-    let (s, f, _) = at(CROSS_HIT)
-    let out = length(f - s) / reach
-    let (_, before, _) = at(CROSS_HIT - 1.0 / 60.0)
-    let (_, after, _) = at(CROSS_HIT + 2.0 / 60.0)
-    let (_, f0, _) = at(CROSS_HIT - 2.0 / 60.0)
-    let into = length(f - before) * 60.0
-    let on = length(after - f) * 30.0
-    let early = length(before - f0) * 60.0
-    print(
-        f"the cross: on contact the fist's {out * 100.0:.0}% out, {into:.1} m/s into it, {on:.2} m/s after (and {early:.1} a frame before)",
-    )
-    assert(out > 0.93, f"the fist's only {out} of its reach out on contact")
-    assert(into > 3.0 * on, "the fist doesn't stop on its contact")
-    var most = 0.0
-    let (_, _, toe0) = at(0.0)
-    for k in 0..u32(CROSS.clip.length() * 60.0) {
-        let (_, _, toe) = at(f32(k) / 60.0)
-        most = max(most, length(toe - toe0))
-    }
-    print(f"the lead foot's ball moves {most * 100.0:.1} cm at most")
-    assert(most < 0.01, f"the lead foot slides {most} m")
 }
