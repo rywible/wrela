@@ -196,6 +196,34 @@ impl<const N: u32> Written<N> {
         curled_hands(c, rig, fist)
     }
 
+    /// When bone `bone` (a VRM name) is half way through its own turn (in the bone it hangs
+    /// from, as each part of the chain plays its clock) from `from` to `to` (s from the move's
+    /// start), read at `RATE` a second: the first step it's turned half as far as it will be,
+    /// placed between that step and the one before by how far each had got. A number a solve
+    /// can follow, so a chain's order (the hips half way round before the striking upper arm,
+    /// that before its forearm) can be a spec's check.
+    pub fn halfway(self, rig: Rig, bone: str, from: f32, to: f32) -> f32 {
+        let b = rig.find(bone)
+        let start = self.pose(rig, from).turns[b]
+        let turned = |time: f32| -> f32 {
+            let q = self.pose(rig, time).turns[b].mul(start.inverse())
+            2.0 * atan2(length(q.v.xyz), abs(q.v.w))
+        }
+        let whole = turned(to)
+        let steps = max(u32((to - from) * RATE + 0.5), 1)
+        let dt = (to - from) / f32(steps)
+        var was = 0.0
+        for i in 1..steps + 1 {
+            let t = from + dt * f32(i)
+            let now = turned(t)
+            if now >= 0.5 * whole {
+                return t - dt + dt * (0.5 * whole - was) / max(now - was, 1.0e-6)
+            }
+            was = now
+        }
+        to
+    }
+
     /// Where the striking wrist is at `time` (the body's space, m).
     pub fn end(self, rig: Rig, time: f32) -> vec3 {
         let wrist = arm_of(rig, self.arm)[3]
@@ -256,6 +284,14 @@ impl<const N: u32> Written<N> {
             last = p
         }
         most
+    }
+
+    /// The strike as a solve reads it from `from` to its contact (s from the move's start): the
+    /// steps that end on the contact and begin no earlier than `from`. Read from the moment the
+    /// throw sets off, not a count of steps back, so a fist easing into its load before then
+    /// isn't read as slowing on its way in.
+    pub fn thrown_from(self, rig: Rig, contact: f32, from: f32) -> Thrown {
+        self.thrown(rig, contact, max(u32((contact - from) * RATE + 1.0e-3), 1))
     }
 
     /// The strike as a solve reads it: `steps` steps of 1 / `RATE` s that end on `contact` (s

@@ -1,10 +1,11 @@
 // What the solved cross (solved.wrela) and the solved lead hook (hook.wrela) should measure:
 // the checks `wrela solve content/humanoid --spec` holds their literals to, and reports.
 //
-// Only what a solve can follow is here: `Written::thrown`'s numbers, each with a derivative by
-// the cross's literals. What the timing sheet reads off the built clip (its chain, its lead,
-// its flags) is found by searching samples, which gives a solve no slope: the lags make those
-// by construction, and the tests read them back (the_solved_cross_reads_as_a_strike).
+// Only what a solve can follow is here: `Written::thrown`'s numbers, and the chain's lead as
+// each part's turn reaches half way (`Written::halfway`), each with a derivative by the moves'
+// literals. What the timing sheet reads off the built clip (its chain's starts, its flags) is
+// found by searching samples, which gives a solve no slope: the tests read those back
+// (the_solved_cross_reads_as_a_strike).
 
 use std::lift::Checks
 use engine::anime
@@ -102,20 +103,30 @@ pub fn spec<C: Checks>(c: mut C) {
     c.at_most("hips outside the feet (m)", t.outside, 0.0, within: 0.01)
     c.at_least("weight toward the lead foot on contact", t.left, 0.45, within: 0.03)
     c.at_most("weight toward the lead foot on contact", t.left, 0.65, within: 0.03)
+    // The chain's lead, as a solve can follow it (`Written::halfway`, each part's own turn):
+    // from the beat's end to the contact, the hips half way round well before the striking
+    // upper arm. (Not the forearm after the upper arm: an elbow opens as a shoulder swings,
+    // and a cross's sets off a little before it.)
+    let (b, e) = (m.keys[2].at, CONTACT)
+    let hips = m.halfway(HERO.rig, "hips", b, e)
+    let upper = m.halfway(HERO.rig, "rightUpperArm", b, e)
+    c.at_least(
+        "the hips' lead on the striking upper arm, half way round (s)",
+        upper - hips,
+        0.035,
+        within: 0.005,
+    )
     hook_spec(mut c)
 }
-
-/// How many of a game's frames before its contact the hook is read over: its throw and the beat
-/// before it, not its load. It lands 18 frames from its start, so 18 would read the fist easing
-/// into its load (its wind-up, 0.07 s and the wrist's lag), which slows as any ease does.
-pub const HOOK_STEPS: u32 = 11
 
 /// What the solved lead hook (hook.wrela) should measure. Each bound is set past the brief's
 /// own by its `within`, so a check holds where the brief's number does and no further: the
 /// fist at 10 m/s at least, not 9.5.
 fn hook_spec<C: Checks>(c: mut C) {
     let m = hook::hook()
-    let t = m.thrown(HERO.rig, hook::CONTACT, HOOK_STEPS)
+    // (Read from the beat's end, when the throw sets off: before it the fist eases into its
+    // load, which slows as any ease does.)
+    let t = m.thrown_from(HERO.rig, hook::CONTACT, m.keys[2].at)
     // The fist within 5 mm of its target when the fight says it lands.
     c.near("hook: fist on its target, across (m)", t.at.x, hook::TARGET.x, within: 0.005)
     c.near("hook: fist on its target, up (m)", t.at.y, hook::TARGET.y, within: 0.005)
@@ -186,4 +197,14 @@ fn hook_spec<C: Checks>(c: mut C) {
     )
     let off = m.hinge(HERO.rig, hook::CONTACT, REAL.hinge[0])
     c.at_most("hook: elbow's bend off its hinge on contact (degrees)", off, 25.0, within: 5.0)
+    // The chain's lead: the hips half way round well before the striking upper arm.
+    let (b, e) = (m.keys[2].at, hook::CONTACT)
+    let hips = m.halfway(HERO.rig, "hips", b, e)
+    let upper = m.halfway(HERO.rig, "leftUpperArm", b, e)
+    c.at_least(
+        "hook: the hips' lead on the striking upper arm, half way round (s)",
+        upper - hips,
+        0.035,
+        within: 0.005,
+    )
 }

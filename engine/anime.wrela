@@ -46,14 +46,19 @@ pub struct Look: Copy {
     pub heavy: bool = false,
 }
 
+/// A look's limb that's the one striking, whichever it is: the limb whose end came furthest
+/// since the last drawing (a left hook's left arm, a cross's right).
+pub const STRIKING: u32 = 5
+
 /// A heavy strike's look (a counter, a finisher: the hits that decide something): on twos,
 /// flashed on contact, smeared, its force along `limb` (0 the left arm, 1 the right, 2 and 3
-/// the legs; 4 none) fraying his whole form and draining the page round him.
-pub const STRIKE: Look = Look { twos: true, flash: true, smear: true, limb: 1, heavy: true }
+/// the legs; 4 none; `STRIKING` the one that strikes) fraying his whole form and draining the
+/// page round him.
+pub const STRIKE: Look = Look { twos: true, flash: true, smear: true, limb: STRIKING, heavy: true }
 
 /// An everyday strike's look: on twos and smeared, its force fraying the striking fist alone, no
 /// flash, no drain. The full fury's kept for the hits that earn it.
-pub const LIGHT: Look = Look { twos: true, smear: true, limb: 1 }
+pub const LIGHT: Look = Look { twos: true, smear: true, limb: STRIKING }
 
 /// A move drawn as it plays: smooth, no flash, no smear.
 pub const PLAIN: Look = Look {}
@@ -92,6 +97,8 @@ pub struct Drawer: Copy {
     pub impact_left: f32,
     pub ends: [vec3; 4],
     pub smears: [Smear; 4],
+    /// The limb that came furthest since the drawing before (`STRIKING`'s; 4 none).
+    pub fastest: u32,
 }
 
 impl Drawer {
@@ -106,6 +113,7 @@ impl Drawer {
             impact_left: 0.0,
             ends: [vec3(0.0); 4],
             smears: [Smear::none(); 4],
+            fastest: 4,
         }
     }
 }
@@ -164,9 +172,18 @@ fn bone_at(rig: Rig, pose: Pose, place: mat4, b: u32) -> vec3 {
     (place * vec4(w.t, 1.0)).xyz
 }
 
-/// A strike's force at `time` (s into it), its contact at `contact`, along limb `limb`.
-fn force_of(rig: Rig, pose: Pose, place: mat4, look: Look, time: f32, contact: f32) -> Force {
-    let limb = look.limb
+/// A strike's force at `time` (s into it), its contact at `contact`, along its look's limb
+/// (`fastest` for `STRIKING`).
+fn force_of(
+    rig: Rig,
+    pose: Pose,
+    place: mat4,
+    look: Look,
+    fastest: u32,
+    time: f32,
+    contact: f32,
+) -> Force {
+    let limb = if look.limb == STRIKING { fastest } else { look.limb }
     if limb >= 4 || contact < 0.0 {
         return Force::none()
     }
@@ -228,9 +245,14 @@ fn draw_new(d: mut Drawer, rig: Rig, pose: Pose, place: mat4, how: Anime, smear:
     // Against the body: a fist carried along by a run hasn't moved.
     let ends = ends_of(rig, pose, std::transform::identity())
     let world = ends_of(rig, pose, place)
+    var most = 0.0
     for i in 0..4 {
         let way = d.ends[i] - ends[i]
         let far = length(way)
+        if d.on && far > most {
+            most = far
+            d.fastest = i
+        }
         d.smears[i] = Smear::none()
         let drawn = !arms || i < 2
         if smear && d.on && drawn && far * how.drawings > how.smear_from {
@@ -290,6 +312,7 @@ pub fn drawn(
         d.struck = false
         d.since = 0.0
         d.impact_left = 0.0
+        d.fastest = 4
     } else if !d.struck && contact >= 0.0 && m.act_time >= contact {
         // Its contact: drawn now, whatever the count, and flashed.
         d.struck = true
@@ -329,7 +352,7 @@ pub fn drawn(
             smears[i].from = ends[i]
         }
     }
-    let force = force_of(rig, shown, at, look, m.act_time, contact)
+    let force = force_of(rig, shown, at, look, d.fastest, m.act_time, contact)
     Drawn { pose: shown, place: at, impact, smears, force }
 }
 

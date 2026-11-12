@@ -31,7 +31,7 @@ pub const SEEN: f32 = 0.03
 
 /// A strike played and drawn: a pose a frame from the frame it's thrown, as played (every
 /// frame its own) and as drawn (held between drawings), which frames are impact frames, and
-/// the frame of its contact (its `ACTIVE` mark's start).
+/// the frame of its contact (the first whose move's clock is at its `ACTIVE` mark's start).
 pub struct Shown: Clone {
     pub played: Vec<Pose>,
     pub drawn: Vec<Pose>,
@@ -45,11 +45,13 @@ pub fn shown(rig: Rig, gaits: Gaits, strike: Move, look: Look) -> Shown {
     var m = Mover::standing(vec3(0.0), 0.0, gaits)
     var d = Drawer::new()
     var out = Shown { played: Vec::new(), drawn: Vec::new(), impact: Vec::new(), contact: 0 }
+    var contact = -1.0
     for mark in strike.marks {
         if mark.kind == ACTIVE {
-            out.contact = u32(mark.from * HZ + 0.5)
+            contact = mark.from
         }
     }
+    var found = false
     var over = 0
     for f in 0..MOST {
         let act = if f == BEFORE { 0 } else { NONE }
@@ -80,6 +82,12 @@ pub fn shown(rig: Rig, gaits: Gaits, strike: Move, look: Look) -> Shown {
         if f < BEFORE {
             continue
         }
+        // Its contact's frame: the first whose move's clock is at its contact (a one-off's
+        // clock runs a step on the frame it begins, so frame k shows its time k + 1 steps on).
+        if !found && m.acting != NONE && m.act_time >= contact - 1.0e-4 {
+            out.contact = out.played.len()
+            found = true
+        }
         out.played.push(pose)
         out.drawn.push(s.pose)
         out.impact.push(s.impact > 0.0)
@@ -104,7 +112,8 @@ fn same(a: Pose, b: Pose, bones: u32) -> bool {
 }
 
 /// The strike's drawings, as lines: how many there are and how many come before its contact,
-/// then each one's frame, how long it's held, and how far the fist (bone `end`) has come
+/// then each one's frame by the move's clock (its first frame shows it a step on, so the
+/// frame its contact is drawn on is its contact's), how long it's held, and how far the fist (bone `end`) has come
 /// since the one before.
 pub fn drawings(rig: Rig, s: Shown, end: u32, name: str) -> String {
     let nb = rig.bones.len()
@@ -137,7 +146,7 @@ pub fn drawings(rig: Rig, s: Shown, end: u32, name: str) -> String {
             into = moved
         }
         rows.push_str(
-            f"  frame {f} ({f32(f) / HZ:.3} s){what}: held {till - f} frames, the fist come {moved * 100.0:.1} cm\n".as_str(),
+            f"  frame {f + 1} ({f32(f + 1) / HZ:.3} s){what}: held {till - f} frames, the fist come {moved * 100.0:.1} cm\n".as_str(),
         )
     }
     let before = landed

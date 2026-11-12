@@ -1,12 +1,13 @@
 // The author's loop for a written, solved strike, as one command (`wrela tool moves -- --solve
-// <out-dir> <strike>`): solve its numbers against its spec, write them only if every check
-// holds, then read the new move's sheet, its chart and its arms, and say what changed.
+// <out-dir> <strike>`): solve its numbers against its spec, written only if every check holds,
+// then read the new move's sheet, its chart and its arms, and say what changed. And a read
+// without a solve (`--read <out-dir> <strike>`): every check's value against its bound, as the
+// strike stands, and its sheet, in seconds.
 //
-// By hand the loop is three commands a round (`wrela solve`, the sheet, the tests), with the
-// lines of the numbers to free counted again after every edit, and a `--write` that writes a
-// solve wherever it stopped. Here the numbers are found by name: each `let <name> = <number>`
-// between the two marks in the strike's file (`FROM`, `TILL`), one a line. A solve that leaves
-// a check missed is reported and not written.
+// The numbers are freed by name (`wrela solve --free <file>:<name>,...`, toolchain 0.33.0): a
+// strike's `free` names them, each a `let` in its file, and a whole value is one name (`chain`
+// frees every lag and snap of a `Chain` literal). The toolchain writes a solve only if every
+// check holds where it stopped, and says which miss.
 //
 // The sheet is read by a fresh run of this tool: this one was built with the numbers as they
 // were, and a move is a constant made when its package is built.
@@ -20,46 +21,50 @@ use std::tool::run
 use toolkit::whole::{data_bytes, joined, read_file}
 
 /// A strike a solve can move: its name on the command line (a strike of `strikes`), the
-/// workspace member its spec is in, and the file there that holds its numbers.
+/// workspace member its spec is in, the file there that holds its numbers, and the names of
+/// the numbers a solve frees (`,` between them).
 pub struct Solved: Copy {
     pub name: Text,
     pub member: Text,
     pub file: Text,
+    pub free: Text,
 }
 
 /// The solved strikes: add a line for a new one.
 pub const SOLVED: [Solved; 2] = [
-    Solved { name: "cross-solved", member: "content/humanoid", file: "solved.wrela" },
-    Solved { name: "hook-solved", member: "content/humanoid", file: "hook.wrela" },
+    Solved {
+        name: "cross-solved",
+        member: "content/humanoid",
+        file: "solved.wrela",
+        free: "sets_off,drive,hips_yaw,chest_yaw,spot_x,spot_y,spot_z,elbow_out",
+    },
+    Solved {
+        name: "hook-solved",
+        member: "content/humanoid",
+        file: "hook.wrela",
+        free: "sets_off,hips_yaw,spot_x,spot_y,spot_z,elbow_up",
+    },
 ]
-
-/// The marks a file's solved numbers are between.
-pub const FROM: Text = "// ---- What the solve finds"
-pub const TILL: Text = "// ---- The rest is written by hand"
 
 /// How long a solve or a sheet may take (s).
 const TIMEOUT: f64 = 600.0
 
-/// The numbers of `text` a solve finds: for each `let <name> = <number>` between the marks,
-/// its line (from 1) and its name.
-pub fn free_lines(text: str) -> Vec<(u32, String)> {
+/// Each name of `free` (`,` between them) with the line of `text` that binds it (`let <name> =`,
+/// from 1; 0 for none): how a solve's report, which gives lines, is read back by name.
+pub fn lines_of(text: str, free: str) -> Vec<(u32, String)> {
     var out: Vec<(u32, String)> = Vec::new()
-    var within = false
-    var n = 0
-    for (a, b) in text.lines() {
-        n += 1
-        let line = text.slice(a, b).trim()
-        if line.starts_with(FROM) {
-            within = true
-        } else if line.starts_with(TILL) {
-            within = false
-        } else if within && line.starts_with("let ") {
-            if let Some(eq) = line.find(" = ") {
-                if line.slice(eq + 3, line.len()).trim().parse_f32().is_some() {
-                    out.push((n, line.slice(4, eq).trim().to_string()))
-                }
+    for (f0, f1) in free.split(",") {
+        let name = free.slice(f0, f1).trim()
+        let want = f"let {name} ="
+        var at = 0
+        var n = 0
+        for (a, b) in text.lines() {
+            n += 1
+            if text.slice(a, b).trim().starts_with(want.as_str()) {
+                at = n
             }
         }
+        out.push((at, name.to_string()))
     }
     out
 }
@@ -122,49 +127,24 @@ fn text_of(path: str) -> Option<String> {
     String::from_utf8(take bytes)
 }
 
-/// The loop for `s`, its sheet under `dir` (a path in the workspace): the tool's exit code. 1
-/// where the solve left a check missed (nothing written).
-pub fn solve(s: Solved, dir: str) -> Result<u32, ToolError> {
-    let path = f"{s.member}/{s.file}"
-    let Some(text) = text_of(path.as_str()) else {
-        return Err(ToolError::new(f"can't read {path}"))
-    }
-    let names = free_lines(text.as_str())
-    if names.is_empty() {
-        return Err(ToolError::new(f"{path} has no numbers between its marks (`{FROM}`)"))
-    }
-    var given: Vec<String> = Vec::from(
-        [String::from("solve"), String::from(s.member), String::from("--spec")],
+/// The arguments of a solve of `s`'s spec, its numbers freed by name.
+fn solve_args(s: Solved) -> Vec<String> {
+    Vec::from(
+        [
+            String::from("solve"),
+            String::from(s.member),
+            String::from("--spec"),
+            String::from("--free"),
+            String::from(f"{s.file}:{s.free}"),
+        ],
     )
-    for (line, _) in names {
-        given.push(String::from("--free"))
-        given.push(String::from(f"{s.file}:{line}"))
-    }
-    print(f"{s.name}: solving {names.len()} numbers of {path}")
-    let (_, tried) = wrela(given.clone())?
-    told(tried.as_str(), s, names)
-    let Some((holds, of)) = held(tried.as_str()) else {
-        print(tried.as_str())
-        return Err(ToolError::new("the solve said nothing of its checks"))
-    }
-    if holds < of {
-        print(
-            f"  not written: {of - holds} of its checks miss. Change a target or a start, and go again.",
-        )
-        return Ok(1)
-    }
-    given.push(String::from("--write"))
-    let (_, wrote) = wrela(take given)?
-    match held(wrote.as_str()) {
-        Some((h, o)) if h == o => print(f"  written: all {o} checks hold"),
-        _ => {
-            print(wrote.as_str())
-            return Err(ToolError::new("the solve that was to be written didn't hold"))
-        },
-    }
-    // The sheet as it was, then as a fresh build reads it.
-    let sheet = f"{dir}/{s.name}.txt"
-    let was = text_of(sheet.as_str()).unwrap_or(String::new())
+}
+
+/// `s`'s sheet written under `dir` by a fresh run of this tool, printed with what changed on
+/// it since the last.
+fn sheet(s: Solved, dir: str) -> Result<(), ToolError> {
+    let path = f"{dir}/{s.name}.txt"
+    let was = text_of(path.as_str()).unwrap_or(String::new())
     let (status, said) = wrela(
         Vec::from(
             [
@@ -181,7 +161,7 @@ pub fn solve(s: Solved, dir: str) -> Result<u32, ToolError> {
         print(said.as_str())
         return Err(ToolError::new("the sheet's run failed"))
     }
-    let now = text_of(sheet.as_str()).unwrap_or(String::new())
+    let now = text_of(path.as_str()).unwrap_or(String::new())
     print(now.as_str())
     if !was.is_empty() && was.as_str() != now.as_str() {
         print("what changed on the sheet:")
@@ -199,16 +179,72 @@ pub fn solve(s: Solved, dir: str) -> Result<u32, ToolError> {
             }
         }
     }
+    Ok(())
+}
+
+/// The read for `s`: each of its spec's checks as the strike stands (a solve of no steps), and
+/// its sheet under `dir`: the tool's exit code, 1 where a check misses.
+pub fn read(s: Solved, dir: str) -> Result<u32, ToolError> {
+    var given = solve_args(s)
+    given.push(String::from("--steps"))
+    given.push(String::from("0"))
+    print(f"{s.name}: its spec as it stands")
+    let (_, said) = wrela(take given)?
+    for (a, b) in said.lines() {
+        let line = said.slice(a, b).trim()
+        if line.starts_with("holds ") ||
+            line.starts_with("misses ") ||
+            line.starts_with("the spec: ") ||
+            line.starts_with("error") {
+            print(f"  {line}")
+        }
+    }
+    let Some((holds, of)) = held(said.as_str()) else {
+        print(said.as_str())
+        return Err(ToolError::new("the spec said nothing of its checks"))
+    }
+    sheet(s, dir)?
+    Ok(if holds < of { 1 } else { 0 })
+}
+
+/// The loop for `s`, its sheet under `dir` (a path in the workspace): the tool's exit code. 1
+/// where the solve left a check missed: the toolchain writes nothing then.
+pub fn solve(s: Solved, dir: str) -> Result<u32, ToolError> {
+    let path = f"{s.member}/{s.file}"
+    let Some(text) = text_of(path.as_str()) else {
+        return Err(ToolError::new(f"can't read {path}"))
+    }
+    let names = lines_of(text.as_str(), s.free)
+    for (line, name) in names {
+        if line == 0 {
+            return Err(ToolError::new(f"{path} binds no `{name}` with `let`"))
+        }
+    }
+    var given = solve_args(s)
+    given.push(String::from("--write"))
+    print(f"{s.name}: solving {names.len()} numbers of {path}")
+    let (status, said) = wrela(take given)?
+    told(said.as_str(), s, names)
+    if status != 0 {
+        print(
+            "  not written: a check misses where the solve stopped. Change a target or a start, and go again.",
+        )
+        return Ok(1)
+    }
+    print("  written: every check holds")
+    sheet(s, dir)?
     Ok(0)
 }
 
 @test
 fn the_solved_numbers_are_found_by_name() {
-    let text = "let before = 1.0\n    // ---- What the solve finds (spec.wrela) ----\n    // When.\n    let sets_off = 0.140\n    let drive = 0.1\n    let named = other\n    // ---- The rest is written by hand. ----\n    let after = 2.0\n"
-    let found = free_lines(text)
-    assert(found.len() == 2, "the two numbers between the marks")
-    assert(found[0].0 == 4 && found[0].1.as_str() == "sets_off")
-    assert(found[1].0 == 5 && found[1].1.as_str() == "drive")
+    let text = "pub fn x() {\n    let sets_off = 0.140\n    let drive = 0.1\n    let chain = Chain {\n"
+    let found = lines_of(text, "sets_off, drive,chain,gone")
+    assert(found.len() == 4)
+    assert(found[0].0 == 2 && found[0].1.as_str() == "sets_off")
+    assert(found[1].0 == 3 && found[1].1.as_str() == "drive")
+    assert(found[2].0 == 4, "a whole value is one name")
+    assert(found[3].0 == 0, "a name the file doesn't bind")
     let said = "spec::spec: 1 -> 0\n  solved.wrela:4  0.14 -> 0.144\nthe spec: 20 of 21 hold\n  misses a check\n"
     assert(held(said) == Some((20, 21)))
 }
