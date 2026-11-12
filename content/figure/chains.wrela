@@ -6,10 +6,13 @@ use engine::chart::{Chain, chain}
 /// His left arm: from 7 cm inside his shoulder (a point his collarbone carries, so the arm's
 /// root stays under what he wears there while the arm swings), through his shoulder and elbow
 /// to his wrist. Its bones are his collarbone, his upper arm and his forearm. Angle 0 is up, a
-/// quarter turn his back. His upper arm's turn about its length is reached a third of the way
-/// to his elbow (past his shoulder's cap, his arm's muscles turn with the bone); his forearm's
-/// is spread from elbow to wrist. Its path cuts the corner of a bent joint: read about that
-/// path, the reference body posed is nearer itself at rest than about a path through the joint
+/// quarter turn his back. His upper arm's turn about its length is spread from his shoulder to
+/// his elbow, as his forearm's is from elbow to wrist: an upper arm is twisted to keep its
+/// elbow's hinge (`engine::keys::posed`: 110 degrees in a cross's load, 75 at its contact), and
+/// reached within a third of the arm that turns it three times as fast as the 40 degrees a
+/// skin took there before it wrung and drew the arm flat (Ryan's look at the lab's body,
+/// 2026-11-12). Its path cuts the corner of a bent joint: read about that path, the reference
+/// body posed is nearer itself at rest than about a path through the joint
 /// (studio/forms/joints.wrela measures it).
 pub fn arm_left() -> Chain {
     chain(
@@ -20,7 +23,6 @@ pub fn arm_left() -> Chain {
             vec3(0.706, 1.455, -0.065),
         ],
         vec3(y: 1.0),
-        spread: [1.0, 0.33, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
         cut: 1.0,
     )
 }

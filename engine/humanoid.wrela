@@ -576,10 +576,61 @@ fn srgb8(c: vec3) -> u32 {
 /// The humanoid a GLB holds: its first skin's rig (its joints' names mapped by `names`), and every
 /// mesh skinned to it, each primitive drawn in its material's colour from `paints` (an unnamed
 /// one in `fallback`). A vertex's weights on unmapped joints go to their mapped ancestors.
+/// The bones whose turn about their own length a skin spreads along them (`SPREAD_TO`, each its
+/// child: where it's reached whole), as a charted limb does (`engine::chart::Chain::spread`):
+/// an upper arm twisted to keep its elbow's hinge turns its skin a little at the shoulder and
+/// more toward the elbow, rather than all at once where the shoulder's weights meet the arm's
+/// (which wrings the shoulder and draws the arm flat).
+pub const SPREAD: [Text; 2] = ["leftUpperArm", "rightUpperArm"]
+pub const SPREAD_TO: [Text; 2] = ["leftLowerArm", "rightLowerArm"]
+
+/// How many steps of a spread bone's twist its skin is bound to besides the bone itself: at 0,
+/// a third and two thirds of its turn about its length (`twist_slot`).
+pub const TWIST_STEPS: u32 = 3
+
+/// The palette's slot for step `k` (`TWIST_STEPS`) of spread bone `s` (`SPREAD`) on `rig`:
+/// after its bones.
+pub fn twist_slot(rig: Rig, s: u32, k: u32) -> u32 {
+    rig.bones.len() + s * TWIST_STEPS + k
+}
+
+/// The bone a palette slot moves with: its own, or a twist step's bone (`NONE` for a slot that
+/// is neither).
+pub fn slot_bone(rig: Rig, slot: u32) -> u32 {
+    let n = rig.bones.len()
+    if slot < n {
+        slot
+    } else if slot < twist_slot(rig, SPREAD.len(), 0) {
+        rig.find(SPREAD[(slot - n) / TWIST_STEPS])
+    } else { NONE }
+}
+
+/// `d`, a bone's turn from its rest (in its own frame), with only `share` of its turn about
+/// `axis` (its length, in its frame): the swing whole, the twist in part.
+pub fn twisted_by(d: Quat, axis: vec3, share: f32) -> Quat {
+    let along = axis * dot(d.v.xyz, axis)
+    let raw = vec4(along, d.v.w)
+    let twist = if length(raw) < 1.0e-6 { Quat::identity() } else {
+        Quat { v: raw / length(raw) }
+    }
+    let swing = d.mul(twist.inverse())
+    swing.mul(Quat::identity().nlerp(twist, share))
+}
+
 pub fn import(file: Bytes, names: [(Text, Text)], paints: [Paint], fallback: vec3) -> Humanoid {
     let g = gltf::read(file)
     let nodes = g.nodes()
     let (rig, joint_bone) = rig_of(g, nodes, names)
+    assert(twist_slot(rig, SPREAD.len(), 0) < 63, "a rig's twist steps fit its palette")
+    // Each spread bone, its child, and where both are at rest.
+    let rest = rig.rest_world()
+    var spread: Vec<(u32, vec3, vec3)> = Vec::new()
+    for s in 0..SPREAD.len() {
+        let (b, c) = (rig.find(SPREAD[s]), rig.find(SPREAD_TO[s]))
+        if b != NONE && c != NONE {
+            spread.push((s, rest[b].t, rest[c].t))
+        }
+    }
     var verts: Vec<BodyVertex> = Vec::new()
     var indices: Vec<u32> = Vec::new()
     var lo = vec3(1.0e9)
@@ -617,12 +668,32 @@ pub fn import(file: Bytes, names: [(Text, Text)], paints: [Paint], fallback: vec
                 for k in 0..4 {
                     w[joint_bone[js[i * 4 + k]]] += ws[i * 4 + k]
                 }
+                let at = vec3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2])
+                // A spread bone's weight shared between the two steps of its twist either side
+                // of how far along it the vertex is (the bone itself the last).
+                for (sb, from, to) in spread {
+                    let b = rig.find(SPREAD[sb])
+                    if w[b] <= 0.0 {
+                        continue
+                    }
+                    let line = to - from
+                    let f = clamp(dot(at - from, line) / dot(line, line), 0.0, 1.0)
+                    let x = f * f32(TWIST_STEPS)
+                    let k = min(u32(x), TWIST_STEPS - 1)
+                    let near = twist_slot(rig, sb, k)
+                    let next = if k + 1 == TWIST_STEPS { b } else { twist_slot(rig, sb, k + 1) }
+                    let part = x - f32(k)
+                    let all = w[b]
+                    w[b] = 0.0
+                    w[near] += all * (1.0 - part)
+                    w[next] += all * part
+                }
                 var idx = [0; 4]
                 var wq = [0.0; 4]
                 for k in 0..4 {
                     var best = 0
                     var bv = -1.0
-                    for b in 0..rig.bones.len() {
+                    for b in 0..63 {
                         if w[b] > bv {
                             bv = w[b]
                             best = b
@@ -641,7 +712,6 @@ pub fn import(file: Bytes, names: [(Text, Text)], paints: [Paint], fallback: vec
                 }
                 // The rounding's remainder on the heaviest, so they sum to 255.
                 q[0] = u32(i32(q[0]) + 255 - i32(sum))
-                let at = vec3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2])
                 lo = min(lo, at)
                 hi = max(hi, at)
                 verts.push(
@@ -651,7 +721,7 @@ pub fn import(file: Bytes, names: [(Text, Text)], paints: [Paint], fallback: vec
                         normal: normalize(vec3(nrm[i * 3], nrm[i * 3 + 1], nrm[i * 3 + 2])),
                         weights: pack(q[0], q[1], q[2], q[3]),
                         colour: srgb8(albedo),
-                        part: part_of(rig.bones[idx[0]].vrm),
+                        part: part_of(rig.bones[slot_bone(rig, idx[0])].vrm),
                         pad0: 0,
                         pad1: 0,
                     },
@@ -1384,6 +1454,25 @@ pub fn palette(rig: Rig, pose: Pose, place: mat4) -> [mat4; 64] {
         let t = if rb.parent == NONE { pose.hips } else { rb.rest.t }
         world[b] = up.then(Rigid { q: pose.turns[b], t })
         out[b] = place * world[b].matrix() * rb.ibm
+    }
+    // Each spread bone's twist steps: its swing whole and its twist in part (`SPREAD`).
+    if twist_slot(rig, SPREAD.len(), 0) < 63 {
+        for s in 0..SPREAD.len() {
+            let (b, c) = (rig.find(SPREAD[s]), rig.find(SPREAD_TO[s]))
+            if b == NONE || c == NONE {
+                continue
+            }
+            borrow rb = rig.bones[b]
+            let up = if rb.parent == NONE { rig.base } else { world[rb.parent] }
+            let axis = normalize(rig.bones[c].rest.t)
+            let d = rb.rest.q.inverse().mul(pose.turns[b])
+            for k in 0..TWIST_STEPS {
+                let share = f32(k) / f32(TWIST_STEPS)
+                let q = rb.rest.q.mul(twisted_by(d, axis, share))
+                let at = up.then(Rigid { q, t: rb.rest.t })
+                out[twist_slot(rig, s, k)] = place * at.matrix() * rb.ibm
+            }
+        }
     }
     out
 }

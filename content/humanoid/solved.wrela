@@ -46,17 +46,16 @@ pub fn cross() -> Written<8> {
     let sets_off = 0.259
     // How far ahead the hips are on contact (m), and how far the hips and the chest above
     // them have turned (degrees toward the left).
-    let drive = 0.040
-    let hips_yaw = 28.67
-    let chest_yaw = 20.62
+    let drive = 0.041
+    let hips_yaw = 31.00
+    let chest_yaw = 18.40
     // Where the contact key puts the fist: not the target, since the arm gets there late.
-    let spot_x = -0.0528
+    let spot_x = -0.0526
     let spot_y = 1.4791
     let spot_z = 0.6906
     // How far out to the side the striking elbow points on contact (degrees from straight
-    // down). An elbow's hinge is kept by twisting its upper arm, only as far as the skin
-    // takes (`keys::TWIST_MOST`), so the way it points is found: the one its arm bends about
-    // its hinge for.
+    // down). An elbow's hinge is kept by twisting its upper arm (`keys::posed`), so the way
+    // it points is found: the one its arm bends about its hinge for.
     let elbow_out = 74.90
     // ---- The rest is written by hand. ----
     // How the body follows the hips: the chest, then the striking arm's collar, shoulder,
@@ -206,21 +205,14 @@ fn the_solved_cross_reads_as_a_strike() {
         print(f"  review: {flag}")
     }
     assert(r.flags.len() == 0, f"{r.flags.len()} review flags")
-    // Its arms: no hand in the head, no shape unlike any real arm's, and the striking elbow
-    // about its own hinge. One fault is left and printed, not held to: the lead elbow in the
-    // load, bent across its hinge. Keeping it there wants the upper arm twisted 110 degrees,
-    // which this body's skin can't take (`keys::TWIST_MOST`: it wrings at the shoulder), and
-    // no elbow a guard would hold mends it (a solve bounded to 10 to 60 degrees out left it
-    // 48 degrees off). It waits on a skin that spreads a twist along the arm.
+    // Its arms: no hand in the head, no shape unlike any real arm's, and both elbows about
+    // their own hinges all through it (an upper arm's twist is kept whole, and what it's drawn
+    // with spreads it along the arm: `humanoid::SPREAD`, `engine::chart::Chain::spread`).
     let faults = arms::report(rig, CROSS.clip, accad_fists::REAL)
-    var held_to = 0
     for fault in faults.clone() {
         print(f"  arms: {fault}")
-        if fault.as_str().find("the left elbow bends across its hinge").is_none() {
-            held_to += 1
-        }
     }
-    assert(held_to == 0, f"{held_to} arm faults")
+    assert(faults.len() == 0, f"{faults.len()} arm faults")
 }
 
 /// How close two turns are: 1 less the size of their dot (0 for the same turn).
@@ -262,4 +254,46 @@ fn a_written_move_is_its_keys_each_part_on_its_own_clock() {
         let _ = chest
     }
     assert(abs(lagged.length() - (lagged.keys[7].at + lagged.chain.wrist)) < 1.0e-6)
+}
+
+/// How far each upper arm is twisted about its own length at its worst through the cross
+/// (degrees, from its rest against its collar), the left's then the right's.
+fn arm_twists() -> (f32, f32) {
+    let rig = HERO.rig.clone()
+    let rests = rig.rests()
+    let parents = rig.parents()
+    var most = [0.0; 2]
+    let names = [("leftUpperArm", "leftLowerArm"), ("rightUpperArm", "rightLowerArm")]
+    let frames = u32(CROSS.length() * 60.0)
+    for f in 0..frames + 1 {
+        let w = engine::humanoid::pose_world(rig, CROSS.pose(f32(f) / 60.0))
+        for i in 0..2 {
+            let (u, l) = (rig.find(names[i].0), rig.find(names[i].1))
+            let rel = rests[u].q.inverse().mul(w[parents[u]].q.inverse().mul(w[u].q))
+            let v = if rel.v.w < 0.0 { -rel.v } else { rel.v }
+            let own = normalize(rests[l].t)
+            let twist = abs(2.0 * atan2(dot(v.xyz, own), v.w)) * 57.29578
+            most[i] = max(most[i], twist)
+        }
+    }
+    (most[0], most[1])
+}
+
+/// The cross's upper arms keep their elbows' hinges by twisting (no cap), and spread along the
+/// whole upper arm (the charted arm's chain, the skin's twist steps) no twist turns faster along
+/// it than the 40 degrees a skin took over a third of it before it wrung.
+@test
+fn the_crosss_arm_twists_turn_no_faster_along_the_arm_than_a_skin_took() {
+    let rig = HERO.rig.clone()
+    let rests = rig.rests()
+    let long = length(rests[rig.find("rightLowerArm")].t) * 100.0
+    let took = 40.0 / (long / 3.0)
+    let (left, right) = arm_twists()
+    for (side, twist) in [("left", left), ("right", right)] {
+        let spread = twist / long
+        print(
+            f"  {side} upper arm: twisted {twist:.0} degrees at most; {spread:.2} degrees a cm spread over it whole ({long:.0} cm), {twist / (long / 3.0):.2} over its first third; a skin took {took:.2}",
+        )
+        assert(spread <= took, f"the {side} arm's twist turns {spread} degrees a cm")
+    }
 }
