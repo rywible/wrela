@@ -1,6 +1,6 @@
 # Charted forms
 
-How to author a part of a creature as a charted form: a limb, a trunk, a sleeve. A charted form is drawn from its function at the creature's posed bones, with no mesh and no skin weights. You write its structure; a tool solves its numbers.
+How to author a part of a creature as a charted form: a limb, a trunk, a sleeve. A charted form is drawn from its function at the creature's posed bones, with no mesh and no skin weights. Where there is a reference, you write the part's structure and a tool solves its numbers; where there is none, you write its shape as a rule ("A creature written from rules").
 
 The code is `engine/chart.wrela` (the form and how it's posed and drawn), `studio/forms` (the tool that solves the numbers), `content/figure` (the human species' forms) and `content/hakuro` (what the hero is over them). `studio/judge` puts two builds before critics blind.
 
@@ -36,6 +36,21 @@ It writes the file and prints the miss: the root mean square, the size half are 
 6. **Read the table before changing anything.** A bad row at the span's start or end means the span runs past the reference: shorten it. A bad column means the reference isn't reached that way (`most` too small; no effect once every ray meets it) or isn't there (an opening: the tool fills it from its neighbours). A miss spread evenly means the form is too small: more control values along for detail along the limb, more terms round for detail round it. A form's control values are spread over its whole path, not its span, so a shorter span adds no detail; a shorter path does (start the chain nearer the part). A joint where the radius changes fast (the back of a knee) is where a limb's miss gathers.
 7. **Declare the part** where the creature is assembled (`figure::limbs::arm` is the pattern): an `engine::chart::Part` with its chain, its bones, its form, its joints' changes, its band, its folds and its caps.
 8. **Add its test** in `studio/forms/tests.wrela`: the written file equals a fresh fit, and the miss is under what you state.
+
+## A creature written from rules
+
+A creature with no reference is written as rules: each part's radius is a function of its place (`chart::of`), about a chain of joints, on bones a cycle poses. `engine/tests/chart` (a hound), `content/crab`, `content/heron` and `content/serpent` are whole creatures written so, each in one file. Start from a copy of one.
+
+Three fresh authors wrote the crab, the heron and the serpent from this doc and the hound, in 12 to 25 builds each. Three reviewers who weren't told what each was named all three and passed all three. What the authors had to find out for themselves:
+
+- **Angles.** Angle 0 is the chain's `up`; a quarter turn on is `up × along`. For a chain running forward with `up` up, that is the creature's left, so a form's width is its radius at a quarter turn. On a flat limb, point `up` along the normal of the limb's plane.
+- **Bones.** Bone `i` of a chain runs from joint `i` to joint `i + 1`, and `Part::bones` names one for each. `root` is what the chain hangs from. A rigid part (a head, a toe, a shell) is a chain of two joints that names one bone twice. A chain has eight joints at most.
+- **Posing.** A bone's matrix carries a point of the creature at rest to where the pose has it. Build them as a hierarchy: each is its parent's times a turn about its own joint. Nothing plants a foot: a leg that must stay on the ground needs a two-bone reach written for it.
+- **Where `f` runs.** `f` is of the path's whole length, its `before` and `after` included. Lengthening a chain's lead-in moves every rule along it.
+- **Ends.** An end that shows takes a cap, and a cap closes toward the path's point; the rule shouldn't also go to nothing there. An end hidden in another part starts inside it and is narrower than it there, or it shows as a step.
+- **How many terms.** A section much wider than it is deep, or a blade, needs more harmonics than a limb's three: a shell 3.7 times as wide as deep took five. Parts drawn in one loop share one size, so the hungriest part sets it.
+- **Two tints on one form.** Paint by place: `chart::Vertex::place` brings how far along and the angle round to the pixel.
+- **Views.** A thin creature seen head-on, and a long-legged one seen from its side, were the weakest views. Look from the side, the front and above, and at three moments of the cycle.
 
 ## Ends, and parts that don't bend
 
