@@ -1,0 +1,265 @@
+// The cross, written (`engine::written`): the hand-keyed cross's poses (`fists::cross_keys`)
+// as a few goal poses, each part of the body on its own clock, and its numbers solved for
+// against a spec (spec.wrela) where they depend on the body's shape.
+//
+// What's written by hand: the poses (the guard, the load, the contact, the drive past it, the
+// way home), when the hips reach each, and how each part follows the hips (`Chain`: how long
+// after them it goes, and whether it's stopped dead by the contact or eases into it). What's
+// solved (`wrela solve content/humanoid --spec --free solved.wrela:<lines>`, the numbers at
+// the top of `cross`): where the contact key puts the fist and the hips, how far they've
+// turned, and when the throw sets off, so that the fist is on its target when the fight says
+// it lands, at a boxer's speed, fastest as it lands, the arm not yet straight, the hips over
+// the feet. A late arm changes where a key's fist ends up, so the key's own spot is not the
+// target: the solve finds the spot that puts it there.
+//
+// A trial (the combat animation plan's Milestone 0): behind `SOLVED` in the lab
+// (main.wrela), beside the hand-keyed cross it would replace.
+
+use std::collections::Vec
+use std::io::print
+use std::string::String
+use std::lift::Report
+use engine::arms
+use engine::keys
+use engine::keys::{Key, SETTLE, SMOOTH, SNAP}
+use engine::playback::{ACTIVE, CANCEL, Mark, Move, RECOVER, WINDUP}
+use engine::review
+use engine::timing::{RIGHT_ARM, timing}
+use engine::written::{Chain, Written}
+use body::HERO
+use fists::guard
+
+/// When the cross lands, and till when it hits (s from its start, at the fight's 60 frames a
+/// second): the hand-keyed cross's own (`fists::CROSS_HIT`), so either plays in the other's
+/// place.
+pub const CONTACT: f32 = 0.40
+pub const CONTACT_TILL: f32 = 0.46
+
+/// Where the fist lands (the body's space, m): chin height, on the centre line.
+pub const TARGET: vec3 = vec3(-0.02, 1.46, 0.72)
+
+/// The cross's goal poses, in the hips' time (s from its start).
+pub fn cross() -> Written<8> {
+    let rest = guard()
+    // ---- What the solve finds (spec.wrela): each number alone on its line. ----
+    // When the throw sets off (the beat's end, s).
+    let sets_off = 0.259
+    // How far ahead the hips are on contact (m), and how far the hips and the chest above
+    // them have turned (degrees toward the left).
+    let drive = 0.040
+    let hips_yaw = 28.67
+    let chest_yaw = 20.62
+    // Where the contact key puts the fist: not the target, since the arm gets there late.
+    let spot_x = -0.0528
+    let spot_y = 1.4791
+    let spot_z = 0.6906
+    // How far out to the side the striking elbow points on contact (degrees from straight
+    // down). An elbow's hinge is kept by twisting its upper arm, only as far as the skin
+    // takes (`keys::TWIST_MOST`), so the way it points is found: the one its arm bends about
+    // its hinge for.
+    let elbow_out = 74.90
+    // ---- The rest is written by hand. ----
+    // How the body follows the hips: the chest, then the striking arm's collar, shoulder,
+    // elbow and wrist, each a little later; the hips and the chest ease into the contact the
+    // fist is stopped dead by. (A captured boxer's hips get going 0.100 s before his arm's
+    // joints: `accad_fists::CROSS_TAKE`'s sheet.)
+    let chain = Chain {
+        trunk: 0.010,
+        collar: 0.030,
+        shoulder: 0.040,
+        elbow: 0.040,
+        wrist: 0.040,
+        body_snap: 0.55,
+        trunk_snap: 0.75,
+    }
+    // The load: sunk and coiled onto the rear foot, the rear fist drawn back a hand's width,
+    // the rear heel down to drive off.
+    var load = rest
+    load.at = 0.07
+    load.ease = SMOOTH
+    load.hips = vec3(-0.05, -0.115, -0.05)
+    load.hips_turn = vec3(0.0, -47.0, 0.0)
+    load.trunk = vec3(12.0, -20.0, 0.0)
+    load.look = vec3(0.0, 1.40, 3.0)
+    load.fists = [vec3(0.13, 1.39, 0.38), vec3(-0.18, 1.34, -0.02)]
+    load.elbows = [vec3(0.5, -1.0, -0.2), vec3(-0.6, -1.0, -0.4)]
+    load.feet[1] = vec4(-0.17, -0.20, -40.0, 0.0)
+    // The beat: settling a hair further in, till the throw sets off.
+    var beat = load
+    beat.at = sets_off
+    beat.ease = SETTLE
+    beat.hips = vec3(-0.055, -0.12, -0.055)
+    beat.hips_turn = vec3(0.0, -49.0, 0.0)
+    beat.trunk = vec3(13.0, -21.0, 0.0)
+    // Contact: the hips and trunk turned square and past, the rear heel up and pivoted, the
+    // fist on the centre line at chin height, its shoulder up over the chin; the lead fist
+    // pulled back to guard the face. The hips are there early by the wrist's lag, so the fist
+    // is when the fight says it lands.
+    var contact = beat
+    contact.at = CONTACT - chain.wrist
+    contact.ease = SNAP
+    contact.hips = vec3(0.0, -0.08, drive)
+    contact.hips_turn = vec3(0.0, hips_yaw, 0.0)
+    contact.trunk = vec3(12.0, chest_yaw, 0.0)
+    contact.collars = [vec3(0.0), vec3(0.0, 10.0, -8.0)]
+    contact.fists = [vec3(0.12, 1.36, 0.22), vec3(spot_x, spot_y, spot_z)]
+    let out = elbow_out * 0.017453292
+    contact.elbows = [vec3(0.3, -1.0, -0.3), vec3(-sin(out), -cos(out), 0.0)]
+    contact.feet[1] = vec4(-0.17, -0.20, -5.0, 32.0)
+    // The impact: driven on along the blow a little past contact, the weight over the lead
+    // foot.
+    var driven = contact
+    driven.at = contact.at + 0.04
+    driven.ease = SETTLE
+    driven.hips = contact.hips + vec3(0.0, -0.005, 0.02)
+    driven.hips_turn = contact.hips_turn + vec3(0.0, 1.5, 0.0)
+    driven.trunk = contact.trunk + vec3(1.0, 1.5, 0.0)
+    driven.fists[1] = contact.fists[1] + vec3(0.0, 0.0, 0.05)
+    // The hold on the hit: all but still.
+    var held = driven
+    held.at = contact.at + 0.14
+    held.ease = SETTLE
+    held.hips = driven.hips + vec3(0.0, -0.002, 0.003)
+    held.hips_turn = driven.hips_turn + vec3(0.0, 0.5, 0.0)
+    held.trunk = driven.trunk + vec3(0.0, 0.5, 0.0)
+    // The pull home: slower than it went, the fist most of the way back, the hips turning
+    // back.
+    var home = held
+    home.at = contact.at + 0.34
+    home.ease = SETTLE
+    home.hips = vec3(-0.01, -0.07, 0.02)
+    home.hips_turn = vec3(0.0, -10.0, 0.0)
+    home.trunk = vec3(7.0, 5.0, 0.0)
+    home.collars = [vec3(0.0), vec3(0.0, 3.0, -2.0)]
+    home.fists = [vec3(0.09, 1.41, 0.26), vec3(-0.07, 1.41, 0.20)]
+    home.elbows = [vec3(0.5, -1.0, -0.2), vec3(-0.5, -1.0, -0.2)]
+    home.feet[1] = vec4(-0.17, -0.20, -30.0, 14.0)
+    // Back in the guard.
+    var back = rest
+    back.at = 0.86
+    back.ease = SMOOTH
+    Written { keys: [rest, load, beat, contact, driven, held, home, back], chain, arm: 1 }
+}
+
+/// A clip as a move that stays where it stands (as `fists`' keyed moves do).
+fn in_place(c: engine::humanoid::Clip) -> Move {
+    let n = c.frames
+    Move {
+        clip: c.clone(),
+        root: Vec::filled(n, vec3(0.0)),
+        heading: Vec::filled(n, 0.0),
+        marks: Vec::new(),
+        speed: 0.0,
+        stride: 0.0,
+    }
+}
+
+/// The solved cross as a game plays it: at 60 a second, fists clenched, in place, its windows
+/// marked as the hand-keyed cross's are.
+@fuel(2 ** 40)
+pub const CROSS: Move = cross_move()
+
+fn cross_move() -> Move {
+    var m = in_place(cross().clip(HERO.rig, fps: 60.0, fist: 2.0))
+    let end = m.clip.length()
+    m.marks = Vec::new()
+    m.marks.push(Mark { kind: WINDUP, from: 0.0, till: CONTACT })
+    m.marks.push(Mark { kind: ACTIVE, from: CONTACT, till: CONTACT_TILL })
+    m.marks.push(Mark { kind: RECOVER, from: CONTACT_TILL, till: end })
+    m.marks.push(Mark { kind: CANCEL, from: end - 0.15, till: end })
+    m
+}
+
+/// The solved cross holds its spec: every check, as `wrela solve --spec` reports them.
+@test
+fn the_solved_cross_holds_its_spec() {
+    var r = Report::new()
+    spec::spec(mut r)
+    assert(r.missed == 0, f"{r.missed} of the spec's checks miss: {r.done()}")
+    assert(r.held >= 20, "the spec's checks ran")
+}
+
+/// The sheet reads the built clip as a strike with nothing flagged, which no solve can follow
+/// and the lags make by construction: the hips going before the arm's joints by about a
+/// captured boxer's 0.100 s, the fist fast and fastest as it lands, its spacing opening
+/// frame by frame, all but stopped by its contact, the weight over the feet. Its review finds
+/// its feet and knees sound, and its arms are ones a person makes.
+@test
+fn the_solved_cross_reads_as_a_strike() {
+    borrow rig = HERO.rig
+    let t = timing(CROSS.clip, rig, RIGHT_ARM, CONTACT)
+    print(t.text("the solved cross"))
+    assert(t.found && t.flags().len() == 0, "the sheet flags nothing")
+    assert(t.lead() >= 0.06 && t.lead() <= 0.12, f"the hips go {t.lead()} s before the arm")
+    // (Fast, but no faster than the hand-keyed cross it stands beside: the spec's band.)
+    let keyed = timing(fists::CROSS.clip, rig, RIGHT_ARM, fists::CROSS_HIT)
+    assert(t.fastest > 12.0 && t.fastest < keyed.fastest, f"the fist goes {t.fastest} m/s")
+    assert(abs(t.fastest_at - t.contact) <= 0.034, f"fastest at {t.fastest_at} s, not as it lands")
+    assert(t.out > 0.85 && t.out < 0.97, f"the arm's {t.out} out on contact")
+    assert(t.after < 0.34 * t.fastest, f"{t.after} m/s after its contact: not stopped by it")
+    assert(t.outside <= 0.1, f"the hips get {t.outside} m outside the feet")
+    for i in 1..t.spacing_before {
+        assert(t.spacing[i] > t.spacing[i - 1] - 0.01, f"the fist checks at step {i} of its way in")
+    }
+    let r = review::review_as(CROSS.clip, rig, review::STRIKE)
+    for flag in r.flags.clone() {
+        print(f"  review: {flag}")
+    }
+    assert(r.flags.len() == 0, f"{r.flags.len()} review flags")
+    // Its arms: no hand in the head, no shape unlike any real arm's, and the striking elbow
+    // about its own hinge. One fault is left and printed, not held to: the lead elbow in the
+    // load, bent across its hinge. Keeping it there wants the upper arm twisted 110 degrees,
+    // which this body's skin can't take (`keys::TWIST_MOST`: it wrings at the shoulder), and
+    // no elbow a guard would hold mends it (a solve bounded to 10 to 60 degrees out left it
+    // 48 degrees off). It waits on a skin that spreads a twist along the arm.
+    let faults = arms::report(rig, CROSS.clip, accad_fists::REAL)
+    var held_to = 0
+    for fault in faults.clone() {
+        print(f"  arms: {fault}")
+        if fault.as_str().find("the left elbow bends across its hinge").is_none() {
+            held_to += 1
+        }
+    }
+    assert(held_to == 0, f"{held_to} arm faults")
+}
+
+/// How close two turns are: 1 less the size of their dot (0 for the same turn).
+fn apart(a: Quat, b: Quat) -> f32 {
+    1.0 - abs(dot(a.v, b.v))
+}
+
+/// A written move is its keys by construction. With no lags and every snap kept it's the keys
+/// alone (`keys::posed` of `keys::key_at`). With a lag, a part turns in its parent as the keys
+/// alone have it that much earlier: a lag written is a lag drawn.
+@test
+fn a_written_move_is_its_keys_each_part_on_its_own_clock() {
+    borrow rig = HERO.rig
+    var plain = cross()
+    plain.chain = Chain {}
+    let lagged = cross()
+    let (upper, fore, chest) = (
+        rig.find("rightUpperArm"),
+        rig.find("rightLowerArm"),
+        rig.find("chest"),
+    )
+    let nb = rig.bones.len()
+    for f in 0..54 {
+        let time = f32(f) / 60.0
+        let alone = keys::posed(rig, keys::key_at(plain.keys, time))
+        let p = plain.pose(rig, time)
+        for b in 0..nb {
+            assert(apart(p.turns[b], alone.turns[b]) < 1.0e-5, f"bone {b} at {time} s")
+        }
+        assert(length(p.hips - alone.hips) < 1.0e-5, f"the hips at {time} s")
+        // Each part of the lagged move against the keys alone at its own time: a snap kept
+        // whole for the arm, so its turn is the keys' exactly.
+        let l = lagged.pose(rig, time)
+        let c = lagged.chain
+        let shoulder = keys::posed(rig, keys::key_at(lagged.keys, time - c.shoulder))
+        let elbow = keys::posed(rig, keys::key_at(lagged.keys, time - c.elbow))
+        assert(apart(l.turns[upper], shoulder.turns[upper]) < 1.0e-5, f"the upper arm at {time} s")
+        assert(apart(l.turns[fore], elbow.turns[fore]) < 1.0e-5, f"the forearm at {time} s")
+        let _ = chest
+    }
+    assert(abs(lagged.length() - (lagged.keys[7].at + lagged.chain.wrist)) < 1.0e-6)
+}

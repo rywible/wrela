@@ -1,0 +1,215 @@
+// A strike as it's drawn, not as it's written: what a player's eye gets. The timing sheet
+// (`engine::timing`) reads a move 60 times a second; the fight draws a strike on twos
+// (`engine::anime`: a new drawing about twelve times a second, each held, one put down on its
+// contact), and plays it out of a bouncing guard through an inertial change
+// (`engine::playback`). A change that falls between two drawings is on the sheet and not on
+// the screen. So here a strike is played as the lab plays it, and read drawing by drawing
+// (`wrela tool moves -- --drawn`), and two strikes are held against each other frame by frame,
+// as played and as drawn (`--differ`): how far apart their bodies are is how much there is to
+// see.
+
+use std::collections::Vec
+use std::string::String
+use engine::anime
+use engine::anime::{Anime, Drawer, Look}
+use engine::humanoid
+use engine::humanoid::{NONE, Pose, Rig, pose_world}
+use engine::playback
+use engine::playback::{ACTIVE, Gaits, Handling, Move, Mover}
+
+/// A game's frames a second, and the frames of its guard's bounce played before the strike is
+/// thrown (the same for every strike, so two are thrown from the same pose).
+pub const HZ: f32 = 60.0
+const BEFORE: u32 = 40
+/// The frames kept after the strike is over, and the most a strike is given.
+const AFTER: u32 = 6
+const MOST: u32 = 240
+
+/// How far apart (m) two bodies' joints are before the difference counts as one to see: about
+/// a third of a fist. A working mark, not a measured threshold of the eye.
+pub const SEEN: f32 = 0.03
+
+/// A strike played and drawn: a pose a frame from the frame it's thrown, as played (every
+/// frame its own) and as drawn (held between drawings), which frames are impact frames, and
+/// the frame of its contact (its `ACTIVE` mark's start).
+pub struct Shown: Clone {
+    pub played: Vec<Pose>,
+    pub drawn: Vec<Pose>,
+    pub impact: Vec<bool>,
+    pub contact: u32,
+}
+
+/// `strike` thrown out of `gaits`' standing guard and drawn as `look` says.
+pub fn shown(rig: Rig, gaits: Gaits, strike: Move, look: Look) -> Shown {
+    let mask = playback::upper_body(rig)
+    var m = Mover::standing(vec3(0.0), 0.0, gaits)
+    var d = Drawer::new()
+    var out = Shown { played: Vec::new(), drawn: Vec::new(), impact: Vec::new(), contact: 0 }
+    for mark in strike.marks {
+        if mark.kind == ACTIVE {
+            out.contact = u32(mark.from * HZ + 0.5)
+        }
+    }
+    var over = 0
+    for f in 0..MOST {
+        let act = if f == BEFORE { 0 } else { NONE }
+        let pose = playback::step(
+            mut m,
+            gaits,
+            [strike.clone()],
+            rig,
+            mask,
+            vec3(0.0),
+            act,
+            false,
+            Handling {},
+            1.0 / HZ,
+        )
+        let s = anime::drawn(
+            mut d,
+            m,
+            [strike.clone()],
+            [look],
+            rig,
+            mask,
+            pose,
+            playback::placed(m),
+            Anime {},
+            1.0 / HZ,
+        )
+        if f < BEFORE {
+            continue
+        }
+        out.played.push(pose)
+        out.drawn.push(s.pose)
+        out.impact.push(s.impact > 0.0)
+        if m.acting == NONE {
+            over += 1
+            if over > AFTER {
+                break
+            }
+        }
+    }
+    out
+}
+
+/// Whether two poses are one drawing: every bone turned the same, the hips in one place.
+fn same(a: Pose, b: Pose, bones: u32) -> bool {
+    for i in 0..bones {
+        if length(a.turns[i].v - b.turns[i].v) > 1.0e-6 {
+            return false
+        }
+    }
+    length(a.hips - b.hips) < 1.0e-6
+}
+
+/// The strike's drawings, as lines: how many there are and how many come before its contact,
+/// then each one's frame, how long it's held, and how far the fist (bone `end`) has come
+/// since the one before.
+pub fn drawings(rig: Rig, s: Shown, end: u32, name: str) -> String {
+    let nb = rig.bones.len()
+    var starts: Vec<u32> = Vec::new()
+    for f in 0..s.drawn.len() {
+        if f == 0 || !same(s.drawn[f], s.drawn[f - 1], nb) {
+            starts.push(f)
+        }
+    }
+    // The contact's drawing: the one on the screen at the contact's frame.
+    var landed = 0
+    for i in 0..starts.len() {
+        if starts[i] <= s.contact {
+            landed = i
+        }
+    }
+    var into = 0.0
+    var rows = String::new()
+    for i in 0..starts.len() {
+        let f = starts[i]
+        let till = if i + 1 < starts.len() { starts[i + 1] } else { s.drawn.len() }
+        let at = pose_world(rig, s.drawn[f])[end].t
+        let moved = if i == 0 { 0.0 } else {
+            length(at - pose_world(rig, s.drawn[starts[i - 1]])[end].t)
+        }
+        let what = if i == landed { " (its contact)" } else if s.impact[f] { " (impact)" } else {
+            ""
+        }
+        if i == landed {
+            into = moved
+        }
+        rows.push_str(
+            f"  frame {f} ({f32(f) / HZ:.3} s){what}: held {till - f} frames, the fist come {moved * 100.0:.1} cm\n".as_str(),
+        )
+    }
+    let before = landed
+    var out = String::from(
+        f"{name}, as drawn: {starts.len()} drawings over {s.drawn.len()} frames, {before} before its contact; the fist comes {into * 100.0:.1} cm into the contact's drawing\n",
+    )
+    out.push_str(rows.as_str())
+    out
+}
+
+/// The joints two bodies are compared at, with what each is called.
+const JOINTS: [(Text, Text); 12] = [
+    ("hips", "hips"),
+    ("head", "head"),
+    ("leftHand", "left fist"),
+    ("rightHand", "right fist"),
+    ("leftLowerArm", "left elbow"),
+    ("rightLowerArm", "right elbow"),
+    ("leftUpperArm", "left shoulder"),
+    ("rightUpperArm", "right shoulder"),
+    ("leftLowerLeg", "left knee"),
+    ("rightLowerLeg", "right knee"),
+    ("leftFoot", "left foot"),
+    ("rightFoot", "right foot"),
+]
+
+/// How far apart two runs of poses are, frame by frame (each held at its last past its end):
+/// a line of numbers and a row of them, the farthest any joint is from its twin a frame (cm).
+fn apart(rig: Rig, a: [Pose], b: [Pose], how: str) -> String {
+    let n = max(a.len(), b.len())
+    var over = 0
+    var sum = 0.0
+    var worst = 0.0
+    var worst_at = 0
+    var worst_joint = "hips"
+    var row = String::new()
+    for f in 0..n {
+        let wa = pose_world(rig, a[min(f, a.len() - 1)])
+        let wb = pose_world(rig, b[min(f, b.len() - 1)])
+        var far = 0.0
+        var which = "hips"
+        for (bone, called) in JOINTS {
+            let i = rig.find(bone)
+            if i == NONE {
+                continue
+            }
+            let d = length(wa[i].t - wb[i].t)
+            if d > far {
+                far = d
+                which = called
+            }
+        }
+        sum += far
+        if far > SEEN {
+            over += 1
+        }
+        if far > worst {
+            worst = far
+            worst_at = f
+            worst_joint = which
+        }
+        row.push_str(f" {far * 100.0:.0}".as_str())
+    }
+    String::from(
+        f"  {how}: more than {SEEN * 100.0:.0} cm apart on {over} of {n} frames; {sum / f32(max(n, 1)) * 100.0:.1} cm apart on average; farthest {worst * 100.0:.1} cm, at the {worst_joint}, frame {worst_at} ({f32(worst_at) / HZ:.3} s)\n    cm apart a frame:{row}\n",
+    )
+}
+
+/// How different two strikes are to look at: as played, and as drawn.
+pub fn differ(rig: Rig, a: Shown, b: Shown, names: str) -> String {
+    var out = String::from(f"{names}: how far apart the two bodies are, joint for joint\n")
+    out.push_str(apart(rig, a.played, b.played, "as played (every frame)").as_str())
+    out.push_str(apart(rig, a.drawn, b.drawn, "as drawn (on twos)").as_str())
+    out
+}

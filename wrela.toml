@@ -124,6 +124,8 @@ write = ["ws=."]
 [tools.moves]
 package = "studio/moves"
 write = ["ws=."]
+# (`--solve` runs `wrela solve` on a strike's package, and the sheet again by a fresh build.)
+run = ["wrela"]
 
 # The forms tool (studio/forms): each charted form's numbers fitted to its reference (the CC0
 # body's triangles, Hakuro's sampled grids) by one solve, written into content/figure and

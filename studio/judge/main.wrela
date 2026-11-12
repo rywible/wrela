@@ -48,7 +48,7 @@ use pairs::{
     Keyed, Vote, brief, cropped, key_of, key_text, page_name, pages, size_of, swapped, tally,
     votes_of,
 }
-use shots::{Options, Scene, Shot, WS, chosen, parse_args, scene}
+use shots::{Crop, Options, Scene, Shot, WS, chosen, parse_args, scene}
 use std::input::Script
 use std::io::print
 use std::tool::{ToolError, args}
@@ -262,6 +262,52 @@ fn taken(build: str, s: Scene, shots: [Shot], clip: str) -> Result<Vec<Taken>, T
     Ok(out)
 }
 
+/// A look for a person's eye, of the two sides' frames (root paths; `NNNNN.png` from `first`):
+/// one side then the other in the same place, cropped to the figure (`crop`), twice at the
+/// scene's rate and once at a quarter of it. The side shown first carries one white mark in
+/// its corner, the other two: which is which is the sealed key's to say, so the look is blind.
+/// Side by side, an eye goes from one figure to the other and compares poses; in one place,
+/// one after the other, it compares how each moves.
+fn look_of(
+    first_frames: str,
+    second_frames: str,
+    first: u32,
+    fps: f64,
+    crop: Crop,
+    to: str,
+) -> Result<(), ToolError> {
+    let cut = f"crop={crop.x1 - crop.x0}:{crop.y1 - crop.y0}:{crop.x0}:{crop.y0}"
+    let mark = "drawbox=x=16:y=16:w=28:h=28:color=white@0.9:t=fill"
+    let marks = f"{mark},drawbox=x=56:y=16:w=28:h=28:color=white@0.9:t=fill"
+    let graph = f"[0:v]{cut},{mark},split=3[a0][a1][a2];[1:v]{cut},{marks},split=3[b0][b1][b2];[a2]setpts=4*PTS[as];[b2]setpts=4*PTS[bs];[a0][b0][a1][b1][as][bs]concat=n=6:v=1:a=0[v]"
+    var given: Vec<String> = Vec::from(
+        [String::from("-y"), String::from("-loglevel"), String::from("error")],
+    )
+    for i in 0..2 {
+        given.push(String::from("-framerate"))
+        given.push(String::from(f"{fps}"))
+        given.push(String::from("-start_number"))
+        given.push(String::from(f"{first}"))
+        given.push(String::from("-i"))
+        given.push(
+            if i == 0 { String::from(f"{shown_path(first_frames)}/%05d.png") } else {
+                String::from(f"{shown_path(second_frames)}/%05d.png")
+            },
+        )
+    }
+    given.push(String::from("-filter_complex"))
+    given.push(String::from(graph.as_str()))
+    for word in ["-map", "[v]", "-r"] {
+        given.push(String::from(word))
+    }
+    given.push(String::from(f"{fps}"))
+    for word in ["-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p"] {
+        given.push(String::from(word))
+    }
+    given.push(String::from(shown_path(to)))
+    ran("ffmpeg", take given)
+}
+
 /// A clip of the frames in `frames` (a root path; `NNNNN.png` from `first`), at `fps`, written
 /// at `to`; with `beside` (another directory of frames), the two side by side, `frames` on the
 /// left.
@@ -401,6 +447,39 @@ fn judged(o: Options) -> Result<(), ToolError> {
                 f"{clips}/{name}-both.mp4",
             )?
             print(f"{name} {shown_path(clips.as_str())}/{name}-both.mp4")
+            if sc.look.x1 > sc.look.x0 {
+                // The look: which side goes first is the seed's to say, and the key's to keep.
+                let new_first = o.seed % 2 == 1
+                if new_first {
+                    look_of(
+                        new_frames.as_str(),
+                        base_frames.as_str(),
+                        sc.clip_first,
+                        sc.fps,
+                        sc.look,
+                        f"{clips}/{name}-look.mp4",
+                    )?
+                } else {
+                    look_of(
+                        base_frames.as_str(),
+                        new_frames.as_str(),
+                        sc.clip_first,
+                        sc.fps,
+                        sc.look,
+                        f"{clips}/{name}-look.mp4",
+                    )?
+                }
+                let key = String::from(
+                    if new_first { "one mark: the new; two marks: the base\n" } else {
+                        "one mark: the base; two marks: the new\n"
+                    },
+                )
+                write_file(
+                    f"{sealed}/{name}-look-key.txt".as_str(),
+                    Vec::from([Vec::from(key.as_bytes())]),
+                )?
+                print(f"{name} {shown_path(clips.as_str())}/{name}-look.mp4 (its key sealed)")
+            }
         }
     }
     // What the critics judge: the stills.

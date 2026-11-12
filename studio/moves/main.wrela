@@ -27,11 +27,15 @@ use engine::cycle::{Cycle, Fit}
 use engine::humanoid::{Clip, NONE, Rig, Rigid}
 use engine::oneoff
 use engine::oneoff::{Keying, OneOff}
+use engine::anime::LIGHT
+use engine::arms
+use engine::playback::Move as Played
 use engine::timing
 use engine::timing::{ANY, RIGHT_ARM, Timing}
 use chart::chart
 use humanoid::exchange
 use humanoid::fists
+use humanoid::solved
 use humanoid::accad_fists
 use humanoid::kimodo
 use std::tool::ToolError
@@ -44,7 +48,7 @@ use std::tool::args
 use std::tool::files
 use std::tool::files::rooted
 
-pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --sheet <out-dir> [strike ...]"
+pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --sheet <out-dir> [strike ...] | --solve <out-dir> <strike> | --drawn [strike ...] | --differ <strike> <strike>"
 
 /// A move: its name on the command line, its file in content/moves and its constant there, the
 /// clip it's fitted to (a looped one as a cycle, a one-off as a shot), and what the file says it
@@ -169,6 +173,13 @@ fn exchange_cross(rig: Rig) -> Clip {
     timing::clip_of(rig, poses, timing::RATE)
 }
 
+/// The strikes the fight plays, each as its move (its marks say when it lands), by its name
+/// among `strikes`: what `--drawn` and `--differ` play as the lab does (thrown out of the
+/// bouncing guard, drawn as an everyday strike is: `anime::LIGHT`). Add a line for a new one.
+pub fn played() -> Vec<(Text, Played)> {
+    Vec::from([("cross", fists::CROSS.clone()), ("cross-solved", solved::CROSS.clone())])
+}
+
 /// The strikes: add a line for a new one.
 pub fn strikes(rig: Rig) -> Vec<Strike> {
     Vec::from(
@@ -186,6 +197,13 @@ pub fn strikes(rig: Rig) -> Vec<Strike> {
                 limb: RIGHT_ARM,
                 contact: fists::CROSS_HIT,
                 about: "the hand-keyed cross (fists::CROSS, engine::keys)",
+            },
+            Strike {
+                name: "cross-solved",
+                clip: solved::CROSS.clip.clone(),
+                limb: RIGHT_ARM,
+                contact: solved::CONTACT,
+                about: "the solved cross (solved::CROSS, engine::written): goal poses, each part on its own clock, its numbers solved against spec.wrela",
             },
             Strike {
                 name: "cross-take",
@@ -215,7 +233,16 @@ pub fn strikes(rig: Rig) -> Vec<Strike> {
 /// `s`'s sheet printed, and written with its chart under `dir` (a root path).
 fn sheet(s: Strike, rig: Rig, dir: str) -> Result<(), ToolError> {
     let t = timing::timing(s.clip, rig, s.limb, s.contact)
-    let text = f"{t.text(s.name)}\n  ({s.about})\n"
+    var text = String::from(f"{t.text(s.name)}\n")
+    // Its arms, a stretch at a time (`engine::arms::report`): nothing for arms a person makes.
+    let faults = arms::report(rig, s.clip, accad_fists::REAL)
+    if faults.is_empty() {
+        text.push_str("  arms: nothing flagged\n")
+    }
+    for fault in faults {
+        text.push_str(f"  arms: {fault}\n".as_str())
+    }
+    text.push_str(f"  ({s.about})\n".as_str())
     print(text.as_str())
     if files::write(f"{dir}/{s.name}.txt".as_str(), text.as_bytes()).wait().is_err() {
         return Err(ToolError::new(f"couldn't write {dir}/{s.name}.txt"))
@@ -366,6 +393,65 @@ fn written(m: Move, rig: Rig) -> Result<String, String> {
 pub fn tool() -> u32 {
     let wanted = args()
     let rig = HERO.rig.clone()
+    if wanted.len() >= 1 && wanted[0].as_str() == "--drawn" {
+        // Each played strike as it's drawn, drawing by drawing.
+        var done = 0
+        for (name, m) in played() {
+            var chosen = wanted.len() == 1
+            for i in 1..wanted.len() {
+                if wanted[i].as_str() == name {
+                    chosen = true
+                }
+            }
+            if chosen {
+                let s = drawn::shown(rig, fists::FIGHT_GAITS, m, LIGHT)
+                print(drawn::drawings(rig, s, rig.find("rightHand"), name).as_str())
+                done += 1
+            }
+        }
+        return if done == 0 { 2 } else { 0 }
+    }
+    if wanted.len() >= 1 && wanted[0].as_str() == "--differ" {
+        // Two played strikes held against each other, as played and as drawn.
+        if wanted.len() != 3 {
+            print(USAGE)
+            return 2
+        }
+        var both: Vec<drawn::Shown> = Vec::new()
+        for i in 1..3 {
+            for (name, m) in played() {
+                if wanted[i].as_str() == name {
+                    both.push(drawn::shown(rig, fists::FIGHT_GAITS, m, LIGHT))
+                }
+            }
+        }
+        if both.len() != 2 {
+            print("moves: --differ takes two of the played strikes (`played` in main.wrela)")
+            return 2
+        }
+        let names = f"{wanted[1]} against {wanted[2]}"
+        print(drawn::differ(rig, both[0].clone(), both[1].clone(), names.as_str()).as_str())
+        return 0
+    }
+    if wanted.len() >= 1 && wanted[0].as_str() == "--solve" {
+        if wanted.len() != 3 {
+            print(USAGE)
+            return 2
+        }
+        for s in author::SOLVED {
+            if s.name == wanted[2].as_str() {
+                return match author::solve(s, wanted[1].as_str()) {
+                    Ok(code) => code,
+                    Err(e) => {
+                        print(f"moves: {e.message()}")
+                        1
+                    },
+                }
+            }
+        }
+        print(f"moves: no solved strike {wanted[2]}: author.wrela's `SOLVED` names them")
+        return 2
+    }
     if wanted.len() >= 1 && wanted[0].as_str() == "--sheet" {
         if wanted.len() < 2 {
             print(USAGE)

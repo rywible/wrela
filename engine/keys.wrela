@@ -11,9 +11,24 @@
 
 use std::collections::Vec
 use humanoid::{Clip, NONE, Pose, Rig, Rigid, arc}
-use stride::{about, curled_hands, leg_of, reach, turn_below}
+use stride::{about, curled_hands, leg_of, reach, turn_below, turn_under}
 
 const DEG: f32 = 0.017453292
+const PI: f32 = 3.14159265
+
+/// An elbow's hinge, for a body bound in a T-pose: the axis it bends about is the body's up
+/// leaned this far ahead (degrees), the left arm's the other way round. Measured: the axes
+/// real elbows bent about in captured takes on Quaternius's body (content/humanoid's
+/// `accad_fists::REAL`, read by `engine::arms`) are 38 degrees (the left) and 29 (the right)
+/// off straight up.
+pub const ELBOW_LEAN: f32 = 33.5
+
+/// The most an upper arm is twisted about its own length to keep its elbow's hinge (degrees,
+/// from its rest): what a skin with no bones along the arm to spread a twist takes before it
+/// wrings at the shoulder. (Twisted 72 degrees for a cross's contact and 110 for its load,
+/// the body's arm drew flat and thin; Ryan's look, 2026-11-12.) A pose that needs more keeps
+/// what's left as a bend off the hinge, which `engine::arms` reads: turn its elbow to mend it.
+pub const TWIST_MOST: f32 = 40.0
 
 /// How a body comes into a key from the one before: evenly (`LINEAR`), easing out of the last
 /// and into this (`SMOOTH`), gathering speed all the way and stopped dead by it (`SNAP`: a
@@ -146,12 +161,16 @@ fn elbow_at(s: vec3, t: vec3, l1: f32, l2: f32, pole: vec3) -> (vec3, vec3) {
 /// The pose key `k` sets: its parts set from the rest down (hips, trunk, collars, head), then
 /// each arm and leg reaching for its spot.
 pub fn posed(rig: Rig, k: Key) -> Pose {
-    let rw = rig.rest_world()
-    var w = rw.clone()
+    // (The bones in arrays, not `Vec`s: a solve's derivation follows an array alone, so a
+    // pose keeps its derivative by the key's numbers: `humanoid::Frames`.)
+    let rw = rig.rest_frames()
+    let rests = rig.rests()
+    let parents = rig.parents()
+    var w = rw
     let nb = rig.bones.len()
     let find = |n: str| -> u32 { rig.find(n) }
     let hips = find("hips")
-    turn_below(rig, mut w, hips, turn_of(k.hips_turn))
+    turn_under(parents, nb, mut w, hips, turn_of(k.hips_turn))
     for b in 0..nb {
         w[b].t += k.hips
     }
@@ -165,13 +184,13 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
     }
     for b in spine {
         if b != NONE {
-            turn_below(rig, mut w, b, turn_of(k.trunk / max(shares, 1.0)))
+            turn_under(parents, nb, mut w, b, turn_of(k.trunk / max(shares, 1.0)))
         }
     }
     let collars = [find("leftShoulder"), find("rightShoulder")]
     for i in 0..2 {
         if collars[i] != NONE {
-            turn_below(rig, mut w, collars[i], turn_of(k.collars[i]))
+            turn_under(parents, nb, mut w, collars[i], turn_of(k.collars[i]))
         }
     }
     // The head: the neck turned half way to the spot, the head the rest.
@@ -181,8 +200,8 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
         let to = k.look - w[head].t
         let r = arc(w[head].q.rotate(ahead), to)
         let half = Quat::identity().nlerp(r, 0.5)
-        turn_below(rig, mut w, neck, half)
-        turn_below(rig, mut w, head, arc(w[head].q.rotate(ahead), to))
+        turn_under(parents, nb, mut w, neck, half)
+        turn_under(parents, nb, mut w, head, arc(w[head].q.rotate(ahead), to))
     }
     // The arms, each reaching its wrist to its fist's spot, its elbow toward its pole.
     let arms = [
@@ -195,9 +214,48 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
             let l1 = length(rw[l].t - rw[u].t)
             let l2 = length(rw[h].t - rw[l].t)
             let (e, t) = elbow_at(w[u].t, k.fists[i], l1, l2, k.elbows[i])
-            turn_below(rig, mut w, u, arc(w[l].t - w[u].t, e - w[u].t))
-            turn_below(rig, mut w, l, arc(w[h].t - w[l].t, t - w[l].t))
-            turn_below(rig, mut w, l, about(normalize(t - e), k.rolls[i] * DEG))
+            turn_under(parents, nb, mut w, u, arc(w[l].t - w[u].t, e - w[u].t))
+            // The upper arm turned about its own length till the elbow bends about its hinge:
+            // the reach above puts the elbow where it's asked, by the shortest turn, which
+            // leaves the upper arm's twist to chance and the elbow bent across its hinge (an
+            // arm that looks wrung). A leg's reach keeps its knee's hinge (`stride::reach`);
+            // this keeps the elbow's.
+            let along = normalize(e - w[u].t)
+            let bend = cross(along, t - e)
+            let side = if i == 0 { -1.0 } else { 1.0 }
+            let lean = ELBOW_LEAN * DEG
+            let hinge = rw[u].q.inverse().rotate(vec3(0.0, cos(lean), sin(lean)) * side)
+            let has = w[u].q.rotate(hinge)
+            let flat = has - along * dot(has, along)
+            if length(bend) > 1.0e-5 && length(flat) > 1.0e-4 {
+                let (want, now) = (normalize(bend), normalize(flat))
+                let twist = atan2(dot(cross(now, want), along), dot(now, want))
+                // No further than a skin takes. A body's skin wrings where a bone is twisted
+                // about its own length against the bone it hangs from (all of an upper
+                // arm's twist lands on the shoulder, there being no bones to spread it
+                // along the arm), so the twist the arm ends up with, from its rest, is held
+                // within `TWIST_MOST`: the hinge is kept as far as that allows.
+                let own = normalize(rests[l].t)
+                let rel = rests[u].q.inverse().mul(w[parents[u]].q.inverse().mul(w[u].q))
+                let v = if rel.v.w < 0.0 { -rel.v } else { rel.v }
+                let has_twist = 2.0 * atan2(dot(v.xyz, own), v.w)
+                var whole = has_twist + twist
+                if whole > PI {
+                    whole -= 2.0 * PI
+                } else if whole < -PI {
+                    whole += 2.0 * PI
+                }
+                let most = TWIST_MOST * DEG
+                turn_under(
+                    parents,
+                    nb,
+                    mut w,
+                    u,
+                    about(along, clamp(whole, -most, most) - has_twist),
+                )
+            }
+            turn_under(parents, nb, mut w, l, arc(w[h].t - w[l].t, t - w[l].t))
+            turn_under(parents, nb, mut w, l, about(normalize(t - e), k.rolls[i] * DEG))
         }
     }
     // The legs: each foot set on its ball, turned and its heel up as said, the leg reaching
@@ -214,17 +272,17 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
         let ankle = ball + q.rotate(rw[l.ankle].t - rw[toe].t)
         let hinge = rw[l.knee].q.inverse().rotate(vec3(1.0, 0.0, 0.0))
         let (qu, ql) = reach(w[l.hip], w[l.knee], w[l.ankle].t, ankle, hinge)
-        turn_below(rig, mut w, l.hip, qu.mul(w[l.hip].q.inverse()))
-        turn_below(rig, mut w, l.knee, ql.mul(w[l.knee].q.inverse()))
-        turn_below(rig, mut w, l.ankle, q.mul(rw[l.ankle].q).mul(w[l.ankle].q.inverse()))
+        turn_under(parents, nb, mut w, l.hip, qu.mul(w[l.hip].q.inverse()))
+        turn_under(parents, nb, mut w, l.knee, ql.mul(w[l.knee].q.inverse()))
+        turn_under(parents, nb, mut w, l.ankle, q.mul(rw[l.ankle].q).mul(w[l.ankle].q.inverse()))
         if l.toes != NONE {
-            turn_below(rig, mut w, l.toes, yaw.mul(rw[l.toes].q).mul(w[l.toes].q.inverse()))
+            turn_under(parents, nb, mut w, l.toes, yaw.mul(rw[l.toes].q).mul(w[l.toes].q.inverse()))
         }
     }
     // Back to each bone's turn in its parent.
     var p = Pose { turns: [Quat::identity(); 64], hips: vec3(0.0) }
     for b in 0..nb {
-        let up = rig.bones[b].parent
+        let up = parents[b]
         let pq = if up == NONE { rig.base.q } else { w[up].q }
         p.turns[b] = pq.inverse().mul(w[b].q)
     }
@@ -243,12 +301,38 @@ pub fn key_at(keys: [Key], time: f32) -> Key {
     }
     for i in 1..n {
         if time < keys[i].at {
-            let (a, b) = (keys[i - 1], keys[i])
-            let x = (time - a.at) / max(b.at - a.at, 1.0e-5)
-            return mixed(a, b, eased(b.ease, x))
+            return between(keys[i - 1], keys[i], time, snap: 1.0)
         }
     }
     keys[n - 1]
+}
+
+/// Between two keys at `time`: mixed as the later one's ease says. A `SNAP` keeps `snap` of
+/// its snap (1 all of it: stopped dead by the key; 0 none: eased into it, as `SMOOTH`).
+fn between(a: Key, b: Key, time: f32, snap: f32) -> Key {
+    let x = (time - a.at) / max(b.at - a.at, 1.0e-5)
+    var e = eased(b.ease, x)
+    if b.ease == SNAP {
+        let soft = eased(SMOOTH, x)
+        e = soft + (e - soft) * snap
+    }
+    mixed(a, b, e)
+}
+
+/// `key_at` for keys held in an array: the form a solve's derivation follows, where it can't
+/// follow a run of keys (`engine::written`). `snap` is how much of a `SNAP` key's snap is
+/// kept (`between`): a part of the body that eases into a pose the fist is stopped dead by.
+pub fn key_in<const N: u32>(keys: [Key; N], time: f32, snap: f32 = 1.0) -> Key {
+    assert(N > 0, "a move needs at least one key")
+    if time <= keys[0].at {
+        return keys[0]
+    }
+    for i in 1..N {
+        if time < keys[i].at {
+            return between(keys[i - 1], keys[i], time, snap)
+        }
+    }
+    keys[N - 1]
 }
 
 /// Where `keys` have the body's root at each of `frames` frames at `fps`: their travel.
