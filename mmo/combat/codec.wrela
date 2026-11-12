@@ -58,10 +58,6 @@ pub struct Pad: Copy {
 /// Turns the pad into the input a player sends, frame by frame.
 pub struct Encoder {
     held: u32,
-    /// Presses made while the rules didn't read them yet but will soon (a cut pressed mid-swing
-    /// for the combo's next): each flips its bit on the first frame the rules read it, or is
-    /// dropped once they won't soon.
-    waiting: u32,
 }
 
 /// A speed band: below `lo` or from `hi` up, the stick has left it.
@@ -102,26 +98,23 @@ pub fn stick_of(x: f32, z: f32, prev: u32) -> u32 {
 
 impl Encoder {
     pub fn new() -> Encoder {
-        Encoder { held: 0, waiting: 0 }
+        Encoder { held: 0 }
     }
 
     /// The input to send this frame. `prev` is the last frame's; `reads` the bits the rules read
     /// now or within `LOOK_AHEAD` frames (`World::reads | World::soon`), and `now` those they read
     /// this frame (`World::reads`). The stick follows the pad while it's read soon, and holds
-    /// while it isn't. A press flips its button's bit on a frame the rules read it, since a flip
-    /// they don't read is spent: one made before then waits while they'll read it soon (an
-    /// input buffer), and one they won't is dropped.
+    /// while it isn't. A press flips its button's bit on the frame the hand pressed it, if the
+    /// rules read it then (a flip they don't read is spent, so one they don't is dropped): the
+    /// rules keep a press made a little before its fighter can act on it (`sim::BUFFER`), and
+    /// read its button from then on, so the log holds the frame it was pressed.
     pub fn input(mut self, pad: Pad, prev: u32, reads: u32, now: u32) -> u32 {
         let stick = if reads & STICK_BITS == 0 { prev & STICK_BITS } else {
             stick_of(x: pad.x, z: pad.z, prev: prev & STICK_BITS)
         }
         let pressed = ((pad.held & !self.held) | pad.pressed) & (BUTTON_BITS >> 6)
         self.held = pad.held
-        let soon = (reads & BUTTON_BITS) >> 6
-        let ready = (now & BUTTON_BITS) >> 6
-        let want = (self.waiting | pressed) & soon
-        let flips = want & ready
-        self.waiting = want & !ready
+        let flips = pressed & ((now & BUTTON_BITS) >> 6)
         let buttons = (prev & BUTTON_BITS) ^ (flips << 6)
         stick | buttons
     }
@@ -1039,12 +1032,14 @@ fn a_press_flips_a_bit_and_letting_go_sends_nothing() {
     assert(enc.input(attack, prev: 0, reads: 0, now: 0) == 0)
     assert(enc.input(still, prev: 0, reads: all, now: all) == 0, "a dropped press stays dropped")
     assert(enc.input(Pad { x: 1.0, z: 0.0, held: 0 }, prev: 0, reads: 0, now: 0) == 0)
-    // A press the rules will read soon waits for the frame they do, then flips its bit once.
+    // A press flips on the frame it's made, the rules reading it (they keep it till its fighter
+    // can act: `sim::BUFFER`), or not at all: the encoder holds none back.
     let chain = sim::ATTACK << 6
     let _ = enc.input(still, prev: 0, reads: 0, now: 0)
-    assert(enc.input(attack, prev: 0, reads: chain, now: 0) == 0, "not read yet: it waits")
-    assert(enc.input(still, prev: 0, reads: chain, now: 0) == 0, "still waiting")
-    assert(enc.input(still, prev: 0, reads: chain, now: chain) == 64, "read now: it flips")
+    assert(enc.input(attack, prev: 0, reads: chain, now: 0) == 0, "not read now: dropped")
+    assert(enc.input(still, prev: 0, reads: chain, now: chain) == 0, "and stays dropped")
+    let _ = enc.input(still, prev: 0, reads: chain, now: chain)
+    assert(enc.input(attack, prev: 0, reads: chain, now: chain) == 64, "read now: it flips")
     assert(enc.input(still, prev: 64, reads: chain, now: chain) == 64, "once")
 }
 
