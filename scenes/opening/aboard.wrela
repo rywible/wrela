@@ -692,7 +692,7 @@ impl chart::Seen for Shot {
 /// His charted parts' pixel (`hakuro::charts`, `hakuro::wide_charts`): as `arm_pixel`, its
 /// normal read from the form at the pixel's own place (`chart::Vertex::normal_from`; `along`:
 /// its path's length) and its paint the part's. Nothing where the part isn't (`cover`: his
-/// jacket's front and armholes) or is cut away.
+/// jacket's front) or is cut away.
 @fragment
 pub fn charted_pixel<const A: u32, const R: u32>(
     v: chart::Vertex,

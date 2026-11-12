@@ -701,7 +701,7 @@ pub fn fighter_pixel<F: Parts<Cloth>>(
 /// part and where the place is on him at rest, and its normal read at the pixel itself from the
 /// form's slopes at its place (`shade`: the posed form, its finest ripples left out; about a
 /// path `length` long: `chart::Vertex::normal_from`). Nothing where the part isn't (`cover`:
-/// his jacket's front and armholes) or is cut away.
+/// his jacket's front) or is cut away.
 @fragment
 pub fn charted_pixel<const A: u32, const R: u32>(
     v: chart::Vertex,

@@ -2,10 +2,11 @@
 // it is. Written by the forms tool from where rays from the body's line met his sampled jacket,
 // which is gone (rywible/wrela#438 is the last revision that holds it and the tool as it wrote
 // this): kept as it is, for the jacket's neck and where its body stops under its shoulders. Its
-// front, its armholes and its hem are cut by rule now (`hakuro::opening`, `hakuro::armhole`,
-// `hakuro::COAT_SEAM`), and its collar and its shoulders have no cover: their edges are rules
-// too (`hakuro::collar_top`, `hakuro::armhole`). A cover made again is written from marks
-// with `engine::chart::cover_source`.
+// front and its hem are cut by rule now (`hakuro::opening`, `hakuro::COAT_SEAM`), its sides
+// are whole (the armholes written here are filled: `hakuro::jacket_body_cover`), and its
+// collar and its shoulders have no cover: their edges are rules too (`hakuro::collar_top`,
+// `hakuro::YOKE_OUT`). A cover made again is written from marks with
+// `engine::chart::cover_source`.
 
 use engine::chart::Cover
 

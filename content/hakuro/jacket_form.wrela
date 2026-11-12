@@ -6,7 +6,8 @@ use engine::chart::Radial
 
 /// Hakuro's jacket's body, its outer face from its hem to under its shoulders, about the line
 /// of his spine: fitted by the forms tool to his sampled jacket, which is gone, and kept as it
-/// is. It runs on across the jacket's open front and its armholes, which its cover cuts.
+/// is. It runs on across the jacket's open front, which its cover cuts, and out along a
+/// sleeve's stub at each shoulder, which `hakuro::JACKET_FORM` trims away.
 pub const JACKET: Radial<24, 21> = Radial {
     from: 0.0000,
     to: 1.0000,

@@ -46,35 +46,45 @@ pub const MOVE: u32 = 0
 
 /// The rig the moves are fitted to, and the move `MOVE` names as a clip.
 const RIG: Rig = reference_rig()
-const PLAYED: Clip = match MOVE {
-    1 => STANCE.clip(RIG.clone(), 30.0),
-    2 => REST.clip(RIG.clone(), 30.0),
-    3 => manner::stand(RIG.clone()),
-    4 => WALK.clip(RIG.clone(), 30.0),
-    5 => if CARRIED > 0.0 { manner::sprint().clip(RIG.clone(), 30.0) } else {
-        RUN.clip(RIG.clone(), 30.0)
-    },
-    6 => PUNCH.clip(RIG.clone(), 30.0),
-    7 => ROLL.clip(RIG.clone(), 30.0),
-    8 => START.clip(RIG.clone(), 30.0),
-    9 => STOP.clip(RIG.clone(), 30.0),
-    _ => STANCE.clip(RIG.clone(), 30.0),
+const PLAYED: Clip = played(MOVE)
+
+/// Move `mv` as a clip on the rig.
+fn played(mv: u32) -> Clip {
+    match mv {
+        1 => STANCE.clip(RIG.clone(), 30.0),
+        2 => REST.clip(RIG.clone(), 30.0),
+        3 => manner::stand(RIG.clone()),
+        4 => WALK.clip(RIG.clone(), 30.0),
+        5 => if CARRIED > 0.0 { manner::sprint().clip(RIG.clone(), 30.0) } else {
+            RUN.clip(RIG.clone(), 30.0)
+        },
+        6 => PUNCH.clip(RIG.clone(), 30.0),
+        7 => ROLL.clip(RIG.clone(), 30.0),
+        8 => START.clip(RIG.clone(), 30.0),
+        9 => STOP.clip(RIG.clone(), 30.0),
+        _ => STANCE.clip(RIG.clone(), 30.0),
+    }
 }
 
 /// His palette as the move has him at `time`: each of the rig's bones' matrix to his, the
 /// fingers he has that it doesn't (none) left with their hand, his walk kept in place.
 fn moved(time: f32) -> [mat4; 64] {
-    var pose = PLAYED.smooth_pose(time)
+    moved_in(PLAYED.clone(), MOVE, time)
+}
+
+/// `moved`, for move `mv` played as `clip`.
+fn moved_in(clip: Clip, mv: u32, time: f32) -> [mat4; 64] {
+    var pose = clip.smooth_pose(time)
     // (In place: a walk's travel taken off, its sway kept.)
-    let loops = if PLAYED.looped { floor(time * PLAYED.fps / f32(PLAYED.frames - 1)) } else { 0.0 }
+    let loops = if clip.looped { floor(time * clip.fps / f32(clip.frames - 1)) } else { 0.0 }
     pose.hips = pose.hips -
-        PLAYED.travel_local * loops -
-        PLAYED.travel_local * fract(time * PLAYED.fps / f32(max(PLAYED.frames, 2) - 1))
+        clip.travel_local * loops -
+        clip.travel_local * fract(time * clip.fps / f32(max(clip.frames, 2) - 1))
     // (He carries himself his own way walking and running, and in another's idle: his stand
     // is his already, and his fighting stance, his punch and his roll hold his head as they
     // need it.)
-    if CARRIED > 0.0 && MOVE >= 2 && MOVE != 3 && MOVE != 6 && MOVE != 7 {
-        let how = if MOVE == 2 { manner::BEARING } else { manner::bearing_at(going()) }
+    if CARRIED > 0.0 && mv >= 2 && mv != 3 && mv != 6 && mv != 7 {
+        let how = if mv == 2 { manner::BEARING } else { manner::bearing_at(going_in(mv)) }
         pose = engine::bearing::carried(RIG.clone(), pose, how)
     }
     let rig_m = palette(RIG.clone(), pose, translate(vec3(0.0)))
@@ -82,14 +92,19 @@ fn moved(time: f32) -> [mat4; 64] {
     // his left hand rests on his hip.)
     manner::palette_of(
         rig_m,
-        standing: if MOVE == 3 { 1.0 } else { 0.0 },
-        fists: if MOVE == 1 || MOVE == 6 { 1.0 } else { 0.0 },
+        standing: if mv == 3 { 1.0 } else { 0.0 },
+        fists: if mv == 1 || mv == 6 { 1.0 } else { 0.0 },
     )
 }
 
 /// How fast (m/s) the move he's playing in place would be taking him.
 fn going() -> f32 {
-    if MOVE == 4 { manner::WALKS } else if MOVE == 5 {
+    going_in(MOVE)
+}
+
+/// `going`, for move `mv`.
+fn going_in(mv: u32) -> f32 {
+    if mv == 4 { manner::WALKS } else if mv == 5 {
         if CARRIED > 0.0 { manner::SPRINTS } else { 4.0 }
     } else { 0.0 }
 }
@@ -719,7 +734,7 @@ pub fn fielded_pixel<F: Parts<Cloth>>(
 /// A pixel of a part drawn along its chart (`hakuro::charts`, `hakuro::wide_charts`), in plain
 /// light: its normal read from the form at the pixel's own place
 /// (`chart::Vertex::normal_from`), and the part's paint. Nothing where the part isn't (`cover`:
-/// his jacket's front and armholes) or is cut away.
+/// his jacket's front) or is cut away.
 @fragment
 pub fn charted_pixel<const A: u32, const R: u32>(
     v: chart::Vertex,
@@ -744,4 +759,33 @@ pub fn charted_pixel<const A: u32, const R: u32>(
     }
     let lit = lights.shadow(view, v.world, n, shadow, shadow_sampler)
     vec4(lights.light(c.albedo, c.rough, n, v.world, view, lit), 1.0)
+}
+
+@test
+fn where_his_arm_meets_his_coat_his_coat_is_on_him() {
+    // Cloth can't pass through what's inside it. His upper arms overlap his trunk where
+    // they hang and where they swing (he's built so: his shoulders' joints are 3 cm out
+    // from his ribs and his arms 7 cm thick), and where they do they meet his coat's body
+    // lying on him. Through every move, from his armpits up, wherever an upper arm's side
+    // (from 2 cm past his shoulder's joint to 5 cm short of his elbow) passes through his
+    // coat's body, the body there is on what his chest carries (`hakuro::off_him`), within
+    // 3.5 cm: never a piece of it that's out along his arm or clear of him, which his chest
+    // would hold still while his arm went through it. (With the form the body was fitted
+    // with, a sleeve's stub out past each joint and a wing of the back behind each shoulder,
+    // this reads 5.6 cm in every move.)
+    let rest = charted_at_rest()
+    let cover = hakuro::jacket_body_cover()
+    for mv in 1..10 {
+        let clip = played(mv)
+        let long = f32(clip.frames - 1) / clip.fps
+        for k in 0..16 {
+            let posed = charted_as(moved_in(clip.clone(), mv, long * f32(k) / 16.0))
+            for h in hakuro::arms_through_coat(posed, rest, cover, 0.16, 0.48, 0.0) {
+                assert(
+                    h.rest.y < 1.33 || h.off < 0.035,
+                    f"in move {mv}, arm {h.arm} is through his coat's body where it's {h.off} m off him: {h.rest} at rest",
+                )
+            }
+        }
+    }
 }
