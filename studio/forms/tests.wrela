@@ -138,5 +138,56 @@ fn hakuros_written_jacket_is_his_jacket_fitted() {
         "content/hakuro/jacket_form.wrela is stale",
     )
     let j = jacket.miss.spread
-    assert(j.rms < 2.6 && j.most < 4.8 && j.worst < 22.0, f"his jacket misses by {j.rms} mm rms")
+    assert(j.rms < 2.6 && j.most < 4.8, f"his jacket misses by {j.rms} mm rms")
+}
+
+@test
+fn hakuros_written_collar_and_shoulders_are_his_jacket_fitted() {
+    // His collar, about a line behind the root of his neck: within 1.3 mm rms, where the one
+    // form about his spine missed it by up to 19.
+    let collar = main::hakuro_collar()
+    assert(
+        apart(collar.form, hakuro::collar_form::COLLAR) < 0.000011,
+        "content/hakuro/collar_form.wrela is stale",
+    )
+    let c = collar.miss.spread
+    assert(c.rms < 1.3 && c.worst < 11.0, f"his collar misses by {c.rms} mm rms")
+    // His jacket's shoulders, each about his collarbone's line and his upper arm's: within 3 mm
+    // rms over all its rays meet (under his arm it's the jacket's inside, which isn't drawn).
+    let left = main::hakuro_yoke(main::HAKURO_YOKE_LEFT)
+    assert(
+        apart(left.form, hakuro::yoke_left_form::YOKE_LEFT) < 0.000011,
+        "content/hakuro/yoke_left_form.wrela is stale",
+    )
+    let right = main::hakuro_yoke(main::HAKURO_YOKE_RIGHT)
+    assert(
+        apart(right.form, hakuro::yoke_right_form::YOKE_RIGHT) < 0.000011,
+        "content/hakuro/yoke_right_form.wrela is stale",
+    )
+    assert(left.miss.spread.rms < 3.0 && right.miss.spread.rms < 3.0, f"{left.miss.spread.rms}")
+}
+
+@test
+fn a_covers_marks_evened_lose_a_speck_and_a_tooth_and_keep_an_edge() {
+    // A cover whose form is over the first half of its turn, with a lone mark out in the open
+    // half and a lone gap in the covered half.
+    let along = engine::chart::COVER_ALONG
+    let round = engine::chart::COVER_ROUND
+    var marks: Vec<bool> = Vec::new()
+    for i in 0..along {
+        for j in 0..round {
+            var here = j < round / 2
+            if i == 40 && j == 200 {
+                here = true
+            }
+            if i == 40 && j == 60 {
+                here = false
+            }
+            marks.push(here)
+        }
+    }
+    let even = main::evened(marks)
+    assert(!even[40 * round + 200] && even[40 * round + 60], "the speck and the gap are gone")
+    // (Its edge is where it was: the last place covered, and the first not.)
+    assert(even[20 * round + round / 2 - 1] && !even[20 * round + round / 2])
 }

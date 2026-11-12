@@ -224,7 +224,7 @@ pub const LEG_LEFT: figure::limbs::Form = figure::leg::LEG.plus(leg_form::LEG_OV
 
 /// How many of his parts are drawn along their charts as limbs are, how many of those are his
 /// arms' (the first of them), and how many are drawn as his trunk is (a larger form).
-pub const CHARTS: u32 = 8
+pub const CHARTS: u32 = 11
 pub const ARM_CHARTS: u32 = 4
 pub const WIDE_CHARTS: u32 = 2
 
@@ -254,6 +254,16 @@ pub fn charts() -> [Part<16, 13>; CHARTS] {
         sunk: vec2(0.0, 0.1),
         ..arm,
     }
+    // (A piece of his jacket about a line `bones` carry: its form `over` off its fitted face.)
+    let worn = |line: chart::Chain, bones: [u32; 2], form: Radial<16, 13>, band: vec2, over: f32| Part {
+        chain: line,
+        bones: [bones[0], bones[1], 0, 0, 0, 0, 0, 0],
+        root: bones[0],
+        form: form.plus(chart::round(over)),
+        changes: [chart::unchanged(); JOINTS],
+        band: Band { f: band, theta: vec2(0.0, TAU) },
+        sunk: vec2(0.0, 0.1),
+    }
     [
         left,
         right,
@@ -280,8 +290,36 @@ pub fn charts() -> [Part<16, 13>; CHARTS] {
             sunk: vec2(0.0, 0.1),
             caps: vec2(HEAD_CAP, 0.0),
         },
+        // His jacket's collar: one rigid form on a line his chest carries. Its shoulders: each
+        // on his collarbone and his upper arm, so it goes where his arm goes.
+        worn(figure::chains::collar(), [3, 3], collar_form::COLLAR, vec2(0.17, 0.84), 0.0),
+        worn(
+            figure::chains::yoke_left(),
+            [6, 8],
+            yoke_left_form::YOKE_LEFT,
+            vec2(0.07, 0.5),
+            YOKE_OVER,
+        ),
+        worn(
+            figure::chains::yoke_right(),
+            [7, 9],
+            yoke_right_form::YOKE_RIGHT,
+            vec2(0.07, 0.5),
+            YOKE_OVER,
+        ),
     ]
 }
+
+/// His jacket's pieces among his charted parts (`charts`' order, then `wide_charts`'): its
+/// collar, its two shoulders, and its body.
+pub const COLLAR: u32 = 8
+pub const YOKE_LEFT: u32 = 9
+pub const YOKE_RIGHT: u32 = 10
+pub const JACKET_BODY: u32 = CHARTS + 1
+
+/// How far his jacket's shoulders stand off their fitted face (m): they lie over its body's
+/// top, and a little off it the step between the two is the shoulders' edge and not a crack.
+pub const YOKE_OVER: f32 = 0.0015
 
 /// How far up his head's path its form closes under his chin (of the path's length): to where
 /// the forms tool starts reading his head (`studio/forms`' `HAKURO_HEAD`).
@@ -333,16 +371,30 @@ pub fn wide_charts() -> [Part<24, 21>; WIDE_CHARTS] {
     ]
 }
 
-/// Whether his jacket is drawn along its chart, in place of its sampled mesh. His arms, his
-/// legs, his trunk, his neck and his head are drawn along theirs always (`charts`,
-/// `wide_charts`: forms made again where his bones are each frame, with no mesh and no
-/// weights); his hands stay sampled. A switch while his charted jacket is judged against his
-/// sampled one: set here (`--set` reaches only a program's own constants).
+/// Whether his jacket is drawn along its charts, in place of its sampled mesh: its body about
+/// his spine, its collar about a line behind his neck, and each shoulder about his collarbone
+/// and his upper arm (`charts`, `wide_charts`). Off: judged blind against his sampled jacket it
+/// took 6 votes to 25 (ragged edges at its shoulders and collar where a cover cuts it, blotches
+/// where one piece lies over another, no thickness at a rim), so his jacket stays sampled, and
+/// docs/charted-forms.md says what's left. His arms, his legs, his trunk, his neck and his
+/// head are drawn along theirs always; his hands stay sampled. Set here (`--set` reaches only
+/// a program's own constants).
 pub const JACKET_CHARTED: bool = false
 
 /// Whether charted part `part` (`charts`' order, then `wide_charts`') is drawn.
 pub fn charted_now(part: u32) -> bool {
-    part != CHARTS + 1 || JACKET_CHARTED
+    !of_jacket(part) || JACKET_CHARTED
+}
+
+/// Whether charted part `part` is drawn from both its faces: his jacket's pieces, each an open
+/// sheet whose inside shows (inside his collar, from the front; under a lifted hem).
+pub fn two_faced(part: u32) -> bool {
+    of_jacket(part)
+}
+
+/// Whether charted part `part` is a piece of his jacket.
+pub fn of_jacket(part: u32) -> bool {
+    part == COLLAR || part == YOKE_LEFT || part == YOKE_RIGHT || part == JACKET_BODY
 }
 
 /// Whether sampled mesh `k` (`arms::jacket`, then his hands) is drawn: not where a charted
@@ -425,22 +477,42 @@ pub fn chart_paint(part: u32, rest: vec3) -> Cloth {
     if part == 3 {
         return LEATHER
     }
-    if part == CHARTS + 1 {
+    if of_jacket(part) {
         return jacket_paint(rest)
     }
     body_paint(rest)
 }
 
-/// Which charted part has a cover (`jacket_cover::JACKET_COVER`: where it is on its chart): his
-/// jacket, which isn't at its open front and its armholes. A program draws nothing of that
-/// part where its cover says it isn't (`engine::chart::covered`, under a half).
-pub const COVERED: u32 = CHARTS + 1
+/// His jacket's pieces' covers in GPU memory (`jacket_cover`: where each is on its chart), in
+/// the order `chart_hidden` reads them.
+pub fn jacket_covers() -> std::gpu::GpuBuffer<u32> {
+    chart::uploaded(
+        [
+            jacket_cover::JACKET_COVER,
+            jacket_cover::COLLAR_COVER,
+            jacket_cover::YOKE_LEFT_COVER,
+            jacket_cover::YOKE_RIGHT_COVER,
+        ],
+    )
+}
+
+/// Whether charted part `part` isn't at `place` on its chart (how far along, the angle
+/// round), by its cover in `covers` (`jacket_covers`): his jacket's pieces, which aren't at
+/// its open front, its armholes or where another piece takes over. A program draws nothing
+/// of a part there.
+pub fn chart_hidden(part: u32, covers: [u32], place: vec3) -> bool {
+    if !of_jacket(part) {
+        return false
+    }
+    let at = if part == JACKET_BODY { 0 } else { part - COLLAR + 1 }
+    chart::covered(covers, place.x, place.y, at: at) < 0.5
+}
 
 /// Whether charted part `part` is cut away at a place besides (where it is on him at rest):
 /// his jacket's front's edge where `body_paint` has his shirt showing, so the gold along it
 /// keeps its width.
 pub fn chart_cut(part: u32, rest: vec3) -> bool {
-    if part == COVERED && rest.z > 0.0 && rest.y < 1.52 && rest.y >= 0.97 {
+    if part == JACKET_BODY && rest.z > 0.0 && rest.y < 1.52 && rest.y >= 0.97 {
         let t = clamp((1.50 - rest.y) / 0.50, 0.0, 1.0)
         return abs(rest.x + 0.05 * t) - (0.040 + 0.070 * sqrt(t)) < 0.0
     }

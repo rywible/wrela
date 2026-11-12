@@ -97,3 +97,31 @@ pub fn neck() -> Chain {
 pub fn head() -> Chain {
     chain([vec3(0.0, 1.55, 0.0), vec3(0.0, 1.82, 0.0)], vec3(z: 1.0))
 }
+
+/// The line a standing collar is charted about: straight up behind the root of his neck, from
+/// under his collar's foot to over its top. His chest carries it whole: a collar stands on
+/// what's worn over his chest, and doesn't turn with his head. Angle 0 is his front, a quarter
+/// turn his right.
+pub fn collar() -> Chain {
+    chain([vec3(0.0, 1.5, -0.06), vec3(0.0, 1.67, -0.06)], vec3(z: 1.0))
+}
+
+/// The line a garment's left shoulder is charted about: along his collarbone from beside his
+/// neck to his shoulder's joint, and on down his upper arm to his elbow. A shoulder's top runs
+/// along it (about his spine that top is square to the path, which a chart is poor at), and
+/// what's worn over a shoulder goes with the arm: its bones are his collarbone and his upper
+/// arm, and the path bends at his shoulder as his arm's does. Angle 0 is up, a quarter turn
+/// his back. His upper arm's turn about its length is spread to his elbow, so the little of
+/// the path a shoulder covers takes little of it.
+pub fn yoke_left() -> Chain {
+    chain(
+        [vec3(0.09, 1.455, -0.065), vec3(0.212, 1.455, -0.065), vec3(0.463, 1.455, -0.073)],
+        vec3(y: 1.0),
+        cut: 1.0,
+    )
+}
+
+/// His right shoulder's: his left's, mirrored.
+pub fn yoke_right() -> Chain {
+    yoke_left().mirrored()
+}
