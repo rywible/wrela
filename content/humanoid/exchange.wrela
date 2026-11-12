@@ -12,7 +12,7 @@
 use engine::anime
 use engine::anime::{Anime, Drawer, Force, Look, STRIKE}
 use engine::contact
-use engine::contact::{Give, Hit, Kick, Shock}
+use engine::contact::{Give, Hit, Kick, Knock, Shock}
 use engine::humanoid
 use engine::humanoid::{Pose, pose_world}
 use engine::playback
@@ -175,11 +175,12 @@ pub fn give_of(t: Tune) -> Give {
         // (The giant stands his ground: he's too big to be knocked off his feet.)
         back: if t.giant { 0.0 } else { g.back * 2.0 * t.give },
         tip: g.tip * 2.0 * t.give * stone,
+        lean: g.lean * 2.0 * t.give * stone,
         open: g.open * 2.0 * t.give * stone,
         shock: g.shock * t.recoil / X_RECOIL,
         // (A kick of `kick` m at its farthest: measured, the camera's spring set going at `v`
         // goes `v` times its half-life over 3.76 at most.)
-        kick: t.kick * 3.76 / (2.0 * g.half),
+        kick: t.kick * 3.76 / g.kick_half,
         ..g,
     }
 }
@@ -203,6 +204,7 @@ pub struct Exchange: Clone {
     given: bool,
     kick: Kick,
     shock: Shock,
+    knock: Knock,
     shown: Pose,
     shown_place: mat4,
     struck_shown: Pose,
@@ -239,6 +241,7 @@ impl Exchange {
             given: true,
             kick: Kick::none(),
             shock: Shock::none(),
+            knock: Knock::none(),
             shown: FIGHT_GAITS.idle.pose(0.0),
             shown_place: std::transform::identity(),
             struck_shown: FIGHT_GAITS.idle.pose(0.0),
@@ -320,11 +323,12 @@ impl Exchange {
         }
         // As the hold breaks, each gives to it.
         if !self.given && self.held <= 0.0 {
-            contact::taken(mut self.struck, rig, self.hit, give)
+            self.knock.struck(self.struck, self.hit, give)
             self.shock = Shock::struck(self.hit, arm: 1)
             self.given = true
         }
-        self.shock.step(mut self.striker, rig, give, dt)
+        self.shock.step(give, dt)
+        let pose = self.shock.over(self.striker, rig, pose)
         // His fist on what it struck while it's held, and a little after.
         let place = playback::placed(self.striker)
         let riding = self.since >= 0.0 && self.since < t.hold + t.pin && striking
@@ -349,7 +353,9 @@ impl Exchange {
         self.smears = d.smears
         self.impact = d.impact
         self.force = d.force
-        self.struck_shown = playback::step(
+        let held = self.held > 0.0
+        self.knock.step(mut self.struck, give, if held { 0.0 } else { dt })
+        let moved = playback::step(
             mut self.struck,
             FIGHT_GAITS,
             MOVES,
@@ -359,8 +365,9 @@ impl Exchange {
             humanoid::NONE,
             upper: false,
             how: Handling {},
-            dt: contact::paced(dt, held: self.held > 0.0, grind: 0.0),
+            dt: contact::paced(dt, held: held, grind: 0.0),
         )
+        self.struck_shown = self.knock.over(rig, moved, give)
         // The one struck with his gloves kept off the striker's arms.
         self.struck_shown = clear_of(
             self.struck_shown,
@@ -548,13 +555,6 @@ pub fn played(t: Tune, after: f32, seconds: f32) -> Vec<Exchange> {
     out
 }
 
-/// How far body `m` is turned off what its moves give it at bone `name` (degrees): what's laid
-/// into its inertia there.
-fn laid(m: Mover, name: str) -> f32 {
-    let b = HERO.rig.find(name)
-    if b == humanoid::NONE { 0.0 } else { length(m.inertia.turns[b]) * 57.29578 }
-}
-
 /// The contact sheet: how the blow lands and how both bodies take it, read a step at a time
 /// (`RATE` a second) through the exchange as `t` tunes it, a blow of each weight in turn (a
 /// quarter, a half, the heaviest). `wrela tool moves -- --contact` prints it.
@@ -597,7 +597,6 @@ fn read(t: Tune) -> String {
     // the blow, and when; when both are back within a centimetre; how far his feet step back and
     // how many steps they take; how far his guard's knocked open (his upper arms' most turned off
     // it, degrees); the camera's kick and push at their most.
-    let names = ["rightLowerArm", "rightUpperArm", "rightShoulder", "upperChest"]
     var shock = [0.0; 4]
     var shock_at = [0.0; 4]
     var far = 0.0
@@ -609,6 +608,10 @@ fn read(t: Tune) -> String {
     var steps_taken = 0
     var stepping = [false, false]
     var open = 0.0
+    var snap = 0.0
+    var snap_at = 0.0
+    var trunk_at = 0.0
+    var trunk = 0.0
     var kick = 0.0
     var push = 0.0
     for i in landed..steps.len() {
@@ -623,7 +626,7 @@ fn read(t: Tune) -> String {
         }
         let after = (u - t.hold) * 1000.0
         for k in 0..4 {
-            let v = laid(x.striker, names[k])
+            let v = x.shock.turned(k)
             if v > shock[k] {
                 shock[k] = v
                 shock_at[k] = after
@@ -641,7 +644,7 @@ fn read(t: Tune) -> String {
         }
         // (Home: his body back on its mark and his head on his neck, whatever his guard's bounce
         // does.)
-        if length(x.struck.drift) > 0.01 || laid(x.struck, "head") > 1.0 {
+        if !x.knock.still() {
             out_at = after
         }
         for f in 0..2 {
@@ -652,7 +655,17 @@ fn read(t: Tune) -> String {
             }
             stepping[f] = on
         }
-        open = max(open, max(laid(x.struck, "leftUpperArm"), laid(x.struck, "rightUpperArm")))
+        open = max(open, length(x.knock.guard.x) * 57.29578)
+        let hs = length(x.knock.head.x) * 57.29578
+        if hs > snap + 0.05 {
+            snap = hs
+            snap_at = after
+        }
+        let ts = length(x.knock.trunk.x) * 57.29578
+        if ts > trunk + 0.05 {
+            trunk = ts
+            trunk_at = after
+        }
         let (k, pu) = x.camera()
         kick = max(kick, length(k))
         push = max(push, pu)
@@ -668,7 +681,10 @@ fn read(t: Tune) -> String {
     }
     out.push_str("\n")
     out.push_str(
-        f"  struck: head {far * 100.0:.1} cm along the blow at its farthest ({far_at:.0} ms), hips {hips_far * 100.0:.1} cm ({hips_at:.0} ms); home (on his mark within 1 cm, his head within a degree) at {out_at:.0} ms{if out_at > 5.0e3 { " (not in the 6 s read)" } else { "" }}\n".as_str(),
+        f"  struck: head {far * 100.0:.1} cm along the blow at its farthest ({far_at:.0} ms), hips {hips_far * 100.0:.1} cm ({hips_at:.0} ms); home (his knock within 1 cm and a degree) at {out_at:.0} ms{if out_at > 5.0e3 { " (not in the 6 s read)" } else { "" }}\n".as_str(),
+    )
+    out.push_str(
+        f"  knock: head snapped back {snap:.0} deg ({snap_at:.0} ms), trunk bent back {trunk:.0} deg ({trunk_at:.0} ms)\n".as_str(),
     )
     out.push_str(
         f"  feet: {steps_taken} steps, back {feet_far * 100.0:.1} cm at most; guard knocked open {open:.0} deg at the shoulder\n".as_str(),
@@ -684,12 +700,13 @@ fn read(t: Tune) -> String {
 /// The cross lands on the one struck: the striker's fist stays on what it struck through the
 /// hold, and as it breaks a blow of weight 1 throws him at least as far as main's keyed reaction
 /// did (its head 63 cm along the blow at its farthest, its hips 65 cm: the Kimodo clip this
-/// replaced), his feet stepping back to catch him and home again; a quarter's a touch.
+/// replaced), his feet taking a few steps back to catch him and home again, and he's home in a
+/// second and a half; a quarter's a touch.
 @test
 fn the_cross_lands_and_the_one_struck_gives_and_comes_back() {
     borrow rig = HERO.rig
     let (head, hips) = (rig.find("head"), rig.find("hips"))
-    let thrown = |weight: f32| -> (f32, f32, u32, f32, bool) {
+    let thrown = |weight: f32| -> (f32, f32, u32, f32, f32) {
         var x = Exchange::new(Tune { weight, ..TUNED }, after: 0.2)
         let dt = 1.0 / 60.0
         var start = [vec3(0.0); 2]
@@ -697,8 +714,8 @@ fn the_cross_lands_and_the_one_struck_gives_and_comes_back() {
         var steps = 0
         var stepping = [false; 2]
         var fist_off = 0.0
-        var home = false
-        for _ in 0..420 {
+        var home = -1.0
+        for _ in 0..240 {
             x.step(dt)
             let w = pose_world(rig, x.struck_shown)
             let place = playback::placed(x.struck)
@@ -720,7 +737,9 @@ fn the_cross_lands_and_the_one_struck_gives_and_comes_back() {
                 let fist = (x.shown_place * vec4(sw[rig.find("rightHand")].t, 1.0)).xyz
                 fist_off = max(fist_off, length(fist - x.hit.at))
             }
-            home = length(x.struck.drift) < 0.01 && laid(x.struck, "head") < 1.0
+            if !x.knock.still() {
+                home = x.since() - TUNED.hold
+            }
         }
         (most[0], most[1], steps, fist_off, home)
     }
@@ -730,8 +749,90 @@ fn the_cross_lands_and_the_one_struck_gives_and_comes_back() {
         head1 >= 0.632 && hips1 >= 0.65,
         f"weight 1 throws his head {head1} m, his hips {hips1} m",
     )
-    assert(steps1 >= 2, f"his feet step to catch him and back: {steps1} steps")
-    assert(home1, "and he's home again")
+    assert(steps1 >= 2 && steps1 <= 4, f"his feet step to catch him and back: {steps1} steps")
+    assert(home1 > 0.5 && home1 < 1.5, f"and he's home {home1} s after the hold breaks")
     let (head4, _, _, _, _) = thrown(0.25)
     assert(head4 < 0.25 * head1, f"a quarter's a touch: his head {head4} m")
+}
+
+/// Body `m`'s ankles where they're drawn (the world), as `pose` has them.
+fn ankles(m: Mover, pose: Pose) -> [vec3; 2] {
+    borrow rig = HERO.rig
+    let w = pose_world(rig, pose)
+    let place = playback::placed(m)
+    [
+        (place * vec4(w[rig.find("leftFoot")].t, 1.0)).xyz,
+        (place * vec4(w[rig.find("rightFoot")].t, 1.0)).xyz,
+    ]
+}
+
+/// `engine::playback`'s feet, on the fight's guard and walk: the guard's bounce (up on the balls
+/// of its feet, its ankles 2 to 7 cm over their height at rest) plants its feet, so they hold
+/// where they stand rather than slide as the guard sways them (as they did when only an ankle at
+/// its height at rest was down); and a walk's swinging foot isn't taken for planted.
+@test
+fn the_guard_holds_its_feet_and_a_walk_swings_its_own() {
+    borrow rig = HERO.rig
+    let dt = 1.0 / 60.0
+    let floor = |a: vec3| -> vec2 { vec2(a.x, a.z) }
+    // The guard: how far each ankle goes along the floor in three seconds, drawn bare (as it was)
+    // and planted.
+    var m = Mover::standing(vec3(0.0), 0.0, FIGHT_GAITS)
+    var bare = 0.0
+    var held = 0.0
+    var down = 0
+    var last_bare = [vec3(0.0); 2]
+    var last = [vec3(0.0); 2]
+    for f in 0..180 {
+        let pose = playback::step(
+            mut m,
+            FIGHT_GAITS,
+            MOVES,
+            rig,
+            playback::upper_body(rig),
+            vec3(0.0),
+            humanoid::NONE,
+            upper: false,
+            how: Handling {},
+            dt: dt,
+        )
+        let a = ankles(m, pose)
+        let b = ankles(m, FIGHT_GAITS.idle.pose(f32(f + 1) * dt))
+        for k in 0..2 {
+            if f > 30 {
+                held += length(floor(a[k]) - floor(last[k]))
+                bare += length(floor(b[k]) - floor(last_bare[k]))
+                if m.feet[k].down {
+                    down += 1
+                }
+            }
+            last[k] = a[k]
+            last_bare[k] = b[k]
+        }
+    }
+    assert(down > 2 * 149 * 8 / 10, f"the guard's feet are down {down} of {2 * 149} foot-frames")
+    assert(held < 0.5 * bare, f"planted, its ankles go {held} m along the floor; bare, {bare} m")
+    // A walk: each foot swings clear (not down) for a good part of each stride.
+    var w = Mover::standing(vec3(0.0), 0.0, FIGHT_GAITS)
+    var up = [0; 2]
+    for f in 0..180 {
+        let _ = playback::step(
+            mut w,
+            FIGHT_GAITS,
+            MOVES,
+            rig,
+            playback::upper_body(rig),
+            vec3(0.0, 0.0, 1.0),
+            humanoid::NONE,
+            upper: false,
+            how: Handling {},
+            dt: dt,
+        )
+        for k in 0..2 {
+            if f > 60 && !w.feet[k].down {
+                up[k] += 1
+            }
+        }
+    }
+    assert(up[0] > 20 && up[1] > 20, f"a walk's feet swing: up {up[0]} and {up[1]} of 119 frames")
 }
