@@ -46,13 +46,13 @@ pub fn cross() -> Written<8> {
     let sets_off = 0.259
     // How far ahead the hips are on contact (m), and how far the hips and the chest above
     // them have turned (degrees toward the left).
-    let drive = 0.041
+    let drive = 0.040
     let hips_yaw = 31.00
     let chest_yaw = 18.40
     // Where the contact key puts the fist: not the target, since the arm gets there late.
-    let spot_x = -0.0526
+    let spot_x = -0.0527
     let spot_y = 1.4791
-    let spot_z = 0.6906
+    let spot_z = 0.6903
     // How far out to the side the striking elbow points on contact (degrees from straight
     // down). An elbow's hinge is kept by twisting its upper arm (`keys::posed`), so the way
     // it points is found: the one its arm bends about its hinge for.

@@ -207,6 +207,12 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
             let l2 = length(rw[h].t - rw[l].t)
             let (e, t) = elbow_at(w[u].t, k.fists[i], l1, l2, k.elbows[i])
             turn_under(parents, nb, mut w, u, arc(w[l].t - w[u].t, e - w[u].t))
+            // The forearm's turn as the plain reach leaves it (the upper arm aimed at the elbow,
+            // the forearm at the wrist), before the upper arm is twisted: the hand faces as the
+            // key wrote it, and the twist below doesn't carry down to it.
+            var plain = w
+            turn_under(parents, nb, mut plain, l, arc(plain[h].t - plain[l].t, t - plain[l].t))
+            let written = plain[l].q
             // The upper arm turned about its own length till the elbow bends about its hinge:
             // the reach above puts the elbow where it's asked, by the shortest turn, which
             // leaves the upper arm's twist to chance and the elbow bent across its hinge (an
@@ -228,6 +234,11 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
                 turn_under(parents, nb, mut w, u, about(along, twist))
             }
             turn_under(parents, nb, mut w, l, arc(w[h].t - w[l].t, t - w[l].t))
+            // The forearm turned back about its own length to the plain reach's turn (both aim
+            // it at the wrist, so only its roll differs): what the upper arm's twist would have
+            // turned the hand by is the forearm's own roll, as a person's forearm turns along its
+            // length from elbow to wrist, and the elbow still bends about its hinge.
+            turn_under(parents, nb, mut w, l, written.mul(w[l].q.inverse()))
             turn_under(parents, nb, mut w, l, about(normalize(t - e), k.rolls[i] * DEG))
         }
     }

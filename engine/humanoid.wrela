@@ -580,13 +580,16 @@ fn srgb8(c: vec3) -> u32 {
 /// child: where it's reached whole), as a charted limb does (`engine::chart::Chain::spread`):
 /// an upper arm twisted to keep its elbow's hinge turns its skin a little at the shoulder and
 /// more toward the elbow, rather than all at once where the shoulder's weights meet the arm's
-/// (which wrings the shoulder and draws the arm flat).
-pub const SPREAD: [Text; 2] = ["leftUpperArm", "rightUpperArm"]
-pub const SPREAD_TO: [Text; 2] = ["leftLowerArm", "rightLowerArm"]
+/// (which wrings the shoulder and draws the arm flat); and a forearm's roll from its elbow to its
+/// wrist, as a person's forearm turns along its length (`engine::keys::posed` gives it what a
+/// whole twist above would turn the hand by), rather than all at the elbow.
+pub const SPREAD: [Text; 4] = ["leftUpperArm", "rightUpperArm", "leftLowerArm", "rightLowerArm"]
+pub const SPREAD_TO: [Text; 4] = ["leftLowerArm", "rightLowerArm", "leftHand", "rightHand"]
 
-/// How many steps of a spread bone's twist its skin is bound to besides the bone itself: at 0,
-/// a third and two thirds of its turn about its length (`twist_slot`).
-pub const TWIST_STEPS: u32 = 3
+/// How many steps of a spread bone's twist its skin is bound to besides the bone itself: at 0
+/// and half its turn about its length (`twist_slot`). (Two: four bones' steps fit beside a
+/// body's 52 bones and its tint in the 64 slots of a palette.)
+pub const TWIST_STEPS: u32 = 2
 
 /// The palette's slot for step `k` (`TWIST_STEPS`) of spread bone `s` (`SPREAD`) on `rig`:
 /// after its bones.
