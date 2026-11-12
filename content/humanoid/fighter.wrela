@@ -121,7 +121,10 @@ pub fn smeared(m: [mat4; 64], fist: vec3, going: vec3, by: f32, big: f32) -> [ma
     )
     out[13] = grow * m[13]
     for j in 0..15 {
-        out[27 + 2 * j] = stretch * m[27 + 2 * j]
+        // (Where his hands are charted his thumb goes with his hand: drawn out with his
+        // fingers, its form came away from his palm and hung under his fist.)
+        let with_hand = j >= 12 && hakuro::hakuro::HANDS_CHARTED
+        out[27 + 2 * j] = (if with_hand { grow } else { stretch }) * m[27 + 2 * j]
     }
     out
 }
@@ -151,6 +154,15 @@ impl Fighters {
         write(mut self.palettes, who * MAX_BONES, m)
         write(mut self.palettes, (FIGHTERS + who) * MAX_BONES, m)
         self.charted[who] = charted_as(m)
+    }
+
+    /// Fighter `who`'s hand on `side` drawn `by` times as thick (his fist, big at a blow): his
+    /// charted hand's pieces' own, where the smear's bones have already drawn its paths out.
+    pub fn fist_grown(mut self, who: u32, side: u32, by: f32) {
+        let first = hakuro::hakuro::hand_first(side)
+        for k in 0..hakuro::hakuro::HAND_PIECES {
+            self.charted[who].limbs[first + k].swell = by
+        }
     }
 
     /// Their coats' tails moved on `dt` seconds (0 through a hit-stop: the cloth holds with them).
@@ -281,7 +293,7 @@ impl Fighters {
                         self.cover,
                         rest.limbs[k],
                         c,
-                        shaded(c.form),
+                        hakuro::hakuro::shaded_part(k, c.form),
                         parts[k].band,
                         parts[k].sunk,
                         shot,

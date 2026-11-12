@@ -405,7 +405,17 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         for a in 0..CHARTS {
             if charted_now(a) {
                 let c = s.charted[k].limbs[a]
-                chart_drawn(pass, s, limbs[a], rest.limbs[a], c, shaded(c.form), v, height, a)
+                chart_drawn(
+                    pass,
+                    s,
+                    limbs[a],
+                    rest.limbs[a],
+                    c,
+                    hakuro::shaded_part(a, c.form),
+                    v,
+                    height,
+                    a,
+                )
             }
         }
         for a in 0..WIDE_CHARTS {

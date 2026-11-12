@@ -673,16 +673,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         // (And his fist drawn big where it counts: going in, and on the face.)
         let landed = if xc >= 0.0 { exchange::squash(xc, xt) / exchange::X_SQUASH } else { 0.0 }
         let way = if landed > 0.0 { exchange::BLOW } else { going }
+        let big = 1.0 + max(0.3 * swift, exchange::X_FIST * landed)
         s.fighters.pose(
             0,
-            fighter::smeared(
-                hakuro_palette(bones),
-                fist,
-                way,
-                exchange::X_SMEAR * swift,
-                1.0 + max(0.3 * swift, exchange::X_FIST * landed),
-            ),
+            fighter::smeared(hakuro_palette(bones), fist, way, exchange::X_SMEAR * swift, big),
         )
+        s.fighters.fist_grown(0, 1, big)
     }
     if SHOW == 28 {
         var foe = palette(
