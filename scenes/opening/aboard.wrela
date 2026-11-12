@@ -9,14 +9,14 @@
 // as fine as his fields, however coarse his mesh. He's lit as the skiff is (`paint::lit_solid`,
 // its sea bounce and its rim), shadowed by the rig and the clouds.
 
-use hakuro::arms::{Drape, drape_room, draped, follow_legs, hand, jacket}
+use hakuro::arms::{Drape, drape_room, draped, follow_legs, jacket}
 use hakuro::hakuro::{
     CHARTS, Charted, Cloth, FINGER_JOINTS, WIDE_CHARTS, body_paint, chart_cut, chart_hidden,
     chart_paint, charted_as, charted_at_rest, charted_now, charts, coat, head, hero, jacket_paint,
     sampled_now, shaded, shaded_wide, wide_charts,
 }
 use engine::chart
-use engine::chart::{Grids, Limb, Part, Radial}
+use engine::chart::{Grids, Grown, Limb, Part, Radial}
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
 use engine::character::skin_matrix
 use engine::look::CreatureLook
@@ -60,8 +60,8 @@ pub struct Aboard {
     body: Mesh,
     head: Mesh,
     coat: Mesh,
-    // (His sampled meshes: his jacket and his hands.)
-    sampled: [Mesh; 3],
+    // (His sampled jacket.)
+    jacket: Mesh,
     // (His charted parts as his pose has them this drawing, `hakuro::Charted`; the grids
     // charted forms are drawn on; and where his jacket is on its chart.)
     charted: Charted,
@@ -109,8 +109,8 @@ pub fn aboard() -> Aboard {
         body: realize_once(hero(), BODY),
         head: realize_once(head(), HEAD),
         coat: follow_legs(realize_once(coat(), COAT)),
-        // (His jacket and hands are sampled from the reference's own surface: `hakuro::arms`.)
-        sampled: [jacket(), hand(0), hand(1)],
+        // (His jacket is sampled from the reference's own surface: `hakuro::arms`.)
+        jacket: jacket(),
         charted: charted_at_rest(),
         grids: chart::grids(),
         cover: hakuro::hakuro::jacket_covers(),
@@ -751,8 +751,8 @@ pub fn charted_pixel<const A: u32, const R: u32>(
     )
 }
 
-/// His sampled meshes' pixel (his body, jacket and hands): as `hero_pixel`, but with no fields
-/// behind them, their own normal and his body's paint where they are on him at rest.
+/// His sampled jacket's pixel: as `hero_pixel`, but with no fields behind it, its own normal
+/// and his jacket's paint where it is on him at rest.
 @fragment
 pub fn arm_pixel(
     v: HeroVertex,
@@ -767,7 +767,6 @@ pub fn arm_pixel(
     skies: [vec4],
     once: [vec4],
     painted: Texture<Rgba16Float>,
-    jacket: u32,
     pixel: FragCoord,
 ) -> Targets3<vec4, vec4, vec4> {
     let s = shot
@@ -782,7 +781,7 @@ pub fn arm_pixel(
         n = normalize(n - d * (dot(n, d) + 0.05))
     }
     // (1 for his jacket, whose paint carries on down over his trousers: `jacket_paint`.)
-    let c = if jacket == 1 { jacket_paint(v.rest) } else { body_paint(v.rest) }
+    let c = jacket_paint(v.rest)
     lit_hero(
         s,
         light,
@@ -1142,6 +1141,64 @@ fn chart_drawn<P: RenderPass, const A: u32, const R: u32, const S: u32>(
     }
 }
 
+/// `chart_drawn`, for a part that grows from another (`onto`, as the pose has it): its side
+/// rising from it and filleted where the two meet (`how`; `chart::vertex_onto`).
+fn chart_drawn_onto<P: RenderPass, const A: u32, const R: u32, const S: u32, const B: u32, const Q: u32>(
+    p: P,
+    grids: Grids,
+    cover: GpuBuffer<u32>,
+    skies: GpuBuffer<vec4>,
+    part: Part<A, R>,
+    rest: Limb<A, R>,
+    form: Limb<A, R>,
+    shade: Radial<A, S>,
+    index: u32,
+    shot: Shot,
+    hv: Heavens,
+    once: GpuBuffer<vec4>,
+    marks: Texture<Rgba16Float>,
+    height: u32,
+    onto: Limb<B, Q>,
+    how: Grown,
+) {
+    let level = form.level(shot.eye, f32(height * FINER), 1.0 / shot.focal)
+    let span = chart::level_span(level)
+    draw(
+        p,
+        chart::vertex_onto.bind(
+            rest: rest,
+            form: form,
+            band: part.band,
+            under: part.sunk,
+            level: level,
+            seen: shot,
+            onto: onto,
+            how: how,
+        ),
+        charted_pixel.bind(
+            shade: shade,
+            along: form.path.length(),
+            cover: cover.items(),
+            shot: shot,
+            light: hv.light,
+            clouds: hv.clouds,
+            view: hv.tables.view,
+            aerial: hv.tables.aerial,
+            dome: hv.sky.dome,
+            cloud: hv.sky.shadow,
+            smp: hv.linear,
+            skies: skies.items(),
+            once: once.items(),
+            painted: marks,
+            part: index,
+        ),
+        indices: grids.indices,
+        first_index: span.x,
+        index_count: span.y,
+        cull: Cull::Front,
+    )
+}
+
 impl Aboard {
     /// His ride, stepped by `dt` (s) of the drawing's time: the hull's lurches (its acceleration
     /// in the world, felt in its own frame, as he stands on it) press his hips the other way on
@@ -1339,14 +1396,11 @@ impl Aboard {
             indirect: self.coat.draw.items(),
             cull: Cull::Front,
         )
-        for a in 0..3 {
-            if !sampled_now(a) {
-                continue
-            }
+        if sampled_now() {
             draw(
                 p,
                 hero_vertex.bind(
-                    verts: self.sampled[a].verts.items(),
+                    verts: self.jacket.verts.items(),
                     palette: self.palette.items(),
                     shot: shot,
                 ),
@@ -1362,10 +1416,9 @@ impl Aboard {
                     skies: self.skies.items(),
                     once: once.items(),
                     painted: marks,
-                    jacket: if a == 0 { 1 } else { 0 },
                 ),
-                indices: self.sampled[a].quads.items(),
-                indirect: self.sampled[a].draw.items(),
+                indices: self.jacket.quads.items(),
+                indirect: self.jacket.draw.items(),
                 cull: Cull::Front,
             )
         }
@@ -1376,22 +1429,61 @@ impl Aboard {
         let rest = charted_at_rest()
         for a in 0..CHARTS {
             if charted_now(a) {
-                chart_drawn(
-                    p,
-                    self.grids,
-                    self.cover,
-                    self.skies,
-                    limbs[a],
-                    rest.limbs[a],
-                    self.charted.limbs[a],
-                    hakuro::hakuro::shaded_part(a, self.charted.limbs[a].form),
-                    a,
-                    shot,
-                    hv,
-                    once,
-                    marks,
-                    height,
-                )
+                let onto = hakuro::hakuro::grows_from(a)
+                if onto < CHARTS {
+                    chart_drawn_onto(
+                        p,
+                        self.grids,
+                        self.cover,
+                        self.skies,
+                        limbs[a],
+                        rest.limbs[a],
+                        self.charted.limbs[a],
+                        hakuro::hakuro::shaded_hand(self.charted.limbs[a].form),
+                        a,
+                        shot,
+                        hv,
+                        once,
+                        marks,
+                        height,
+                        self.charted.limbs[onto],
+                        hakuro::hakuro::grown(a),
+                    )
+                } else if hakuro::hakuro::of_hand(a) {
+                    chart_drawn(
+                        p,
+                        self.grids,
+                        self.cover,
+                        self.skies,
+                        limbs[a],
+                        rest.limbs[a],
+                        self.charted.limbs[a],
+                        hakuro::hakuro::shaded_hand(self.charted.limbs[a].form),
+                        a,
+                        shot,
+                        hv,
+                        once,
+                        marks,
+                        height,
+                    )
+                } else {
+                    chart_drawn(
+                        p,
+                        self.grids,
+                        self.cover,
+                        self.skies,
+                        limbs[a],
+                        rest.limbs[a],
+                        self.charted.limbs[a],
+                        hakuro::hakuro::shaded(self.charted.limbs[a].form),
+                        a,
+                        shot,
+                        hv,
+                        once,
+                        marks,
+                        height,
+                    )
+                }
             }
         }
         for a in 0..WIDE_CHARTS {

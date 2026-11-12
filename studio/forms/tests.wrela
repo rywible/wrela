@@ -168,29 +168,17 @@ fn hakuros_written_collar_and_shoulders_are_his_jacket_fitted() {
 }
 
 @test
-fn hakuros_written_hands_are_his_hands_fitted() {
-    // Each piece of each hand (four fingers, a thumb, a palm): what the tool would write now,
-    // and within what a finger's and a palm's fit were found to be (0.3 and 1 mm rms).
-    let written = [
-        hakuro::index_left_form::INDEX_LEFT,
-        hakuro::middle_left_form::MIDDLE_LEFT,
-        hakuro::ring_left_form::RING_LEFT,
-        hakuro::little_left_form::LITTLE_LEFT,
-        hakuro::thumb_left_form::THUMB_LEFT,
-        hakuro::palm_left_form::PALM_LEFT,
-        hakuro::index_right_form::INDEX_RIGHT,
-        hakuro::middle_right_form::MIDDLE_RIGHT,
-        hakuro::ring_right_form::RING_RIGHT,
-        hakuro::little_right_form::LITTLE_RIGHT,
-        hakuro::thumb_right_form::THUMB_RIGHT,
-        hakuro::palm_right_form::PALM_RIGHT,
-    ]
+fn hakuros_hands_are_where_his_sampled_hands_were() {
+    // Each piece of each hand (four fingers, a thumb, a palm), kept as it's written: within
+    // what a finger's, a thumb's and a palm's fit were found to be of his sampled hand's radii
+    // as they were kept (0.3, 0.35 and 0.6 mm rms), so a change to a piece's line or to the
+    // form's basis that moved his hand would show.
     for i in 0..12 {
         let fit = main::hakuro_hand(i)
         let spec = main::hand_spec(i)
-        assert(apart(fit.form, written[i]) < 0.000011, f"{spec.file} is stale")
-        let most = if i % 6 == 5 { 1.0 } else { 0.35 }
+        let most = if i % 6 == 5 { 0.8 } else if i % 6 == 4 { 0.45 } else { 0.35 }
         assert(fit.miss.spread.rms < most, f"{spec.name} misses by {fit.miss.spread.rms} mm rms")
+        assert(fit.miss.spread.count >= 80, f"{spec.name}: {fit.miss.spread.count} radii")
     }
 }
 

@@ -58,7 +58,15 @@ pub fn set_of(s: str) -> Option<Set> {
 }
 
 /// The scenes' names.
-pub const SCENES: [Text; 6] = ["exchange", "rider", "rider-quarter", "turnaround", "run", "roll"]
+pub const SCENES: [Text; 7] = [
+    "exchange",
+    "rider",
+    "rider-quarter",
+    "turnaround",
+    "turnaround-large",
+    "run",
+    "roll",
+]
 
 /// The scene named `name`, if there is one.
 /// - `exchange`: the combat lab's exchange (content/humanoid, `SHOW=28`): Hakuro and his double
@@ -84,6 +92,22 @@ pub fn scene(name: str) -> Option<Scene> {
                 fps: 30.0,
                 clip_first: 96,
                 clip_last: 216,
+            },
+        )
+    }
+    if name == "turnaround-large" {
+        // (The turnaround three times as large each way: a hand at a hip is 60 pixels across
+        // in the turnaround, and a shot of it wants it as a close camera would have it.)
+        return Some(
+            Scene {
+                name: "turnaround-large",
+                program: "content/hakuro",
+                sets: Vec::from([set("MOVE", "0")]),
+                width: 4800,
+                height: 2700,
+                fps: 60.0,
+                clip_first: 0,
+                clip_last: 0,
             },
         )
     }
@@ -278,18 +302,26 @@ pub fn list(name: str) -> Option<Vec<Shot>> {
                     ),
                     close(
                         "open-hand-front",
-                        "turnaround",
+                        "turnaround-large",
                         30,
-                        Crop { x0: 150, y0: 380, x1: 350, y1: 520 },
-                        4,
+                        Crop { x0: 500, y0: 1140, x1: 1040, y1: 1540 },
+                        2,
                         "his open hand at his hip, from the front",
                     ),
                     close(
-                        "open-hand-side",
-                        "turnaround",
+                        "open-hand-quarter",
+                        "turnaround-large",
                         30,
-                        Crop { x0: 720, y0: 380, x1: 920, y1: 520 },
-                        4,
+                        Crop { x0: 1360, y0: 1140, x1: 1900, y1: 1540 },
+                        2,
+                        "his open hand at his hip, from three-quarters",
+                    ),
+                    close(
+                        "open-hand-side",
+                        "turnaround-large",
+                        30,
+                        Crop { x0: 2200, y0: 1140, x1: 2740, y1: 1540 },
+                        2,
                         "his open hand at his hip, from the side",
                     ),
                 ],

@@ -311,10 +311,14 @@ const HAND_CONSTANTS: [Text; 12] = [
 ]
 
 /// Piece `i` of Hakuro's hands (his left's six in `HAND_PIECES`' order, then his right's): his
-/// left hand bare and his right in its glove, each its sampled hand's own surface. A finger
-/// from where it leaves his palm to where its tip starts to round (a part closes it from
-/// there: `Part::caps`); his palm from up his forearm, through his wrist, to his knuckles. A
-/// finger's reference is read no further out than the gap to the finger beside it.
+/// left hand bare and his right in its glove. A finger from where it leaves his palm to where
+/// its tip starts to round (a part closes it from there: `Part::caps`); his thumb from its
+/// root at his wrist, so the ball of his thumb is the thumb's and moves with it; his palm from
+/// up his forearm, through his wrist, to his knuckles. Each was fitted to his sampled hand,
+/// which is gone: a finger read no further out than the gap to the finger beside it, his palm
+/// no further than its own edge, short of the ball of his thumb, and his thumb only on the
+/// sides that face away from his hand (read all round, its form took his palm's and his
+/// index's surfaces for its own). The forms are kept as they are (`hakuro_hand`).
 pub fn hand_spec(i: u32) -> Spec {
     let piece = i % HAND_PIECES
     let left = i < HAND_PIECES
@@ -324,9 +328,9 @@ pub fn hand_spec(i: u32) -> Spec {
         file: HAND_FILES[i],
         constant: HAND_CONSTANTS[i],
         about: [
-            "A piece of one of Hakuro's hands (his left bare, his right gloved): his sampled hand's",
-            "surface (`hand_left_grid`, `hand_right_grid`), read along rays from the piece's own",
-            "line (`hakuro::hands`) and fitted by the forms tool.",
+            "A piece of one of Hakuro's hands (his left bare, his right gloved), about the piece's own",
+            "line (`hakuro::hands`): fitted by the forms tool to his sampled hand, which is gone, and",
+            "kept as it is. `studio/forms/measured.wrela` holds radii of that hand to measure it by.",
         ],
         chain: if palm {
             if left { hakuro::hands::palm_left() } else { hakuro::hands::palm_right() }
@@ -335,25 +339,39 @@ pub fn hand_spec(i: u32) -> Spec {
         } else {
             hakuro::hands::finger_right(piece)
         },
-        // (A finger is read from its knuckle on: there only the rays toward the back of his
-        // hand meet it, and the rest run on from them, so the form carries the knuckle's
-        // head. Read from past the web, his open hand had no line of knuckles.)
-        span: if palm { vec2(0.04, 0.94) } else if piece == 4 { vec2(0.55, 0.88) } else {
-            vec2(0.15, 0.88)
-        },
-        // (His palm is read as far out as the root of his thumb: cut short of it, a notch
-        // opened between his palm and his thumb.)
-        most: if palm { 0.07 } else { 0.016 },
+        span: measured::HAND_SPANS[i],
+        most: if palm { 0.048 } else if piece == 4 { 0.022 } else { 0.016 },
         tuck: 1.0,
     }
 }
 
-/// Piece `i` of Hakuro's hands (`hand_spec`), fitted.
+/// Piece `i` of Hakuro's hands as it's written.
+fn hand_written(i: u32) -> Radial<16, 13> {
+    [
+        hakuro::index_left_form::INDEX_LEFT,
+        hakuro::middle_left_form::MIDDLE_LEFT,
+        hakuro::ring_left_form::RING_LEFT,
+        hakuro::little_left_form::LITTLE_LEFT,
+        hakuro::thumb_left_form::THUMB_LEFT,
+        hakuro::palm_left_form::PALM_LEFT,
+        hakuro::index_right_form::INDEX_RIGHT,
+        hakuro::middle_right_form::MIDDLE_RIGHT,
+        hakuro::ring_right_form::RING_RIGHT,
+        hakuro::little_right_form::LITTLE_RIGHT,
+        hakuro::thumb_right_form::THUMB_RIGHT,
+        hakuro::palm_right_form::PALM_RIGHT,
+    ][i]
+}
+
+/// Piece `i` of Hakuro's hands (`hand_spec`): its form as written, kept where it is, and how
+/// far it is from his sampled hand's radii as they were (`measured::HANDS`).
 pub fn hakuro_hand(i: u32) -> Fitted<16, 13> {
-    if i < HAND_PIECES {
-        fitted(Grid { samples: hakuro::hand_left_grid::samples(0) }, hand_spec(i))
-    } else {
-        fitted(Grid { samples: hakuro::hand_right_grid::samples(0) }, hand_spec(i))
+    let s = hand_spec(i)
+    let form = hand_written(i)
+    Fitted {
+        form,
+        miss: miss(form, measured::hand_samples(i), s.span, s.chain.rest().length()),
+        rays: 0,
     }
 }
 
@@ -920,18 +938,6 @@ fn stations_of(name: str) -> Option<String> {
     }
     if name == HAKURO_COLLAR.name {
         return Some(stations(Grid { samples: hakuro::jacket_grid::samples(0) }, HAKURO_COLLAR))
-    }
-    for i in 0..2 * HAND_PIECES {
-        if name == hand_spec(i).name {
-            if i < HAND_PIECES {
-                return Some(
-                    stations(Grid { samples: hakuro::hand_left_grid::samples(0) }, hand_spec(i)),
-                )
-            }
-            return Some(
-                stations(Grid { samples: hakuro::hand_right_grid::samples(0) }, hand_spec(i)),
-            )
-        }
     }
     if name == HAKURO_YOKE_LEFT.name {
         return Some(stations(Grid { samples: hakuro::jacket_grid::samples(0) }, HAKURO_YOKE_LEFT))

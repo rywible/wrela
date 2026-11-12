@@ -4,9 +4,9 @@
 
 use engine::chart::Radial
 
-/// A piece of one of Hakuro's hands (his left bare, his right gloved): his sampled hand's
-/// surface (`hand_left_grid`, `hand_right_grid`), read along rays from the piece's own
-/// line (`hakuro::hands`) and fitted by the forms tool.
+/// A piece of one of Hakuro's hands (his left bare, his right gloved), about the piece's own
+/// line (`hakuro::hands`): fitted by the forms tool to his sampled hand, which is gone, and
+/// kept as it is. `studio/forms/measured.wrela` holds radii of that hand to measure it by.
 pub const LITTLE_LEFT: Radial<16, 13> = Radial {
     from: 0.0000,
     to: 1.0000,
