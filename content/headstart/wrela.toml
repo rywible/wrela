@@ -1,0 +1,7 @@
+# "Head Start": a swung hip-hop strut played by engine::session, for the audio tool to render
+# (`wrela tool audio -- content/headstart wav <out.wav>`).
+[package]
+name = "headstart"
+
+[dependencies]
+engine = { workspace = true }

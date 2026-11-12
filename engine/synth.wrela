@@ -1,0 +1,595 @@
+// A synthesizer: oscillators through a filter into an amplifier, each moved by an envelope, as
+// the analogue instruments are built (Moog, "Voltage-controlled electronic music modules",
+// Journal of the AES 13(3), 1965).
+//
+// A patch (`Patch`) says what it is made of:
+// - the waves: a sawtooth and a pulse (twice over, a few cents apart and to either side, for
+//   width; or several times over, a unison), a triangle, a sine, a sine an octave below, and
+//   noise. The pulse's width can sway, which moves its harmonics about as nothing else in a
+//   held note does;
+// - the pitch: a glide between notes that overlap, a drop onto each note's pitch from above (a
+//   bass drum's sag, kept by the basses made from it), a vibrato, and a slow drift of a few
+//   cents, each voice's own, as an analogue oscillator's is;
+// - the filter: a low-pass whose corner an envelope opens, the key raises and a hard key opens
+//   further, with a peak at the corner; the waves can be pushed into it (a soft clip before
+//   it, whose edges the filter then rounds);
+// - the amplifier: an envelope, a soft clip, and how far a soft key is under a hard one.
+//
+// `synth` makes one to play; `press` and `lift` are its keys. With one voice it plays one note
+// at a time: a note pressed while another is down takes over its sound without starting again,
+// and glides to its pitch. With more, each note has its own voice, and the oldest makes way.
+//
+// The filter's corner and the pitch are set every 16 samples; the waves, the filter and the
+// envelopes run every sample. Everything is f32 arithmetic in a fixed order, and the noise is
+// seeded, so both hosts give the same samples.
+
+use std::audio::SAMPLE_RATE
+use std::math::TAU
+use tone::{Band, Env, Noise, Shape, Svf, band, gain_of, key_hz, pulse, saw, seeded, triangle, warm}
+
+/// The audio thread's rate.
+const RATE: f32 = f32(SAMPLE_RATE)
+
+/// The most voices a patch may ask for, and the samples between settings of pitch and corner.
+pub const VOICES: u32 = 8
+const CONTROL: u32 = 16
+/// The most sawtooths and pulses a unison has.
+pub const UNISON: u32 = 7
+
+/// What makes a synthesizer's sound. A level of 0 leaves a wave out.
+pub struct Patch: Copy {
+    /// The waves' levels, and the pulse's width (the share of its period it is low).
+    pub saw: f32 = 0.0,
+    pub pulse: f32 = 0.0,
+    pub width: f32 = 0.5,
+    /// How far the pulse's width sways either way (a share of its period), and how often (Hz).
+    pub pwm: f32 = 0.0,
+    pub pwm_hz: f32 = 0.7,
+    pub triangle: f32 = 0.0,
+    pub sine: f32 = 0.0,
+    pub sub: f32 = 0.0,
+    pub noise: f32 = 0.0,
+    /// A second sawtooth and pulse, this many cents above the first, and how far apart the two
+    /// sit across the channels (0: together; 1: one to each side).
+    pub spread: f32 = 0.0,
+    pub wide: f32 = 0.0,
+    /// A unison: how many sawtooths and pulses a note has in all (1 to `UNISON`), and the
+    /// cents from the lowest to the highest. They sit across the channels as `wide` says, and
+    /// are together as loud as one would be.
+    pub unison: u32 = 1,
+    pub detune: f32 = 0.0,
+    /// How far each voice's pitch drifts (cents, about that much either way, over seconds).
+    pub drift: f32 = 0.0,
+    /// Seconds a note takes to reach its pitch from the last one's, when it takes over a note
+    /// still down.
+    pub glide: f32 = 0.0,
+    /// Semitones above its pitch a note starts, and the seconds it takes to come most of the
+    /// way down.
+    pub drop: f32 = 0.0,
+    pub drop_time: f32 = 0.03,
+    /// The vibrato's depth (cents) and rate (Hz), and the seconds after a note starts that it
+    /// has come in fully (0: it is there from the start).
+    pub vibrato: f32 = 0.0,
+    pub vibrato_hz: f32 = 5.0,
+    pub vibrato_wake: f32 = 0.0,
+    /// The filter: its corner (Hz) with its envelope at 0, the octaves the envelope opens it,
+    /// its peak (0.7: none), the octaves it rises for each octave the key is above middle C,
+    /// and the octaves the hardest key opens it over a key at half.
+    pub cutoff: f32 = 20000.0,
+    pub open: f32 = 0.0,
+    pub q: f32 = 0.7,
+    pub follow: f32 = 0.0,
+    pub touch: f32 = 0.0,
+    pub filter: Shape = Shape { attack: 0.002, decay: 0.2, sustain: 0.0, release: 0.2 },
+    /// How hard the waves are pushed into the filter (0: not at all): a soft clip before it.
+    pub push: f32 = 0.0,
+    /// The amplifier: its envelope, how hard it is driven into soft clipping (0: not at all),
+    /// its lean to one side (the even harmonics), and the decibels between the softest key and
+    /// the hardest.
+    pub amp: Shape = Shape {},
+    pub drive: f32 = 0.0,
+    pub lean: f32 = 0.0,
+    pub range_db: f32 = 18.0,
+    /// How many notes sound at once (1 to `VOICES`), and the level of each.
+    pub voices: u32 = VOICES,
+    pub level: f32 = 0.4,
+}
+
+/// One note sounding.
+struct Voice: Copy {
+    /// The key it is going to, the key it is at (a glide's), and the semitones it is still
+    /// above it (a drop's).
+    key: f32 = 0.0,
+    now: f32 = 0.0,
+    above: f32 = 0.0,
+    velocity: f32 = 0.0,
+    level: f32 = 0.0,
+    /// The oscillators' phases and steps per sample.
+    a: f32 = 0.0,
+    b: f32 = 0.0,
+    sub: f32 = 0.0,
+    da: f32 = 0.0,
+    db: f32 = 0.0,
+    /// A unison's other oscillators' phases, and where its pitch has drifted (cents).
+    more: [f32; 6] = [0.0; 6],
+    adrift: f32 = 0.0,
+    amp: Env = Env {},
+    filter: Env = Env {},
+    /// The filter envelope's level, as the corner was last set from it.
+    opened: f32 = 0.0,
+    band: Band = Band {},
+    left: Svf = Svf {},
+    right: Svf = Svf {},
+    /// When it was pressed, in presses: the lowest is the oldest; and the seconds since.
+    age: u32 = 0,
+    sung: f32 = 0.0,
+}
+
+/// A synthesizer being played: what the audio thread owns of it.
+pub struct Synth {
+    patch: Patch,
+    voices: [Voice; 8],
+    presses: u32,
+    noise: Noise,
+    lfo: f32,
+    /// Samples to the next setting of pitch and corner.
+    until: u32,
+    /// The pulse's width now, and where its sway is in its turn.
+    width: f32,
+    sway: f32,
+    /// A unison's other oscillators: each one's pitch beside the note's, and its share of the
+    /// left channel (the right has the rest).
+    apart: [f32; 6],
+    lefts: [f32; 6],
+}
+
+/// A synthesizer playing `patch`. `seed` sets its noise.
+pub fn synth(patch: Patch, seed: u32 = 1) -> Synth {
+    assert(patch.voices >= 1 && patch.voices <= VOICES, f"a patch has 1 to {VOICES} voices")
+    assert(patch.unison >= 1 && patch.unison <= UNISON, f"a unison has 1 to {UNISON} oscillators")
+    // A unison's others: by turns above and below the note, each further out than the last,
+    // and by turns to the right and the left.
+    var apart = [1.0; 6]
+    var lefts = [0.5; 6]
+    for k in 0..6 {
+        let out = f32(k / 2 + 1) / f32(max(patch.unison / 2, 1))
+        let way = if k % 2 == 0 { 1.0 } else { -1.0 }
+        apart[k] = exp2(0.5 * way * out * patch.detune / 1200.0)
+        lefts[k] = 0.5 - 0.5 * way * out * patch.wide
+    }
+    Synth {
+        patch,
+        voices: [Voice {}; 8],
+        presses: 0,
+        noise: seeded(seed),
+        lfo: 0.0,
+        until: 0,
+        width: patch.width,
+        sway: 0.0,
+        apart,
+        lefts,
+    }
+}
+
+impl Synth {
+    /// Presses `key` (MIDI's numbering; a fraction is a fraction of a semitone) `velocity` hard
+    /// (0 to 1).
+    @audio
+    pub fn press(mut self, key: f32, velocity: f32) {
+        let p = self.patch
+        let v = clamp(velocity, 0.0, 1.0)
+        self.presses += 1
+        if p.voices == 1 && self.voices[0].amp.held() {
+            // One voice, and its key still down: the new note takes over the sound and glides.
+            self.voices[0].key = key
+            self.voices[0].age = self.presses
+            self.voices[0].sung = 0.0
+            return
+        }
+        // A silent voice, or else the oldest.
+        var at = 0
+        for i in 0..p.voices {
+            if self.voices[i].amp.silent() {
+                at = i
+                break
+            }
+            if self.voices[i].age < self.voices[at].age {
+                at = i
+            }
+        }
+        var voice = self.voices[at]
+        voice.key = key
+        voice.now = key
+        voice.above = p.drop
+        voice.velocity = v
+        voice.level = p.level * gain_of(-p.range_db * (1.0 - v))
+        voice.age = self.presses
+        voice.sung = 0.0
+        if voice.amp.silent() {
+            // From silence the waves start at their zero, so the note starts without a step.
+            voice.a = 0.5
+            voice.b = 0.5
+            voice.sub = 0.0
+            // A unison's others start apart from each other, so the note doesn't begin as one
+            // loud wave that then spreads.
+            for k in 0..6 {
+                voice.more[k] = fract(0.5 + 0.618034 * f32(k + 1))
+            }
+            voice.left = Svf {}
+            voice.right = Svf {}
+        }
+        voice.amp.on(p.amp)
+        voice.filter.on(p.filter)
+        self.voices[at] = voice
+        self.steer(at)
+    }
+
+    /// Lets `key` go.
+    @audio
+    pub fn lift(mut self, key: f32) {
+        for i in 0..self.patch.voices {
+            if self.voices[i].key == key && self.voices[i].amp.held() {
+                self.voices[i].amp.off()
+                self.voices[i].filter.off()
+            }
+        }
+    }
+
+    /// Whether nothing of it sounds.
+    @audio
+    pub fn silent(self) -> bool {
+        for i in 0..self.patch.voices {
+            if !self.voices[i].amp.silent() {
+                return false
+            }
+        }
+        true
+    }
+
+    /// Voice `i`'s pitch and its filter's corner, from where its glide, its drop, the vibrato
+    /// and its filter's envelope are now.
+    @audio
+    fn steer(mut self, i: u32) {
+        let p = self.patch
+        var v = self.voices[i]
+        let awake = if p.vibrato_wake > 0.0 { min(v.sung / p.vibrato_wake, 1.0) } else { 1.0 }
+        let wobble = awake * p.vibrato * 0.01 * sin(TAU * self.lfo)
+        let hz = key_hz(v.now + v.above + wobble + 0.01 * v.adrift)
+        v.da = hz / RATE
+        v.db = v.da * exp2(p.spread / 1200.0)
+        let octaves = p.open * v.opened +
+            p.follow * (v.now - 60.0) / 12.0 +
+            p.touch * 2.0 * (v.velocity - 0.5)
+        v.band = band(p.cutoff * exp2(octaves), p.q)
+        self.voices[i] = v
+    }
+
+    /// Adds its sound to samples `from` to `to` of `left` and `right`.
+    @audio
+    pub fn sound(mut self, left: mut [f32], right: mut [f32], from: u32, to: u32) {
+        if self.silent() {
+            return
+        }
+        let p = self.patch
+        let doubled = p.spread > 0.0 && (p.saw > 0.0 || p.pulse > 0.0)
+        // Each oscillator's share of each channel.
+        let near = 0.5 + 0.5 * p.wide
+        let far = 0.5 - 0.5 * p.wide
+        // What a glide and a drop keep of their distance each setting.
+        let glide = if p.glide > 0.0 { exp(-3.0 * f32(CONTROL) / (p.glide * RATE)) } else { 0.0 }
+        let drop = exp(-f32(CONTROL) / (max(p.drop_time, 0.001) * RATE))
+        for n in from..to {
+            if self.until == 0 {
+                self.until = CONTROL
+                self.lfo = fract(self.lfo + p.vibrato_hz * f32(CONTROL) / RATE)
+                if p.pwm > 0.0 {
+                    self.sway = fract(self.sway + p.pwm_hz * f32(CONTROL) / RATE)
+                    self.width = clamp(p.width + p.pwm * sin(TAU * self.sway), 0.05, 0.95)
+                }
+                for i in 0..p.voices {
+                    if !self.voices[i].amp.silent() {
+                        if p.drift > 0.0 {
+                            // Noise through a slow low-pass (half a hertz), scaled so what
+                            // comes out is about `drift` cents.
+                            let slow = TAU * 0.5 * f32(CONTROL) / RATE
+                            let pull = p.drift / (0.57735 * sqrt(0.5 * slow)) * self.noise.next()
+                            self.voices[i].adrift += slow * (pull - self.voices[i].adrift)
+                        }
+                        let key = self.voices[i].key
+                        self.voices[i].now = key + glide * (self.voices[i].now - key)
+                        self.voices[i].above *= drop
+                        self.voices[i].sung += f32(CONTROL) / RATE
+                        self.steer(i)
+                    }
+                }
+            }
+            self.until -= 1
+            let hiss = if p.noise > 0.0 { p.noise * self.noise.next() } else { 0.0 }
+            for i in 0..p.voices {
+                if self.voices[i].amp.silent() {
+                    continue
+                }
+                var v = self.voices[i]
+                let amp = v.amp.next()
+                v.opened = v.filter.next()
+                // The waves: the sawtooth and the pulse, once or twice; the rest in the middle.
+                var first = 0.0
+                if p.saw > 0.0 {
+                    first += p.saw * saw(v.a, v.da)
+                }
+                if p.pulse > 0.0 {
+                    first += p.pulse * pulse(v.a, v.da, self.width)
+                }
+                var second = first
+                if doubled {
+                    second = p.saw * saw(v.b, v.db) + p.pulse * pulse(v.b, v.db, self.width)
+                }
+                // A unison: the others, each at its own pitch and side, all together as loud
+                // as one.
+                var left_more = 0.0
+                var right_more = 0.0
+                if p.unison > 1 {
+                    for k in 0..p.unison - 1 {
+                        let d = v.da * self.apart[k]
+                        let wave = p.saw * saw(v.more[k], d) +
+                            p.pulse * pulse(v.more[k], d, self.width)
+                        left_more += self.lefts[k] * wave
+                        right_more += (1.0 - self.lefts[k]) * wave
+                        v.more[k] = fract(v.more[k] + d)
+                    }
+                }
+                var middle = hiss
+                // The triangle and the sine start at zero going up (the phase starts at a half),
+                // as a bass drum's tone does: a bass and a drum struck together push the
+                // same way first, and don't cancel.
+                if p.triangle > 0.0 {
+                    middle += p.triangle * triangle(fract(v.a + 0.25))
+                }
+                if p.sine > 0.0 {
+                    middle += p.sine * sin(TAU * (v.a + 0.5))
+                }
+                if p.sub > 0.0 {
+                    middle += p.sub * sin(TAU * v.sub)
+                }
+                v.a = fract(v.a + v.da)
+                v.b = fract(v.b + v.db)
+                v.sub = fract(v.sub + 0.5 * v.da)
+                var into_l = middle + near * first + far * second
+                var into_r = middle + far * first + near * second
+                if p.unison > 1 {
+                    let share = 1.0 / sqrt(f32(p.unison))
+                    into_l = middle + share * (0.5 * first + left_more)
+                    into_r = middle + share * (0.5 * first + right_more)
+                }
+                if p.push > 0.0 {
+                    into_l = warm(into_l, p.push)
+                    into_r = warm(into_r, p.push)
+                }
+                var l = v.left.low(v.band, into_l)
+                var r = v.right.low(v.band, into_r)
+                if p.drive > 0.0 {
+                    l = warm(l, p.drive, p.lean)
+                    r = warm(r, p.drive, p.lean)
+                }
+                left[n] += v.level * amp * l
+                right[n] += v.level * amp * r
+                self.voices[i] = v
+            }
+        }
+    }
+}
+
+// ---- patches --------------------------------------------------------------------------------
+
+/// A sub bass: a sine with a little triangle over it, dying away over a second, driven so its
+/// harmonics reach a small speaker, sliding between notes that overlap. Its notes start on
+/// their pitch: a drop onto each one (a bass drum's sag) made repeated notes chirp like a second
+/// drum.
+pub const SUB: Patch = Patch {
+    sine: 1.0,
+    triangle: 0.15,
+    glide: 0.09,
+    amp: Shape { attack: 0.004, decay: 1.6, sustain: 0.0, release: 0.07 },
+    drive: 2.2,
+    lean: 0.3,
+    range_db: 10.0,
+    voices: 1,
+    level: 0.9,
+}
+
+/// A sung lead: one voice, a triangle with a sawtooth under it, through a filter that opens
+/// gently; it slides between notes that overlap, and its vibrato comes in after a note has
+/// been held a while.
+pub const LEAD: Patch = Patch {
+    saw: 0.3,
+    triangle: 0.5,
+    glide: 0.05,
+    vibrato: 9.0,
+    vibrato_hz: 5.2,
+    vibrato_wake: 0.3,
+    cutoff: 650.0,
+    open: 2.8,
+    q: 0.9,
+    follow: 0.6,
+    touch: 0.8,
+    filter: Shape { attack: 0.02, decay: 0.5, sustain: 0.45, release: 0.25 },
+    amp: Shape { attack: 0.012, decay: 0.6, sustain: 0.8, release: 0.22 },
+    range_db: 14.0,
+    voices: 1,
+    level: 0.4,
+}
+
+/// A plucked lead: a sawtooth and a pulse through a filter that snaps shut, brighter the harder
+/// the key.
+pub const PLUCK: Patch = Patch {
+    saw: 0.5,
+    pulse: 0.3,
+    width: 0.35,
+    spread: 7.0,
+    wide: 0.6,
+    cutoff: 420.0,
+    open: 4.5,
+    q: 1.3,
+    follow: 0.5,
+    touch: 1.2,
+    filter: Shape { attack: 0.001, decay: 0.16, sustain: 0.08, release: 0.2 },
+    amp: Shape { attack: 0.002, decay: 0.5, sustain: 0.25, release: 0.25 },
+    level: 0.3,
+}
+
+/// A pad: two sawtooths apart and wide, opening slowly.
+pub const PAD: Patch = Patch {
+    saw: 0.5,
+    triangle: 0.2,
+    spread: 11.0,
+    wide: 0.9,
+    vibrato: 4.0,
+    vibrato_hz: 4.5,
+    cutoff: 600.0,
+    open: 2.0,
+    q: 0.8,
+    follow: 0.4,
+    filter: Shape { attack: 0.9, decay: 1.5, sustain: 0.6, release: 1.2 },
+    amp: Shape { attack: 0.5, decay: 1.0, sustain: 0.8, release: 1.2 },
+    level: 0.22,
+}
+
+/// A lead for the top of the keyboard: three pulses and sawtooths a few cents apart, their
+/// width swaying, pushed into a filter that opens little further for a higher key, each
+/// voice's pitch drifting a little. A filter that follows the key half an octave for each
+/// octave is wide open by C6, and lets a pulse's and a sawtooth's every harmonic by, a buzz:
+/// on one phrase from C5 to A flat 6, such a lead's 8 kHz octave was 10 dB under its 1 kHz
+/// octave, and this one's is 20 dB under. (Its harmonics already moved: two oscillators 8
+/// cents apart beat, and its second harmonic wandered 7 dB. The sway and the unison here are
+/// for colour, not to cure a stillness that wasn't measured.)
+pub const SOAR: Patch = Patch {
+    saw: 0.25,
+    pulse: 0.45,
+    width: 0.4,
+    pwm: 0.12,
+    pwm_hz: 0.9,
+    unison: 3,
+    detune: 14.0,
+    wide: 0.6,
+    drift: 3.0,
+    glide: 0.05,
+    vibrato: 10.0,
+    vibrato_hz: 5.4,
+    vibrato_wake: 0.25,
+    cutoff: 1400.0,
+    open: 1.6,
+    q: 0.9,
+    follow: 0.15,
+    touch: 0.6,
+    filter: Shape { attack: 0.01, decay: 0.3, sustain: 0.6, release: 0.2 },
+    push: 1.5,
+    amp: Shape { attack: 0.008, decay: 0.4, sustain: 0.85, release: 0.14 },
+    drive: 0.8,
+    range_db: 12.0,
+    voices: 1,
+    level: 0.54,
+}
+
+// The tests render on the program's thread, as the audio thread would.
+
+/// `seconds` of `s`: the left channel's samples.
+fn rendered(s: mut Synth, seconds: f32) -> Vec<f32> {
+    var out: Vec<f32> = Vec::new()
+    var l = [0.0; 128]
+    var r = [0.0; 128]
+    for _ in 0..u32(seconds * RATE) / 128 {
+        for i in 0..128 {
+            l[i] = 0.0
+            r[i] = 0.0
+        }
+        s.sound(mut l, mut r, from: 0, to: 128)
+        for i in 0..128 {
+            out.push(l[i])
+        }
+    }
+    out
+}
+
+/// How many times `x` crosses zero going up, a second: its pitch, if it is near a sine.
+fn crossings(x: [f32], seconds: f32) -> f32 {
+    var n = 0
+    for i in 1..x.len() {
+        if x[i - 1] <= 0.0 && x[i] > 0.0 {
+            n += 1
+        }
+    }
+    f32(n) / seconds
+}
+
+@test
+fn one_voice_glides_to_a_note_that_takes_over_and_starts_again_after_a_gap() {
+    // A sine with no drop, so its crossings are its pitch.
+    var s = synth(Patch { drop: 0.0, drive: 0.0, amp: Shape { sustain: 1.0 }, ..SUB })
+    s.press(45.0, velocity: 0.8)
+    let first = rendered(mut s, seconds: 0.5)
+    let a = crossings(first, seconds: 0.5)
+    assert(abs(a - 110.0) < 4.0, f"A2 sounded at {a} Hz")
+    // A second key over the first: no new attack, and soon its pitch.
+    s.press(52.0, velocity: 0.8)
+    s.lift(45.0)
+    let _ = rendered(mut s, seconds: 0.3)
+    let e = crossings(rendered(mut s, seconds: 0.5), seconds: 0.5)
+    assert(abs(e - 164.8) < 4.0, f"after the glide, E3 sounded at {e} Hz")
+    // Let go, it is 26 dB down in its release's time, and silent in four of them.
+    s.lift(52.0)
+    let _ = rendered(mut s, seconds: 0.8)
+    assert(s.silent())
+}
+
+@test
+fn a_note_starts_without_a_step_and_voices_make_way() {
+    var s = synth(PLUCK)
+    s.press(60.0, velocity: 1.0)
+    let x = rendered(mut s, seconds: 0.01)
+    assert(abs(x[0]) < 0.02, f"a pluck's first sample is {x[0]}")
+    // More keys than voices: all sound, none traps.
+    for k in 0..12 {
+        s.press(48.0 + f32(k), velocity: 0.7)
+    }
+    let y = rendered(mut s, seconds: 0.05)
+    var peak = 0.0
+    for i in 0..y.len() {
+        peak = max(peak, abs(y[i]))
+    }
+    assert(peak > 0.05 && peak < 4.0, f"twelve keys on eight voices peak at {peak}")
+}
+
+/// The energy of `x`.
+fn energy(x: [f32]) -> f32 {
+    var e = 0.0
+    for i in 0..x.len() {
+        e += x[i] * x[i]
+    }
+    e
+}
+
+/// A unison is several oscillators as loud together as one (within 3 dB over half a second,
+/// whatever their beating), and a pulse whose width sways and is pushed into the filter is
+/// still a bounded sound that dies away when its key is let go.
+@test
+fn a_unison_is_as_loud_as_one_and_a_swaying_pushed_pulse_stays_bounded() {
+    let one = Patch { saw: 0.5, cutoff: 6000.0, amp: Shape { sustain: 1.0 }, ..Patch {} }
+    var single = synth(one)
+    single.press(60.0, velocity: 0.8)
+    var many = synth(Patch { unison: 5, detune: 20.0, wide: 0.8, ..one })
+    many.press(60.0, velocity: 0.8)
+    let ratio = energy(rendered(mut many, seconds: 0.5)) /
+        energy(rendered(mut single, seconds: 0.5))
+    assert(ratio > 0.5 && ratio < 2.0, f"five oscillators have {ratio} times one's energy")
+    var s = synth(SOAR)
+    s.press(84.0, velocity: 1.0)
+    let x = rendered(mut s, seconds: 0.5)
+    var peak = 0.0
+    for i in 0..x.len() {
+        peak = max(peak, abs(x[i]))
+    }
+    assert(peak > 0.05 && peak < 1.5, f"the lead at C6 peaks at {peak}")
+    s.lift(84.0)
+    let _ = rendered(mut s, seconds: 1.0)
+    assert(s.silent(), "the lead rang on after its key was let go")
+}

@@ -1,0 +1,7 @@
+# "Low Sun": a drop-D riff and the quiet figure it comes from, played by engine::session, for
+# the audio tool to render (`wrela tool audio -- content/lowsun wav <out.wav>`).
+[package]
+name = "lowsun"
+
+[dependencies]
+engine = { workspace = true }

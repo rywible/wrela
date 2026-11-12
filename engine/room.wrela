@@ -1,0 +1,272 @@
+// A room: what a space gives back of the sound made in it, across two channels.
+//
+// It is 16 delay lines, mixed by a Hadamard matrix (orthogonal, so the room loses only what each
+// line's filter takes) and fed from each channel with signs that make the two channels' tails
+// differ (Jot and Chaigne, "Digital delay networks for designing artificial reverberators", AES
+// 90th Convention, 1991). Each line's filter makes every mode fall 60 dB in the room's time, and
+// the highs faster, as air and walls take them. Each line's length sways slowly, by 6 samples,
+// so no mode of the room rings on.
+//
+// A room of size 1 has lines from 4.8 to 42 ms: a studio's live room, the one the piano
+// (engine::piano) is heard in. A larger size stretches every line: a hall's are two to three
+// times as long.
+//
+// Call `hear` for each sample of a quantum, then `sway` once.
+//
+// A sharp sound (a rim shot, a clap) fed straight to the lines comes back as separate echoes, a
+// flutter, before the lines have mixed it; a piano's note, which blooms over 15 ms, hides that.
+// An `Entry` is the way in for sharp sounds: what goes to the room is cut below and above (a
+// room's sound under 180 Hz is mud, and its walls take the top), held back a moment (the first
+// wall is some metres off), and smeared by four short all-pass filters, each channel's own
+// lengths (Schroeder, "Natural sounding artificial reverberation", JAES 10(3), 1962), so the
+// lines are fed a wash, not a click.
+
+use std::audio::SAMPLE_RATE
+use std::collections::Vec
+use std::math::TAU
+use tone::{Band, Svf, band, scatter}
+
+/// The audio thread's rate.
+const RATE: f32 = f32(SAMPLE_RATE)
+
+/// The lines: four vec4s of four, each `SPAN` samples of memory; their longest lengths in
+/// samples at size 1 (primes), and how far each length sways either way round its mean, `SWAY`
+/// under its longest.
+const GROUPS: u32 = 4
+const SPAN: u32 = 8192
+const LENGTHS: [f32; 16] = [
+    229.0, 337.0, 449.0, 571.0, 683.0, 797.0, 919.0, 1031.0, 1153.0, 1279.0, 1399.0, 1523.0, 1657.0,
+    1777.0, 1879.0, 1997.0,
+]
+const SWAY: f32 = 6.0
+/// The largest size: its longest line, with its sway, still fits its memory.
+pub const LARGEST: f32 = 4.0
+/// Which way round each line takes its channel's sound (the even lines the left's, the odd the
+/// right's), and gives its sound to each channel: the two channels' patterns are orthogonal, so
+/// their tails differ.
+const IN: [f32; 16] = [
+    1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0,
+]
+const LEFT: [f32; 16] = [
+    1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
+]
+const RIGHT: [f32; 16] = [
+    1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0,
+]
+/// How much of its channel's sound each line takes, and how much of each line the channels
+/// hear.
+const FEED: f32 = 0.35
+const OUT: f32 = 0.44
+
+/// A room's lines and their filters: what the audio thread owns of it.
+pub struct Room {
+    // Line i's samples from `i * SPAN` (on the heap: they are half a megabyte, more than a
+    // thread's stack carries), and the sample being written.
+    lines: Vec<f32>,
+    at: u32,
+    // Each line's darkened output and its filter (low = a y + b low).
+    low: [vec4; 4],
+    a: [vec4; 4],
+    b: [vec4; 4],
+    // Each line's longest length (samples); its length at this quantum's start, its change per
+    // sample, and the phase and rate of its sway.
+    longest: [f32; 16],
+    delay: [f32; 16],
+    step: [f32; 16],
+    phase: [f32; 16],
+    rate: [f32; 16],
+}
+
+/// A room whose lows fall 60 dB in `time` seconds and whose highest highs in `highs` of that,
+/// `size` times the live room's (1 to `LARGEST`). Builds its filters, so call it on the
+/// program's thread.
+pub fn room(time: f32, highs: f32 = 0.25, size: f32 = 1.0) -> Room {
+    assert(size > 0.0 && size <= LARGEST, f"a room's size is over 0 and at most {LARGEST}")
+    var r = Room {
+        lines: Vec::filled(16 * SPAN, value: 0.0),
+        at: 0,
+        low: [vec4(0.0); 4],
+        a: [vec4(0.0); 4],
+        b: [vec4(0.0); 4],
+        longest: [0.0; 16],
+        delay: [0.0; 16],
+        step: [0.0; 16],
+        phase: [0.0; 16],
+        rate: [0.0; 16],
+    }
+    for i in 0..4 * GROUPS {
+        let (g, lane) = (i / 4, i % 4)
+        r.longest[i] = LENGTHS[i] * size
+        // Each line's filter falls 60 dB in `time` at the lowest frequencies and in `highs` of
+        // it at the highest, over its mean length: low = a y + b low, its gain g₀ at 0 Hz and gπ
+        // at the top.
+        let length = r.longest[i] - SWAY
+        let g0 = pow(10.0, -3.0 * length / RATE / time)
+        let gp = pow(10.0, -3.0 * length / RATE / (time * highs))
+        let b = (g0 - gp) / (g0 + gp)
+        r.a[g][lane] = g0 * (1.0 - b)
+        r.b[g][lane] = b
+        // Each line's length sways slowly (0.15 to 0.6 Hz), so no mode of the room rings on.
+        r.rate[i] = TAU * (0.15 + 0.45 * scatter(i, b: 0, c: 10)) * 128.0 / RATE
+        r.phase[i] = TAU * scatter(i, b: 0, c: 11)
+    }
+    r.sway()
+    r
+}
+
+impl Room {
+    /// Each line's length over the next quantum: it sways `SWAY` samples either way round its
+    /// mean, and moves evenly from sample to sample. Call it once a quantum, after its samples.
+    @audio
+    pub fn sway(mut self) {
+        for i in 0..4 * GROUPS {
+            let now = self.longest[i] - SWAY * (1.0 + sin(self.phase[i]))
+            var phase = self.phase[i] + self.rate[i]
+            if phase > TAU {
+                phase -= TAU
+            }
+            self.phase[i] = phase
+            let next = self.longest[i] - SWAY * (1.0 + sin(phase))
+            self.delay[i] = now
+            self.step[i] = (next - now) / 128.0
+        }
+    }
+
+    /// The room's sound at sample `s` of this quantum, for the two channels' sound `l` and `r`:
+    /// each line read and darkened, the lines mixed, the channels' sound fed to each line, and
+    /// each line heard in both channels.
+    @audio
+    pub fn hear(mut self, s: u32, l: f32, r: f32) -> vec2 {
+        let at = self.at
+        var y = [vec4(0.0); 4]
+        for i in 0..4 * GROUPS {
+            let d = self.delay[i] + self.step[i] * f32(s)
+            let whole = u32(d)
+            let part = d - f32(whole)
+            let base = i * SPAN
+            let a = self.lines[base + ((at + SPAN - whole) & (SPAN - 1))]
+            let b = self.lines[base + ((at + SPAN - whole - 1) & (SPAN - 1))]
+            y[i / 4][i % 4] = a + (b - a) * part
+        }
+        // Each line darkened; then mixed, four by four within each vec4 and across them.
+        var h = [vec4(0.0); 4]
+        var wet = vec2(0.0)
+        for g in 0..GROUPS {
+            let low = self.a[g] * y[g] + self.b[g] * self.low[g]
+            self.low[g] = low
+            h[g] = vec4(
+                (low.x + low.y) + (low.z + low.w),
+                (low.x - low.y) + (low.z - low.w),
+                (low.x + low.y) - (low.z + low.w),
+                (low.x - low.y) - (low.z - low.w),
+            )
+            for lane in 0..4 {
+                let i = 4 * g + lane
+                wet += low[lane] * vec2(LEFT[i], RIGHT[i])
+            }
+        }
+        let mixed = [
+            0.25 * ((h[0] + h[1]) + (h[2] + h[3])),
+            0.25 * ((h[0] - h[1]) + (h[2] - h[3])),
+            0.25 * ((h[0] + h[1]) - (h[2] + h[3])),
+            0.25 * ((h[0] - h[1]) - (h[2] - h[3])),
+        ]
+        for i in 0..4 * GROUPS {
+            let input = IN[i] * (if i % 2 == 0 { l } else { r })
+            self.lines[i * SPAN + at] = mixed[i / 4][i % 4] + FEED * input
+        }
+        self.at = (at + 1) & (SPAN - 1)
+        OUT * wet
+    }
+}
+
+/// An entry's memory: the samples it can hold a sound back (42 ms), each all-pass's (10 ms), and
+/// the all-passes' lengths for each channel (samples: 2 to 8 ms, no two alike) and their gain.
+const HELD: u32 = 2048
+const SMEAR: u32 = 512
+const SMEARS: [u32; 8] = [142, 107, 379, 277, 151, 113, 359, 293]
+const SMEAR_GAIN: f32 = 0.6
+
+/// The way into a room for sharp sounds: what the audio thread owns of it.
+pub struct Entry {
+    low: Band,
+    high: Band,
+    low_state: [Svf; 2],
+    high_state: [Svf; 2],
+    // Each channel's held samples (the right's from `HELD`), the sample being written, and how
+    // many samples back the room hears.
+    held: Vec<f32>,
+    held_at: u32,
+    back: u32,
+    // Each all-pass's line (the `k`th from `k * SMEAR`), and the sample being written.
+    lines: Vec<f32>,
+    at: u32,
+}
+
+/// An entry that holds a sound back `wait` seconds (at most 0.04), and cuts it below `low_cut`
+/// and above `high_cut` (Hz).
+pub fn entry(wait: f32 = 0.014, low_cut: f32 = 180.0, high_cut: f32 = 6000.0) -> Entry {
+    Entry {
+        low: band(hz: low_cut, q: 0.7),
+        high: band(hz: high_cut, q: 0.7),
+        low_state: [Svf {}; 2],
+        high_state: [Svf {}; 2],
+        held: Vec::filled(2 * HELD, value: 0.0),
+        held_at: 0,
+        back: clamp(u32(wait * RATE), 1, HELD - 1),
+        lines: Vec::filled(8 * SMEAR, value: 0.0),
+        at: 0,
+    }
+}
+
+impl Entry {
+    /// The two channels' sound `l` and `r`, as the room is to hear it.
+    @audio
+    pub fn pass(mut self, l: f32, r: f32) -> vec2 {
+        let cut = [
+            self.high_state[0].low(self.high, self.low_state[0].high(self.low, l)),
+            self.high_state[1].low(self.high, self.low_state[1].high(self.low, r)),
+        ]
+        var out = vec2(0.0)
+        for ch in 0..2 {
+            // Held back.
+            let from = (self.held_at + HELD - self.back) & (HELD - 1)
+            var x = self.held[ch * HELD + from]
+            self.held[ch * HELD + self.held_at] = cut[ch]
+            // Smeared: each all-pass gives the sound back spread over its length, its level
+            // the same at every frequency.
+            for k in 0..4 {
+                let line = (4 * ch + k) * SMEAR
+                let was = self.lines[line + ((self.at + SMEAR - SMEARS[4 * ch + k]) & (SMEAR - 1))]
+                let w = x + SMEAR_GAIN * was
+                self.lines[line + self.at] = w
+                x = was - SMEAR_GAIN * w
+            }
+            out[ch] = x
+        }
+        self.held_at = (self.held_at + 1) & (HELD - 1)
+        self.at = (self.at + 1) & (SMEAR - 1)
+        out
+    }
+}
+
+@test
+fn an_entry_turns_a_click_into_a_wash_as_loud() {
+    // One sample in: nothing for the wait, then its energy spread over tens of milliseconds, no
+    // single sample holding most of it; and (the cuts set wide) nearly all of it comes out.
+    var e = entry(wait: 0.01, low_cut: 5.0, high_cut: 20000.0)
+    var energy = 0.0
+    var most = 0.0
+    var early = 0.0
+    for n in 0..9600 {
+        let y = e.pass(if n == 0 { 1.0 } else { 0.0 }, 0.0)
+        energy += y.x * y.x
+        most = max(most, y.x * y.x)
+        if n < 470 {
+            early += y.x * y.x
+        }
+    }
+    assert(early < 1e-6, f"the entry let {early} through before its wait")
+    assert(energy > 0.8 && energy < 1.05, f"a click of energy 1 came out with {energy}")
+    assert(most < 0.3 * energy, f"one sample holds {most / energy} of the wash")
+}

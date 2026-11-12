@@ -1,0 +1,176 @@
+// The winds' players, for the audio tool (`wrela tool audio -- content/winds wav <out.wav>
+// --take n`). An instrument check, not a composition:
+// - take 0: a short phrase on the clarinet, heard in a room: tongued notes, a slur, a held
+//   note, a soft note and a loud one;
+// - take 13: every note of the clarinet's range, tongued, 0.7 s each with a rest between,
+//   with no room, each note as loud as the recording's middling (mf) note of that key
+//   (`levels`): the check that the instrument sounds the note it is asked for, set beside the
+//   recording's own scales;
+// - takes 23 and 33: the same scale as soft as the recording's pp notes, and as loud as its ff.
+// (Takes 1, 14, 24 and 34 were a trumpet's; there is no trumpet yet: engine::wind says why.)
+
+use engine::room::{Room, room}
+use engine::tone::key_hz
+use engine::wind::{Blown, CLARINET, Wind, wind}
+use levels::CLARINET_DB
+use std::audio::{SAMPLE_RATE, play}
+use std::collections::Vec
+use std::io::print
+
+/// How loud the room is beside the instrument in a phrase.
+const ROOM: f32 = 0.2
+
+fn samples(seconds: f32) -> u32 {
+    u32(max(seconds, 0.0) * f32(SAMPLE_RATE) + 0.5)
+}
+
+/// Every key of the clarinet's range, tongued, 0.7 s each and 0.3 s apart, each
+/// as loud as the recording's note of that key at the take's level (`levels`).
+fn scale(which: u32) -> Vec<Blown> {
+    let p = CLARINET
+    let level = which / 10 - 1
+    var out: Vec<Blown> = Vec::new()
+    for k in p.low..p.high + 1 {
+        let at = f32(k - p.low)
+        out.push(
+            Blown {
+                from: samples(0.2 + at),
+                to: samples(0.9 + at),
+                hz: key_hz(f32(k)),
+                db: CLARINET_DB[level][k - p.low],
+                tongued: true,
+            },
+        )
+    }
+    out
+}
+
+/// A phrase's notes from (key, beats of rest before it, beats long, dB, tongued), at `tempo`
+/// beats a minute.
+fn phrase(tempo: f32, notes: [(u32, f32, f32, f32, bool)]) -> Vec<Blown> {
+    var out: Vec<Blown> = Vec::new()
+    let beat = 60.0 / tempo
+    var at = 0.3
+    for (key, rest, long, db, tongued) in notes {
+        at += rest * beat
+        out.push(
+            Blown {
+                from: samples(at),
+                to: samples(at + long * beat),
+                hz: key_hz(f32(key)),
+                db,
+                tongued,
+            },
+        )
+        at += long * beat
+    }
+    out
+}
+
+/// The notes of take `which`.
+fn blown(which: u32) -> Vec<Blown> {
+    if which >= 10 {
+        return scale(which)
+    }
+    // The clarinet: three tongued notes, a slur down, a held note, a soft one, a loud one, and
+    // a slur up from its lowest register.
+    phrase(
+        92.0,
+        [
+            (67, 0.0, 1.0, -23.0, true),
+            (69, 0.0, 1.0, -23.0, true),
+            (71, 0.0, 1.0, -22.0, true),
+            (74, 0.0, 0.5, -22.0, true),
+            (72, 0.0, 0.5, -23.0, false),
+            (71, 0.0, 0.5, -23.0, false),
+            (69, 0.0, 0.5, -24.0, false),
+            (67, 0.0, 3.0, -23.0, true),
+            (62, 1.0, 2.0, -36.0, true),
+            (79, 1.0, 2.0, -19.0, true),
+            (52, 1.0, 0.5, -23.0, true),
+            (55, 0.0, 0.5, -23.0, false),
+            (59, 0.0, 0.5, -23.0, false),
+            (64, 0.0, 2.5, -22.0, false),
+        ],
+    )
+}
+
+pub struct Piece {
+    which: u32,
+    started: bool,
+}
+
+pub fn init() -> Piece {
+    Piece { which: 0, started: false }
+}
+
+pub fn choose(p: mut Piece, which: u32) {
+    assert(!p.started, "a take is chosen before the piece starts")
+    assert(
+        which == 0 || which == 13 || which == 23 || which == 33,
+        "the winds have takes 0, 13, 23 and 33",
+    )
+    p.which = which
+}
+
+/// An instrument and its room.
+struct Player {
+    horn: Wind,
+    room: Room,
+    wet: f32,
+}
+
+fn player(which: u32) -> Player {
+    Player {
+        horn: wind(CLARINET, blown(which)),
+        room: room(time: 1.5, highs: 0.3, size: 1.6),
+        wet: if which >= 10 { 0.0 } else { ROOM },
+    }
+}
+
+@audio
+fn render(p: mut Player, left: mut [f32], right: mut [f32]) {
+    var dry = [0.0; 128]
+    p.horn.play(mut dry)
+    for n in 0..128 {
+        let wet = p.room.hear(n, dry[n], dry[n])
+        left[n] = dry[n] + p.wet * wet.x
+        right[n] = dry[n] + p.wet * wet.y
+    }
+    p.room.sway()
+}
+
+pub fn frame(p: mut Piece, time: f32, width: u32, height: u32) {
+    if !p.started {
+        p.started = true
+        play(player(p.which), render)
+    }
+}
+
+pub fn seconds(p: Piece) -> f32 {
+    var last = 0
+    for b in blown(p.which) {
+        last = max(last, b.to)
+    }
+    f32(last) / f32(SAMPLE_RATE) + (if p.which >= 10 { 0.5 } else { 2.5 })
+}
+
+/// Prints the take as the audio tool reads it: the piece, its voice, and each note with when it
+/// starts and ends and, as its velocity, how loud it is asked for (0 is -40 dB, 1 is -10 dB).
+pub fn describe(p: Piece) {
+    let name = "clarinet"
+    print(
+        f"{{\"title\":\"Winds\",\"take\":\"{name} {p.which}\",\"bars\":1,\"beats_per_bar\":4,\"seconds\":{seconds(p)}}}",
+    )
+    print(f"{{\"voice\":0,\"name\":\"{name}\"}}")
+    let notes = blown(p.which)
+    for k in 0..notes.len() {
+        let b = notes[k]
+        let key = u32(69.0 + 12.0 * log2(b.hz / 440.0) + 0.5)
+        print(
+            f"{{\"key\":{key},\"voice\":0,\"onset\":{f32(b.from) / f32(SAMPLE_RATE)},\"release\":{f32(b.to) / f32(SAMPLE_RATE)},\"velocity\":{(b.db + 40.0) / 30.0},\"bar\":1}}",
+        )
+    }
+    print("{\"beat\":0}")
+    print(f"{{\"beat\":{seconds(p)}}}")
+}

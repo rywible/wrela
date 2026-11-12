@@ -1,0 +1,28 @@
+// How loud each note of the recording's scales is (dB of full scale, a note's harmonics
+// together), key by key from each instrument's lowest: at a middling level, soft, and loud. The
+// winds' scales are played at these, so each note can be set beside the recording's at the
+// same loudness. Measured from the University of Iowa Musical Instrument Samples
+// (docs/citations.md); a note the measuring missed has its neighbours' middle, and each is the
+// middle of itself and its two neighbours.
+
+/// The clarinet's notes, from key 50: mf, pp, ff.
+pub const CLARINET_DB: [[f32; 46]; 3] = [
+    [
+        -29.9, -29.0, -27.2, -27.1, -27.0, -25.6, -24.2, -24.2, -25.2, -25.5, -25.5, -24.8, -24.1,
+        -24.1, -24.6, -26.3, -26.3, -26.7, -25.0, -25.0, -24.7, -23.0, -21.0, -20.2, -17.6, -17.2,
+        -17.2, -17.7, -17.7, -17.4, -17.4, -14.1, -14.1, -15.8, -15.8, -15.8, -16.1, -16.1, -16.1,
+        -17.9, -17.9, -14.6, -14.6, -20.1, -20.1, -21.3,
+    ],
+    [
+        -40.7, -40.7, -40.7, -40.7, -40.7, -40.7, -40.7, -40.7, -40.7, -39.0, -37.2, -34.6, -34.6,
+        -33.9, -35.7, -35.7, -35.7, -35.7, -37.6, -38.1, -38.1, -36.6, -34.0, -32.2, -25.0, -25.0,
+        -26.8, -27.1, -26.8, -23.0, -22.9, -20.7, -20.2, -20.2, -20.3, -20.9, -20.3, -17.1, -17.1,
+        -22.5, -24.7, -24.7, -26.9, -26.7, -26.9, -29.6,
+    ],
+    [
+        -25.3, -25.2, -25.7, -25.2, -25.1, -24.0, -22.9, -22.8, -22.9, -24.1, -24.1, -23.1, -21.5,
+        -20.4, -20.4, -23.8, -23.8, -23.8, -24.8, -24.8, -23.8, -21.8, -20.3, -18.7, -15.7, -14.6,
+        -14.0, -14.6, -12.9, -12.9, -11.5, -11.5, -12.4, -12.4, -14.4, -14.9, -14.4, -12.1, -12.1,
+        -14.8, -16.5, -16.5, -16.4, -16.4, -17.0, -23.8,
+    ],
+]

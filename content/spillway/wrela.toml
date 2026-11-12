@@ -1,0 +1,7 @@
+# "Spillway": a quiet figure and a wall of sound, played by engine::session, for the audio tool
+# to render (`wrela tool audio -- content/spillway wav <out.wav>`).
+[package]
+name = "spillway"
+
+[dependencies]
+engine = { workspace = true }

@@ -3,8 +3,15 @@
 // highs), its energy over 1 ms, more than 12 dB over its median within 50 ms either side, and the
 // most within 2 ms. With a take's notes (`describe`'s answer), each click is put with what's
 // happening when it starts: a note struck (within 8 ms after an onset), a note let go or the
-// pedal lifted (within 40 ms after a release, or the sustain pedal crossing half its travel), or
-// neither.
+// pedal lifted (within 40 ms after a release, or the sustain pedal crossing half its travel), a
+// note's attack (from 8 to 60 ms after an onset: a drum's hit is a burst that long, and a bass
+// drum's falling pitch is several), or neither.
+//
+// Of those that are neither (and of all of them, without notes), the ones that come at a steady
+// rate are a wave's own edges, not faults in it: a sawtooth's step or a driven sine's corner,
+// once or twice a period (`in_waves`, with their rate). On a beat's whole mix that leaves
+// `elsewhere` holding what is worth looking at: of 629 clicks in "Slack Water", 407 are at
+// onsets, 154 in attacks, 32 at releases and 20 in waves, and 16 are elsewhere.
 
 use dsp::{median, round, round_away}
 use json::{Value, obj, opt, text}
@@ -103,7 +110,34 @@ pub fn kind_of(c: Click, have_notes: bool, onsets: [f64], releases: [f64]) -> Te
             return "release"
         }
     }
+    for x in onsets {
+        if c.at > x + 0.008 && c.at <= x + 0.06 {
+            return "attack"
+        }
+    }
     "other"
+}
+
+/// Which of `found` (in order of time) come at a steady rate: a click whose gaps to the one
+/// before and the one after are under 25 ms and within an eighth of each other, and those two
+/// neighbours. They are a wave's own edges, once or twice a period.
+pub fn in_waves(found: [Click]) -> Vec<bool> {
+    let n = found.len()
+    var out: Vec<bool> = Vec::filled(n, value: false)
+    if n < 3 {
+        return out
+    }
+    for i in 1..n - 1 {
+        let before = found[i].at - found[i - 1].at
+        let after = found[i + 1].at - found[i].at
+        let longer = if before > after { before } else { after }
+        if longer < 0.025 && abs(before - after) < 0.125 * longer {
+            out[i - 1] = true
+            out[i] = true
+            out[i + 1] = true
+        }
+    }
+    out
 }
 
 /// `clicks`' answer.
@@ -158,9 +192,20 @@ pub fn clicks_report(a: Args) -> Result<(), ToolError> {
         }
     }
     var kinds: Vec<Text> = Vec::with_capacity(found.len())
-    for c in found {
-        kinds.push(kind_of(c, have_notes, onsets, releases))
+    let steady = in_waves(found)
+    var rates: Vec<f64> = Vec::new()
+    for i in 0..found.len() {
+        let kind = kind_of(found[i], have_notes, onsets, releases)
+        if steady[i] && (kind == "other" || kind == "unknown") {
+            kinds.push("wave")
+            if i > 0 && steady[i - 1] {
+                rates.push(1.0 / (found[i].at - found[i - 1].at))
+            }
+        } else {
+            kinds.push(kind)
+        }
     }
+    let wave_hz = median(take rates)
     let count = |k: str| {
         var n = 0
         for x in kinds {
@@ -228,8 +273,19 @@ pub fn clicks_report(a: Args) -> Result<(), ToolError> {
             .with("per_minute", Value::Num(round(f64(found.len()) / seconds * 60.0, 1)))
             .with("at_onsets", Value::Int(i64(count("onset"))))
             .with("at_onsets_mean_db", opt(mean_db("onset")))
+            .with("in_attacks", Value::Int(i64(count("attack"))))
             .with("at_releases", Value::Int(i64(count("release"))))
             .with("at_releases_mean_db", opt(mean_db("release")))
+            .with("in_waves", Value::Int(i64(count("wave"))))
+            .with(
+                "in_waves_hz",
+                opt(
+                    match wave_hz {
+                        Some(hz) => Some(round(hz, 1)),
+                        None => None,
+                    },
+                ),
+            )
             .with("elsewhere", Value::Int(i64(count("other"))))
             .with("elsewhere_mean_db", opt(mean_db("other")))
             .with(

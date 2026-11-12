@@ -1,0 +1,8 @@
+# The electric guitar checked by ear and by numbers: a phrase for each of its three sounds and a
+# scale on each, for the audio tool to render (`wrela tool audio -- content/guitar wav <out.wav>
+# --take n`).
+[package]
+name = "guitar"
+
+[dependencies]
+engine = { workspace = true }

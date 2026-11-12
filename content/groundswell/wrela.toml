@@ -1,0 +1,7 @@
+# "Groundswell": a hymn, and the bass that turns it minor, played by engine::session, for the
+# audio tool to render (`wrela tool audio -- content/groundswell wav <out.wav>`).
+[package]
+name = "groundswell"
+
+[dependencies]
+engine = { workspace = true }

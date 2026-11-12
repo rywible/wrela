@@ -1,0 +1,600 @@
+// "Low Sun": a drop-D piece at 88, in D minor, fifty-two bars, about two minutes and twenty
+// seconds. Original music, written here, by Claude for Ryan. The brief: "a sick drop D guitar
+// riff reminiscent of the Deftones", then, of the first version, "more math rock". Nothing of
+// any recording or score is quoted.
+//
+// What it is for: to hear engine::guitar play a piece. Mood: heavy, hazy, patient.
+//
+// An ear's notes on the first version (twenty-five bars; a riff of chugs in threes with
+// chords on F, E flat and D): too short, and it doesn't develop; the riff is generic ("short
+// chunky riffs have to be memorable if they're gonna be played; otherwise big walls of
+// guitars with long power chords are better"); the middle section, the tune and its
+// atmosphere, is the best part; and, of the second mix, the drums and the bass are still low.
+//
+// So, this version:
+// - the riff is a seven-sixteenth cell said against a straight four: the open low chord, a
+//   run of two notes up, and a landing on the octave, then a rest. Said three times in two
+//   bars, its landing a half step high the second time; the fourth time it climbs the wrong
+//   way (F, A flat, C) and two long chords, B flat and C, turn it round. The drums keep a
+//   plain backbeat under it, so the sevens roll over the bar line and reset every two bars;
+// - everywhere else the heavy guitars play walls: chords of a fifth held one and two bars;
+// - the middle is twice as long: the tune as it was, then the walls come in under it and it
+//   climbs to its one highest note, a ninth over C, held; the riff cuts in on the bar line
+//   and D makes that note its root;
+// - it develops: the figure alone; the bass joins it; the riff; the tune; the tune over the
+//   walls; the riff with an octave ringing over it; the walls with the tune's first words;
+//   the figure alone again;
+// - the drums and the bass are up, the guitars down and pushed down a little more by each
+//   bass drum, and the master is driven less, so the drums' hits aren't flattened.
+//
+// An ear's notes on the second version (the riff a seven-sixteenth cell running up D minor's
+// five notes to the octave): "the most bland ass riff ever. It sounds like mom rock. I want
+// it fucking dark. I want it to go hard." A run up the pentatonic to the octave is classic
+// rock's own figure, whatever it is counted in. The riff now is on the low strings alone:
+// muted chugs on the open string, a stab a half step over it, the tritone left hanging, and
+// a fall home by half steps that stops dead; the drums strike every stroke with it. The
+// closing walls go to E flat, a half step over home, and not to C. The sevens are gone.
+//
+// An ear's notes on the third version (chugs on the open string, a stab a half step over
+// it, a hanging tritone, a fall by half steps, the bass drum on every stroke): "No. Rocket
+// Skates by the Deftones is heavy. Jesus Glue by Glassjaw is heavy. This is bland and
+// weird." What those two do, researched (tabs read as data): each riff is one short cell of
+// three or four pitches said over and over; one has three strokes and then a whole beat of
+// silence, the other a note on the low string pushed up a half step from the tritone; the
+// snare is once a bar on its third beat, so the backbeat is at half speed; the bass drum
+// and a crash strike with the guitar and nothing fills the gaps; the bass holds or doubles.
+// A riff of fast chugs under moving chords fills every gap and exposes no stroke: the
+// opposite. The riff now: the open chord twice, the tritone bent up to the fifth and held;
+// the open chord twice and a beat of nothing. Sixths of a beat, not quarters of it.
+//
+// The spine, from the listener's taste (the music skill's taste sheet): withhold, then drop
+// in whole (no drums for eight bars; half a bar of near silence; then everyone on one
+// downbeat, no fill); a rolling figure as the bed (sixteenths in threes against four over two
+// notes that never change, an echo a dotted eighth behind); a short loop with no dominant (D,
+// B flat with its major seventh, C); a tune that hovers on two neighbouring notes, each said
+// twice, then leaps and holds; the bass as a character (alone with the figure, with a line
+// of its own); the cut is the resolution.
+//
+// The style, researched before writing (tabs read as data, interviews, lessons): their heavy
+// riffs are one finger across the low strings against the open low chord, one or two bars
+// long; the fretted notes are mostly a half step or a step from the open one or each other,
+// and land off the beat; octave shapes ring over the open string. The snare is tuned high and
+// dry, on beat 3 alone in the half-time ones, with ghost notes; the bass plays in unison. A
+// quiet section is a clean guitar on two chords a major third apart. Their records are in
+// lower tunings than drop D. The sevens are not theirs: they are the math in "math rock",
+// and near the listener's own list (threes against four that roll over the bar line).
+//
+// The form, with each section's energy (1 to 10):
+//   bars 1-4     the figure alone                                   2
+//   bars 5-8     the bass joins it                                  3
+//   bars 9-16    the riff, everyone                                 9
+//   bars 17-24   the figure, held chords, the tune, half time       5
+//   bars 25-32   the walls come in under the tune; it climbs        8
+//   bars 33-40   the riff, an octave ringing over it               10
+//   bars 41-48   the walls, the tune's first words, falling         7
+//   bars 49-52   the figure alone                                   2
+//
+// Chosen on paper with the skill's melody.py: the tune raised no flags; its second half is
+// flagged for ending on its top note, which is the point of it (the riff answers). The riff
+// is flagged restless, as sevens against four are; the drums under it are as plain as can be.
+
+use engine::drum::{CRASH, Drum, HAT, KICK, OPEN_HAT, RIDE, SNARE}
+use engine::guitar::{
+    Amp, BASS, CLEAN, DAD_ROCK, Guitar, HUMBUCKER, Hand, LEAD, Picking, SOLO, WALL, pickings,
+}
+use engine::pattern::{Feel, Pattern, pattern, struck, tacet}
+use engine::perform::{Mark, Performance, Taste, bar, perform}
+use engine::score::{Meter, Score, meter, score}
+use engine::session::{Master, Session, Strip, session}
+use std::collections::Vec
+
+pub const TITLE: Text = "Low Sun"
+pub const TEMPO: f32 = 88.0
+pub const BARS: u32 = 52
+
+fn four() -> Meter {
+    meter(beats: 4, unit: 4)
+}
+
+fn part(name: Text, lines: [Text]) -> Score {
+    score(TITLE, four()).voice(name, lines)
+}
+
+/// `bars` bars of rest for the part `name`.
+fn rests(name: Text, bars: u32) -> Score {
+    var s = part(name, ["r/1 |"])
+    for _ in 1..bars {
+        s = take s.then(part(name, ["r/1 |"]))
+    }
+    s
+}
+
+// ---- the notes --------------------------------------------------------------------------------
+
+/// The riff's two bars, each two halves of two beats.
+/// The open chord on the beat and again an eighth later, then, on the
+/// next beat, the tritone on the low string pushed up a half step to the fifth and held. The
+/// next half: the same two strokes and a whole beat of nothing, where the snare is alone.
+/// The second bar ends not in nothing but on the chord a half step over home, held a beat.
+/// Nothing else: two chords and a bent note, with room round every stroke. And the bar it
+/// ends on when what follows is quiet: the first bar again.
+const RIFF_1: Text = "<d2 a2 d3>/8 !f !accent <d2 a2 d3>/8 ab2/16t !accent ( a2/8t ~ a2/8 ) <d2 a2 d3>/8 !accent <d2 a2 d3>/8 r/4 |"
+const RIFF_2: Text = "<d2 a2 d3>/8 !accent <d2 a2 d3>/8 ab2/16t !accent ( a2/8t ~ a2/8 ) <d2 a2 d3>/8 !accent <d2 a2 d3>/8 <eb2 bb2 eb3>/4 !accent |"
+const RIFF_HOLE: Text = "<d2 a2 d3>/8 !accent <d2 a2 d3>/8 ab2/16t !accent ( a2/8t ~ a2/8 ) <d2 a2 d3>/8 !accent <d2 a2 d3>/8 r/4 |"
+
+/// The riff four times over two bars each; the last ends on the hole if `holes`.
+fn riff(holes: bool) -> Score {
+    var s = part("guitar", [RIFF_1, RIFF_2])
+    for k in 1..4 {
+        s = take s.then(part("guitar", [RIFF_1, if holes && k == 3 { RIFF_HOLE } else { RIFF_2 }]))
+    }
+    s
+}
+
+/// The driven guitars' whole part: silent, the riff, silent, walls under the tune, the riff,
+/// walls, silent.
+fn heavy() -> Score {
+    var s = rests("guitar", 8)
+    s = take s.then(riff(holes: true))
+    s = take s.then(rests("guitar", 8))
+    s = take s.then(
+        part(
+            "guitar",
+            [
+                "<bb2 f3 bb3>/1 !mf ~ | <bb2 f3 bb3>/1 | <d2 a2 d3>/1 ~ | <d2 a2 d3>/1 |",
+                "<bb2 f3 bb3>/1 ~ | <bb2 f3 bb3>/1 | <c3 g3 c4>/1 !< ~ | <c3 g3 c4>/1 !f |",
+            ],
+        ),
+    )
+    s = take s.then(riff(holes: false))
+    s = take s.then(
+        part(
+            "guitar",
+            [
+                "<d2 a2 d3>/1 !f | <bb2 f3 bb3>/1 | <g2 d3 g3>/1 | <d2 a2 d3>/1 |",
+                "<d2 a2 d3>/1 !> | <bb2 f3 bb3>/1 | <g2 d3 g3>/1 | <d2 a2 d3>/1 !mp |",
+            ],
+        ),
+    )
+    take s.then(rests("guitar", 4))
+}
+
+/// The bass under the riff: the riff, an octave under the guitars.
+const LOW_1: Text = "d1/8 !f d1 d1/4 d1/8 d1 r/4 |"
+const LOW_2: Text = "d1/8 d1 d1/4 d1/8 d1 eb1/4 |"
+const LOW_HOLE: Text = "d1/8 d1 d1/4 d1/8 d1 r/4 |"
+
+fn low_riff(holes: bool) -> Score {
+    var s = part("bass", [LOW_1, LOW_2])
+    for k in 1..4 {
+        s = take s.then(part("bass", [LOW_1, if holes && k == 3 { LOW_HOLE } else { LOW_2 }]))
+    }
+    s
+}
+
+/// The bass under the riff and the walls.
+fn bass() -> Score {
+    var s = rests("bass", 8)
+    s = take s.then(low_riff(holes: true))
+    s = take s.then(rests("bass", 8))
+    // Under the walls: their roots, held as long.
+    s = take s.then(
+        part(
+            "bass",
+            ["bb1/1 !mf ~ | bb1/1 | d1/1 ~ | d1/1 | bb1/1 ~ | bb1/1 | c2/1 !< ~ | c2/1 !f |"],
+        ),
+    )
+    s = take s.then(low_riff(holes: false))
+    s = take s.then(
+        part("bass", ["d1/1 !f | bb1/1 | g1/1 | d1/1 | d1/1 !> | bb1/1 | g1/1 | d1/1 !mp |"]),
+    )
+    take s.then(rests("bass", 4))
+}
+
+/// The bass in the quiet: with the figure alone, and under the tune, a line of its own, a
+/// root held and a walk to the next. (It is a track of its own, played softly through a
+/// cleaner amplifier: on the riff's track, through its driven one, it was as loud as the
+/// riff.)
+fn bass_line() -> Score {
+    var s = rests("bass line", 4)
+    s = take s.then(
+        part("bass line", ["d2/2. !mp a1/4 | d2/2 c2/4 a1 | bb1/2. f2/4 | bb1/2 r |"]),
+    )
+    s = take s.then(rests("bass line", 8))
+    s = take s.then(
+        part(
+            "bass line",
+            [
+                "d2/2. !mp a1/4 | d2/2 c2/4 a1 | bb1/2. f2/4 | bb1/2 c2 |",
+                "d2/2. a1/4 | d2/2 c2/4 a1 | bb1/2. f2/4 | bb1/1 |",
+            ],
+        ),
+    )
+    take s.then(rests("bass line", 28))
+}
+
+/// One bar of the figure for each note its top takes: threes against four over the open D
+/// and the A above it.
+const ROLL_D: Text = "d4/16 a3 d3 d4 a3 d3 d4 a3 d3 d4 a3 d3 d4 a3 d4 a3 |"
+const ROLL_E: Text = "e4/16 a3 d3 e4 a3 d3 e4 a3 d3 e4 a3 d3 e4 a3 e4 a3 |"
+const ROLL_F: Text = "f4/16 a3 d3 f4 a3 d3 f4 a3 d3 f4 a3 d3 f4 a3 f4 a3 |"
+const ROLL_G: Text = "g4/16 a3 d3 g4 a3 d3 g4 a3 d3 g4 a3 d3 g4 a3 g4 a3 |"
+const ROLL_A: Text = "a4/16 a3 d3 a4 a3 d3 a4 a3 d3 a4 a3 d3 a4 a3 a4 a3 |"
+
+fn rolls(bars: [Text]) -> Score {
+    var s = part("figure", [bars[0]])
+    for k in 1..bars.len() {
+        s = take s.then(part("figure", [bars[k]]))
+    }
+    s
+}
+
+/// The clean guitar: the figure for eight bars (the last stops halfway, for the riff), silent
+/// under the riff, the figure through the tune and the walls, silent under the riff, the
+/// figure under the last walls, and alone again, coming to rest on its two fixed notes.
+fn figure() -> Score {
+    var s = rolls([ROLL_F, ROLL_E, ROLL_F, ROLL_G, ROLL_F, ROLL_E, ROLL_F])
+    s = take s.then(part("figure", ["g4/16 !mp a3 d3 g4 a3 d3 g4 a3 r/2 |"]))
+    s = take s.then(rests("figure", 8))
+    s = take s.then(rolls([ROLL_D, ROLL_D, ROLL_F, ROLL_F, ROLL_D, ROLL_D, ROLL_F, ROLL_A]))
+    s = take s.then(rolls([ROLL_F, ROLL_F, ROLL_D, ROLL_D, ROLL_F, ROLL_F, ROLL_E, ROLL_E]))
+    s = take s.then(rests("figure", 8))
+    s = take s.then(rests("figure", 8))
+    s = take s.then(rolls([ROLL_F, ROLL_E, ROLL_F]))
+    take s.then(part("figure", ["d4/16 !p a3 d3 a3 d4/2. |"]))
+}
+
+/// The held chords, barely driven: D with no third (the tune has the third and the ninth, a
+/// half step apart, and says them one at a time), B flat with its major seventh, and C. Over
+/// the riff's return, an octave held high: what holds the top while the riff moves under it.
+fn wash() -> Score {
+    var s = rests("wash", 16)
+    for _ in 0..2 {
+        s = take s.then(
+            part(
+                "wash",
+                [
+                    "<d2 a2 d3 a3 d4>/1 !mp | <d2 a2 d3 a3 d4>/2. <d2 a2 d3 a3 d4>/4 |",
+                    "<bb2 f3 a3 d4>/1 | <bb2 f3 a3 d4>/2. <bb2 f3 a3 d4>/4 |",
+                ],
+            ),
+        )
+    }
+    s = take s.then(
+        part(
+            "wash",
+            [
+                "<bb2 f3 a3 d4>/1 !mf | <bb2 f3 a3 d4>/1 | <d2 a2 d3 a3 d4>/1 | <d2 a2 d3 a3 d4>/1 |",
+                "<bb2 f3 a3 d4>/1 | <bb2 f3 a3 d4>/1 | <c3 g3 c4 e4>/1 | <c3 g3 c4 e4>/1 |",
+            ],
+        ),
+    )
+    s = take s.then(
+        part(
+            "wash",
+            [
+                "<d4 d5>/1 !mf ~ | <d4 d5>/1 | <d4 d5>/1 ~ | <d4 d5>/1 |",
+                "<d4 d5>/1 ~ | <d4 d5>/1 | <d4 d5>/1 ~ | <d4 d5>/1 |",
+            ],
+        ),
+    )
+    s = take s.then(
+        part(
+            "wash",
+            [
+                "<d2 a2 d3 a3 d4>/1 !mf | <bb2 f3 a3 d4>/1 | <g2 d3 g3 d4>/1 | <d2 a2 d3 a3 d4>/1 |",
+                "<d2 a2 d3 a3 d4>/1 !> | <bb2 f3 a3 d4>/1 | <g2 d3 g3 d4>/1 | <d2 a2 d3 a3 d4>/1 !p |",
+            ],
+        ),
+    )
+    take s.then(rests("wash", 4))
+}
+
+/// The tune. First: two neighbouring notes, each said twice, long then short; said a step
+/// lower over B flat; said again; then a leap of a fourth, an eighth early, held two bars.
+/// Then, over the walls: it starts lower and climbs, comes back to its held A, reaches a
+/// half step over it, and at the last leaps a fourth to its one highest note and holds it.
+/// Last, over the walls falling: its first words, a little changed, and home.
+fn tune() -> Score {
+    var s = rests("lead", 16)
+    s = take s.then(
+        part(
+            "lead",
+            [
+                "e5/4. !mf e5/8 f5/4. f5/8 | e5/2 r/2 |",
+                "d5/4. d5/8 c5/4. c5/8 | d5/2 r/2 |",
+                "e5/4. !< e5/8 f5/4. f5/8 | e5/2 r/4. a5/8 !f ~ |",
+                "a5/1 ~ | a5/1 |",
+            ],
+        ),
+    )
+    s = take s.then(
+        part(
+            "lead",
+            [
+                "d5/4. !mf d5/8 f5/4. f5/8 | g5/2 r/4 f5/8 g5 |",
+                "a5/2. ~ a5/8 g5 | a5/2 r/2 |",
+                "bb5/4. !< a5/8 g5/4. f5/8 | g5/2. r/4 |",
+                "a5/4. !f a5/8 d6/2 !accent ~ | d6/1 |",
+            ],
+        ),
+    )
+    s = take s.then(rests("lead", 8))
+    s = take s.then(
+        part(
+            "lead",
+            ["e5/4. !mf e5/8 f5/4. f5/8 | d5/1 | g5/4. !> g5/8 f5/4. f5/8 | d5/1 !p |"],
+        ),
+    )
+    take s.then(rests("lead", 8))
+}
+
+// ---- the drums --------------------------------------------------------------------------------
+
+/// The snare tuned up and dried: a higher shell, more of its wires, a short ring.
+const CRACK: Drum = Drum {
+    tone_hz: 235.0,
+    tone_t60: 0.15,
+    second_hz: 500.0,
+    noise: 1.6,
+    noise_t60: 0.2,
+    click: 0.2,
+    ..SNARE,
+}
+
+/// The bass drum for a wall of guitars: a shorter boom and the beater's click, which is what
+/// is heard of it through them.
+const BEATER: Drum = Drum { tone_hz: 50.0, tone_t60: 0.36, click: 6.0, ..KICK }
+
+/// Two bars of nothing.
+const NONE: Text = ".... .... .... .... | .... .... .... .... |"
+
+fn drum(name: Text, lines: [Text]) -> Pattern {
+    pattern(name, four(), lines)
+}
+
+/// Two bars written six marks to a beat: the riff's own grid.
+fn sixths(name: Text, line: Text) -> Pattern {
+    pattern(name, four(), [line], steps: 24)
+}
+
+/// Two bars of nothing, six marks to a beat.
+const NONE_SIXTHS: Text = "...... ...... ...... ...... | ...... ...... ...... ...... |"
+
+/// A drum's whole part, each two bars four times over: silent for eight bars, `riff`, `soft`
+/// (under the tune), `full` (under the tune and the walls), `again` (the riff's return,
+/// harder), `wide` (under the last walls), and silent for four.
+fn kit(name: Text, riff: Text, soft: Text, full: Text, again: Text, wide: Text) -> Pattern {
+    var p = tacet(four(), bars: 8)
+    p = take p.then(sixths(name, riff).times(4))
+    p = take p.then(drum(name, [soft]).times(4))
+    p = take p.then(drum(name, [full]).times(4))
+    p = take p.then(sixths(name, again).times(4))
+    p = take p.then(drum(name, [wide]).times(4))
+    take p.then(tacet(four(), bars: 4))
+}
+
+// ---- the session ------------------------------------------------------------------------------
+
+/// A score as the player `seed` plays it: accents leaned on, no two notes quite alike.
+fn played(s: Score, seed: u32) -> Performance {
+    perform(
+        s,
+        Taste {
+            tempo: TEMPO,
+            metre: 0.04,
+            accent: 0.3,
+            jitter_time: 0.004,
+            jitter_velocity: 0.06,
+            seed,
+        },
+        [Mark::Hold { at: bar(1), by: 1.0 }; 0],
+    )
+}
+
+/// Drop D: the lowest string a whole step down, so one finger across the low three strings
+/// is a chord of a fifth.
+const DROP_D: [f32; 6] = [38.0, 45.0, 50.0, 55.0, 59.0, 64.0]
+const BASS_DROP_D: [f32; 6] = [26.0, 33.0, 38.0, 43.0, 47.0, 52.0]
+
+/// The whole piece, ready to play.
+pub fn build() -> Session {
+    // The master is driven gently: the drums' hits are what the limiter would flatten first.
+    var s = session(
+        TEMPO,
+        Master {
+            gain: 0.0,
+            glue_db: -18.0,
+            glue: 0.25,
+            makeup: 2.5,
+            warmth: 0.6,
+            ceiling: -1.0,
+            room_time: 1.1,
+            room_highs: 0.4,
+            room_size: 1.8,
+            room_db: -7.0,
+            echo_beats: 0.75,
+            echo_again: 0.35,
+            echo_db: -6.0,
+            duck_time: 0.07,
+        },
+    )
+    // The drums. Under the riff: the bass drum on the open chord's two strokes and nowhere
+    // else, a crash on the bar's first, an open hi-hat every eighth, and the snare on the
+    // second and fourth beats: with the bent note the first time, alone in the silence the
+    // second. When the riff returns the bass drum adds a pickup and the snare a roll into
+    // each second bar. Under the tune: half as busy, on the ride; under the walls, fuller.
+    let feel = Feel { loose: 0.002, uneven: 0.05, seed: 3 }
+    s.drum(
+        "kick",
+        BEATER,
+        struck(
+            kit(
+                "kick",
+                "x..x.. ...... x..x.. ...... | x..x.. ...... x..x.. .....x |",
+                "x... .... ..x. .... | x... .... .x.. .... |",
+                "x... ..x. .... x... | x... ..x. .... x.x. |",
+                "x..x.. ...... x..x.. .....x | x..x.. ...... x..x.. ...x.x |",
+                "x... .... ..x. .... | x... ..x. .... .... |",
+            ),
+            TEMPO,
+            feel,
+            key: 36,
+        ),
+        Strip { gain: 6.0, room: 0.05 },
+    )
+    s.drum(
+        "snare",
+        CRACK,
+        struck(
+            kit(
+                "snare",
+                "...... X..... ...... X..... | ...... X..... ...... X..... |",
+                ".... .... x... .... | .... .... x... ...o |",
+                ".... .... X... .... | .... .... X... ..o. |",
+                "...... X..... ...... X..... | ...... X..... ...... X..xxx |",
+                ".... .... X... .... | .... .... X... .... |",
+            ),
+            TEMPO,
+            Feel { late: 0.006, ..feel },
+            key: 38,
+        ),
+        Strip { gain: 6.5, room: 0.12 },
+    )
+    s.drum(
+        "open hat",
+        OPEN_HAT,
+        struck(
+            kit(
+                "open hat",
+                "x..x.. x..x.. x..x.. x..x.. | x..x.. x..x.. x..x.. x..x.. |",
+                NONE,
+                NONE,
+                "x..x.. x..x.. x..x.. x..x.. | x..x.. x..x.. x..x.. x..x.. |",
+                NONE,
+            ),
+            TEMPO,
+            Feel { late: -0.004, ..feel },
+            key: 46,
+        ),
+        Strip { gain: -1.0, pan: 0.3, low_cut: 400.0, room: 0.15 },
+    )
+    s.drum(
+        "ride",
+        RIDE,
+        struck(
+            kit(
+                "ride",
+                NONE_SIXTHS,
+                "x... x... x... x... | x... x... x... x.x. |",
+                "x... x... x... x... | x... x... x... x.x. |",
+                NONE_SIXTHS,
+                "x... x... x... x... | x... x... x... x... |",
+            ),
+            TEMPO,
+            Feel { late: -0.003, ..feel },
+            key: 51,
+        ),
+        Strip { gain: 0.0, pan: -0.25, low_cut: 300.0, room: 0.25 },
+    )
+    s.drum(
+        "crash",
+        CRASH,
+        struck(
+            kit(
+                "crash",
+                "X..... ...... ...... ...... | ...... ...... ...... ...... |",
+                "x... .... .... .... | .... .... .... .... |",
+                "X... .... .... .... | .... .... .... .... |",
+                "X..... ...... ...... ...... | X..... ...... ...... ...... |",
+                "X... .... .... .... | x... .... .... .... |",
+            ),
+            TEMPO,
+            feel,
+            key: 49,
+        ),
+        Strip { gain: -7.0, pan: -0.3, low_cut: 300.0, room: 0.3 },
+    )
+    // The bass guitar: in the middle, pushed down a little by each bass drum. Its amplifier
+    // driven a little harder and its speaker opened up, so its growl at 700 Hz to 2 kHz is
+    // heard through the guitars and not only its bottom felt under them.
+    let growl = Amp { drive: 19.0, mid: 1.3, treble: 1.3, cab_high: 3600.0, ..BASS.amp }
+    let low = Guitar { open: BASS_DROP_D, amp: growl, ..BASS }
+    let b = bass()
+    s.guitar(
+        "bass",
+        low,
+        pickings(b, played(b, 5), 0, low, Hand { mutes: false }),
+        Strip { gain: 0.5, high_cut: 4500.0, duck: 3.0, room: 0.03 },
+    )
+    let soft = Guitar { open: BASS_DROP_D, ..BASS }
+    let bl = bass_line()
+    s.guitar(
+        "bass line",
+        soft,
+        pickings(bl, played(bl, 6), 0, soft, Hand { mutes: false }),
+        Strip { gain: -6.0, high_cut: 3000.0, duck: 2.0, room: 0.05 },
+    )
+    // The riff and the walls: two players, one a side, through two speakers, each pushed
+    // down a little by the bass drum.
+    // The wall's amplifier with fewer of the lows cut before its valves: there are no fast
+    // chugs to keep apart now, and the weight is under 80 Hz.
+    let tight = Amp { tight: 120.0, ..WALL }
+    let left = Guitar { open: DROP_D, amp: tight, ..HUMBUCKER }
+    let right = Guitar { open: DROP_D, amp: Amp { cone: 29, ..tight }, ..HUMBUCKER }
+    let h = heavy()
+    // Every stroke down; a slur of a half step on one string is a bend.
+    let down = Hand { up_every: 0, strum: 0.005, bends: 1, bend_time: 0.24 }
+    s.guitar(
+        "guitar left",
+        left,
+        pickings(h, played(h, 11), 0, left, down),
+        Strip { gain: -6.0, pan: -0.92, low_cut: 100.0, duck: 1.5, room: 0.12 },
+    )
+    s.guitar(
+        "guitar right",
+        right,
+        pickings(h, played(h, 12), 0, right, down),
+        Strip { gain: -6.0, pan: 0.92, low_cut: 100.0, duck: 1.5, room: 0.12 },
+    )
+    // The held chords: barely driven, far back and wide.
+    let hazy = Guitar {
+        open: DROP_D,
+        amp: Amp { drive: 9.0, level: -14.0, ..DAD_ROCK },
+        ..HUMBUCKER,
+    }
+    let w = wash()
+    let slow = Hand { up_every: 0, strum: 0.02, ring: 0.6 }
+    s.guitar(
+        "wash left",
+        hazy,
+        pickings(w, played(w, 21), 0, hazy, slow),
+        Strip { gain: 1.5, pan: -0.85, low_cut: 110.0, room: 0.4, echo: 0.15 },
+    )
+    s.guitar(
+        "wash right",
+        Guitar { amp: Amp { cone: 41, ..hazy.amp }, ..hazy },
+        pickings(w, played(w, 22), 0, hazy, slow),
+        Strip { gain: 1.5, pan: 0.85, low_cut: 110.0, room: 0.4, echo: 0.15 },
+    )
+    // The figure: clean, each string let ring, its echo a dotted eighth behind.
+    let clean = Guitar { open: DROP_D, ..CLEAN }
+    let f = figure()
+    s.guitar(
+        "figure",
+        clean,
+        pickings(f, played(f, 31), 0, clean, Hand { ring: 1.0 }),
+        Strip { gain: -1.0, pan: -0.15, low_cut: 100.0, room: 0.3, echo: 0.4 },
+    )
+    // The tune: a lead guitar, in front, a little echo.
+    let singer = Guitar { open: DROP_D, ..LEAD }
+    let t = tune()
+    s.guitar(
+        "lead",
+        singer,
+        pickings(t, played(t, 41), 0, singer, SOLO),
+        Strip { gain: -4.0, pan: 0.1, low_cut: 150.0, room: 0.2, echo: 0.3 },
+    )
+    s.key("kick")
+    s
+}

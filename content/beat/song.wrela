@@ -1,0 +1,302 @@
+// "Slack Water": a beat at 86, in A minor, twenty bars, about a minute. Original music, written
+// here, by Claude for Ryan.
+//
+// Four chords go round, a bar each: A minor 9, D minor 9, F major 9, E7 with a sharp ninth.
+// - bars 1-4, the keys alone: the electric piano's left hand holds each chord's root and its
+//   right plays the chord twice a bar, the second pushed ahead of the third beat, the pedal
+//   changed with each root; from bar 3 a soft hi-hat and a rim.
+// - bars 5-12, the beat: the bass drum and the sub bass together (the bass follows the drum's
+//   rhythm and slides into each next chord), the snare and a clap behind the beat, the hi-hats
+//   a little ahead of it, an open hat at the end of every second bar.
+// - bars 13-16, the lead: a sung line in A minor over the same beat, slurred, answered by its
+//   echo, the hats rolling up into each fourth beat.
+// - bars 17-20, the tide goes out: the drums thin to a bass drum, hats and a rim, then stop; the
+//   keys' last chord rings.
+//
+// Everything swings: each off sixteenth falls 58% of the way between its eighths.
+//
+// An ear's notes on the first version shaped this one: the keys no longer let go together
+// before each chord (the pedal holds them), their chords are rolled and have roots under them,
+// the lead is an octave lower and sung, not plucked, and the room is entered through a smear.
+
+use engine::drum::{CLAP, Drum, HAT, KICK, OPEN_HAT, RIM, SNARE}
+use engine::pattern::{Feel, Pattern, pattern, struck, swung, tacet}
+use engine::perform::{Mark, Pedal, Performance, Taste, bar, perform}
+use engine::score::{Meter, Score, meter, score}
+use engine::session::{Master, Session, Strip, session}
+use engine::synth::{LEAD, SUB}
+use engine::tine::SUITCASE
+
+pub const TITLE: Text = "Slack Water"
+
+/// The snare's wires (round 1.5 kHz), a little over the engine's 1.3 (1.3 dB more of them).
+/// The whole beat's octave at 1 kHz sat 4.7 dB under the line through its others, and the
+/// snare is most of what is there; an ear's note was that the groove wanted more snap. With
+/// this the octaves at 1, 2 and 4 kHz are 0.4, 0.7 and 1.0 dB up. (Driving the keys' strip to
+/// add harmonics there changed nothing measurable, so the keys are as they were.)
+const WIRES: f32 = 1.4
+pub const TEMPO: f32 = 86.0
+pub const BARS: u32 = 20
+const SWING: f32 = 0.58
+
+fn four() -> Meter {
+    meter(beats: 4, unit: 4)
+}
+
+/// A drum's part: the bars' text.
+fn drum(name: Text, lines: [Text]) -> Pattern {
+    pattern(name, four(), lines)
+}
+
+// ---- the drums --------------------------------------------------------------------------------
+
+fn kick() -> Pattern {
+    let beat = drum("kick", ["x... ...x ..x. .... | x... ..x. ..x. ..x."])
+    tacet(four(), bars: 4)
+        .then(beat.times(6))
+        .then(drum("kick", ["x... .... .... .... | x... .... ..x. .... | x... .... .... .... |"]))
+        .then(tacet(four(), bars: 1))
+}
+
+fn snare() -> Pattern {
+    let beat = drum("snare", [".... X... .o.. X... | .... X..o .... X..o"])
+    tacet(four(), bars: 4).then(beat.times(6)).then(tacet(four(), bars: 4))
+}
+
+fn clap() -> Pattern {
+    let beat = drum("clap", [".... x... .... x..."])
+    tacet(four(), bars: 4).then(beat.times(12)).then(tacet(four(), bars: 4))
+}
+
+fn hat() -> Pattern {
+    let soft = drum("hat", ["o.o. o.o. o.o. o.o."])
+    let beat = drum("hat", ["X.x. X.xo X.x. X.xx | X.x. X.x. X.xo X..."])
+    // The rolls climb: soft, then harder, into the beat.
+    let rolling = drum("hat", ["X.x. X.xo X.x. X.[oxX]x | X.x. X.x. X.[oxX]o X..."])
+    tacet(four(), bars: 2)
+        .then(soft.times(2))
+        .then(beat.times(4))
+        .then(rolling.times(2))
+        .then(drum("hat", ["x.x. x.x. x.x. x.x. | x.x. x.x. x.x. x.x. | x... x... x... o... |"]))
+        .then(tacet(four(), bars: 1))
+}
+
+fn open_hat() -> Pattern {
+    let beat = drum("open hat", [".... .... .... .... | .... .... .... ..x."])
+    tacet(four(), bars: 4).then(beat.times(6)).then(tacet(four(), bars: 4))
+}
+
+fn rim() -> Pattern {
+    let back = drum("rim", [".... x... .... x..."])
+    tacet(four(), bars: 2)
+        .then(back.times(2))
+        .then(tacet(four(), bars: 12))
+        .then(drum("rim", [".... x... .... x... | .... x... .... x..x |"]))
+        .then(tacet(four(), bars: 2))
+}
+
+// ---- the parts written as notes ---------------------------------------------------------------
+
+fn part(name: Text, lines: [Text]) -> Score {
+    score(TITLE, four()).voice(name, lines)
+}
+
+/// `bars` bars of rest for the part `name`.
+fn rests(name: Text, bars: u32) -> Score {
+    var s = part(name, ["r/1 |"])
+    for _ in 1..bars {
+        s = take s.then(part(name, ["r/1 |"]))
+    }
+    s
+}
+
+/// The keys: the right hand's chord struck on the first beat, held, and struck again a sixteenth
+/// before the third; the left hand's root under it, a bar long.
+fn keys() -> Score {
+    let round = || -> Score {
+        score(TITLE, four())
+            .voice(
+                "keys",
+                [
+                    "<g3 b3 c4 e4>/4.. !mf <g3 b3 c4 e4>/16~ <g3 b3 c4 e4>/2 |",
+                    "<f3 a3 c4 e4>/4.. <f3 a3 c4 e4>/16~ <f3 a3 c4 e4>/2 |",
+                    "<e3 g3 a3 c4>/4.. <e3 g3 a3 c4>/16~ <e3 g3 a3 c4>/2 |",
+                    "<g#3 d4 g4>/4.. <g#3 d4 g4>/16~ <g#3 d4 g4>/2 |",
+                ],
+            )
+            .voice("left", ["a2/1 | d3/1 | f2/1 | e2/1 |"])
+    }
+    // The last round stops on the A minor: the first chord again, a bar, and once more, softly,
+    // so the ending rings and doesn't fade to nothing over two bars.
+    let last = score(TITLE, four())
+        .voice(
+            "keys",
+            [
+                "<g3 b3 c4 e4>/4.. !mf <g3 b3 c4 e4>/16~ <g3 b3 c4 e4>/2 |",
+                "<f3 a3 c4 e4>/4.. <f3 a3 c4 e4>/16~ <f3 a3 c4 e4>/2 |",
+                "<g3 b3 c4 e4>/1 !mp | <g3 b3 c4 e4>/1 !p |",
+            ],
+        )
+        .voice("left", ["a2/1 | d3/1 | a2/1 | a2/1 |"])
+    round().then(round()).then(round()).then(round()).then(last)
+}
+
+/// The bass: each chord's root where the bass drum falls, sliding (a slur) into the next.
+fn bass() -> Score {
+    let round = || -> Score {
+        part(
+            "bass",
+            [
+                "a1/4. !f r/16 a1/8. a1/4 ( c2/8 ) |",
+                "d2/4. d2/4 d2/4 ( f2/8 ) |",
+                "f1/4. r/16 f1/8. f1/4 ( g1/8 ) |",
+                "e1/4. e1/4 e2/4 ( e1/8 ) |",
+            ],
+        )
+    }
+    let last = part("bass", ["a1/2. !mf r/4 | d2/2. r/4 | a1/1 | r/1 |"])
+    rests("bass", bars: 4).then(round()).then(round()).then(round()).then(last)
+}
+
+/// The lead: four bars, a call and its answer twice, each phrase under one slur, with room
+/// round it.
+fn lead() -> Score {
+    let line = part(
+        "lead",
+        [
+            "r/4 e4/8 !mf ( g4/8 a4/4. ) e4/8 |",
+            "d4/4 ( c4/4 a3/2 ) |",
+            "r/4 e4/8 ( g4/8 a4/4 c5/4 ) |",
+            "b4/4. ( g#4/8 e4/2 ) |",
+        ],
+    )
+    rests("lead", bars: 12).then(line).then(rests("lead", bars: 4))
+}
+
+/// A score as a player with `taste` plays it, sitting in time as `feel` says.
+fn played(s: Score, taste: Taste, feel: Feel) -> Performance {
+    swung(perform(s, taste, [Mark::Hold { at: bar(1), by: 1.0 }; 0]), feel)
+}
+
+// ---- the session ------------------------------------------------------------------------------
+
+/// The whole beat, ready to play.
+pub fn build() -> Session {
+    var s = session(
+        TEMPO,
+        Master {
+            gain: 4.0,
+            glue_db: -16.0,
+            glue: 0.3,
+            makeup: 3.6,
+            warmth: 1.0,
+            ceiling: -1.0,
+            room_time: 1.3,
+            room_size: 1.6,
+            room_db: -3.0,
+            echo_beats: 0.75,
+            echo_again: 0.38,
+            echo_db: -5.0,
+        },
+    )
+    // The drums: the kick on the grid, the snare and the clap laid back, the hats pushed.
+    s.drum(
+        "kick",
+        KICK,
+        struck(kick(), TEMPO, Feel { swing: SWING, loose: 0.001, uneven: 0.03, seed: 1 }, key: 36),
+        Strip { gain: -2.0, room: 0.03 },
+    )
+    s.drum(
+        "snare",
+        Drum { noise: WIRES, ..SNARE },
+        struck(
+            snare(),
+            TEMPO,
+            Feel { swing: SWING, late: 0.012, loose: 0.003, uneven: 0.06, seed: 2 },
+            key: 38,
+        ),
+        Strip { gain: -4.0, low_cut: 110.0, drive: 1.2, room: 0.28 },
+    )
+    s.drum(
+        "clap",
+        CLAP,
+        struck(
+            clap(),
+            TEMPO,
+            Feel { swing: SWING, late: 0.02, loose: 0.003, uneven: 0.08, seed: 3 },
+            key: 39,
+        ),
+        Strip { gain: -3.0, pan: -0.2, low_cut: 300.0, room: 0.3 },
+    )
+    s.drum(
+        "hat",
+        HAT,
+        struck(
+            hat(),
+            TEMPO,
+            Feel { swing: SWING, late: -0.004, loose: 0.004, uneven: 0.12, seed: 4 },
+            key: 42,
+        ),
+        Strip { gain: -5.0, pan: 0.4, room: 0.08 },
+    )
+    s.drum(
+        "open hat",
+        OPEN_HAT,
+        struck(open_hat(), TEMPO, Feel { swing: SWING, late: -0.004, seed: 5 }, key: 46),
+        Strip { gain: -4.0, pan: 0.45, room: 0.12 },
+    )
+    s.drum(
+        "rim",
+        RIM,
+        struck(
+            rim(),
+            TEMPO,
+            Feel { swing: SWING, late: 0.008, loose: 0.003, uneven: 0.08, seed: 6 },
+            key: 37,
+        ),
+        Strip { gain: -4.0, pan: -0.45, room: 0.3 },
+    )
+    s.chokes("hat", "open hat")
+    s.key("kick")
+    // The bass slides where it is slurred: its slurred notes overlap the next.
+    s.synth(
+        "bass",
+        SUB,
+        played(bass(), Taste { tempo: TEMPO, legato: 0.05, detache: 0.04 }, Feel { swing: SWING }),
+        Strip { gain: -4.5, high_cut: 1500.0, duck: 8.0 },
+    )
+    // The keys: a hand rolls each chord a little, from the root up, and the pedal is changed
+    // with each root, so a chord rings until the next.
+    s.tine(
+        "keys",
+        SUITCASE,
+        played(
+            keys(),
+            Taste {
+                tempo: TEMPO,
+                bass: "left",
+                bass_weight: 0.9,
+                detache: 0.02,
+                pedal: Pedal::ByVoice { voice: "left", catch: 0.07, depth: 1.0 },
+                ring: 1.5,
+                roll: 0.014,
+                jitter_velocity: 0.05,
+                seed: 7,
+            },
+            Feel { swing: SWING, late: 0.006, loose: 0.003, seed: 7 },
+        ),
+        Strip { gain: -11.5, low_cut: 90.0, room: 0.3, echo: 0.06, duck: 2.0 },
+    )
+    // The lead slides where it is slurred, as the bass does.
+    s.synth(
+        "lead",
+        LEAD,
+        played(
+            lead(),
+            Taste { tempo: TEMPO, legato: 0.06, detache: 0.1, jitter_velocity: 0.06, seed: 8 },
+            Feel { swing: SWING, late: 0.012, loose: 0.004, seed: 8 },
+        ),
+        Strip { gain: -2.5, pan: 0.2, low_cut: 150.0, room: 0.25, echo: 0.3 },
+    )
+    s
+}

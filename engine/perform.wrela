@@ -106,6 +106,15 @@ pub struct Taste: Copy {
     pub hairpin_curve: f32 = 1.0,
     /// How much harder a bar's first beat is struck than its others.
     pub metre: f32 = 0.0,
+    /// How much harder a note on a beat is struck than the notes between beats (which are a
+    /// third of this softer): the pulse.
+    pub pulse: f32 = 0.0,
+    /// How much longer the note that starts a bar, or its second half, is held: an agogic
+    /// accent. What follows comes that much later.
+    pub agogic: f32 = 0.0,
+    /// How much softer a note under a slur is than the slur's first: a bow, or a breath, is
+    /// strongest where it starts.
+    pub slur_ease: f32 = 0.0,
     /// How much harder each octave above middle C is struck (below, softer).
     pub high_loud: f32 = 0.0,
     /// How much harder an accented note is struck.
@@ -121,6 +130,9 @@ pub struct Taste: Copy {
     /// The soft pedal's depth where the music is at `soft_below` or softer (0: never used).
     pub soft: f32 = 0.0,
     pub soft_below: f32 = 0.3,
+    /// Seconds a chord's notes are struck across, the lowest first: a hand's small roll, on
+    /// every chord (a `Mark::Roll` rolls one chord further).
+    pub roll: f32 = 0.0,
     /// Small random differences, as a hand makes: the spread of onsets in seconds, and of
     /// velocities as a fraction. `seed` chooses them, so the same taste plays the same way.
     pub jitter_time: f32 = 0.0,
@@ -224,6 +236,12 @@ pub fn perform(score: Score, taste: Taste, marks: [Mark]) -> Performance {
                 _ => {},
             }
         }
+        if taste.roll > 0.0 {
+            let (rank, count) = rank_at(score, n.start, n.key)
+            if count > 1 {
+                onset += f64(taste.roll) * f64(rank) / f64(count - 1)
+            }
+        }
         onset += f64(taste.jitter_time) * gaussian(mut rng)
 
         // How long: to the next note of a slur, or the written end less a détaché.
@@ -249,6 +267,13 @@ pub fn perform(score: Score, taste: Taste, marks: [Mark]) -> Performance {
         }
         let beat_in_bar = n.start % score.meter.bar()
         v = v * (if beat_in_bar == 0 { 1.0 + taste.metre } else { 1.0 - taste.metre / 3.0 })
+        if taste.pulse != 0.0 {
+            let on_beat = n.start % score.meter.beat() == 0
+            v = v * (if on_beat { 1.0 + taste.pulse } else { 1.0 - taste.pulse / 3.0 })
+        }
+        if taste.slur_ease != 0.0 && n.slur != NO_SLUR && !starts_slur(score, i) {
+            v = v * (1.0 - taste.slur_ease)
+        }
         v = v * (1.0 + taste.high_loud * (f32(n.key) - 60.0) / 12.0)
         if n.has(ACCENT) {
             v = v * (1.0 + taste.accent)
@@ -290,6 +315,16 @@ pub fn perform(score: Score, taste: Taste, marks: [Mark]) -> Performance {
         t += score.meter.beat()
     }
     Performance { notes, sustain, soft, beats, length }
+}
+
+/// A performance that is only `notes` (by onset): no pedal, and no beats.
+pub fn of_notes(notes: take Vec<Played>) -> Performance {
+    var last = 0.0
+    for n in notes {
+        last = max(last, n.release)
+    }
+    let up = Vec::from([PedalPoint { at: 0.0, depth: 0.0 }])
+    Performance { notes, sustain: up.clone(), soft: up, beats: Vec::new(), length: last }
 }
 
 /// The score played exactly at `tempo`: no taste, no marks.
@@ -377,6 +412,24 @@ fn time_map(score: Score, taste: Taste, marks: [Mark], lead: u32) -> TimeMap {
     var t = 0.0
     times.push(0.0)
     let last_bar = score.bar_start(max(score.bars + 1 - min(taste.final_bars, score.bars), 1))
+    // The notes an agogic accent lengthens: at each bar's start and its middle, the shortest
+    // note that starts there (its ticks).
+    var lingered: Vec<(u32, u32)> = Vec::new()
+    if taste.agogic != 0.0 {
+        let bar_ticks = score.meter.bar()
+        let half = if score.meter.beats % 2 == 0 { bar_ticks / 2 } else { bar_ticks }
+        for n in score.notes {
+            if n.start % half != 0 {
+                continue
+            }
+            let count = lingered.len()
+            if count > 0 && lingered[count - 1].0 == n.start {
+                lingered[count - 1] = (n.start, min(lingered[count - 1].1, n.end()))
+            } else {
+                lingered.push((n.start, n.end()))
+            }
+        }
+    }
     for i in 0..steps {
         let c = i * STEP + STEP / 2
         var m = 1.0 + f64(arch(score, taste, lead, c) * taste.arch_tempo)
@@ -390,6 +443,11 @@ fn time_map(score: Score, taste: Taste, marks: [Mark], lead: u32) -> TimeMap {
             m = m * f64(pow(1.0 + (pow(w, q) - 1.0) * x, 1.0 / q))
         }
         var stretch = 1.0
+        for (from, to) in lingered {
+            if c >= from && c < to {
+                stretch = stretch * f64(1.0 + taste.agogic)
+            }
+        }
         for m2 in marks {
             match m2 {
                 Mark::Drag { over, to } => {
@@ -532,6 +590,18 @@ fn level(taste: Taste, l: Level) -> f32 {
 }
 
 /// Whether note `i`'s slur goes on past it: a note of its voice starts where it ends, under the
+/// Whether note `i` is the first under its slur (in its voice).
+fn starts_slur(score: Score, i: u32) -> bool {
+    let n = score.notes[i]
+    for j in 0..score.notes.len() {
+        let m = score.notes[j]
+        if m.voice == n.voice && m.slur == n.slur && m.start < n.start {
+            return false
+        }
+    }
+    true
+}
+
 /// same slur.
 fn slurred_on(score: Score, i: u32) -> bool {
     let n = score.notes[i]
@@ -663,4 +733,41 @@ fn ease(u: f32) -> f32 {
 /// A draw near 0 with a spread of about 1: the sum of three uniform draws, centred.
 fn gaussian(rng: mut Rng) -> f64 {
     2.0 * (rng.next() + rng.next() + rng.next() - 1.5)
+}
+
+@test
+fn a_roll_strikes_a_chord_from_the_lowest_note_up() {
+    let s = score::score("chord", score::meter(beats: 4, unit: 4)).voice("keys", ["<g4 c4 e4>/1 |"])
+    let p = perform(s, Taste { tempo: 60.0, roll: 0.03 }, [Mark::Hold { at: bar(1), by: 1.0 }; 0])
+    // By onset: C, E, G, across 30 ms.
+    assert(
+        p.notes.len() == 3 && p.notes[0].key == 60 && p.notes[1].key == 64 && p.notes[2].key == 67,
+    )
+    assert(abs(p.notes[0].onset) < 1e-9 && abs(p.notes[1].onset - 0.015) < 1e-6)
+    assert(abs(p.notes[2].onset - 0.03) < 1e-6)
+}
+
+/// The pulse strikes a note on a beat harder and the ones between softer; an agogic accent
+/// holds the note that starts a bar, and its second half, longer, and what follows comes that
+/// much later; under a slur, every note but its first is softer.
+@test
+fn a_pulse_an_agogic_accent_and_a_slurs_easing() {
+    let s = score::score("line", score::meter(beats: 2, unit: 4)).voice(
+        "line",
+        ["c4/8 ( d4 e4 ) f4 | g4 a4 b4 c5 |"],
+    )
+    let none: [Mark; 0] = [Mark::Hold { at: bar(1), by: 1.0 }; 0]
+    let plain = perform(s, Taste { tempo: 60.0 }, none)
+    let pulsed = perform(s, Taste { tempo: 60.0, pulse: 0.3 }, none)
+    assert(abs(pulsed.notes[0].velocity / plain.notes[0].velocity - 1.3) < 1e-4, "on a beat")
+    assert(abs(pulsed.notes[1].velocity / plain.notes[1].velocity - 0.9) < 1e-4, "between beats")
+    // At 60 an eighth is half a second: the C and the E (the bar's start and its middle) last
+    // 0.6 s, so the D starts at 0.6 s and the F at 1.7 s.
+    let held = perform(s, Taste { tempo: 60.0, agogic: 0.2 }, none)
+    assert(abs(held.notes[1].onset - 0.6) < 1e-6, f"the D starts at {held.notes[1].onset} s")
+    assert(abs(held.notes[3].onset - 1.7) < 1e-6, f"the F starts at {held.notes[3].onset} s")
+    let eased = perform(s, Taste { tempo: 60.0, slur_ease: 0.25 }, none)
+    assert(abs(eased.notes[0].velocity / plain.notes[0].velocity - 1.0) < 1e-4, "a slur's first")
+    assert(abs(eased.notes[2].velocity / plain.notes[2].velocity - 0.75) < 1e-4, "under it")
+    assert(abs(eased.notes[3].velocity / plain.notes[3].velocity - 1.0) < 1e-4, "after it")
 }

@@ -1,0 +1,7 @@
+# "Adrift": a cue for the opening (a skiff on a grey sea, a cathedral on a rock in the sky), played
+# by engine::session, for the audio tool to render (`wrela tool audio -- content/adrift wav <out.wav>`).
+[package]
+name = "adrift"
+
+[dependencies]
+engine = { workspace = true }

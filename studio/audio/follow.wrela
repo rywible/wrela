@@ -1,0 +1,768 @@
+// `follow <file.wav> (--notes "<g2 d3 b3 ...>" | --at <take.json>) [--out <file.wrela>]`: a known line of notes,
+// followed through a recording of it, for an agent that can't hear it: when each note starts,
+// how loud each is, and how strong each one's harmonics are. It is what a player's timing and
+// stress are read from, and what an instrument's body is set by, note by note.
+//
+// A note is found by its own harmonics. The recording's spectrum is taken every 5 ms (4096
+// samples under a Hann window), and for each note the power at its harmonics is gathered: only
+// those the note before it has none near, since the note before may still be ringing, and what
+// is at a shared harmonic could be either's. A note starts where its own harmonics' power rises
+// most (the 40 ms after against the 40 ms before, as a share of both: energy-rise onset
+// detection, as in Bello et al., "A Tutorial on Onset Detection in Music Signals", IEEE Trans.
+// SAP 13(5), 2005, kept to the pitch the score says is next, as in Ewert, Mueller and Grosche,
+// "High resolution audio synchronization using chroma onset features", ICASSP 2009), and where
+// the harmonics only the note before has fall. The starts are then chosen all together, in
+// order, by dynamic programming (as in Sakoe and Chiba, "Dynamic programming algorithm
+// optimization for spoken word recognition", IEEE Trans. ASSP 26(1), 1978): each start scores
+// what the sound shows there, less what its note's length is off from the usual length (the
+// square of the log of their ratio), so a weak start is put where steady playing would have
+// it and a clear one where it is heard. The notes are taken as written equally long; the usual
+// length is searched for. The line may start after the recording does; the last note is given
+// the usual length.
+//
+// An earlier version laid the notes on the tracked pitch. A recording in a room, of arpeggios
+// over ringing strings, tracks as the ringing note or its octave as often as the played one,
+// and many of its notes came out the least a note may be. On a render of the same passage,
+// whose starts are known, this one's starts are 10 ms (RMS) from the true ones, the worst 30 ms.
+//
+// The notes are written as engine::score's pitches are: a letter, sharps (#) or flats (b), an
+// octave (C4 is middle C), with spaces between. Their pitches are equal-tempered from A4 at
+// 440 Hz, moved by the recording's own tuning: the middle of how far its sure steps are from
+// the notes laid on them (`tuning_cents`).
+//
+// With `--at`, nothing is searched for: the notes and their starts are a take's (`describe`'s
+// answer for a piece), and each is measured where the take says it is. That is for a render,
+// whose notes' times are known; `--notes` is for a recording, whose times are what is wanted.
+//
+// For each note it gives its start (seconds); its level (dB of full scale, the mean power of
+// everything sounding from 10 ms after its start to its end); its harmonics' levels (dB, each
+// harmonic's mean power in spectra of 8192 samples taken within the note); and the level of
+// its own harmonics together (`own_db`): those none of the three notes before it has a
+// harmonic near, so that a string still ringing isn't counted as the note. `own_harmonics` is
+// how many those are: a note with none has no own level (-200). Own levels are for comparing
+// the same note in the same line (a render against a recording, a note against what was asked
+// of it), not one note with another, since each note keeps different harmonics.
+// `--out` writes the starts and the levels as Wrela constants.
+
+use dsp::{Plan, max_of, median, round, round_away}
+use json::{Value, nums, obj, text}
+use main::{Args, failed, in_root}
+use std::collections::Vec
+use std::io::print
+use std::json::{Kind, TOP, parse}
+use std::math
+use std::string::String
+use std::tool::ToolError
+use std::tool::toolchain
+use toolkit::whole::{read_file, write_file}
+use track::{STEP, Tracked, track}
+
+/// The fewest steps a note takes (40 ms), and the most harmonics measured of one.
+const FEWEST: u32 = 8
+pub const HARMONICS: u32 = 24
+
+/// The notes `words` name, as frequencies (Hz) at A4 = 440: none if a word isn't a pitch.
+pub fn pitches(words: str) -> Option<Vec<f64>> {
+    var out: Vec<f64> = Vec::new()
+    for (a, b) in words.split(" ") {
+        let w = words.slice(a, b).trim()
+        if w.len() == 0 {
+            continue
+        }
+        let c = w.byte(0)
+        if c < 97 || c > 103 {
+            return None
+        }
+        // C D E F G A B from c: a=97.
+        let semitones: [i32; 7] = [9, 11, 0, 2, 4, 5, 7]
+        var key = semitones[u32(c - 97)]
+        var at = 1
+        while at < w.len() && (w.byte(at) == 35 || w.byte(at) == 98) {
+            key += if w.byte(at) == 35 { 1 } else { -1 }
+            at += 1
+        }
+        if at + 1 != w.len() || w.byte(at) < 48 || w.byte(at) > 57 {
+            return None
+        }
+        let midi = 12 * (i32(w.byte(at)) - 48 + 1) + key
+        out.push(440.0 * math::pow_f64(2.0, f64(midi - 69) / 12.0))
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+/// How far `hz` is from `note` (semitones, signed), with an octave either way taken off: and
+/// whether one was.
+fn off(hz: f64, note: f64) -> (f64, bool) {
+    let d = 12.0 * math::log2_f64(hz / note)
+    if d > 6.0 {
+        (d - 12.0, true)
+    } else if d < -6.0 {
+        (d + 12.0, true)
+    } else {
+        (d, false)
+    }
+}
+
+/// A line followed through a recording: each note's first step, the step after the last
+/// note's last, each note's level (dB), its harmonics' levels (dB, `HARMONICS` a note), the level
+/// of the harmonics that are its own and how many they are, and the recording's tuning (cents
+/// over A4 = 440).
+pub struct Followed: Clone {
+    pub starts: Vec<u32>,
+    pub end: u32,
+    pub levels: Vec<f64>,
+    pub harmonics: Vec<f64>,
+    pub own: Vec<f64>,
+    pub own_count: Vec<u32>,
+    pub tuning: f64,
+}
+
+/// The spectra the notes are followed by: each of this many samples, a step apart.
+const SPAN: u32 = 4096
+/// The harmonics a note is found and weighed by: at most this many, none over this (Hz). (Its
+/// tone is measured further up: `HARMONICS` of them, to `TONE_TOP_HZ`.)
+const MOST: u32 = 12
+const TOP_HZ: f64 = 3000.0
+const TONE_TOP_HZ: f64 = 10000.0
+/// The spectra a note is measured by, once it is placed: this many samples (171 ms at 48 kHz),
+/// so that harmonics 24 Hz apart are told apart, which the spectra the notes are followed by
+/// (twice as quick, half as fine) can't do: under those, nothing is apart from the harmonics of
+/// a low string ringing on, which are under 100 Hz from each other.
+const LONG: u32 = 8192
+/// The stretch either side of a step that a start is weighed across (steps: 40 ms).
+const ACROSS: u32 = 8
+/// What a note's length being off the usual costs: this times the square of the log of their
+/// ratio, beside a clear start's 1 to 1.5. A note half as long again as usual costs a third of
+/// a clear start.
+const STEADY: f64 = 2.0
+/// How many notes back a string may still be ringing: a harmonic one of them shares isn't
+/// counted as a note's own.
+const RINGING: u32 = 3
+
+/// How far either side of a harmonic at `hz` its power is gathered (Hz): a bin and a half of
+/// the spectrum (`bin` Hz each), or a fifth of a semitone if that is more (a vibrato, a finger
+/// a little off).
+fn reach(hz: f64, bin: f64) -> f64 {
+    max_of(1.5 * bin, 0.012 * hz)
+}
+
+/// The power gathered at a harmonic at `hz` from a spectrum `mag` whose bins are `bin` Hz: the
+/// squares of the bins within its reach. (A sine's mean square is a third of that: a Hann
+/// window spreads its power over bins whose squares sum to 1.5 times its amplitude's.)
+fn gathered(mag: [f64], hz: f64, bin: f64) -> f64 {
+    let r = reach(hz, bin)
+    let lo = u32(max_of((hz - r) / bin + 0.5, 1.0))
+    let hi = min(u32((hz + r) / bin + 0.5), mag.len() - 1)
+    var power = 0.0
+    for b in lo..hi + 1 {
+        power += mag[b] * mag[b]
+    }
+    power
+}
+
+/// What is heard of a line's notes in a recording.
+pub struct Heard: Clone {
+    /// The line's different notes (Hz, as the recording is tuned), and which of them each of
+    /// the line's notes is.
+    kinds: Vec<f64>,
+    kind_of: Vec<u32>,
+    /// The power of each harmonic of each kind at each step: harmonic `h` (of `MOST`) of kind
+    /// `d` at step `i` is at `(d * MOST + h) * frames + i`. A harmonic over `TOP_HZ` is left
+    /// at 0.
+    powers: Vec<f64>,
+    frames: u32,
+    /// A spectrum's bin (Hz).
+    bin: f64,
+    /// The recording's tuning (cents over the notes as written): the middle of how far its
+    /// sure steps are from the nearest of the line's notes.
+    pub tuning: f64,
+}
+
+/// What is heard of `notes` (Hz) in `mono` (at `rate`, tracked as `t`).
+pub fn heard(mono: [f32], rate: f64, t: Tracked, notes: [f64]) -> Heard {
+    let n = notes.len()
+    let frames = t.pitch.len()
+    let hop = max(u32(rate * STEP + 0.5), 1)
+    var kinds: Vec<f64> = Vec::new()
+    var kind_of: Vec<u32> = Vec::with_capacity(n)
+    for k in 0..n {
+        var found = kinds.len()
+        for d in 0..kinds.len() {
+            if abs(kinds[d] / notes[k] - 1.0) < 0.001 {
+                found = d
+            }
+        }
+        if found == kinds.len() {
+            kinds.push(notes[k])
+        }
+        kind_of.push(found)
+    }
+    var cents: Vec<f64> = Vec::new()
+    for i in 0..frames {
+        if t.pitch[i] <= 0.0 {
+            continue
+        }
+        var nearest = 100.0
+        for hz in kinds {
+            let (d, _) = off(t.pitch[i], hz)
+            if abs(d) < abs(nearest) {
+                nearest = d
+            }
+        }
+        if abs(nearest) < 0.5 {
+            cents.push(100.0 * nearest)
+        }
+    }
+    let tuning = median(take cents).unwrap_or(0.0)
+    let tuned = math::pow_f64(2.0, tuning / 1200.0)
+    for d in 0..kinds.len() {
+        kinds[d] = kinds[d] * tuned
+    }
+    let plan = Plan::new(SPAN)
+    var scratch = plan.scratch()
+    // Half a spectrum of silence first, so step `i`'s spectrum is centred on it.
+    var padded: Vec<f32> = Vec::filled(SPAN / 2, value: 0.0)
+    for k in 0..mono.len() {
+        padded.push(mono[k])
+    }
+    let bin = rate / f64(SPAN)
+    var powers: Vec<f64> = Vec::filled(kinds.len() * MOST * frames, value: 0.0)
+    for i in 0..frames {
+        plan.transform(padded, i * hop, mut scratch)
+        for d in 0..kinds.len() {
+            for h in 0..MOST {
+                let f = kinds[d] * f64(h + 1)
+                if f > TOP_HZ {
+                    break
+                }
+                powers[(d * MOST + h) * frames + i] = gathered(scratch.mag, f, bin)
+            }
+        }
+    }
+    Heard { kinds, kind_of, powers, frames, bin, tuning }
+}
+
+impl Heard {
+    /// Which of a note of kind `a`'s first `MOST` harmonics (those under `TOP_HZ`) are apart
+    /// from every harmonic of kind `b` in spectra whose bins are `bin` Hz: far enough that the
+    /// two aren't gathered together. None is if the two are the same kind.
+    fn apart(self, a: u32, b: u32, bin: f64) -> Vec<bool> {
+        var out: Vec<bool> = Vec::filled(MOST, value: false)
+        if a == b {
+            return out
+        }
+        for h in 0..MOST {
+            let f = self.kinds[a] * f64(h + 1)
+            if f > TOP_HZ {
+                break
+            }
+            let nearest = max_of(round_away(f / self.kinds[b]), 1.0) * self.kinds[b]
+            out[h] = abs(f - nearest) > 2.0 * reach(f, bin) + bin
+        }
+        out
+    }
+
+    /// All of kind `a`'s first `MOST` harmonics (those under `TOP_HZ`).
+    fn all(self, a: u32) -> Vec<bool> {
+        var out: Vec<bool> = Vec::filled(MOST, value: false)
+        for h in 0..MOST {
+            out[h] = self.kinds[a] * f64(h + 1) <= TOP_HZ
+        }
+        out
+    }
+
+    /// The harmonics a note of kind `a` is told from one of kind `b` by, as the notes are
+    /// followed: those apart from `b`'s, or all of them if none is (a note an octave under
+    /// `b`, or `b` again).
+    fn told(self, a: u32, b: u32) -> Vec<bool> {
+        let out = self.apart(a, b, self.bin)
+        for h in 0..MOST {
+            if out[h] {
+                return out
+            }
+        }
+        self.all(a)
+    }
+
+    /// The harmonics `which` of kind `d` together at each step, summed over the steps before
+    /// each (`frames + 1` sums): a stretch's power is a difference.
+    fn summed(self, d: u32, which: [bool]) -> Vec<f64> {
+        var out: Vec<f64> = Vec::with_capacity(self.frames + 1)
+        var sum = 0.0
+        out.push(0.0)
+        for i in 0..self.frames {
+            for h in 0..MOST {
+                if which[h] {
+                    sum += self.powers[(d * MOST + h) * self.frames + i]
+                }
+            }
+            out.push(sum)
+        }
+        out
+    }
+
+    /// How clearly each note seems to start at each step: note `k` at step `i` is at
+    /// `k * frames + i`, from 0 (nothing) to about 1.5 (its own harmonics from silence, and the
+    /// harmonics of the note before stopped).
+    fn starting(self) -> Vec<f64> {
+        // Under a hundred-thousandth of the strongest harmonic's power is silence.
+        var most = 0.0
+        for p in self.powers {
+            most = max_of(most, p)
+        }
+        let floor = 0.00001 * most + 1e-20
+        let n = self.kind_of.len()
+        let frames = self.frames
+        var out: Vec<f64> = Vec::filled(n * frames, value: 0.0)
+        for k in 0..n {
+            let d = self.kind_of[k]
+            let before = if k > 0 { self.kind_of[k - 1] } else { d }
+            let mine = self.summed(d, self.told(d, before))
+            // The note before, if it is another note: what only it has should fall here.
+            let theirs = if before != d { Some(self.summed(before, self.told(before, d))) } else {
+                None
+            }
+            let risen = rises(mine, frames, floor)
+            for i in 0..frames {
+                out[k * frames + i] = max_of(risen[i], 0.0)
+            }
+            if let Some(t) = theirs {
+                let fallen = rises(t, frames, floor)
+                for i in 0..frames {
+                    out[k * frames + i] += 0.5 * max_of(-fallen[i], 0.0)
+                }
+            }
+        }
+        out
+    }
+}
+
+/// At each step, how much more power there is in the `ACROSS` steps from it than in those
+/// before it, as a share of the most power either side of any step within `ACROSS` of it (and
+/// `floor`): near 1 where a note starts from silence, near -1 where one stops, and well under
+/// that a few steps to either side. `sums` is as `summed` gives. (As a share of the power
+/// either side of the step itself, every step before a start from silence read 1: there was no
+/// telling the start from the 80 ms before it.)
+fn rises(sums: [f64], frames: u32, floor: f64) -> Vec<f64> {
+    var more: Vec<f64> = Vec::with_capacity(frames)
+    var both: Vec<f64> = Vec::with_capacity(frames)
+    for i in 0..frames {
+        let from = if i > ACROSS { i - ACROSS } else { 0 }
+        let to = min(i + ACROSS, frames)
+        let before = (sums[i] - sums[from]) / f64(ACROSS)
+        let after = (sums[to] - sums[i]) / f64(ACROSS)
+        more.push(after - before)
+        both.push(after + before)
+    }
+    var out: Vec<f64> = Vec::with_capacity(frames)
+    for i in 0..frames {
+        var most = 0.0
+        let from = if i > ACROSS { i - ACROSS } else { 0 }
+        for j in from..min(i + ACROSS + 1, frames) {
+            most = max_of(most, both[j])
+        }
+        out.push(more[i] / (most + floor))
+    }
+    out
+}
+
+/// The `n` notes' starts (steps) that score best by `clear` (as `starting` gives it) when a
+/// note is usually `usual` steps long, and that score. A note is at least `FEWEST` steps and
+/// a third of the usual, at most three times the usual.
+fn laid(clear: [f64], n: u32, frames: u32, usual: f64) -> (f64, Vec<u32>) {
+    let least = max(u32(0.35 * usual), FEWEST)
+    let most = max(u32(3.0 * usual), least + 1)
+    var cost: Vec<f64> = Vec::with_capacity(most + 1)
+    for d in 0..most + 1 {
+        let l = math::log_f64(f64(max(d, 1)) / usual)
+        cost.push(STEADY * l * l)
+    }
+    // best[k][i]: the best score of notes 0 to k, note k starting at step i; from[k][i]: where
+    // note k - 1 started then. The line may start at any step.
+    var best: Vec<f64> = Vec::filled(n * frames, value: -1e18)
+    var from: Vec<u32> = Vec::filled(n * frames, value: 0)
+    for i in 0..frames {
+        best[i] = clear[i]
+    }
+    for k in 1..n {
+        for i in least..frames {
+            let lo = if i > most { i - most } else { 0 }
+            var top = -1e18
+            var top_at = 0
+            for j in lo..i - least + 1 {
+                let v = best[(k - 1) * frames + j] - cost[i - j]
+                if v > top {
+                    top = v
+                    top_at = j
+                }
+            }
+            if top > -1e17 {
+                best[k * frames + i] = top + clear[k * frames + i]
+                from[k * frames + i] = top_at
+            }
+        }
+    }
+    var end = 0
+    for i in 0..frames {
+        if best[(n - 1) * frames + i] > best[(n - 1) * frames + end] {
+            end = i
+        }
+    }
+    var starts: Vec<u32> = Vec::filled(n, value: 0)
+    var at = end
+    var k = n
+    while k > 0 {
+        k -= 1
+        starts[k] = at
+        at = from[k * frames + at]
+    }
+    (best[(n - 1) * frames + end], starts)
+}
+
+/// The notes `notes` (Hz) followed through `mono` (at `rate`).
+pub fn follow(mono: [f32], rate: f64, notes: [f64]) -> Followed {
+    let t = track(mono, rate)
+    let h = heard(mono, rate, t, notes)
+    let n = notes.len()
+    let frames = h.frames
+    let clear = h.starting()
+    // The usual length of a note: first each of a spread of lengths is tried (80 ms to 1.4 s,
+    // each half as long again), then the middle of the lengths found, twice over.
+    var usual = 0.08 / STEP
+    let (first_score, first) = laid(clear, n, frames, usual)
+    var top = first_score
+    var starts = take first
+    var tried = usual * 1.5
+    while tried * STEP < 1.5 {
+        let (score, found) = laid(clear, n, frames, tried)
+        if score > top {
+            top = score
+            starts = take found
+            usual = tried
+        }
+        tried *= 1.5
+    }
+    for _ in 0..2 {
+        var lengths: Vec<f64> = Vec::with_capacity(n)
+        for k in 1..n {
+            lengths.push(f64(starts[k] - starts[k - 1]))
+        }
+        let Some(middle) = median(take lengths) else { break }
+        usual = middle
+        let (_, found) = laid(clear, n, frames, usual)
+        starts = take found
+    }
+    // The last note has the usual length; a lone note lasts to the recording's end.
+    let end = if n > 1 { min(starts[n - 1] + u32(usual + 0.5), frames) } else { frames }
+    measured(mono, rate, h, t, take starts, end)
+}
+
+/// Each note of the line `h` hears, measured in `mono` (at `rate`, tracked as `t`) where
+/// `starts` puts it (steps), the last ending at step `end`.
+pub fn measured(
+    mono: [f32],
+    rate: f64,
+    h: Heard,
+    t: Tracked,
+    starts: take Vec<u32>,
+    end: u32,
+) -> Followed {
+    let n = h.kind_of.len()
+    let hop = max(u32(rate * STEP + 0.5), 1)
+    let plan = Plan::new(LONG)
+    var scratch = plan.scratch()
+    let bin = rate / f64(LONG)
+    var levels: Vec<f64> = Vec::with_capacity(n)
+    var harmonics: Vec<f64> = Vec::filled(n * HARMONICS, value: -200.0)
+    var own: Vec<f64> = Vec::with_capacity(n)
+    var own_count: Vec<u32> = Vec::with_capacity(n)
+    for k in 0..n {
+        let first = starts[k]
+        let last = if k + 1 < n { starts[k + 1] } else { end }
+        // The level: the mean power from 10 ms in.
+        var power = 0.0
+        var count = 0
+        for i in min(first + 2, last)..min(last, t.level.len()) {
+            power += math::pow_f64(10.0, t.level[i] / 10.0)
+            count += 1
+        }
+        levels.push(
+            if count > 0 { 10.0 * math::log10_f64(power / f64(count) + 1e-20) } else { -120.0 },
+        )
+        // The note's spectra: as many as fit within it, a quarter of one apart; or, if it is
+        // shorter than one, one about its middle (whose edges, where the window is near
+        // nothing, reach into its neighbours).
+        let d = h.kind_of[k]
+        let (a, b) = (first * hop, min(last * hop, mono.len()))
+        var means = [0.0; 24]
+        var spectra = 0
+        var at = if b >= a + LONG { a } else if a + b > LONG { (a + b - LONG) / 2 } else { 0 }
+        while spectra == 0 || at + LONG <= b {
+            plan.transform(mono, at, mut scratch)
+            for j in 0..HARMONICS {
+                let f = h.kinds[d] * f64(j + 1)
+                if f > TONE_TOP_HZ || f > 0.45 * rate {
+                    break
+                }
+                means[j] += gathered(scratch.mag, f, bin) / 3.0
+            }
+            spectra += 1
+            at += LONG / 4
+        }
+        for j in 0..HARMONICS {
+            means[j] = means[j] / f64(spectra)
+            if means[j] > 0.0 {
+                harmonics[k * HARMONICS + j] = 10.0 * math::log10_f64(means[j] + 1e-20)
+            }
+        }
+        // The harmonics that are the note's own: those apart from every harmonic of the notes
+        // that may still be ringing (the `RINGING` before it).
+        var which = h.all(d)
+        let back = if k > RINGING { k - RINGING } else { 0 }
+        for other in back..k {
+            let before = h.kind_of[other]
+            if before == d {
+                continue
+            }
+            let apart = h.apart(d, before, bin)
+            for j in 0..MOST {
+                which[j] = which[j] && apart[j]
+            }
+        }
+        var mine = 0.0
+        var how_many = 0
+        for j in 0..MOST {
+            if which[j] {
+                mine += means[j]
+                how_many += 1
+            }
+        }
+        own.push(if how_many > 0 { 10.0 * math::log10_f64(mine + 1e-20) } else { -200.0 })
+        own_count.push(how_many)
+    }
+    Followed { starts, end, levels, harmonics, own, own_count, tuning: h.tuning }
+}
+
+/// `xs`, each with `digits` decimals, ten to a row.
+fn listed(xs: [f64], digits: u32) -> String {
+    var out = String::new()
+    for i in 0..xs.len() {
+        if i > 0 {
+            out.push_str(if i % 10 == 0 { ",\n    " } else { ", " })
+        }
+        out.push_str(if digits == 1 { f"{xs[i]:.1}" } else { f"{xs[i]:.3}" })
+    }
+    out
+}
+
+/// `follow`'s answer.
+pub fn follow_report(a: Args) -> Result<(), ToolError> {
+    let shown = a.rest[0].as_str()
+    let path = in_root(a.root.as_str(), shown)?
+    let w = wav::read(read_file(path.as_str(), shown)?, shown).map_err(failed)?
+    let mono = w.mono()
+    var notes: Vec<f64> = Vec::new()
+    var f = Followed {
+        starts: Vec::new(),
+        end: 0,
+        levels: Vec::new(),
+        harmonics: Vec::new(),
+        own: Vec::new(),
+        own_count: Vec::new(),
+        tuning: 0.0,
+    }
+    if let Some(take_shown) = a.at.clone() {
+        // The notes and their times are a take's.
+        let take_path = in_root(a.root.as_str(), take_shown.as_str())?
+        let raw = read_file(take_path.as_str(), take_shown.as_str())?
+        let Some(words) = String::from_utf8(take raw) else {
+            return Err(ToolError::new(f"{take_shown}: it isn't UTF-8"))
+        }
+        let Some(d) = parse(words.as_str()) else {
+            return Err(ToolError::new(f"{take_shown}: it isn't JSON"))
+        }
+        let Some(listed_notes) = d.get(TOP, "notes") else {
+            return Err(ToolError::new("the take has no notes"))
+        }
+        if d.kind(listed_notes) != Kind::List || d.count(listed_notes) == 0 {
+            return Err(ToolError::new("the take has no notes"))
+        }
+        let num = |k: Option<u32>| match k {
+            Some(v) => d.num(v).unwrap_or(0.0),
+            None => 0.0,
+        }
+        var starts: Vec<u32> = Vec::new()
+        var end = 0
+        for k in 0..d.count(listed_notes) {
+            let Some(note) = d.at(listed_notes, k) else { continue }
+            notes.push(440.0 * math::pow_f64(2.0, (num(d.get(note, "key")) - 69.0) / 12.0))
+            starts.push(u32(num(d.get(note, "onset")) / STEP + 0.5))
+            end = u32(num(d.get(note, "release")) / STEP + 0.5)
+        }
+        let t = track(mono, w.rate)
+        end = min(end, t.pitch.len())
+        f = measured(mono, w.rate, heard(mono, w.rate, t, notes), t, take starts, end)
+    } else {
+        let Some(words) = a.notes.clone() else {
+            return Err(ToolError::new("follow needs --notes \"<pitches>\" or --at <take.json>"))
+        }
+        let Some(named) = pitches(words.as_str()) else {
+            return Err(ToolError::new("--notes holds pitches like g2 f#3 bb3, with spaces between"))
+        }
+        notes = take named
+        f = follow(mono, w.rate, notes)
+    }
+    let n = notes.len()
+    var onsets: Vec<f64> = Vec::with_capacity(n + 1)
+    for s in f.starts {
+        onsets.push(f64(s) * STEP)
+    }
+    onsets.push(f64(f.end) * STEP)
+    var rounded: Vec<f64> = Vec::with_capacity(n + 1)
+    for x in onsets {
+        rounded.push(round(x, places: 3))
+    }
+    var levels: Vec<f64> = Vec::with_capacity(n)
+    for x in f.levels {
+        levels.push(round(x, places: 1))
+    }
+    var own: Vec<f64> = Vec::with_capacity(n)
+    var own_count: Vec<f64> = Vec::with_capacity(n)
+    for k in 0..n {
+        own.push(round(f.own[k], places: 1))
+        own_count.push(f64(f.own_count[k]))
+    }
+    var harmonics: Vec<Value> = Vec::with_capacity(n)
+    for k in 0..n {
+        var row: Vec<f64> = Vec::with_capacity(HARMONICS)
+        for h in 0..HARMONICS {
+            row.push(round(f.harmonics[k * HARMONICS + h], places: 1))
+        }
+        harmonics.push(nums(row))
+    }
+    var hz: Vec<f64> = Vec::with_capacity(n)
+    for x in notes {
+        hz.push(round(x * math::pow_f64(2.0, f.tuning / 1200.0), places: 2))
+    }
+    let answer = obj()
+        .with("file", text(shown))
+        .with("notes", Value::Int(i64(n)))
+        .with("tuning_cents", Value::Num(round(f.tuning, places: 1)))
+        .with("hz", nums(hz))
+        .with("starts", nums(rounded))
+        .with("levels_db", nums(levels))
+        .with("own_db", nums(own))
+        .with("own_harmonics", nums(own_count))
+        .with("harmonics_db", Value::List(take harmonics))
+    if let Some(out_shown) = a.out.clone() {
+        let out = in_root(a.root.as_str(), out_shown.as_str())?
+        var s = String::new()
+        s.push_str(
+            "// A line of notes as it was played: when each started and how loud each was, measured by\n",
+        )
+        s.push_str(
+            f"// `wrela tool audio -- follow {shown}`. The recording's source and licence are in\n",
+        )
+        s.push_str("// docs/citations.md. Only these measurements are here: no sound of it.\n\n")
+        s.push_str(f"/// When each of the {n} notes started (seconds), then when the last ended.\n")
+        s.push_str(f"pub const STARTS: [f32; {n + 1}] = [\n    {listed(onsets, 3)},\n]\n\n")
+        s.push_str("/// How loud each note was (dB of full scale).\n")
+        s.push_str(f"pub const LEVELS: [f32; {n}] = [\n    {listed(f.levels, 1)},\n]\n\n")
+        s.push_str("/// The recording's tuning: cents over A4 at 440 Hz.\n")
+        s.push_str(f"pub const TUNING: f32 = {f.tuning:.1}\n")
+        write_file(out.as_str(), Vec::from([Vec::from(s.as_bytes())])).map_err(
+            |e| ToolError::new(f"can't write {out_shown}: {e.message()}"),
+        )?
+        if !toolchain::fmt(Vec::from([out.clone()]), check: false).wait()?.failed.is_empty() {
+            return Err(ToolError::new("the followed line's source doesn't parse"))
+        }
+    }
+    print(answer.pretty().as_str())
+    Ok(())
+}
+
+/// Three notes, each 0.3 s at 48 kHz, a tone whose kth harmonic is 1/k as strong, the middle
+/// one half as loud: A3, E4, C4.
+fn three() -> Vec<f32> {
+    var out: Vec<f32> = Vec::new()
+    let notes = [(220.0, 0.1), (329.63, 0.05), (261.63, 0.1)]
+    for (hz, level) in notes {
+        var phase = 0.0
+        for _ in 0..14400 {
+            phase += hz / 48000.0
+            var x = 0.0
+            for k in 1..7 {
+                x += math::sin_f64(math::TAU_F64 * phase * f64(k)) / f64(k)
+            }
+            out.push(f32(level * x))
+        }
+    }
+    out
+}
+
+@test
+fn notes_are_followed_to_their_starts_and_levels() {
+    let Some(notes) = pitches("a3 e4 c4") else { panic("the notes parse") }
+    assert(abs(notes[1] - 329.63) < 0.01 && abs(notes[2] - 261.63) < 0.01)
+    let f = follow(three(), 48000.0, notes)
+    // The starts at 0, 0.3 and 0.6 s, each within 25 ms; the end at 0.9 s.
+    for k in 0..3 {
+        let at = f64(f.starts[k]) * STEP
+        assert(abs(at - 0.3 * f64(k)) < 0.025, f"note {k} starts at {at} s")
+    }
+    assert(abs(f64(f.end) * STEP - 0.9) < 0.04, f"the line ends at {f64(f.end) * STEP} s")
+    // The middle note 6 dB under the others; each first harmonic 6 dB over its second.
+    assert(abs(f.levels[0] - f.levels[1] - 6.02) < 0.5, f"levels {f.levels[0]}, {f.levels[1]}")
+    for k in 0..3 {
+        let fall = f.harmonics[k * HARMONICS] - f.harmonics[k * HARMONICS + 1]
+        assert(abs(fall - 6.02) < 0.7, f"note {k}'s second harmonic is {fall} dB under its first")
+    }
+    assert(abs(f.tuning) < 3.0, f"tones in tune read {f.tuning} cents off")
+}
+
+/// A3 for 0.3 s, then E4 for 0.3 s (at 48 kHz, each a tone whose kth harmonic is 1/k as
+/// strong), the A3 ringing on under the E4 at `ringing` of its strength.
+fn rung(ringing: f64) -> Vec<f32> {
+    var out: Vec<f32> = Vec::new()
+    for i in 0..28800 {
+        let second = i >= 14400
+        var x = 0.0
+        for k in 1..7 {
+            let turn = math::TAU_F64 * f64(i) / 48000.0 * f64(k)
+            x += (if second { ringing } else { 1.0 }) * math::sin_f64(220.0 * turn) / f64(k)
+            if second {
+                x += math::sin_f64(329.63 * turn) / f64(k)
+            }
+        }
+        out.push(f32(0.1 * x))
+    }
+    out
+}
+
+/// A note is found, and is as loud by its own harmonics, whether or not the note before it
+/// rings on under it: the ringing string shares every second harmonic of the E (660 Hz is the
+/// A's third harmonic and the E's second), and adds 3 dB to everything sounding.
+@test
+fn a_note_is_found_and_weighed_under_a_ringing_one() {
+    let Some(notes) = pitches("a3 e4") else { panic("the notes parse") }
+    let alone = follow(rung(0.0), 48000.0, notes)
+    let under = follow(rung(1.0), 48000.0, notes)
+    for f in [alone.clone(), under.clone()] {
+        let at = f64(f.starts[1]) * STEP
+        assert(abs(at - 0.3) < 0.025, f"the second note starts at {at} s")
+    }
+    assert(alone.own_count[1] == 5 && under.own_count[1] == 5, "330, 990, 1650, 2310, 2970 Hz")
+    assert(
+        abs(alone.own[1] - under.own[1]) < 0.5,
+        f"its own level is {alone.own[1]} dB alone and {under.own[1]} dB under the ringing note",
+    )
+    assert(
+        under.levels[1] - alone.levels[1] > 2.0,
+        f"everything sounding: {alone.levels[1]} dB alone, {under.levels[1]} dB under",
+    )
+}
+
+@test
+fn a_word_that_is_not_a_pitch_is_refused() {
+    assert(pitches("g2 h3").is_none() && pitches("g2 d").is_none() && pitches("").is_none())
+}

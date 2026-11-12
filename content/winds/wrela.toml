@@ -1,0 +1,8 @@
+# Wind instruments checked one at a time: a scale and a short phrase each, for the audio tool to
+# render and set beside anechoic recordings (`wrela tool audio -- content/winds wav <out.wav>
+# --take n`).
+[package]
+name = "winds"
+
+[dependencies]
+engine = { workspace = true }
