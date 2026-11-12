@@ -81,6 +81,7 @@ Each of Hakuro's hands is six forms (`content/hakuro/hands.wrela`): four fingers
 - **A piece laid on another** (`Grown::laid`, `Grown::cover`): within a stated distance either side of the other form's side, its side is put on that side, and only where the other form's cover has it (a jacket's shoulder on its body; "Garments").
 - **A vertex that nothing can move does none of this.** Where the other form isn't, or the point is out of reach of the hold, the laying and the fillet, the vertex is `chart::vertex`'s for one place found on the other form's chart (`Limb::toward_at`). Reading the other form's side for every vertex of a jacket's collar and shoulders cost the combat lab about a millisecond a frame; skipped where it can't matter, about a fifth of one (the best of six runs each, on a busy machine).
 - **Find the cause in numbers.** The seam outlasted three changes to the geometry. A test that printed the thumb's side against the palm's, place by place, showed half the readings were wrong: a rounding difference had been taken for "past the path's end".
+- **A head grows from its neck too.** With his neck bare, the back of Hakuro's skull, closed under itself, stood over his nape as a roll. His head's form closes over a longer run (`HEAD_CAP`), so his jaw and the back of his skull narrow toward his neck, and it's filleted 3 cm onto his neck (`grows_from`, `grown`): the nape is one curve.
 
 ## What changes with the pose
 
