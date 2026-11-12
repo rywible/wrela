@@ -4,9 +4,9 @@
 
 use engine::chart::Radial
 
-/// Hakuro's neck: his sampled body's surface (`body_grid`), read along rays from the line
-/// through his neck's and his head's joints (`figure::chains::neck`), no further out than
-/// his throat, and fitted by the forms tool.
+/// Hakuro's neck, about the line through his neck's and his head's joints
+/// (`figure::chains::neck`), read no further out than his throat: fitted by the forms tool to
+/// his sampled body, which is gone, and kept as it is.
 pub const NECK: Radial<16, 13> = Radial {
     from: 0.0000,
     to: 1.0000,

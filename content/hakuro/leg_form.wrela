@@ -4,9 +4,9 @@
 
 use engine::chart::Radial
 
-/// What Hakuro's left leg is over the figure's (`figure::leg::LEG`): his loose trousers, as
-/// his sampled body has them (`body_grid`), less the figure's leg, read along rays from the
-/// line through his hip, knee and ankle. His right is its mirror image.
+/// What Hakuro's left leg is over the figure's (`figure::leg::LEG`): his loose trousers, less
+/// the figure's leg, about the line through his hip, knee and ankle. Fitted by the forms tool to
+/// his sampled body, which is gone, and kept where it is. His right is its mirror image.
 pub const LEG_OVER: Radial<16, 13> = Radial {
     from: 0.0000,
     to: 1.0000,

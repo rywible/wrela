@@ -4,9 +4,9 @@
 
 use engine::chart::Radial
 
-/// Hakuro's trunk as he's dressed, from the fork of his legs to his neck: his sampled body's
-/// surface (`body_grid`), read along rays from the line of his spine
-/// (`figure::chains::trunk`) and fitted by the forms tool.
+/// Hakuro's trunk as he's dressed, from the fork of his legs to his neck, about the line of
+/// his spine (`figure::chains::trunk`): fitted by the forms tool to his sampled body, which is
+/// gone, and kept as it is.
 pub const TRUNK: Radial<24, 21> = Radial {
     from: 0.0000,
     to: 1.0000,

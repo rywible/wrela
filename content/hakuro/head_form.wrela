@@ -4,9 +4,9 @@
 
 use engine::chart::Radial
 
-/// Hakuro's head, under his mask and his hair: his sampled body's surface (`body_grid`), read
-/// along rays from a line straight up through his head (`figure::chains::head`) and fitted
-/// by the forms tool. It closes under his chin (`hakuro::charts`).
+/// Hakuro's head, under his mask and his hair, about a line straight up through his head
+/// (`figure::chains::head`): fitted by the forms tool to his sampled body, which is gone, and
+/// kept as it is. It closes under his chin (`hakuro::charts`).
 pub const HEAD: Radial<16, 13> = Radial {
     from: 0.0000,
     to: 1.0000,

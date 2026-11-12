@@ -1053,8 +1053,13 @@ impl<const A: u32, const R: u32> Limb<A, R> {
     /// closed where a cap closes it, as thick as it's swelled. Past an end of its path, how
     /// far `p` is from the end's rim (its point, where a cap closes it).
     pub fn toward(self, p: vec3) -> vec4 {
+        self.toward_at(p, self.path.place(p))
+    }
+
+    /// `toward`, for a point whose place about its path is already known (`pl`,
+    /// `Path::place`): finding the place is most of the work, and what needs both pays once.
+    pub fn toward_at(self, p: vec3, pl: Place) -> vec4 {
         let len = self.path.length()
-        let pl = self.path.place(p)
         let x = saturate(pl.along / len)
         let k = self.form.radius_and_slopes(x, pl.theta)
         // (A cap's slope along the path, across a little either side; a quarter circle is
@@ -1126,58 +1131,155 @@ pub const COVER_ROUND: u32 = 256
 /// The words a cover's marks take: a bit a place.
 pub const COVER_WORDS: u32 = 768
 
+/// The places a cover marks.
+pub const COVER_PLACES: u32 = COVER_ALONG * COVER_ROUND
+
+/// How far from a cover's edge its places are told apart (places along its path): further in
+/// or out than this, a place is this far.
+pub const EDGE_REACH: f32 = 12.0
+
 /// Where on its chart a form is: a garment's openings (a jacket's front, its armholes) are
 /// where it isn't. A bit a place, `COVER_ALONG` along the path by `COVER_ROUND` round it from
-/// angle 0, set where the form is; read between places (`covered`), so an opening's edge is
-/// smooth. A pixel reads it from GPU memory (`upload`, then `covered` on the buffer's words):
-/// as a constant in a shader, its table is copied for every pixel.
+/// angle 0, set where the form is. What's drawn reads how far inside the cover's edge a place
+/// is (`edges`, then `inside` on the numbers in GPU memory: `uploaded`), between places, so
+/// an opening's edge is a line and not a row of teeth a place wide.
 pub struct Cover: Copy {
     pub words: [u32; COVER_WORDS],
 }
 
 impl Cover {
-    /// How much of the form is at `f` of the way along and angle `theta` (`covered`).
-    pub fn covered(self, f: f32, theta: f32) -> f32 {
-        covered(self.words, f, theta)
+    /// Whether its form is at place (`i` along, `j` round, counted round the whole turn).
+    pub fn at(self, i: u32, j: u32) -> bool {
+        let k = min(i, COVER_ALONG - 1) * COVER_ROUND + j % COVER_ROUND
+        (self.words[k / 32] >> (k % 32)) & 1 == 1
     }
 
-    /// Its words in GPU memory, for a pixel to read.
-    pub fn upload(self) -> GpuBuffer<u32> {
-        buffer_of(self.words)
+    /// How far inside its edge each place is (`COVER_PLACES` numbers, in places along the
+    /// path: under 0 where the form isn't, 0 on the edge, which runs midway between a place
+    /// the form is at and one it isn't; held within `EDGE_REACH`). `round` is how long a
+    /// place round the path is against a place along it. Made once, when a program loads:
+    /// each place's distance from the nearest edge, carried from place to place over the
+    /// grid twice each way (twice, since the grid closes on itself round the path).
+    pub fn edges(self, round: f32) -> Vec<f32> {
+        let far = 4.0 * EDGE_REACH
+        let across = sqrt(1.0 + round * round)
+        var d: Vec<f32> = Vec::new()
+        // A place beside the edge starts half a step from it.
+        for i in 0..COVER_ALONG {
+            for j in 0..COVER_ROUND {
+                let here = self.at(i, j)
+                var least = far
+                for di in 0..3 {
+                    if i + di < 1 || i + di > COVER_ALONG {
+                        continue
+                    }
+                    for dj in 0..3 {
+                        if self.at(i + di - 1, j + dj + COVER_ROUND - 1) != here {
+                            let step = if di == 1 { round } else if dj == 1 { 1.0 } else { across }
+                            least = min(least, 0.5 * step)
+                        }
+                    }
+                }
+                d.push(least)
+            }
+        }
+        for _ in 0..2 {
+            // Down the path and round it, then back.
+            for i in 0..COVER_ALONG {
+                for j in 0..COVER_ROUND {
+                    let k = i * COVER_ROUND + j
+                    let before = i * COVER_ROUND + (j + COVER_ROUND - 1) % COVER_ROUND
+                    var least = min(d[k], d[before] + round)
+                    if i > 0 {
+                        let up = k - COVER_ROUND
+                        least = min(least, d[up] + 1.0)
+                        least = min(least, d[before - COVER_ROUND] + across)
+                        least = min(least, d[up - j + (j + 1) % COVER_ROUND] + across)
+                    }
+                    d[k] = least
+                }
+            }
+            for ii in 0..COVER_ALONG {
+                let i = COVER_ALONG - 1 - ii
+                for jj in 0..COVER_ROUND {
+                    let j = COVER_ROUND - 1 - jj
+                    let k = i * COVER_ROUND + j
+                    let after = i * COVER_ROUND + (j + 1) % COVER_ROUND
+                    var least = min(d[k], d[after] + round)
+                    if i + 1 < COVER_ALONG {
+                        let down = k + COVER_ROUND
+                        least = min(least, d[down] + 1.0)
+                        least = min(least, d[after + COVER_ROUND] + across)
+                        least = min(
+                            least,
+                            d[down - j + (j + COVER_ROUND - 1) % COVER_ROUND] + across,
+                        )
+                    }
+                    d[k] = least
+                }
+            }
+        }
+        for i in 0..COVER_ALONG {
+            for j in 0..COVER_ROUND {
+                let k = i * COVER_ROUND + j
+                let by = min(d[k], EDGE_REACH)
+                d[k] = if self.at(i, j) { by } else { -by }
+            }
+        }
+        // (Marks say which side of the edge a place is on, not where between two places the
+        // edge runs, so the distances step as the marks do where an edge slants: evened over
+        // each place's neighbours, twice, the steps are gone and a corner is rounded by about
+        // a place.)
+        for _ in 0..2 {
+            var even: Vec<f32> = Vec::new()
+            for i in 0..COVER_ALONG {
+                let up = if i > 0 { i - 1 } else { i }
+                let down = min(i + 1, COVER_ALONG - 1)
+                for j in 0..COVER_ROUND {
+                    let before = (j + COVER_ROUND - 1) % COVER_ROUND
+                    let after = (j + 1) % COVER_ROUND
+                    var sum = 0.0
+                    for row in [up, i, i, down] {
+                        let r = row * COVER_ROUND
+                        sum += d[r + before] + 2.0 * d[r + j] + d[r + after]
+                    }
+                    even.push(sum / 16.0)
+                }
+            }
+            d = take even
+        }
+        d
     }
 }
 
-/// Whether the cover whose words start at `first` of `words` has its form at place (`i`
-/// along, `j` round, counted round the whole turn).
-fn mark(words: [u32], first: u32, i: u32, j: u32) -> f32 {
-    let k = min(i, COVER_ALONG - 1) * COVER_ROUND + j % COVER_ROUND
-    f32((words[first + k / 32] >> (k % 32)) & 1)
-}
-
-/// How much of a form is at `f` of the way along and angle `theta`, by its cover's words: 1
-/// well inside it, 0 well inside an opening, and a half at an opening's edge. Where `words`
-/// holds several covers one after another (`uploaded`), `at` says which.
-pub fn covered(words: [u32], f: f32, theta: f32, at: u32 = 0) -> f32 {
-    let first = at * COVER_WORDS
+/// How far inside a cover's edge the place `f` of the way along and at angle `theta` is, by
+/// the cover's `edges` (places along the path; under 0 where the form isn't): read between
+/// places. Where `edges` holds several covers' one after another (`uploaded`), `at` says
+/// which.
+pub fn inside(edges: [f32], f: f32, theta: f32, at: u32 = 0) -> f32 {
+    let first = at * COVER_PLACES
     let x = clamp(f * f32(COVER_ALONG) - 0.5, 0.0, f32(COVER_ALONG - 1))
     let y = fract(theta / TAU + 1.0) * f32(COVER_ROUND) - 0.5 + f32(COVER_ROUND)
     let i = u32(x)
-    let j = u32(y)
+    let i1 = min(i + 1, COVER_ALONG - 1)
+    let j = u32(y) % COVER_ROUND
+    let j1 = (j + 1) % COVER_ROUND
     let fx = x - f32(i)
-    let fy = y - f32(j)
+    let fy = y - floor(y)
     mix(
-        mix(mark(words, first, i, j), mark(words, first, i + 1, j), fx),
-        mix(mark(words, first, i, j + 1), mark(words, first, i + 1, j + 1), fx),
+        mix(edges[first + i * COVER_ROUND + j], edges[first + i1 * COVER_ROUND + j], fx),
+        mix(edges[first + i * COVER_ROUND + j1], edges[first + i1 * COVER_ROUND + j1], fx),
         fy,
     )
 }
 
-/// Several covers' words in GPU memory, one after another, for a pixel to read one of
-/// (`covered`'s `at`): a garment of several forms has a cover a form.
-pub fn uploaded<const N: u32>(covers: [Cover; N]) -> GpuBuffer<u32> {
-    var out: GpuBuffer<u32> = buffer(N * COVER_WORDS)
+/// Several covers' `edges` in GPU memory, one after another, for what's drawn to read one of
+/// (`inside`'s `at`): a garment of several forms has a cover a form. `round[k]` is cover
+/// `k`'s place round its path against a place along it (`Cover::edges`).
+pub fn uploaded<const N: u32>(covers: [Cover; N], round: [f32; N]) -> GpuBuffer<f32> {
+    var out: GpuBuffer<f32> = buffer(N * COVER_PLACES)
     for k in 0..N {
-        write(mut out, k * COVER_WORDS, covers[k].words)
+        write(mut out, k * COVER_PLACES, covers[k].edges(round[k]))
     }
     out
 }
@@ -1643,20 +1745,40 @@ pub fn fillet(d: f32, by: f32, cos: f32) -> f32 {
     by * (1.0 - sqrt(max(1.0 - x * x, 0.0)))
 }
 
-/// How a form grows from another (`vertex_onto`). Its side starts on the other form's and
-/// rises to its own by `rooted` of the way along its path (eased at both ends, and slowest to
-/// leave: it lies along the other side before it lifts off it, as the ball of a thumb leaves
-/// the heel of a hand; 0: it stands on the other form as it is, a finger on a knuckle).
-/// And where its side nears the other's, a fillet of radius `fillet` (m), whole over the first
-/// half of `reach` of its path and gone by `reach`, so a fingertip curled back to the palm it
-/// grew from only touches it. Within the fillet's radius of the other side its light leans to
-/// that side's (`leant`): two sides that meet nearly flush have next to no fillet between
-/// them, and would still be lit as two.
+/// How a form grows from another, or lies on it (`vertex_onto`). Its side starts on the other
+/// form's and rises to its own by `rooted` of the way along its path (eased at both ends, and
+/// slowest to leave: it lies along the other side before it lifts off it, as the ball of a
+/// thumb leaves the heel of a hand; 0: it stands on the other form as it is, a finger on a
+/// knuckle). And where its side nears the other's, a fillet of radius `fillet` (m), whole over
+/// the first half of `reach` of its path and gone by `reach`, so a fingertip curled back to
+/// the palm it grew from only touches it. Within the fillet's radius of the other side its
+/// light leans to that side's (`leant`): two sides that meet nearly flush have next to no
+/// fillet between them, and would still be lit as two.
+///
+/// A piece of a garment that lies on another piece (a shoulder on a jacket's body) is laid on
+/// it: within `laid` (m) of the other form's side, either side of it, its side is put on that
+/// side (`laid_at`), so the two are one surface where they overlap however they were posed,
+/// and no edge of the one stands off the other. Only where the other form is: `cover` says
+/// which of the covers the vertex is given is the other form's (`COVERLESS`: it has none).
 pub struct Grown: Copy + GpuData {
     pub fillet: f32,
     pub reach: f32,
     pub rooted: f32 = 0.0,
+    pub laid: f32 = 0.0,
+    pub cover: u32 = COVERLESS,
 }
+
+/// A form with no cover: it's everywhere on its chart.
+pub const COVERLESS: u32 = 4294967295
+
+/// How far under the form it grows from a rooted form's side starts (m), and how far over the
+/// form it lies on a laid form's side is put.
+pub const UNDER: f32 = 0.0002
+pub const OVER: f32 = 0.0004
+
+/// How many places inside its cover's edge the other form counts as wholly there, for a form
+/// laid on it: nearer its edge the laid form comes away to its own side.
+pub const THERE: f32 = 2.0
 
 impl Grown {
     /// How much of the way to the other form's side its side is held, `f` of the way along.
@@ -1668,15 +1790,31 @@ impl Grown {
         1.0 - risen * risen
     }
 
+    /// How far off the other form's side a point `d` off it (m; negative inside) is put, laid
+    /// on it: `OVER` it from as far inside as half of `laid` to on it, rising to where it was
+    /// by `laid` off it, and left where it was from `laid` inside. Where it was, if it isn't
+    /// laid.
+    pub fn laid_at(self, d: f32) -> f32 {
+        if self.laid <= 0.0 {
+            return d
+        }
+        if d >= OVER {
+            return OVER + (d - OVER) * smoothstep(0.0, self.laid, d)
+        }
+        mix(d, OVER, smoothstep(-self.laid, -0.5 * self.laid, d))
+    }
+
     /// How far a point of its side `f` of the way along is moved, and which way: `d` from the
-    /// other form's side (m; negative inside), that side's way out `other`, its own `out`.
-    /// Toward the other side by what it's held (and a fifth of a millimetre under it, so the
-    /// two don't lie in one another), and out by the fillet of what's left.
-    pub fn moved(self, f: f32, d: f32, other: vec3, out: vec3) -> vec3 {
-        let held = self.held(f)
-        let across = self.fillet * (1.0 - smoothstep(0.5 * self.reach, self.reach, f))
-        let up = (1.0 - held) * fillet((1.0 - held) * d, across, dot(out, other))
-        out * up - other * (held * (max(d, 0.0) + UNDER))
+    /// other form's side (m; negative inside), that side's way out `other`, its own `out`,
+    /// and how much of the other form is `there` (0 at an opening in it: nothing to lie on or
+    /// meet). Laid on the other side (`laid_at`); toward it by what it's held (and `UNDER`
+    /// it, so the two don't lie in one another); and out by the fillet of what's left.
+    pub fn moved(self, f: f32, d: f32, other: vec3, out: vec3, there: f32 = 1.0) -> vec3 {
+        let on = mix(d, self.laid_at(d), there)
+        let held = self.held(f) * there
+        let across = self.fillet * there * (1.0 - smoothstep(0.5 * self.reach, self.reach, f))
+        let up = (1.0 - held) * fillet((1.0 - held) * on, across, dot(out, other))
+        out * up + other * (on - d - held * (max(on, 0.0) + UNDER))
     }
 
     /// How much of the other side's way out a point's normal takes, `f` of the way along and
@@ -1688,16 +1826,16 @@ impl Grown {
     }
 }
 
-/// How far under the form it grows from a rooted form's side starts (m).
-pub const UNDER: f32 = 0.0002
-
-/// `vertex`, for a form that grows from another (`onto`, as a pose has it; `how`): its side
-/// rises from that form's at its root and is filleted where it nears it (`Grown`), so the two
-/// meet as skin does and not at a crease or a step: a finger at a palm, a thumb's ball at a
-/// wrist. Where it's moved, a pixel takes the side's own normal (`Vertex::normal_from`), as it
-/// does at a fold.
+/// `vertex`, for a form that grows from another or lies on it (`onto`, as a pose has it;
+/// `how`): its side rises from that form's at its root, is laid on it where they overlap and
+/// is filleted where it nears it (`Grown`), so the two meet as skin or as one cloth does and
+/// not at a crease or a step: a thumb's ball at a wrist, a jacket's shoulder on its body.
+/// Where it lies by the other form its light is that form's own (`light`: what the other
+/// form's pixels read their normals from), and elsewhere where it's moved a pixel takes the
+/// side's own normal (`Vertex::normal_from`), as it does at a fold. `covers` holds the other
+/// form's cover's edges (`uploaded`; any buffer where `how.cover` is `COVERLESS`).
 @vertex
-pub fn vertex_onto<const A: u32, const R: u32, const B: u32, const Q: u32, S: Seen>(
+pub fn vertex_onto<const A: u32, const R: u32, const B: u32, const Q: u32, const T: u32, S: Seen>(
     v: VertexIndex,
     rest: Limb<A, R>,
     form: Limb<A, R>,
@@ -1706,7 +1844,9 @@ pub fn vertex_onto<const A: u32, const R: u32, const B: u32, const Q: u32, S: Se
     level: u32,
     seen: S,
     onto: Limb<B, Q>,
+    light: Radial<B, T>,
     how: Grown,
+    covers: [f32],
 ) -> Vertex {
     let at = place_of(v.index, level, band)
     // (The side there and at two places beside it, each moved by its own share: the normal
@@ -1719,14 +1859,43 @@ pub fn vertex_onto<const A: u32, const R: u32, const B: u32, const Q: u32, S: Se
     let b = form.side(f: f0 + df, theta: at.y)
     let c = form.side(f: f0, theta: at.y + dt)
     let out = unit(cross(b - a, c - a))
-    let (foot, other) = onto.foot(a)
-    let by = how.moved(f: f0, d: dot(other, a - foot), other: other, out: out)
-    let a1 = a + by
-    let b1 = b + how.moved(f: f0 + df, d: dot(other, b - foot), other: other, out: out)
-    let c1 = c + how.moved(f: f0, d: dot(other, c - foot), other: other, out: out)
+    // Where the point is on the other form's chart, and whether that form is there.
+    let reach = onto.path.length()
+    let pl = onto.path.place(a)
+    let along = clamp(pl.along, 0.0, reach)
+    var there = 1.0
+    if how.cover != COVERLESS {
+        there = saturate(inside(covers, along / reach, pl.theta, at: how.cover) / THERE)
+    }
+    // (Most of a form's points are nowhere near the form it grows from or lies on: one where
+    // that form isn't, or one out of reach of the hold, the laying and the fillet, is left
+    // as `vertex` has it, for one place found on the other form's chart. The rest pay for the
+    // other form's side under them, read twice, and its light.)
+    var by = vec3()
+    var a1 = a
+    var normal = out
+    var leant = 0.0
+    if there > 0.0 {
+        let first = onto.toward_at(a, pl)
+        if how.held(f0) > 0.0 || first.w < max(how.laid, 2.0 * how.fillet) {
+            let nearer = a - first.xyz * first.w
+            let again = onto.toward(nearer)
+            let foot = nearer - again.xyz * again.w
+            let other = again.xyz
+            by = how.moved(f: f0, d: dot(other, a - foot), other: other, out: out, there: there)
+            a1 = a + by
+            let b1 = b +
+                how.moved(f: f0 + df, d: dot(other, b - foot), other: other, out: out, there: there)
+            let c1 = c +
+                how.moved(f: f0, d: dot(other, c - foot), other: other, out: out, there: there)
+            leant = there * how.leant(f: f0, d: dot(other, a1 - foot))
+            let fr = onto.path.frame(along)
+            let lit = normal_at(light, fr.up, fr.left, reach, along / reach, pl.theta)
+            normal = unit(mix(unit(cross(b1 - a1, c1 - a1)), lit, vec3(leant)))
+        }
+    }
     let drawn = sunk(a1, seen.seen_from(), sunk_by(under, at.x))
     let section = form.path.frame(saturate(at.x) * form.path.length())
-    let leant = how.leant(f: f0, d: dot(other, a1 - foot))
     Vertex {
         clip: ClipPosition { position: seen.clip_at(drawn) },
         world: a1,
@@ -1738,12 +1907,12 @@ pub fn vertex_onto<const A: u32, const R: u32, const B: u32, const Q: u32, S: Se
             at,
             max(
                 max(form.folded(f: at.x, theta: at.y), saturate(leant * 1000.0)),
-                max(saturate(how.held(f0) * 1000.0), saturate(length(by) / 0.0003)),
+                max(saturate(how.held(f0) * there * 1000.0), saturate(length(by) / 0.0003)),
             ),
         ),
         up: section.up,
         left: section.left,
-        normal: unit(mix(unit(cross(b1 - a1, c1 - a1)), other, vec3(leant))),
+        normal,
     }
 }
 
@@ -1865,6 +2034,25 @@ fn a_grown_forms_light_leans_to_the_side_it_meets() {
     assert(how.leant(f: 0.1, d: 0.0) == 1.0 && how.leant(f: 0.1, d: -0.002) == 1.0)
     assert(abs(how.leant(f: 0.1, d: 0.004) - 0.5) < 1.0e-5)
     assert(how.leant(f: 0.1, d: 0.008) == 0.0 && how.leant(f: 0.7, d: 0.0) == 0.0)
+}
+
+@test
+fn a_laid_forms_side_is_put_on_the_form_it_lies_on() {
+    // Laid within a centimetre: a point 2 mm off the other side, on it or 3 mm inside it is
+    // put just over it; one 5 mm off comes halfway back; one a centimetre off or a centimetre
+    // inside stays where it was. Where the other form has an opening, nothing moves.
+    let how = Grown { fillet: 0.0, reach: 9.0, laid: 0.01 }
+    assert(abs(how.laid_at(0.002) - (OVER + 0.0016 * smoothstep(0.0, 0.01, 0.002))) < 1.0e-7)
+    assert(how.laid_at(0.002) < 0.0006)
+    assert(how.laid_at(0.0) == OVER && how.laid_at(-0.003) == OVER)
+    assert(abs(how.laid_at(0.005) - (OVER + 0.0046 * 0.5)) < 1.0e-6)
+    assert(how.laid_at(0.01) == 0.01 && how.laid_at(-0.01) == -0.01)
+    let up = vec3(z: 1.0)
+    let down = how.moved(f: 0.5, d: 0.002, other: up, out: up)
+    assert(abs(down.z - (how.laid_at(0.002) - 0.002)) < 1.0e-7)
+    assert(length(how.moved(f: 0.5, d: 0.002, other: up, out: up, there: 0.0)) < 1.0e-9)
+    // A form that isn't laid isn't moved by it.
+    assert(Grown { fillet: 0.0, reach: 9.0 }.laid_at(0.002) == 0.002)
 }
 
 @test
@@ -2266,9 +2454,10 @@ fn a_part_posed_is_its_chain_posed_and_its_form_bent() {
 }
 
 @test
-fn a_cover_says_where_a_form_is() {
-    // A form with an opening down its front, a tenth of a turn either side of angle 0: none of
-    // it in the opening, all of it away from it, half at the opening's edge.
+fn a_covers_edge_runs_between_where_its_form_is_and_isnt() {
+    // A form with an opening down its front, a tenth of a turn either side of angle 0: under
+    // 0 in the opening, over it away from it, and 0 on the opening's edge, between the last
+    // place in the opening and the first out of it (26 places round from angle 0).
     var marks: Vec<bool> = Vec::new()
     for _ in 0..COVER_ALONG {
         for j in 0..COVER_ROUND {
@@ -2276,37 +2465,57 @@ fn a_cover_says_where_a_form_is() {
             marks.push(turn > 0.1 && turn < 0.9)
         }
     }
-    let c = cover_of(marks)
-    assert(c.covered(0.5, 0.0) == 0.0 && c.covered(0.3, 0.05 * TAU) == 0.0)
-    assert(c.covered(0.5, PI) == 1.0 && c.covered(0.9, 0.3 * TAU) == 1.0)
-    // (The edge is between the last place in the opening and the first out of it: 26 places
-    // round from angle 0.)
+    let e = cover_of(marks).edges(round: 0.5)
+    assert(inside(e, f: 0.5, theta: 0.0) < -1.0 && inside(e, f: 0.3, theta: 0.05 * TAU) < -1.0)
+    assert(inside(e, f: 0.5, theta: PI) == EDGE_REACH && inside(e, f: 0.9, theta: 0.3 * TAU) > 1.0)
     let edge = TAU * 26.0 / f32(COVER_ROUND)
-    assert(abs(c.covered(0.5, edge) - 0.5) < 0.01, f"{c.covered(0.5, edge)}")
-    assert(abs(c.covered(0.5, -edge) - 0.5) < 0.01, f"{c.covered(0.5, -edge)}")
+    assert(abs(inside(e, f: 0.5, theta: edge)) < 0.01, f"{inside(e, f: 0.5, theta: edge)}")
+    assert(abs(inside(e, f: 0.5, theta: -edge)) < 0.01, f"{inside(e, f: 0.5, theta: -edge)}")
+    // Two places in from the edge is two places round, each half a place along.
+    let two = TAU * 28.0 / f32(COVER_ROUND)
+    assert(abs(inside(e, f: 0.5, theta: two) - 1.0) < 0.01, f"{inside(e, f: 0.5, theta: two)}")
+}
+
+@test
+fn a_covers_slanted_edge_is_a_line_and_not_steps() {
+    // A form on one side of an edge that slants across the chart, a place round for every
+    // two along. Along the edge's own line the distance read stays within a fifth of a place
+    // of 0; read from the marks themselves it would swing by half a place a step.
+    var marks: Vec<bool> = Vec::new()
+    for i in 0..COVER_ALONG {
+        for j in 0..COVER_ROUND {
+            marks.push(f32(j) + 0.5 > 40.0 + 0.5 * (f32(i) + 0.5))
+        }
+    }
+    let e = cover_of(marks).edges(round: 1.0)
+    var worst = 0.0
+    for n in 0..60 {
+        let x = 20.0 + 0.9 * f32(n)
+        let y = 40.0 + 0.5 * x
+        worst = max(
+            worst,
+            abs(inside(e, f: x / f32(COVER_ALONG), theta: TAU * y / f32(COVER_ROUND))),
+        )
+    }
+    assert(worst < 0.2, f"{worst}")
 }
 
 @test
 fn one_of_several_covers_held_together_is_read_by_its_place_among_them() {
-    // Two covers' words one after the other, as `uploaded` holds them: the first with its form
-    // nowhere, the second with its form everywhere. Each reads as itself.
+    // Two covers' edges one after the other, as `uploaded` holds them: the first with its
+    // form nowhere, the second with its form everywhere. Each reads as itself.
     var none: Vec<bool> = Vec::new()
     var all: Vec<bool> = Vec::new()
-    for _ in 0..COVER_ALONG * COVER_ROUND {
+    for _ in 0..COVER_PLACES {
         none.push(false)
         all.push(true)
     }
-    let a = cover_of(none)
-    let b = cover_of(all)
-    var words: Vec<u32> = Vec::new()
-    for w in a.words {
-        words.push(w)
+    var edges = cover_of(none).edges(round: 1.0)
+    for d in cover_of(all).edges(round: 1.0) {
+        edges.push(d)
     }
-    for w in b.words {
-        words.push(w)
-    }
-    assert(covered(words, f: 0.4, theta: 1.0) == 0.0)
-    assert(covered(words, f: 0.4, theta: 1.0, at: 1) == 1.0)
+    assert(inside(edges, f: 0.4, theta: 1.0) == -EDGE_REACH)
+    assert(inside(edges, f: 0.4, theta: 1.0, at: 1) == EDGE_REACH)
 }
 
 @test
