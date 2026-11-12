@@ -9,18 +9,18 @@ use std::transform::translate
 
 /// The snout's axis in his rest space (the mask's cone, the head scaled 1.1 about its joint):
 /// its root and tip, and the cone's radius at each.
-const ROOT = vec3(0.0, 1.6792, 0.0783)
-const TIP = vec3(0.0, 1.6352, 0.2063)
-const R_ROOT: f32 = 0.057
-const R_TIP: f32 = 0.019
+const ROOT = vec3(0.0, 1.677, 0.0743)
+const TIP = vec3(0.0, 1.6528, 0.1953)
+const R_ROOT: f32 = 0.044
+const R_TIP: f32 = 0.0143
 
 /// The mask's cheeks (his left's; the right mirrored): their middles and radius, in his rest space.
-const CHEEK = vec3(0.0726, 1.6308, 0.0830)
-const R_CHEEK: f32 = 0.065
+const CHEEK = vec3(0.052, 1.645, 0.072)
+const R_CHEEK: f32 = 0.05
 
 /// The mask's chin, under the snout's root, and its radius.
-const CHIN = vec3(0.0, 1.600, 0.090)
-const R_CHIN: f32 = 0.045
+const CHIN = vec3(0.0, 1.602, 0.082)
+const R_CHIN: f32 = 0.04
 
 /// A fist's middle in his rest space (his left; the right mirrored), and its half thickness.
 const FIST = vec3(0.795, 1.425, -0.062)
@@ -105,8 +105,10 @@ const FINGERS_MID = vec3(0.86, 1.445, -0.05)
 const HAND_R: f32 = 0.035
 
 /// `m` (his palette) with each hand moved out of his hips and belt (a hand resting at his side
-/// sank its fingers in), the arm swung about its shoulder as `fists_off_mask` does.
-pub fn hands_off_hips(m: [mat4; 64]) -> [mat4; 64] {
+/// sank its fingers in), the arm swung about its shoulder as `fists_off_mask` does; each hand
+/// only as far as `kept` says (his left's, his right's: 1 kept clear, 0 left where it is: a
+/// hand he's set on his hip rests there).
+pub fn hands_off_hips(m: [mat4; 64], kept: vec2) -> [mat4; 64] {
     var out = m
     let o = m[0][3].xyz
     let ax = m[0][0].xyz
@@ -130,7 +132,8 @@ pub fn hands_off_hips(m: [mat4; 64]) -> [mat4; 64] {
                 continue
             }
             let moved = vec3(q.x * want / e, q.y, q.z * want / e)
-            let shift = ax * (moved.x - q.x) + az * (moved.z - q.z)
+            let by = if side == 0 { kept.x } else { kept.y }
+            let shift = (ax * (moved.x - q.x) + az * (moved.z - q.z)) * by
             let r = swung(p - shoulder, p + shift - shoulder, shoulder)
             for i in 0..20 {
                 let b = arm_bone(i, side)

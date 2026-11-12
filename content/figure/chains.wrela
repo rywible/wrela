@@ -109,12 +109,10 @@ pub fn collar() -> Chain {
 }
 
 /// The line a garment's left shoulder is charted about: along his collarbone from beside his
-/// neck to his shoulder's joint, and on down his upper arm to his elbow. A shoulder's top runs
-/// along it (about his spine that top is square to the path, which a chart is poor at), and
-/// what's worn over a shoulder goes with the arm: its bones are his collarbone and his upper
-/// arm, and the path bends at his shoulder as his arm's does. Angle 0 is up, a quarter turn
-/// his back. His upper arm's turn about its length is spread to his elbow, so the little of
-/// the path a shoulder covers takes little of it.
+/// neck to his shoulder's joint, and on along his upper arm at rest. A shoulder's top runs
+/// along it (about his spine that top is square to the path, which a chart is poor at).
+/// What carries it is the garment's to say: a sleeveless coat's shoulder is on his chest
+/// alone, the whole line with it. Angle 0 is up, a quarter turn his back.
 pub fn yoke_left() -> Chain {
     chain(
         [vec3(0.09, 1.455, -0.065), vec3(0.212, 1.455, -0.065), vec3(0.463, 1.455, -0.073)],

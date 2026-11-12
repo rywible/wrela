@@ -1,0 +1,198 @@
+// A pose written the way a sculptor sets a figure: a list of turns, each of one bone (and all
+// that hangs from it) about one of the body's own axes, made in order from the hips out. A turn
+// may also swing a little either side of where it's set, some whole number of times a loop: a
+// held pose that breathes, shifts its weight and looks about, written as that same list and
+// played as a looped clip (`held`).
+//
+// The body's axes are its own at rest: +x its left, +y up, +z the way it faces. A turn is about
+// its bone's joint, by the right hand: about +z, a left arm (which points along +x) lifts.
+
+use std::quat::Quat
+use humanoid::{Clip, NONE, Pose, Rig, Rigid}
+
+/// One turn: the bone (its VRM name); the axis (the body's frame) and how far about it
+/// (degrees); and its swing through a loop: how far either side (`wave`, degrees), how many
+/// times a loop (`times`), and how far through a swing it is as the loop starts (`at`, 0 to 1:
+/// 0 sets out the positive way from the middle).
+pub struct Turn: Copy {
+    pub bone: Text,
+    pub axis: vec3,
+    pub by: f32,
+    pub wave: f32 = 0.0,
+    pub times: f32 = 1.0,
+    pub at: f32 = 0.0,
+}
+
+const DEG: f32 = 0.017453292
+const TAU: f32 = 6.2831853
+
+impl Turn {
+    /// How far it turns (radians) at `phase` of its loop (0 to 1).
+    pub fn angle(self, phase: f32) -> f32 {
+        (self.by + self.wave * sin(TAU * (self.times * phase + self.at))) * DEG
+    }
+}
+
+/// `from` (a pose of `rig`) with each of `turns` made in order, as they are at `phase` of their
+/// loop. A turn of a bone the rig doesn't have is passed over.
+pub fn posed(rig: Rig, from: Pose, turns: [Turn], phase: f32) -> Pose {
+    let nb = rig.bones.len()
+    var w = [Rigid::identity(); 64]
+    for b in 0..nb {
+        borrow rb = rig.bones[b]
+        let up = if rb.parent == NONE { rig.base } else { w[rb.parent] }
+        let t = if rb.parent == NONE { from.hips } else { rb.rest.t }
+        w[b] = up.then(Rigid { q: from.turns[b], t })
+    }
+    for turn in turns {
+        let b = rig.find(turn.bone)
+        if b == NONE {
+            continue
+        }
+        let r = Quat::axis_angle(normalize(turn.axis), turn.angle(phase))
+        let about = w[b].t
+        var below = [false; 64]
+        for d in b..nb {
+            let up = rig.bones[d].parent
+            if d == b || (up != NONE && below[up]) {
+                below[d] = true
+                w[d] = Rigid { q: r.mul(w[d].q), t: about + r.rotate(w[d].t - about) }
+            }
+        }
+    }
+    var out = from
+    for b in 0..nb {
+        let up = rig.bones[b].parent
+        let above = if up == NONE { rig.base.q } else { w[up].q }
+        out.turns[b] = above.inverse().mul(w[b].q)
+    }
+    let back = rig.base.inverse()
+    out.hips = back.t + back.q.rotate(w[0].t)
+    out
+}
+
+/// `rig` at rest as a pose.
+pub fn at_rest(rig: Rig) -> Pose {
+    var p = Pose { turns: [Quat::identity(); 64], hips: rig.bones[0].rest.t }
+    for b in 0..rig.bones.len() {
+        p.turns[b] = rig.bones[b].rest.q
+    }
+    p
+}
+
+/// `turns`, made on `rig` at rest, as a looped clip `length` seconds long at `fps` frames a
+/// second, in place: a held pose, swinging as its turns do. (Its feet are wherever its turns
+/// put them: `cleanup::cleaned` stands it on the floor.)
+pub fn held(rig: Rig, turns: [Turn], length: f32, fps: f32) -> Clip {
+    let nb = rig.bones.len()
+    let span = max(u32(round(length * fps)), 2)
+    let frames = span + 1
+    let rest = at_rest(rig.clone())
+    var all: Vec<Quat> = Vec::with_capacity(frames * nb)
+    var hips: Vec<vec3> = Vec::with_capacity(frames)
+    for j in 0..frames {
+        // (Its last frame is its first: whole swings a loop meet themselves.)
+        let p = posed(rig.clone(), rest, turns, f32(j % span) / f32(span))
+        for b in 0..nb {
+            all.push(p.turns[b])
+        }
+        hips.push(p.hips)
+    }
+    Clip {
+        fps: f32(span) / length,
+        frames,
+        bones: nb,
+        turns: all,
+        hips,
+        looped: true,
+        travel: vec3(0.0),
+        travel_local: vec3(0.0),
+    }
+}
+
+/// A rig for the tests: hips a metre up, a spine and a head over them, an arm out to its left.
+fn test_rig() -> Rig {
+    let same = mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    )
+    let table = [
+        ("hips", NONE, vec3(0.0, 1.0, 0.0)),
+        ("spine", 0, vec3(0.0, 0.2, 0.0)),
+        ("head", 1, vec3(0.0, 0.4, 0.0)),
+        ("leftUpperArm", 1, vec3(0.2, 0.3, 0.0)),
+        ("leftLowerArm", 3, vec3(0.3, 0.0, 0.0)),
+    ]
+    var bones: Vec<humanoid::RigBone> = Vec::new()
+    var of = [NONE; 55]
+    for i in 0..5 {
+        let (name, parent, at) = table[i]
+        let v = humanoid::bone(name)
+        of[v] = i
+        bones.push(
+            humanoid::RigBone {
+                vrm: v,
+                parent,
+                rest: Rigid { q: Quat::identity(), t: at },
+                ibm: same,
+            },
+        )
+    }
+    Rig { bones, of, base: Rigid::identity() }
+}
+
+/// Where each of the tests' rig's bones is as `p` has it.
+fn places(rig: Rig, p: Pose) -> [vec3; 5] {
+    var w = [Rigid::identity(); 5]
+    for b in 0..5 {
+        let up = if b == 0 { rig.base } else { w[rig.bones[b].parent] }
+        let t = if b == 0 { p.hips } else { rig.bones[b].rest.t }
+        w[b] = up.then(Rigid { q: p.turns[b], t })
+    }
+    [w[0].t, w[1].t, w[2].t, w[3].t, w[4].t]
+}
+
+@test
+fn turns_are_made_in_order_about_the_bodys_axes_each_about_its_own_joint() {
+    let rig = test_rig()
+    // Its spine turned a quarter turn to its left about +y, then its arm lifted a quarter turn
+    // about +z: the room's +z still, though its spine has turned.
+    let turns = [
+        Turn { bone: "spine", axis: vec3(0.0, 1.0, 0.0), by: 90.0 },
+        Turn { bone: "leftUpperArm", axis: vec3(0.0, 0.0, 1.0), by: 90.0 },
+        Turn { bone: "tail", axis: vec3(1.0, 0.0, 0.0), by: 45.0 },
+    ]
+    let at = places(rig, posed(rig, at_rest(rig), turns, 0.0))
+    // The spine's turn carries its shoulder from its left to behind it (+x to -z); its hips
+    // and its head, on the axis, stay.
+    assert(length(at[0] - vec3(0.0, 1.0, 0.0)) < 1.0e-5)
+    assert(length(at[2] - vec3(0.0, 1.6, 0.0)) < 1.0e-5)
+    assert(length(at[3] - vec3(0.0, 1.5, -0.2)) < 1.0e-5, f"its shoulder is at {at[3]}")
+    // Its arm then pointed along -z; about +z it doesn't move (it lies on the axis).
+    assert(length(at[4] - vec3(0.0, 1.5, -0.5)) < 1.0e-5, f"its elbow is at {at[4]}")
+}
+
+@test
+fn a_held_pose_swings_as_its_turns_do_and_meets_itself() {
+    let rig = test_rig()
+    let turns = [
+        Turn { bone: "leftUpperArm", axis: vec3(0.0, 0.0, 1.0), by: 30.0, wave: 10.0, times: 2.0 },
+    ]
+    let c = held(rig, turns, length: 4.0, fps: 10.0)
+    assert(c.frames == 41 && c.looped && abs(c.length() - 4.0) < 1.0e-4)
+    let lift = |f: u32| -> f32 {
+        var p = Pose { turns: [Quat::identity(); 64], hips: c.hips[f] }
+        for b in 0..5 {
+            p.turns[b] = c.turns[f * 5 + b]
+        }
+        let at = places(rig, p)
+        atan2(at[4].y - at[3].y, at[4].x - at[3].x) / DEG
+    }
+    // Twice a loop: at an eighth of the loop it's at the top of its swing, at three eighths
+    // the bottom, and its last frame is its first.
+    assert(abs(lift(0) - 30.0) < 0.01 && abs(lift(5) - 40.0) < 0.01, f"{lift(0)} {lift(5)}")
+    assert(abs(lift(15) - 20.0) < 0.01 && abs(lift(25) - 40.0) < 0.01)
+    assert(abs(lift(40) - lift(0)) < 1.0e-4)
+}

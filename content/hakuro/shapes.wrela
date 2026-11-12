@@ -78,10 +78,50 @@ pub fn unscaled(p: vec3) -> vec3 {
     HEAD_JOINT + (p - HEAD_JOINT) / HEAD_SCALE
 }
 
+// ---- his skull -------------------------------------------------------------------------------
+
+/// His skull's vault, in the unscaled head's space (the body's, measured): what his hair
+/// grows from.
+pub const CRANIUM_AT = vec3(0.0002, 1.7222, -0.0056)
+pub const CRANIUM = vec3(0.0735, 0.0906, 0.1011)
+
+/// How high his chin's underside is (the unscaled head's space): his head is 22.7 cm from
+/// there to his crown, 7.5 heads to his height.
+pub const CHIN: f32 = 1.586
+
+/// His skull's vault at `p`.
+pub fn cranium(p: vec3) -> f32 {
+    ellip(p, CRANIUM_AT, CRANIUM)
+}
+
+/// His skull at `p` (the unscaled head's space): what his head's wrap lies on, his hair
+/// grows from and his mask is shaped to. Its vault, as wide as it is anywhere over his ears;
+/// under its front his cheekbones and his upper jaw, a little narrower; and his lower jaw,
+/// narrower again at its corners under his ears, its underside rising from his chin back to
+/// them, and narrowing forward to a chin 5 cm across; and its base behind his jaw, where his
+/// neck comes up into it. In thirds from his chin to his
+/// hairline: the foot of his nose, his brow.
+pub fn skull(p: vec3) -> f32 {
+    let vault = cranium(p)
+    // (Its base, behind his jaw and under his ears, as wide as his cheekbones: the vault alone
+    // narrows from its middle down, and his head was widest in front of his ears.)
+    let base = ellip(p, vec3(0.0, 1.676, -0.022), vec3(0.068, 0.046, 0.062))
+    let face = ellip(p, vec3(0.0, 1.668, 0.028), vec3(0.064, 0.050, 0.062))
+    var jaw = ellip(p, vec3(0.0, 1.636, 0.018), vec3(0.055, 0.05, 0.068))
+    // (His chin: the lowest and the foremost of his jaw, as far forward as his teeth. An
+    // ellipsoid's underside alone is lowest at its middle, and his chin fell away.)
+    jaw = smin(jaw, ellip(p, vec3(0.0, 1.604, 0.060), vec3(0.025, 0.019, 0.024)), 0.014)
+    // (Its sides in to his chin; its underside up from his chin to its corners.)
+    jaw = smax(jaw, (abs(p.x) - 0.024 - 0.85 * (p.y - CHIN)) * 0.762, 0.012)
+    jaw = smax(jaw, (CHIN + 0.3 * max(0.058 - p.z, 0.0) - p.y) * 0.958, 0.008)
+    smin(smin(smin(vault, base, 0.02), face, 0.02), jaw, 0.016)
+}
+
 // ---- the mask -------------------------------------------------------------------------------
 
-/// The snout's tip. (It was 2.3 cm longer: from the side the mask read as a beak.)
-pub const TIP = vec3(0.0, 1.632, 0.186)
+/// The snout's tip. (It was 2.3 cm longer: from the side the mask read as a beak. And it
+/// fell 16° from its root: with his chin down as he carries it, it hung like an anteater's.)
+pub const TIP = vec3(0.0, 1.648, 0.176)
 
 /// An ear's height and its width at its base (m).
 const EAR_H: f32 = 0.168
@@ -122,78 +162,62 @@ fn ear(p: vec3, side: f32) -> f32 {
     max(d2 - 0.004, abs(z) - mix(0.011, 0.0045, up)) - 0.002
 }
 
-/// Where the fur at the mask's cheek ends, his left's two points (the right's mirrored): the
-/// lower and longer, and the upper.
-const RUFF_LOW = vec3(0.124, 1.602, -0.052)
-const RUFF_HIGH = vec3(0.128, 1.664, -0.058)
+/// Where the fur at the mask's cheek ends on his left (the right's mirrored): one short
+/// point, swept back and up past the mask's rim.
+const TUFT = vec3(0.098, 1.694, 0.004)
 
-/// The fur at the mask's cheek on `side`: two flat points swept back along the side of his
-/// head from the mask's rim, the lower the longer. (Round cones standing straight out from
-/// his cheeks, they read as tusks.)
-fn ruff(p: vec3, side: f32) -> f32 {
-    // (Flat against his head: half as thick out from it as they're wide.)
+/// The fur at the mask's cheek on `side`: one flat point at his cheekbone, swept back and up
+/// along the side of his head, part of the mask's own plate. (Two points to a side, low on
+/// his jaw and tipped in red, read as barbs stuck on the mask.)
+fn tuft(p: vec3, side: f32) -> f32 {
+    // (Flat against his head: half as thick out from it as it's wide.)
     let q = vec3(side * p.x, p.y, p.z)
     let flat = vec3(2.0, 1.0, 1.0)
-    let low = cone(
-        q * flat,
-        vec3(0.088, 1.648, 0.040) * flat,
-        RUFF_LOW * flat,
-        ra: 0.030,
-        rb: 0.003,
-    )
-    let high = cone(
-        q * flat,
-        vec3(0.096, 1.690, 0.026) * flat,
-        RUFF_HIGH * flat,
-        ra: 0.024,
-        rb: 0.003,
-    )
-    min(low, high) / 2.0
+    cone(q * flat, vec3(0.062, 1.666, 0.046) * flat, TUFT * flat, ra: 0.027, rb: 0.003) / 2.0
 }
 
-/// Hakuro's mask, in the unscaled head's space: a fox's face, wide at the brow and narrowing
-/// to a short muzzle; a slanted brow ridge over each slit eye; tall ears leaning out, their
-/// fronts turned outward; and two flat points of fur at each cheek, swept back. Its rim runs back round his cheeks
-/// to his ears, so it sits on his face as a shell: cut off flat across behind his brow, it
-/// was a plate held in front of a black block.
+/// How far off his skull his mask's outside is (m): its own thickness and the wrap under it.
+pub const MASK_OFF: f32 = 0.010
+
+/// Hakuro's mask, in the unscaled head's space: a fox's face cut to his own. Its shell is
+/// his skull's face a centimetre out (`skull`, `MASK_OFF`), from over his brow to under his
+/// chin and back round his cheeks to its rim, so it lies on his face everywhere; on it a slim
+/// muzzle, a slanted brow ridge over each slit eye, tall ears leaning out from its top
+/// corners, and one point of fur at each cheekbone, swept back. (It was first an ellipsoid
+/// 2 to 3 cm wider than his head a side with round jowls, a faceplate held in front of him;
+/// then an ellipsoid his head's width cut to a wedge, which no longer followed his jaw.)
 pub fn fox(p: vec3) -> f32 {
-    var face = ellip(p, vec3(0.0, 1.694, -0.004), vec3(0.106, 0.138, 0.130))
-    for s in [1.0, -1.0] {
-        face = smin(
-            face,
-            ellip(p, vec3(s * 0.060, 1.640, 0.064), vec3(0.040, 0.034, 0.046)),
-            0.03,
-        )
-    }
-    var sn = cone(p, vec3(0.0, 1.668, 0.070), TIP, ra: 0.047, rb: 0.015)
-    sn = smax(sn, -(p.y - 1.6), 0.01)
-    face = smin(face, sn, 0.021)
+    var face = skull(p) - MASK_OFF
+    var sn = cone(p, vec3(0.0, 1.670, 0.060), TIP, ra: 0.040, rb: 0.013)
+    sn = smax(sn, -(p.y - 1.604), 0.008)
+    face = smin(face, sn, 0.022)
     for s in [1.0, -1.0] {
         // Its brow's ridge, low by the nose and rising outward.
         face = smin(
             face,
             cone(
                 p,
-                vec3(s * 0.014, 1.724, 0.117),
-                vec3(s * 0.084, 1.754, 0.074),
-                ra: 0.012,
-                rb: 0.006,
+                vec3(s * 0.012, 1.724, 0.096),
+                vec3(s * 0.070, 1.750, 0.048),
+                ra: 0.011,
+                rb: 0.005,
             ),
-            0.018,
+            0.016,
         )
     }
-    // Its rim: back round his cheeks, further the further out.
-    let rim = 0.046 - 4.0 * p.x * p.x
+    // Its rim: a little way back round his cheeks, further the further out.
+    let rim = 0.030 - 1.5 * p.x * p.x
     var d = smax(face, -(p.z - rim), 0.006)
-    d = smax(d, -(p.y - 1.560), 0.004)
+    // (Open under his chin.)
+    d = smax(d, -(p.y - (CHIN - 0.006)), 0.004)
     d = smin(d, min(ear(p, 1.0), ear(p, -1.0)), 0.010)
     // (Its cheeks' fur after the rim's cut: it sweeps back past the rim.)
-    d = smin(d, min(ruff(p, 1.0), ruff(p, -1.0)), 0.012)
+    d = smin(d, min(tuft(p, 1.0), tuft(p, -1.0)), 0.012)
     // The eye slits, tilted 22°.
     for s in [1.0, -1.0] {
-        let q0 = vec2(s * (p.x - s * 0.037), p.y - 1.700)
+        let q0 = vec2(s * (p.x - s * 0.036), p.y - 1.702)
         let q = vec2(0.927184 * q0.x + 0.374607 * q0.y, -0.374607 * q0.x + 0.927184 * q0.y)
-        var e = (length(q / vec2(0.027, 0.006)) - 1.0) * 0.006
+        var e = (length(q / vec2(0.027, 0.0065)) - 1.0) * 0.0065
         e = max(e, -(p.z - 0.02))
         d = smax(d, -e, 0.0015)
     }
@@ -256,26 +280,36 @@ pub fn fox_paint(p: vec3) -> (vec3, f32) {
             tri2(e.xy, vec2(-0.023, 0.014), vec2(0.025, 0.014), vec2(0.004, EAR_H - 0.04)),
         )
     }
-    if p.y < 1.636 {
+    if p.y < 1.65 {
         marks = min(
             marks,
             stroke(
                 vec2(p.z, p.y),
-                vec2(TIP.z - 0.012, 1.618),
-                vec2(0.150, 1.612),
-                vec2(0.115, 1.618),
+                vec2(TIP.z - 0.012, 1.641),
+                vec2(0.150, 1.634),
+                vec2(0.115, 1.636),
                 w0: 0.0016,
                 w1: 0.0006,
             ),
         )
     }
     var c = if marks < 0.0 { red } else { white }
+    // (Its inside and the cut of its rim, dark: lacquered white like its face, its rim's
+    // thickness showed from behind as a white band round his head.)
+    let rim = 0.030 - 1.5 * p.x * p.x
+    let on_its_ear = e.y > -0.004 && abs(e.x) < EAR_W && abs(e.z) < 0.03
+    if p.z < rim + 0.002 && !on_its_ear && tuft(q, 1.0) > 0.003 {
+        c = vec3(0.02, 0.017, 0.018)
+    }
+    // (Inside an eye's slit, the dark behind the mask: its walls were lacquer, and a slit seen
+    // aslant showed white.)
+    let e0 = vec2(q.x - 0.036, p.y - 1.702)
+    let slit = vec2(0.927184 * e0.x + 0.374607 * e0.y, -0.374607 * e0.x + 0.927184 * e0.y)
+    if length(slit / vec2(0.027, 0.0065)) < 1.06 && p.z > 0.02 {
+        c = vec3(0.004, 0.003, 0.004)
+    }
     if length((p - TIP) * vec3(1.0, 1.3, 1.0)) < 0.016 {
         c = vec3(0.007, 0.006, 0.007)
-    }
-    // (Its cheeks' fur tipped in vermilion.)
-    if min(length(q - RUFF_LOW), length(q - RUFF_HIGH)) < 0.03 {
-        c = red
     }
     (c, 0.25)
 }
@@ -305,40 +339,118 @@ const CLUMPS: [(vec3, vec3, f32, f32); 15] = [
 /// The hair's centre, which each spike's flat side faces.
 const HAIR_CENTRE = vec3(0.0, 1.70, -0.01)
 
+/// How far `p` is from the curve from `a` to `c` bent toward `b` (a quadratic Bézier), and
+/// how far along the curve the nearest point is (0 at `a`, 1 at `c`). The curve's nearest
+/// point is a cubic's root, solved in closed form.
+fn to_curve(p: vec3, a: vec3, b: vec3, c: vec3) -> vec2 {
+    let aa = b - a
+    let bb = a - b * 2.0 + c
+    let cc = aa * 2.0
+    let dd = a - p
+    let kk = 1.0 / max(dot(bb, bb), 1.0e-9)
+    let kx = kk * dot(aa, bb)
+    let ky = kk * (2.0 * dot(aa, aa) + dot(dd, bb)) / 3.0
+    let kz = kk * dot(dd, aa)
+    let pp = ky - kx * kx
+    let q = kx * (2.0 * kx * kx - 3.0 * ky) + kz
+    let h = q * q + 4.0 * pp * pp * pp
+    if h >= 0.0 {
+        let r = sqrt(h)
+        let (x0, x1) = ((r - q) * 0.5, (-r - q) * 0.5)
+        let t = clamp(
+            sign(x0) * pow(abs(x0), 1.0 / 3.0) + sign(x1) * pow(abs(x1), 1.0 / 3.0) - kx,
+            0.0,
+            1.0,
+        )
+        return vec2(length(dd + (cc + bb * t) * t), t)
+    }
+    let z = sqrt(-pp)
+    let v = acos(clamp(q / (pp * z * 2.0), -1.0, 1.0)) / 3.0
+    let (m, n) = (cos(v), sin(v) * 1.7320508)
+    let t0 = clamp((m + m) * z - kx, 0.0, 1.0)
+    let t1 = clamp((-n - m) * z - kx, 0.0, 1.0)
+    let (q0, q1) = (dd + (cc + bb * t0) * t0, dd + (cc + bb * t1) * t1)
+    if dot(q0, q0) < dot(q1, q1) { vec2(length(q0), t0) } else { vec2(length(q1), t1) }
+}
+
 /// A spike from `a` toward `b` (the design's, shortened to 0.64 of its length), arcing up by
-/// `arc`, `r0` thick at its base and flattened 2:1 across its sweep.
+/// `arc`, `r0` thick at its base and flattened 2:1 across its sweep: one curve, its
+/// thickness falling evenly to a point. (Five straight lengths joined end to end, it was
+/// ringed at each joint, a horn's and not a lock of hair's: a crease where they met, a
+/// bulge where they were run together.)
 fn blade(p: vec3, a: vec3, b0: vec3, r0: f32, arc: f32) -> f32 {
     let flat = 2.0
     let b = a + (b0 - a) * 0.64
     let r = r0 * 0.82
-    let up = arc * 0.7
+    // (At least a little arc: a straight line is no curve to solve for.)
+    let up = max(arc * 0.7, 0.008)
     let t = normalize(a - HAIR_CENTRE)
-    let q = p + t * ((flat - 1.0) * dot(p - a, t))
+    // (Flattened: the space stretched across the spike's sweep, and the spike round in it.)
+    let wide = |x: vec3| x + t * ((flat - 1.0) * dot(x - a, t))
     let ctrl = (a + b) * 0.5 + vec3(0.0, up, 0.0)
-    var d = 1.0e9
-    var last = a
-    var rl = r + 0.002
-    for i in 1..6 {
-        let s = f32(i) / 5.0
-        let pt = a * ((1.0 - s) * (1.0 - s)) + ctrl * (2.0 * (1.0 - s) * s) + b * (s * s)
-        let ri = r * pow(1.0 - s, 0.8) + 0.002
-        let pa = a + (last - a) + t * ((flat - 1.0) * dot(last - a, t))
-        let pb = a + (pt - a) + t * ((flat - 1.0) * dot(pt - a, t))
-        // (Each length run smoothly into the last: joined at a crease, a spike was a stack
-        // of rings, a horn's and not a lock of hair's.)
-        d = smin(d, cone(q, pa, pb, rl * flat, ri * flat) / flat, 0.006)
-        last = pt
-        rl = ri
-    }
-    d
+    let near = to_curve(wide(p), a, wide(ctrl), wide(b))
+    (near.x - (r * pow(1.0 - near.y, 0.8) + 0.002) * flat) / flat
 }
 
-/// The hair, in the unscaled head's space: a cap over the skull behind the mask, and fifteen
-/// separate spikes fanned back from it. `skull` is the skull's distance there.
-pub fn hair(p: vec3, skull: f32) -> f32 {
-    var cap = skull - 0.012
-    cap = smax(cap, -(p.y - 1.690), 0.01)
-    cap = smax(cap, p.z - 0.005, 0.01)
+/// How far off his scalp his hair's body stands at its least (m), and how much further a
+/// lock's tip stands off it. (A shell 12 mm off his scalp, smooth, read as hair pressed flat
+/// and glued down wherever it wasn't a spike.)
+const HAIR_DEEP: f32 = 0.015
+const LOCK_HIGH: f32 = 0.014
+
+/// How many locks lie side by side round his head, and how long a lock is (radians of his
+/// head's round).
+const LOCKS_ROUND: f32 = 11.0
+const LOCK_LONG: f32 = 0.36
+
+/// Where his hair runs from, and which way is straight back from there: from his crown, a
+/// little forward of the top of his head, down and back all round. (From over his brow, its
+/// rows met again at his nape, where his locks drew in to a point as a star.)
+const HAIR_FROM: vec3 = vec3(0.0, 0.9404, 0.3401)
+const HAIR_OVER: vec3 = vec3(0.0, 0.3401, -0.9404)
+
+/// How far along his hair's run a point of his head is (radians from his crown, toward the
+/// foot of his skull), and how far round it (radians from the middle of the back of his head).
+fn combed(p: vec3) -> vec2 {
+    // (Never divided by less than 2 cm: no hair is that near his head's middle, and a bound
+    // worked out over a box that holds the middle would divide by nothing.)
+    let from = p - HAIR_CENTRE
+    let d = from / max(length(from), 0.02)
+    vec2(acos(clamp(dot(d, HAIR_FROM), -1.0, 1.0)), atan2(d.x, dot(d, HAIR_OVER)))
+}
+
+/// How far a lock stands off his hair's body at `p` (m): his hair lies in locks, each a
+/// tongue that rises from its root to its tip and narrows to a point, a row of them lapping
+/// over the roots of the next, each row set half a lock round from the last.
+fn locks(p: vec3) -> f32 {
+    let at = combed(p)
+    let row = at.x / LOCK_LONG
+    let t = fract(row)
+    let half = 0.5 * (floor(row) - 2.0 * floor(0.5 * floor(row)))
+    let across = abs(fract(at.y * LOCKS_ROUND / 6.2831853 + half) - 0.5)
+    // (Its width, narrowing to its tip; its height, rising to its tip and rounded off there.)
+    let wide = 0.5 * (1.0 - 0.65 * t)
+    let round = saturate(1.0 - (across / wide) * (across / wide))
+    // (None by his crown, where the rows draw in.)
+    let grown = smoothstep(0.3, 0.6, at.x) * (1.0 - smoothstep(2.6, 2.9, at.x))
+    LOCK_HIGH * round * smoothstep(0.0, 0.6, t) * (1.0 - smoothstep(0.6, 1.0, t)) * grown
+}
+
+/// How low his hair grows at a point round his head (the unscaled head's space): to the tops
+/// of his ears at his temples, and down behind them to the foot of his skull, its edge in
+/// points, a lock's width each.
+pub fn hairline(p: vec3) -> f32 {
+    let at = combed(p)
+    let point = abs(fract(at.y * LOCKS_ROUND / 6.2831853) - 0.5)
+    1.704 - 0.066 * smoothstep(-0.025, -0.075, p.z) + 0.02 * (point - 0.25)
+}
+
+/// His hair, in the unscaled head's space, `scalp` how far `p` is from his skull
+/// (`skull`): its body, locks lying on one another back over his whole head from his mask's
+/// rim to its hairline, and its spikes, swept back out of it.
+pub fn hair(p: vec3, scalp: f32) -> f32 {
+    var cap = scalp - (HAIR_DEEP + locks(p))
+    cap = smax(cap, hairline(p) - p.y, 0.008)
     // (Far from every spike's reach, the cap alone: the spikes are evaluated near the head.)
     if length(p - vec3(0.0, 1.76, -0.12)) < 0.32 {
         for c in CLUMPS {
@@ -352,7 +464,12 @@ pub fn hair(p: vec3, skull: f32) -> f32 {
             }
         }
     }
-    smax(cap, p.z + 0.012, 0.008)
+    // (Behind his mask: a centimetre and a half behind its ears, which lean back, so they
+    // stand clear of it; between them a forelock comes forward to the mask's rim.)
+    let behind_ears = 0.004 - 0.14 * (p.y - 1.772)
+    let to_rim = 0.022 - 1.5 * p.x * p.x
+    let front = mix(to_rim, behind_ears, smoothstep(0.016, 0.03, abs(p.x)))
+    smax(cap, p.z - front, 0.016)
 }
 
 // ---- the boots ------------------------------------------------------------------------------
@@ -456,6 +573,9 @@ pub fn boot_paint(p: vec3) -> (vec3, f32, f32) {
 pub const TAILS_AXIS = vec3(0.0, 0.949, -0.043)
 pub const TAILS_TOP: f32 = 0.93
 
+/// How far the tails' cloth runs on up inside the jacket, over their top (m).
+pub const TAILS_UNDER: f32 = 0.028
+
 /// Where the long jacket's hem is (rest height): the tails carry on below it.
 pub const JACKET_HEM: f32 = 0.865
 
@@ -550,12 +670,22 @@ pub fn tails(p: vec3) -> (f32, f32) {
     // round his hips that caught the light as a second belt.)
     let down = max(TAILS_TOP - p.y, 0.0)
     let eased = clamp(down / 0.30, 0.0, 1.0)
-    let rr = girth(inside) - 0.009 + FLARE * down + fold * eased * eased * (3.0 - 2.0 * eased)
+    // (Its flare eased in over 25 cm: flaring from its very top, the cloth turned up to the
+    // light at the seam, and the tails were a lighter piece than the jacket over them.)
+    let flare = FLARE * down * smoothstep(0.0, 0.25, down)
+    // (Over its top it runs on up inside the jacket, 4 mm inside the jacket's line
+    // (`TAILS_UNDER`): its top rim, where its cloth is cut off, is out of sight. Ending at
+    // the jacket's foot, the rim showed there as a thin dark line round his waist, and his
+    // coat's back was two pieces.)
+    // (From a centimetre over the jacket's foot: the cloth's mesh is 7 mm a cell, and a turn
+    // inward that started at the foot showed under it as a pale hairline.)
+    let tuck = 0.004 * smoothstep(0.0, 0.008, p.y - (TAILS_TOP + 0.007))
+    let rr = girth(inside) - 0.009 - tuck + flare + fold * eased * eased * (3.0 - 2.0 * eased)
     var d = abs(r - rr) - 0.009
     // Its front edges: the distance round to the nearer (negative between them).
     let edge = front_edge(p.y)
     d = max(d, max(edge - deg, deg - (360.0 - edge)) * 0.0174532925 * r)
-    d = max(d, max(p.y - TAILS_TOP, low - p.y))
+    d = max(d, max(p.y - (TAILS_TOP + TAILS_UNDER), low - p.y))
     // Its vent: split up the middle of the back from the hem, so each side follows its own leg.
     let vent = max(abs(deg - 180.0) * 0.0174532925 * r - VENT_HALF, p.y - VENT_TOP)
     d = max(d, -vent)

@@ -1,20 +1,20 @@
-// Hakuro as the lab's fighters (`--set HAKURO=1`, the exchange and the lab: `SHOW=28`, `29`): the
-// hero (content/hakuro, written as fields on his skeleton) realized once as the engine realizes a
-// character, posed by the body's own rig (the reference he was measured on, so each of its bones
-// moves one of his), and painted into what the ink reads as the body is: his own colours in two
-// values, a rim, his cloth's edges as the ink's seams. The one he strikes is his double, his
-// values turned over (pale where he's black), so the two part on the page as ink and paper do.
+// Hakuro as the lab's fighters (`--set HAKURO=1`, the exchange and the lab: `SHOW=28`, `29`) and
+// as the body a game plays (`SHOW=11`): the hero (content/hakuro, written as fields on his
+// skeleton) realized once as the engine realizes a character, posed by the body's own rig (the
+// reference he was measured on, so each of its bones moves one of his), and painted into what
+// the ink reads as the body is: his own colours in two values, a rim, his cloth's edges as the
+// ink's seams. The one he strikes is his double, his values turned over (pale where he's
+// black), so the two part on the page as ink and paper do.
 
 use engine::chart
 use engine::chart::{Band, Grids, Grown, Limb, Part, Radial}
-use hakuro::arms::{Drape, drape_room, draped, follow_legs}
+use hakuro::arms::{Drape, drape_room, draped, follow_legs, rooted_hair}
 use hakuro::clear::fists_off_mask
 use hakuro::fingers::{FIST_CURL, curled}
 use hakuro::hakuro::{
     CHARTS, Charted, Cloth, WIDE_CHARTS, charted_as, charted_at_rest, charts, coat, head, hero,
     shaded, shaded_wide, wide_charts,
 }
-use hakuro::reference_rig::HAKURO_BONE
 use engine::sway
 use engine::sway::Sway
 use engine::character::skin_matrix
@@ -64,12 +64,18 @@ pub struct Fighters {
     /// their hair moves on the clock their cloth does.
     hair: [Sway; FIGHTERS],
     dt: f32,
+    /// The air they're in (m/s, from ahead), as last stepped.
+    going: f32,
+    /// How many of them are drawn and moved: both, or the first alone.
+    shown: u32,
 }
 
-pub fn fighters() -> Fighters {
+/// The fighters, `shown` of them drawn (the striker alone, or the one struck too).
+pub fn fighters(shown: u32) -> Fighters {
     Fighters {
+        shown: min(shown, FIGHTERS),
         body: realize_once(hero(), HOW_BODY),
-        head: realize_once(head(), HOW_HEAD),
+        head: rooted_hair(realize_once(head(), HOW_HEAD)),
         coat: follow_legs(realize_once(coat(), HOW_COAT)),
         palettes: buffer(2 * FIGHTERS * MAX_BONES),
         drape: drape_room(FIGHTERS),
@@ -77,6 +83,7 @@ pub fn fighters() -> Fighters {
         cover: hakuro::hakuro::jacket_covers(),
         hair: [sway::still(); FIGHTERS],
         dt: 0.0,
+        going: 0.0,
         grids: chart::grids(),
     }
 }
@@ -85,16 +92,7 @@ pub fn fighters() -> Fighters {
 /// his): each of the rig's bones' matrices to his, and his hands closed into fists, kept off
 /// his mask (the captures hold no fingers, and his snout stands out where their face doesn't).
 pub fn hakuro_palette(rig_m: [mat4; 64]) -> [mat4; 64] {
-    var m = [translate(vec3(0.0)); 64]
-    for b in 0..52 {
-        m[HAKURO_BONE[b]] = rig_m[b]
-    }
-    // His old single finger and thumb bones (14 to 17), unused by his skin, with his hands.
-    for side in 0..2 {
-        m[14 + side] = m[12 + side]
-        m[16 + side] = m[12 + side]
-    }
-    fists_off_mask(curled(m, FIST_CURL))
+    fists_off_mask(curled(hakuro::manner::on_rig(rig_m), FIST_CURL))
 }
 
 /// His palette with his punching fist (at `fist`, going `going`) drawn `big` times its size, and
@@ -155,13 +153,14 @@ pub fn squashed(m: [mat4; 64], about: vec3, along: vec3, by: f32) -> [mat4; 64] 
 impl Fighters {
     /// Fighter `who`'s palette set, and his cloth's.
     pub fn pose(mut self, who: u32, bare: [mat4; 64]) {
+        let swayed = self.hair[who].step(
+            hakuro::hakuro::hair_held(bare),
+            self.dt,
+            hakuro::hakuro::HAIR_SPRING,
+        )
         let m = hakuro::hakuro::with_hair(
             bare,
-            self.hair[who].step(
-                hakuro::hakuro::hair_held(bare),
-                self.dt,
-                hakuro::hakuro::HAIR_SPRING,
-            ),
+            hakuro::hakuro::hair_blown(bare, swayed, self.going),
         )
         write(mut self.palettes, who * MAX_BONES, m)
         write(mut self.palettes, (FIGHTERS + who) * MAX_BONES, m)
@@ -177,19 +176,29 @@ impl Fighters {
         }
     }
 
-    /// Their coats' tails moved on `dt` seconds (0 through a hit-stop: the cloth holds with them).
-    pub fn step(mut self, dt: f32) {
+    /// Their coats' tails moved on `dt` seconds (0 through a hit-stop: the cloth holds with
+    /// them), in air that meets them at `going` m/s from ahead (what they go through, or a
+    /// wind: `hakuro::arms::Drape::work`).
+    pub fn step(mut self, dt: f32, going: f32 = 0.0) {
         self.dt = dt
-        self.drape.work(self.palettes, FIGHTERS, MAX_BONES, FIGHTERS * MAX_BONES, dt)
+        self.going = going
+        self.drape.work(
+            self.palettes,
+            self.shown,
+            MAX_BONES,
+            FIGHTERS * MAX_BONES,
+            dt,
+            going: going,
+        )
     }
 
-    /// Both drawn into the paint's targets.
+    /// Those shown drawn into the paint's targets.
     pub fn draw<P: RenderPass>(self, p: P, shot: Shot) {
         let hb = hero()
         let hh = head()
         let hc = coat()
         // Their shadows first: each mesh laid flat on the ground along the sun.
-        for who in 0..FIGHTERS {
+        for who in 0..self.shown {
             let first = who * MAX_BONES
             shadow_of(p, self.body, self.palettes, first, shot)
             shadow_of(p, self.head, self.palettes, first, shot)
@@ -220,7 +229,7 @@ impl Fighters {
         }
         let parts = charts()
         let wide = wide_charts()
-        for who in 0..FIGHTERS {
+        for who in 0..self.shown {
             draw(
                 p,
                 fighter_vertex.bind(
@@ -692,7 +701,7 @@ pub fn fighter_pixel<F: Parts<Cloth>>(
 /// part and where the place is on him at rest, and its normal read at the pixel itself from the
 /// form's slopes at its place (`shade`: the posed form, its finest ripples left out; about a
 /// path `length` long: `chart::Vertex::normal_from`). Nothing where the part isn't (`cover`:
-/// his jacket's front and armholes) or is cut away.
+/// his jacket's front) or is cut away.
 @fragment
 pub fn charted_pixel<const A: u32, const R: u32>(
     v: chart::Vertex,

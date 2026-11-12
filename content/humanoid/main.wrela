@@ -13,12 +13,14 @@
 // `--set SHOW=11` plays the body as a game would (`engine::playback`): a scripted stick walks it
 // off (in the actor's own first steps), turns it, runs it, throws a punch over the run (timed
 // to the fight's attack frames), stops it (in his own last steps), rolls it, turns it on the spot
-// (stepping round) and walks it back, each change inertial. `--set SHOW=12` stands the body in
+// (stepping round) and walks it back, each change inertial. The body is Hakuro (`HAKURO`), as
+// he stands, carries himself and runs (content/hakuro's `manner`); `--set HAKURO=0` plays the
+// bare body with the captures' own gaits. `--set SHOW=12` stands the body in
 // its guard and throws the hand-posed cross (`fists`), twice. `--set SHOW=16` plays a take NVIDIA's
 // Kimodo made from a text prompt (`kimodo`), its right cross retimed to the fight's frame data.
 
 use body::{
-    ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
+    HAKURO_GAITS, ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
     ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_CODE, ACCAD_M2_WALK_RAW, ACT_PUNCH, ACT_ROLL,
     ACTS, ACTS_CODE, GAITS, GAITS_CODE, HERO, PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW,
     T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
@@ -26,6 +28,8 @@ use body::{
 use engine::anime
 use engine::anime::{Anime, Drawer}
 use fighter::{Fighters, fighters, hakuro_palette}
+use hakuro::manner
+use engine::bearing
 use fists::{ACT_CROSS, ACT_STEP_IN, ACT_STEP_LEFT, ACT_STEP_OUT, ACT_STEP_RIGHT, FIGHT_GAITS, LOOKS}
 use engine::cleanup
 use engine::cleanup::Cleanup
@@ -56,8 +60,8 @@ use ui::widgets::{Anchor, Ui}
 /// What plays: 0 each in turn, 1 the T-pose, 2 the idle, 3 the walk, 4 the run, 5 the walking
 /// turns, 6 the jog; and whether as its take has it (1), before its cleanup.
 pub const SHOW: u32 = 0
-/// Who fights in the exchange and the lab (`SHOW=28`, `29`): 1 Hakuro (`fighter`), against his
-/// double; 0 the bare body, as before (`--set HAKURO=0`).
+/// Who fights in the exchange and the lab (`SHOW=28`, `29`) and who a game plays (`SHOW=11`):
+/// 1 Hakuro (`fighter`), in a fight against his double; 0 the bare body (`--set HAKURO=0`).
 pub const HAKURO: u32 = 1
 pub const RAW: u32 = 0
 
@@ -66,11 +70,14 @@ pub const RAW: u32 = 0
 /// gait and one-off a game plays (`SHOW=11`).
 pub const CODE: u32 = 0
 
-/// The gaits and one-offs `SHOW=11` plays: the clips', or as `CODE` says, the code's. (Chosen as
-/// constants: chosen with an `if` where they're played, toolchain 0.24.0's build drew single
-/// frames with the body flipped, whichever was chosen.)
+/// The gaits and one-offs `SHOW=11` plays: Hakuro's own (`HAKURO`), or the bare body's: the
+/// clips', or as `CODE` says, the code's. (Chosen as constants: chosen with an `if` where
+/// they're played, toolchain 0.24.0's build drew single frames with the body flipped,
+/// whichever was chosen; and a build holds only the set it plays.)
 @fuel(2 ** 40)
-const PLAYED_GAITS: Gaits = if CODE == 1 { GAITS_CODE.clone() } else { GAITS.clone() }
+const PLAYED_GAITS: Gaits = if HAKURO == 1 { HAKURO_GAITS.clone() } else if CODE == 1 {
+    GAITS_CODE.clone()
+} else { GAITS.clone() }
 @fuel(2 ** 40)
 const PLAYED_ACTS: [Move; 2] = if CODE == 1 { ACTS_CODE.clone() } else { ACTS.clone() }
 
@@ -152,6 +159,11 @@ pub struct State {
     /// `SHOW=11`'s body and when it was last stepped.
     mover: Mover,
     last: f32,
+    /// How Hakuro is holding himself there, each eased from 0 to 1: how much he's carrying
+    /// himself his own way (not in a roll, which holds its own head), how much his arms are
+    /// his bearing's (not a punch's), how much he's standing as he stands, and how closed his
+    /// fists are.
+    held: vec4,
     mask: [f32; 64],
     drawer: Drawer,
     /// `SHOW=29`'s: the lab, its panel, and the cues to its sounds.
@@ -229,7 +241,7 @@ pub fn init() -> State {
         indices: buffer_of(HERO.indices),
         palette: buffer_of([identity(); 64]),
         palette2: buffer_of([identity(); 64]),
-        fighters: fighters(),
+        fighters: fighters(if SHOW == 11 { 1 } else { 2 }),
         cloth_at: 0.0,
         colour: texture(width: 640, height: 360),
         marks: texture(width: 640, height: 360),
@@ -244,9 +256,10 @@ pub fn init() -> State {
         } else if SHOW == 14 {
             Mover::standing(vec3(0.0), 0.0, accad_fists::KEYED_GAITS)
         } else {
-            Mover::standing(vec3(0.0), 0.0, GAITS)
+            Mover::standing(vec3(0.0), 0.0, PLAYED_GAITS)
         },
         last: 0.0,
+        held: vec4(1.0, 1.0, 1.0, 0.0),
         mask: playback::upper_body(HERO.rig),
         drawer: Drawer::new(),
     }
@@ -258,7 +271,7 @@ pub fn init() -> State {
 pub fn script(last: f32, time: f32) -> (vec3, u32, bool) {
     let at = |t: f32| -> bool { last < t && time >= t }
     let dir = |deg: f32| -> vec3 { vec3(sin(deg * 0.017453292), 0.0, cos(deg * 0.017453292)) }
-    let (walk, run) = (GAITS.walk.speed, GAITS.run.speed)
+    let (walk, run) = (PLAYED_GAITS.walk.speed, PLAYED_GAITS.run.speed)
     let stick = if time < 1.5 {
         vec3(0.0)
     } else if time < 4.5 {
@@ -646,6 +659,33 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     // (How swiftly the fist is going in, 0 to 1: the smear's drawing.)
     var swift = 0.0
 
+    // Hakuro as the body a game plays: how he's holding himself, eased from what he's doing.
+    let hero = HAKURO == 1 && SHOW == 11
+    if hero {
+        let acting = s.mover.acting != humanoid::NONE
+        let rolling = acting && !s.mover.upper
+        let punching = acting && s.mover.acting == ACT_PUNCH
+        let stands = s.mover.doing == playback::STANDING && !acting && s.mover.speed < 0.3
+        let ease = |x: f32, to: bool, over: f32| -> f32 {
+            x + ((if to { 1.0 } else { 0.0 }) - x) * (1.0 - exp(-dt / over))
+        }
+        s.held = vec4(
+            ease(s.held.x, !rolling, 0.12),
+            ease(s.held.y, !acting, 0.08),
+            ease(s.held.z, stands, 0.25),
+            ease(s.held.w, punching, 0.06),
+        )
+    }
+    // (Carried his own way: his bearing at the speed he's going, his arms left to a punch.)
+    let carry = |p: Pose| -> Pose {
+        if !hero {
+            return p
+        }
+        let how = manner::bearing_at(s.mover.speed).part(s.held.x)
+        bearing::carried(HERO.rig, p, bearing::Bearing { trail: how.trail * s.held.y, ..how })
+    }
+    bones = palette(HERO.rig, carry(pose), place)
+
     var kinetic = KINETIC
     var force = anime::Force::none()
     if game && ANIME == 1 {
@@ -676,11 +716,14 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                 dt,
             )
         }
-        bones = anime::smeared(palette(HERO.rig, d.pose, d.place), HERO.rig, d.smears)
+        bones = anime::smeared(palette(HERO.rig, carry(d.pose), d.place), HERO.rig, d.smears)
         kinetic = max(kinetic, d.impact)
         force = d.force
     }
     write(mut s.palette, 0, bones)
+    if hero {
+        s.fighters.pose(0, manner::palette_of(bones, standing: s.held.z, fists: s.held.w))
+    }
     let fight = HAKURO == 1 && (SHOW == 28 || SHOW == 29)
     if fight {
         // His punching arm smeared on the drawings where his fist is going in fast.
@@ -851,6 +894,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             let _ = s.cues.push(Cue::Impact { at: fist, kind, strength, seed: u32(time * 60.0) })
         }
     }
+    if hero {
+        // (He casts his own shadow, in his own shape; his coat's in the air he goes through.)
+        shot.pair_a = vec4(s.mover.place.x, 0.0, s.mover.place.z, 2.0)
+        shot.pair_b = shot.pair_a
+        s.fighters.step(dt, going: manner::air_at(s.mover.speed, time))
+    }
     if fight {
         // (Their cloth moves on the bodies' clock: held through the hit-stop with them.)
         let played = if SHOW == 28 { exchange::played_at(time, exchange::TUNED) } else { time }
@@ -873,7 +922,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         vertices: 6,
         depth: engine::view::NEAREST,
     )
-    if fight {
+    if fight || hero {
         s.fighters.draw(p, shot)
     } else {
         draw(

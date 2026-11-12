@@ -41,6 +41,11 @@ pub fn below(s: Skeleton, b: u32, of: u32) -> bool {
 /// `m` with each finger's joints set by its hand's, curled toward the palm by `curl` (degrees a
 /// joint, as `HIP_CURL`), each joint about its own rest z (the thumb's, `THUMB_AXIS`).
 pub fn curled(m: [mat4; 64], curl: [f32; 15]) -> [mat4; 64] {
+    curled_each(m, curl, curl)
+}
+
+/// `curled`, his left hand's fingers by `left` and his right's by `right`.
+pub fn curled_each(m: [mat4; 64], left: [f32; 15], right: [f32; 15]) -> [mat4; 64] {
     let s = skeleton()
     var out = m
     for side in 0..2 {
@@ -55,23 +60,41 @@ pub fn curled(m: [mat4; 64], curl: [f32; 15]) -> [mat4; 64] {
             // (His right hand is his left's mirror image: a mirrored turn is about the mirrored
             // axis the other way round. Turned the same way about the same axis, his left
             // hand's fingers curled toward the back of his hand.)
-            let left = side == 0
+            let is_left = side == 0
             let own = if j >= 12 {
-                if left { THUMB_AXIS } else { vec3(-THUMB_AXIS.x, THUMB_AXIS.y, THUMB_AXIS.z) }
+                if is_left { THUMB_AXIS } else { vec3(-THUMB_AXIS.x, THUMB_AXIS.y, THUMB_AXIS.z) }
             } else {
                 vec3(0.0, 0.0, 1.0)
             }
             let axis = normalize((out[b] * vec4(own, 0.0)).xyz)
-            let way = if j >= 12 { if left { 1.0 } else { -1.0 } } else if left { -1.0 } else {
+            let way = if j >= 12 { if is_left { 1.0 } else { -1.0 } } else if is_left {
+                -1.0
+            } else {
                 1.0
             }
-            let r = turn_about(axis, way * curl[j], at)
+            let by = if is_left { left[j] } else { right[j] }
+            let r = turn_about(axis, way * by, at)
             for k in 26..56 {
                 if below(s, k, b) {
                     out[k] = r * out[k]
                 }
             }
         }
+    }
+    out
+}
+
+/// A hand resting on his hip (degrees a joint; index, middle, ring, little, thumb): relaxed,
+/// the fingers round over it, the thumb nearly straight.
+pub const HIP_CURL = [
+    28.0, 34.0, 18.0, 30.0, 36.0, 20.0, 32.0, 38.0, 20.0, 36.0, 40.0, 22.0, 4.0, 12.0, 12.0,
+]
+
+/// Two hands' curls mixed: `a` where `t` is 0, `b` where it's 1.
+pub fn between(a: [f32; 15], b: [f32; 15], t: f32) -> [f32; 15] {
+    var out = a
+    for j in 0..15 {
+        out[j] = mix(a[j], b[j], t)
     }
     out
 }
