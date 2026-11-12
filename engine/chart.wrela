@@ -1041,16 +1041,56 @@ impl<const A: u32, const R: u32> Limb<A, R> {
         (p[0], unit(cross(p[1] - p[0], p[2] - p[0])))
     }
 
-    /// About how far `p` is from its side (negative inside), near it: how far `p` is past the
-    /// radius at its place, over how steep the side is there (√(1 + r_s² + (r_θ / ρ)²), ρ held
-    /// at least half the radius).
+    /// About how far `p` is from its side (m; negative inside), near it (`toward`).
     pub fn near(self, p: vec3) -> f32 {
+        self.toward(p).w
+    }
+
+    /// The way out of its side where `p` is nearest it (`xyz`: the side's outward normal
+    /// there, unit) and about how far `p` is from the side (`w`, m; negative inside), near it:
+    /// how far `p` is past the radius at its place, over how steep the side is there
+    /// (√(1 + r_s² + (r_θ / ρ)²), ρ held at least half the radius). Its side as it's drawn:
+    /// closed where a cap closes it, as thick as it's swelled. Past an end of its path, how
+    /// far `p` is from the end's rim (its point, where a cap closes it).
+    pub fn toward(self, p: vec3) -> vec4 {
         let len = self.path.length()
         let pl = self.path.place(p)
-        let k = self.form.radius_and_slopes(pl.along / len, pl.theta)
-        let around = k.z / max(max(pl.rho, 0.5 * k.x), 0.001)
-        let along = k.y / len
-        (pl.rho - k.x) / sqrt(1.0 + along * along + around * around)
+        let x = saturate(pl.along / len)
+        let k = self.form.radius_and_slopes(x, pl.theta)
+        // (A cap's slope along the path, across a little either side; a quarter circle is
+        // upright at the path's end, so the slope is held to what the form's length allows.)
+        let e = 0.004
+        let x0 = max(x - e, 0.0)
+        let x1 = min(x + e, 1.0)
+        let shut = closed(self.caps, x)
+        let shuts = (closed(self.caps, x1) - closed(self.caps, x0)) / (x1 - x0)
+        let r = k.x * shut * self.swell
+        let along = (k.y * shut + k.x * shuts) * self.swell / len
+        let around = k.z * shut * self.swell / max(max(pl.rho, 0.5 * r), 0.001)
+        let fr = self.path.frame(x * len)
+        let out = fr.up * cos(pl.theta) + fr.left * sin(pl.theta)
+        let round = fr.left * cos(pl.theta) - fr.up * sin(pl.theta)
+        let gap = pl.rho - r
+        // (How far past an end of its path: none between them, to the last bit.)
+        let past = max(pl.along - len, 0.0) + min(pl.along, 0.0)
+        if past != 0.0 {
+            let off = max(gap, 0.0)
+            return vec4(unit(out * off + fr.along * past), sqrt(off * off + past * past))
+        }
+        vec4(
+            unit(out - round * around - fr.along * along),
+            gap / sqrt(1.0 + along * along + around * around),
+        )
+    }
+
+    /// The point of its side under `p`, and the side's way out there (unit): `p` moved to the
+    /// side by how far `toward` has it, twice. Once isn't enough off a flat form's edge, where
+    /// "about how far" is measured along a radius that runs nearly along the side.
+    pub fn foot(self, p: vec3) -> (vec3, vec3) {
+        let first = self.toward(p)
+        let nearer = p - first.xyz * first.w
+        let again = self.toward(nearer)
+        (nearer - again.xyz * again.w, again.xyz)
     }
 }
 
@@ -1590,6 +1630,123 @@ pub fn vertex<const A: u32, const R: u32, S: Seen>(
     }
 }
 
+/// How far a form's side is moved out where it meets the form it grows from: `d` from that
+/// form's side (m; negative inside it), the two sides' outward normals `cos` apart (the cosine
+/// of the angle between them). A fillet of radius `by`: the arc that touches both sides, which
+/// two sides at right angles reach `by` from where they cross, and two that meet nearly flush
+/// hardly at all (the side is moved `by · (1 − √(1 − tan²(φ/2)))` where they cross, φ the
+/// angle between the normals). Two forms that only cross meet at a crease; skin doesn't.
+pub fn fillet(d: f32, by: f32, cos: f32) -> f32 {
+    let c = clamp(cos, -0.999, 0.999)
+    let t = sqrt((1.0 - c) / (1.0 + c))
+    let x = clamp(t - d / (max(by, 0.000001) * sqrt(1.0 - c * c)), 0.0, min(t, 1.0))
+    by * (1.0 - sqrt(max(1.0 - x * x, 0.0)))
+}
+
+/// How a form grows from another (`vertex_onto`). Its side starts on the other form's and
+/// rises to its own by `rooted` of the way along its path (eased at both ends, and slowest to
+/// leave: it lies along the other side before it lifts off it, as the ball of a thumb leaves
+/// the heel of a hand; 0: it stands on the other form as it is, a finger on a knuckle).
+/// And where its side nears the other's, a fillet of radius `fillet` (m), whole over the first
+/// half of `reach` of its path and gone by `reach`, so a fingertip curled back to the palm it
+/// grew from only touches it. Within the fillet's radius of the other side its light leans to
+/// that side's (`leant`): two sides that meet nearly flush have next to no fillet between
+/// them, and would still be lit as two.
+pub struct Grown: Copy + GpuData {
+    pub fillet: f32,
+    pub reach: f32,
+    pub rooted: f32 = 0.0,
+}
+
+impl Grown {
+    /// How much of the way to the other form's side its side is held, `f` of the way along.
+    pub fn held(self, f: f32) -> f32 {
+        if self.rooted <= 0.0 {
+            return 0.0
+        }
+        let risen = smoothstep(0.0, self.rooted, f)
+        1.0 - risen * risen
+    }
+
+    /// How far a point of its side `f` of the way along is moved, and which way: `d` from the
+    /// other form's side (m; negative inside), that side's way out `other`, its own `out`.
+    /// Toward the other side by what it's held (and a fifth of a millimetre under it, so the
+    /// two don't lie in one another), and out by the fillet of what's left.
+    pub fn moved(self, f: f32, d: f32, other: vec3, out: vec3) -> vec3 {
+        let held = self.held(f)
+        let across = self.fillet * (1.0 - smoothstep(0.5 * self.reach, self.reach, f))
+        let up = (1.0 - held) * fillet((1.0 - held) * d, across, dot(out, other))
+        out * up - other * (held * (max(d, 0.0) + UNDER))
+    }
+
+    /// How much of the other side's way out a point's normal takes, `f` of the way along and
+    /// `d` off that side once it's moved (m): all of it on the side, none the fillet's radius
+    /// off it, and none past the fillet's reach.
+    pub fn leant(self, f: f32, d: f32) -> f32 {
+        let across = 1.0 - smoothstep(0.5 * self.reach, self.reach, f)
+        across * (1.0 - smoothstep(0.0, max(self.fillet, 0.000001), max(d, 0.0)))
+    }
+}
+
+/// How far under the form it grows from a rooted form's side starts (m).
+pub const UNDER: f32 = 0.0002
+
+/// `vertex`, for a form that grows from another (`onto`, as a pose has it; `how`): its side
+/// rises from that form's at its root and is filleted where it nears it (`Grown`), so the two
+/// meet as skin does and not at a crease or a step: a finger at a palm, a thumb's ball at a
+/// wrist. Where it's moved, a pixel takes the side's own normal (`Vertex::normal_from`), as it
+/// does at a fold.
+@vertex
+pub fn vertex_onto<const A: u32, const R: u32, const B: u32, const Q: u32, S: Seen>(
+    v: VertexIndex,
+    rest: Limb<A, R>,
+    form: Limb<A, R>,
+    band: Band,
+    under: vec2,
+    level: u32,
+    seen: S,
+    onto: Limb<B, Q>,
+    how: Grown,
+) -> Vertex {
+    let at = place_of(v.index, level, band)
+    // (The side there and at two places beside it, each moved by its own share: the normal
+    // is the moved side's. The other form's side is flat across the three: one reading of it
+    // serves them.)
+    let df = 0.002
+    let dt = 0.01
+    let f0 = min(at.x, 1.0 - df)
+    let a = form.side(f: f0, theta: at.y)
+    let b = form.side(f: f0 + df, theta: at.y)
+    let c = form.side(f: f0, theta: at.y + dt)
+    let out = unit(cross(b - a, c - a))
+    let (foot, other) = onto.foot(a)
+    let by = how.moved(f: f0, d: dot(other, a - foot), other: other, out: out)
+    let a1 = a + by
+    let b1 = b + how.moved(f: f0 + df, d: dot(other, b - foot), other: other, out: out)
+    let c1 = c + how.moved(f: f0, d: dot(other, c - foot), other: other, out: out)
+    let drawn = sunk(a1, seen.seen_from(), sunk_by(under, at.x))
+    let section = form.path.frame(saturate(at.x) * form.path.length())
+    let leant = how.leant(f: f0, d: dot(other, a1 - foot))
+    Vertex {
+        clip: ClipPosition { position: seen.clip_at(drawn) },
+        world: a1,
+        rest: rest.side(f: at.x, theta: at.y),
+        // (Its own normal wherever it's held toward the other side or leans to it, however
+        // little it's moved there: just off that side it's moved a hair, and its form's
+        // slopes are still its own side's, a long way round from the side it lies along.)
+        place: vec3(
+            at,
+            max(
+                max(form.folded(f: at.x, theta: at.y), saturate(leant * 1000.0)),
+                max(saturate(how.held(f0) * 1000.0), saturate(length(by) / 0.0003)),
+            ),
+        ),
+        up: section.up,
+        left: section.left,
+        normal: unit(mix(unit(cross(b1 - a1, c1 - a1)), other, vec3(leant))),
+    }
+}
+
 impl Vertex {
     /// The side's normal at a pixel (unit): read from the form's slopes at the pixel's own place
     /// (`shade`: the posed form, as `Radial::softened` leaves it; about a path `length` long),
@@ -1637,6 +1794,101 @@ fn a_form_that_asks_to_be_coarser_is_drawn_that_many_levels_down_and_no_further_
     assert(level == 0, f"{level}")
     assert(coarse.level(eye, pixels: 900.0, tan_half: 0.4) == 2)
     assert(coarsest.level(eye, pixels: 900.0, tan_half: 0.4) == LEVELS - 1)
+}
+
+@test
+fn a_fillet_is_whole_where_two_sides_cross_square_and_gone_its_width_off() {
+    // Sides at right angles (their normals' cosine 0).
+    assert(abs(fillet(0.0, by: 0.006, cos: 0.0) - 0.006) < 1.0e-6)
+    assert(fillet(0.007, by: 0.006, cos: 0.0) == 0.0 && fillet(0.02, by: 0.006, cos: 0.0) == 0.0)
+    // (Inside the other form it's whole; halfway, a quarter circle's: 1 - sqrt(0.75) of it.)
+    assert(abs(fillet(-0.01, by: 0.006, cos: 0.0) - 0.006) < 1.0e-6)
+    assert(abs(fillet(0.003, by: 0.006, cos: 0.0) - 0.006 * (1.0 - sqrt(0.75))) < 1.0e-6)
+}
+
+@test
+fn a_fillet_hardly_moves_sides_that_meet_nearly_flush() {
+    // Normals 30 degrees apart: where they cross the side moves by * (1 - sqrt(1 - tan(15)^2)),
+    // under a twenty-fifth of the fillet's radius, and no more inside the other form.
+    let c = cos(TAU / 12.0)
+    let t = tan(TAU / 24.0)
+    let most = 0.006 * (1.0 - sqrt(1.0 - t * t))
+    assert(abs(fillet(0.0, by: 0.006, cos: c) - most) < 1.0e-6, f"{fillet(0.0, by: 0.006, cos: c)}")
+    assert(most < 0.006 / 25.0)
+    assert(abs(fillet(-0.01, by: 0.006, cos: c) - most) < 1.0e-6)
+    // It's gone by * (1 - cos) off the other side.
+    assert(fillet(0.006 * (1.0 - c) + 0.0001, by: 0.006, cos: c) == 0.0)
+}
+
+@test
+fn the_foot_under_a_point_is_on_a_flat_forms_side() {
+    // A form four times as wide as it's thick (80 mm by 20), and a point 30 mm off its side
+    // toward its edge: one reading of how far leaves it a tenth of a millimetre and more off
+    // the side, the foot under it is on it. (Off a hand's palm, whose section is less even,
+    // one reading left a thumb's side 20 mm away as much as 12 mm off.)
+    let l: Limb<8, 7> = Limb {
+        path: path([vec3(0.0, 0.0, 0.0), vec3(0.0, 0.5, 0.0)], vec3(z: 1.0)),
+        form: of(|f: f32, theta: f32| 0.025 - 0.015 * cos(2.0 * theta)),
+    }
+    let on = l.side(f: 0.5, theta: 1.25)
+    let p = on + l.toward(on).xyz * 0.03
+    let once = l.toward(p)
+    let (foot, out) = l.foot(p)
+    assert(
+        abs(l.near(p - once.xyz * once.w)) > 0.0001 && abs(l.near(foot)) < 0.00001,
+        f"{l.near(p - once.xyz * once.w)} {l.near(foot)}",
+    )
+    assert(dot(out, l.toward(on).xyz) > 0.9, f"{dot(out, l.toward(on).xyz)}")
+}
+
+@test
+fn a_rooted_forms_side_starts_on_the_form_it_grows_from() {
+    // Rooted over its first two fifths: at its start a point 3 mm off the other form's side is
+    // put just under it; halfway it's still three quarters of the way down; past two fifths it
+    // isn't moved (no fillet where the sides' ways out agree).
+    let how = Grown { fillet: 0.006, reach: 0.5, rooted: 0.4 }
+    let up = vec3(z: 1.0)
+    let start = how.moved(f: 0.0, d: 0.003, other: up, out: up)
+    assert(abs(start.z + 0.003 + UNDER) < 1.0e-6 && abs(start.x) + abs(start.y) < 1.0e-6)
+    assert(abs(how.moved(f: 0.2, d: 0.003, other: up, out: up).z + 0.75 * (0.003 + UNDER)) < 1.0e-6)
+    assert(length(how.moved(f: 0.45, d: 0.003, other: up, out: up)) < 1.0e-5)
+    // Inside the other form it's only put that little further in.
+    assert(abs(how.moved(f: 0.0, d: -0.004, other: up, out: up).z + UNDER) < 1.0e-6)
+    // A form that isn't rooted keeps its fillet: sides square to one another, on the crossing.
+    let stood = Grown { fillet: 0.006, reach: 0.5 }
+    assert(abs(stood.moved(f: 0.1, d: 0.0, other: up, out: vec3(x: 1.0)).x - 0.006) < 1.0e-6)
+}
+
+@test
+fn a_grown_forms_light_leans_to_the_side_it_meets() {
+    let how = Grown { fillet: 0.008, reach: 0.6 }
+    assert(how.leant(f: 0.1, d: 0.0) == 1.0 && how.leant(f: 0.1, d: -0.002) == 1.0)
+    assert(abs(how.leant(f: 0.1, d: 0.004) - 0.5) < 1.0e-5)
+    assert(how.leant(f: 0.1, d: 0.008) == 0.0 && how.leant(f: 0.7, d: 0.0) == 0.0)
+}
+
+@test
+fn a_capped_forms_side_is_near_where_its_drawn() {
+    // A round form 5 cm thick, closed over its last fifth: at its end a point 1 cm off its
+    // path is outside it, where its radius unclosed would have it inside.
+    let l: Limb<8, 7> = Limb {
+        path: path([vec3(0.0, 0.0, 0.0), vec3(0.0, 0.5, 0.0)], vec3(z: 1.0)),
+        form: round(0.05),
+        caps: vec2(0.0, 0.2),
+    }
+    assert(l.near(vec3(0.01, 0.499, 0.0)) > 0.0)
+    assert(l.near(vec3(0.01, 0.25, 0.0)) < 0.0)
+    // Past its end, a point is as far from it as from the end's point, and the way out is
+    // from that point: 3 cm on and 4 cm off the path is 5 cm away.
+    let past = l.toward(vec3(0.04, 0.53, 0.0))
+    assert(abs(past.w - 0.05) < 1.0e-5, f"{past.w}")
+    assert(length(past.xyz - vec3(0.8, 0.6, 0.0)) < 1.0e-4)
+    // On its side between its ends, the way out is straight off the path.
+    let mid = l.toward(vec3(0.0, 0.25, 0.06))
+    assert(abs(mid.w - 0.01) < 1.0e-5 && length(mid.xyz - vec3(z: 1.0)) < 1.0e-4)
+    // On its cap, the way out leans toward the end.
+    let cap = l.toward(vec3(0.0, 0.48, 0.03))
+    assert(cap.xyz.y > 0.3 && cap.xyz.z > 0.3, f"{cap.xyz.y} {cap.xyz.z}")
 }
 
 @test

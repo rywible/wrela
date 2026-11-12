@@ -6,8 +6,8 @@
 // values turned over (pale where he's black), so the two part on the page as ink and paper do.
 
 use engine::chart
-use engine::chart::{Band, Grids, Limb, Part, Radial}
-use hakuro::arms::{Drape, drape_room, draped, follow_legs, hand, jacket}
+use engine::chart::{Band, Grids, Grown, Limb, Part, Radial}
+use hakuro::arms::{Drape, drape_room, draped, follow_legs, jacket}
 use hakuro::clear::fists_off_mask
 use hakuro::fingers::{FIST_CURL, curled}
 use hakuro::hakuro::{
@@ -51,8 +51,8 @@ pub struct Fighters {
     body: Mesh,
     head: Mesh,
     coat: Mesh,
-    /// His sampled meshes: his jacket and his hands.
-    sampled: [Mesh; 3],
+    /// His sampled jacket.
+    jacket: Mesh,
     palettes: GpuBuffer<mat4>,
     drape: Drape,
     /// Each fighter's charted parts as his bones pose them this frame (`hakuro::Charted`), and
@@ -68,7 +68,7 @@ pub fn fighters() -> Fighters {
         body: realize_once(hero(), HOW_BODY),
         head: realize_once(head(), HOW_HEAD),
         coat: follow_legs(realize_once(coat(), HOW_COAT)),
-        sampled: [jacket(), hand(0), hand(1)],
+        jacket: jacket(),
         palettes: buffer(2 * FIGHTERS * MAX_BONES),
         drape: drape_room(FIGHTERS),
         charted: [charted_at_rest(); FIGHTERS],
@@ -121,9 +121,9 @@ pub fn smeared(m: [mat4; 64], fist: vec3, going: vec3, by: f32, big: f32) -> [ma
     )
     out[13] = grow * m[13]
     for j in 0..15 {
-        // (Where his hands are charted his thumb goes with his hand: drawn out with his
-        // fingers, its form came away from his palm and hung under his fist.)
-        let with_hand = j >= 12 && hakuro::hakuro::HANDS_CHARTED
+        // (His thumb goes with his hand: drawn out with his fingers, its form came away from
+        // his palm and hung under his fist.)
+        let with_hand = j >= 12
         out[27 + 2 * j] = (if with_hand { grow } else { stretch }) * m[27 + 2 * j]
     }
     out
@@ -192,11 +192,8 @@ impl Fighters {
                     chart_shadow(p, self.grids, self.charted[who].wide[k], wide[k].band, shot)
                 }
             }
-            for k in 0..3 {
-                if !sampled_now(k) {
-                    continue
-                }
-                shadow_of(p, self.sampled[k], self.palettes, first, shot)
+            if sampled_now() {
+                shadow_of(p, self.jacket, self.palettes, first, shot)
             }
             draw(
                 p,
@@ -262,23 +259,20 @@ impl Fighters {
                 cull: Cull::Back,
                 depth: engine::view::NEAREST,
             )
-            // (His sampled meshes before his charted parts: what's under his jacket is then
-            // behind it already when its pixels come.)
-            for k in 0..3 {
-                if !sampled_now(k) {
-                    continue
-                }
+            // (His sampled jacket before his charted parts: what's under it is then behind it
+            // already when its pixels come.)
+            if sampled_now() {
                 draw(
                     p,
                     fighter_vertex.bind(
-                        verts: self.sampled[k].verts.items(),
+                        verts: self.jacket.verts.items(),
                         palettes: self.palettes.items(),
                         first: who * MAX_BONES,
                         shot: shot,
                     ),
-                    sampled_pixel.bind(shot: shot, who: who, jacket: if k == 0 { 1 } else { 0 }),
-                    indices: self.sampled[k].quads.items(),
-                    indirect: self.sampled[k].draw.items(),
+                    sampled_pixel.bind(shot: shot, who: who),
+                    indices: self.jacket.quads.items(),
+                    indirect: self.jacket.draw.items(),
                     cull: Cull::Back,
                     depth: engine::view::NEAREST,
                 )
@@ -287,19 +281,52 @@ impl Fighters {
             for k in 0..CHARTS {
                 if charted_now(k) {
                     let c = self.charted[who].limbs[k]
-                    chart_drawn(
-                        p,
-                        self.grids,
-                        self.cover,
-                        rest.limbs[k],
-                        c,
-                        hakuro::hakuro::shaded_part(k, c.form),
-                        parts[k].band,
-                        parts[k].sunk,
-                        shot,
-                        who,
-                        k,
-                    )
+                    let onto = hakuro::hakuro::grows_from(k)
+                    if onto < CHARTS {
+                        chart_drawn_onto(
+                            p,
+                            self.grids,
+                            self.cover,
+                            rest.limbs[k],
+                            c,
+                            hakuro::hakuro::shaded_hand(c.form),
+                            parts[k].band,
+                            parts[k].sunk,
+                            shot,
+                            who,
+                            k,
+                            self.charted[who].limbs[onto],
+                            hakuro::hakuro::grown(k),
+                        )
+                    } else if hakuro::hakuro::of_hand(k) {
+                        chart_drawn(
+                            p,
+                            self.grids,
+                            self.cover,
+                            rest.limbs[k],
+                            c,
+                            hakuro::hakuro::shaded_hand(c.form),
+                            parts[k].band,
+                            parts[k].sunk,
+                            shot,
+                            who,
+                            k,
+                        )
+                    } else {
+                        chart_drawn(
+                            p,
+                            self.grids,
+                            self.cover,
+                            rest.limbs[k],
+                            c,
+                            hakuro::hakuro::shaded(c.form),
+                            parts[k].band,
+                            parts[k].sunk,
+                            shot,
+                            who,
+                            k,
+                        )
+                    }
                 }
             }
             for k in 0..WIDE_CHARTS {
@@ -434,6 +461,53 @@ fn chart_drawn<P: RenderPass, const A: u32, const R: u32, const S: u32>(
             depth: engine::view::NEAREST,
         )
     }
+}
+
+/// `chart_drawn`, for a part that grows from another (`onto`, as the pose has it): its side
+/// rising from it and filleted where the two meet (`how`; `chart::vertex_onto`).
+fn chart_drawn_onto<P: RenderPass, const A: u32, const R: u32, const S: u32, const B: u32, const Q: u32>(
+    p: P,
+    grids: Grids,
+    cover: GpuBuffer<u32>,
+    rest: Limb<A, R>,
+    form: Limb<A, R>,
+    shade: Radial<A, S>,
+    band: Band,
+    sunk: vec2,
+    shot: Shot,
+    who: u32,
+    part: u32,
+    onto: Limb<B, Q>,
+    how: Grown,
+) {
+    let level = form.level(shot.cam.eye, shot.resolution.y, shot.cam.tan_half)
+    let span = chart::level_span(level)
+    draw(
+        p,
+        chart::vertex_onto.bind(
+            rest: rest,
+            form: form,
+            band: band,
+            under: sunk,
+            level: level,
+            seen: shot.cam,
+            onto: onto,
+            how: how,
+        ),
+        charted_pixel.bind(
+            shade: shade,
+            length: form.path.length(),
+            cover: cover.items(),
+            shot: shot,
+            who: who,
+            part: part,
+        ),
+        indices: grids.indices,
+        first_index: span.x,
+        index_count: span.y,
+        cull: Cull::Back,
+        depth: engine::view::NEAREST,
+    )
 }
 
 /// A charted part's shadow drawn.
@@ -576,17 +650,11 @@ pub fn fighter_pixel<F: Parts<Cloth>>(
     painted(shot, v.world, n, c, who, own)
 }
 
-/// His pixel where his mesh was sampled from the reference (his body, hands and jacket):
-/// its own normal, and his paint where it is on him at rest.
+/// His pixel where his mesh was sampled from the reference (his jacket): its own normal, and
+/// his jacket's paint where it is on him at rest.
 @fragment
-pub fn sampled_pixel(
-    v: FighterVertex,
-    shot: Shot,
-    who: u32,
-    jacket: u32,
-) -> Targets3<vec4, vec4, vec4> {
-    let c = if jacket == 1 { jacket_paint(v.rest) } else { body_paint(v.rest) }
-    painted(shot, v.world, normalize(v.normal), c, who, 0)
+pub fn sampled_pixel(v: FighterVertex, shot: Shot, who: u32) -> Targets3<vec4, vec4, vec4> {
+    painted(shot, v.world, normalize(v.normal), jacket_paint(v.rest), who, 0)
 }
 
 /// His pixel where his form is drawn along its chart (charted part `part`): his paint by the

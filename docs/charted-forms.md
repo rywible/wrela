@@ -59,13 +59,26 @@ Three fresh authors wrote the crab, the heron and the serpent from this doc and 
 
 ## A hand
 
-Each of Hakuro's hands is six forms behind a switch (`hakuro::HANDS_CHARTED`, off; `content/hakuro/hands.wrela`): four fingers and a thumb, each on its own line from inside the palm through its three joints to its tip, and a palm on the forearm's and the hand's bones.
+Each of Hakuro's hands is six forms (`content/hakuro/hands.wrela`): four fingers and a thumb, each on its own line from inside the palm through its three joints to its tip, and a palm on the forearm's and the hand's bones. No part of a hand is sampled: the sampled hands they were fitted to are gone, and `studio/forms/measured.wrela` keeps 208 of each piece's radii to measure the forms against.
 
-- **A finger fits a chart well.** Read no further out than the gap to the finger beside it, each fits its sampled finger to 0.2 to 0.3 mm rms. Its path cuts a curled joint's corner over 8 mm, and its tip closes with a cap.
-- **A palm starts where the arm's own form ends,** not at the wrist. Hakuro's arm was fitted as far as inside his wrap, and past that its form holds a forearm's thickness: with the palm starting at the wrist, the cuff was thick and the hand read as a paddle stuck in it. A palm runs a little past the knuckles' line before it closes, or the fingers' roots show as tubes coming out of a small palm, and is read as far out as the root of the thumb, or a notch opens there.
+- **A finger fits a chart well.** Read no further out than the gap to the finger beside it, each fits its sampled finger to 0.2 to 0.3 mm rms. Its path cuts a curled joint's corner over 8 mm, and its tip closes with a cap. It stands on its knuckle as it is: the crease there is the line a fist's knuckles are drawn with, and with a fillet a fist at a blow read as "a blunt, rounded lump".
+- **A palm starts where the arm's own form ends,** not at the wrist, and ends at the knuckles' line. Hakuro's arm was fitted as far as inside his wrap, and past that its form holds a forearm's thickness: with the palm starting at the wrist, the cuff was thick and the hand read as a paddle stuck in it. Run on past the knuckles and read as far out as the thumb, the palm was a blob that hid his curled fingers.
+- **A thumb owns its ball.** Its line starts back at the wrist, and its form is read only on the sides that face away from the hand (read all round, it took the palm's and the index finger's surfaces for its own). Left to the palm, which doesn't move with the thumb, the ball stood where the thumb was at rest.
+- **A thumb grows from the palm** (`chart::vertex_onto`, `Grown`; next section). Two forms that only cross meet at a crease, and four critics of four called the crease at his thumb "a hard, pinched notch". Its root, which no reference was read for, starts on the palm's side and rises to its own over a fifth of its length, and its light leans to the palm's where the two lie together.
+- **What's worn over the wrist runs well into the palm's end of it.** A wrap is drawn to a fraction of the arm's path, and the path is shorter where the elbow is bent, since it cuts the corner: at 0.86 the wrap stopped short of the palm in his guard and the sky showed between them, "a stray white crescent" three critics marked. At 0.91 it doesn't.
 - **A fist drawn big** (`Limb::swell`) is its forms drawn thicker: bones that are scaled stretch a form's path and leave its thickness alone. A smear that draws finger bones out should leave the thumb with the hand, or the thumb's form comes away from the palm.
-- **Judged**, over four rounds of four critics against the sampled hands: the charted fist took the impact drawing 15 votes to none ("shows knuckle and finger lines" where the sampled fist "melts into the sleeve") and the guard 6 to 2; the follow-through and the recovery were even; the open hand at the hip, from the front, lost 15 to none. So the sampled hands stay.
-- **What's left.** The open hand: its fingers read as "fused into one tube" where the sampled hand's thumb and knuckles are picked out by their shade (finer shading, fingers fitted from their knuckles and a thinner wrist were each tried, and none turned a vote). A thin spike at a sharply bent wrist, where the palm's root comes out of the gauntlet's end. A thumb that stands off the fist like a stalk, where the sampled hand has a web.
+- **Judged** against the sampled hands, four critics a round on seven shots (four of the fighters' fists, three of his open hand at his hip, large). With a crease at the thumb: 4 votes to 17. With a fillet on every finger and the thumb held to the palm over half its length: 4 to 17 again; the hold had flattened the thumb's own fitted ball, and the fillets the knuckle lines. As it is now, over two rounds: 17 to 17, with 22 "no difference"; the open hand 13 to 9 for the charted one ("one smooth, believable form", where the sampled hand's cuff shows "a doubled inner band"), the fists 4 to 7.
+- **What's left.** At a blow, the small fist beside the punch: three of four chose the sampled one, whose thumb lies flatter ("the thumb sticks out from the fist as a lump"). The open hand's fingers are smooth where the sampled hand had knuckle bumps, and two critics of four still prefer the bumps. A thumb that stands off a fist like a stalk in the recovery is the pose's, in both.
+
+## A form that grows from another
+
+`chart::vertex_onto` draws a form where it meets the form it grows from (`Grown`): a thumb at a palm, and whatever else is skin over two charts.
+
+- **It needs the other form's side at a point** (`Limb::toward`): how far off it is and which way is out, from the radius and its slopes at the point's place on the other chart, with the other form's caps and swell. One reading is within a quarter of a millimetre up to a centimetre off a palm and as much as 12 mm out at three centimetres, so the vertex reads twice (`Limb::foot`).
+- **A root that rises from the other side** (`rooted`): the form starts a fifth of a millimetre under the other form's side and rises to its own by a stated share of its length, slowest to leave. Hold it only over what was never fitted. A thumb held over half its length lost the ball the fit had given it.
+- **A fillet by the angle the sides meet at** (`chart::fillet`): the arc that touches both. Sides at right angles are moved the fillet's radius where they cross; sides that meet nearly flush hardly at all (the radius times 1 − √(1 − tan²(φ/2)), φ the angle between their normals). A fillet by distance alone pushed a thumb's ball, which lies along the palm, the whole radius out of it as a ridge.
+- **Light that leans to the other side's** (`Grown::leant`): within the fillet's radius of the other form the normal is the other form's. Two sides that meet nearly flush have next to no fillet between them and are still lit as two; this, not the geometry, was what removed the seam. Both forms' pixels must read the same side for it: his hands' pieces read their normals from their whole forms (`hakuro::shaded_hand`), not softened ones.
+- **Find the cause in numbers.** The seam outlasted three changes to the geometry. A test that printed the thumb's side against the palm's, place by place, showed half the readings were wrong: a rounding difference had been taken for "past the path's end".
 
 ## What changes with the pose
 
@@ -105,7 +118,7 @@ A pixel reads its normal from the chart itself (`chart::normal_at`): its place o
 
 ## When a species' limb changes
 
-A character's limb is the species' plus a difference, so fitting the species' limb again would move the character's. The tool keeps the character's limb where it is (`kept_over`): forms about one path add, so the new difference is the old one plus the old species' limb less the new, and no reference is read. Hakuro's arms are kept so; the sampled grids they were first fitted to are gone, and `studio/forms/measured.wrela` holds 416 of each grid's radii to measure the arms against.
+A character's limb is the species' plus a difference, so fitting the species' limb again would move the character's. The tool keeps the character's limb where it is (`kept_over`): forms about one path add, so the new difference is the old one plus the old species' limb less the new, and no reference is read. Hakuro's arms are kept so; the sampled grids they were first fitted to are gone, and `studio/forms/measured.wrela` holds 416 of each grid's radii to measure the arms against. His hands' forms are kept as written for the same reason (their sampled hands are gone), with 208 radii a piece.
 
 ## Judging a change
 
@@ -139,7 +152,8 @@ A round is run in stages, to keep its cost down:
 | Hakuro's jacket's body, to under its shoulders | 24 by 21 | 2.22 mm; 63 mm (at its sides near its top, which its shoulders draw) |
 | Hakuro's jacket's collar | 16 by 13 | 1.14 mm; 9.9 mm |
 | Hakuro's jacket's shoulders, each (over all its rays meet) | 16 by 13 | 2.67 mm; 18.0 mm |
-| Hakuro's fingers and thumbs, each | 16 by 13 | 0.21 to 0.28 mm; 3.5 mm |
-| Hakuro's palms | 16 by 13 | 0.86 and 0.80 mm; 9.6 mm |
+| Hakuro's fingers, each (against the radii kept of his sampled hands) | 16 by 13 | 0.22 to 0.30 mm; 1.7 mm |
+| Hakuro's thumbs, on the sides they were read on | 16 by 13 | 0.32 and 0.35 mm; 1.0 mm |
+| Hakuro's palms | 16 by 13 | 0.61 and 0.59 mm; 3.3 mm |
 
-Each is measured on rays between the fit's own places, on toolchain 0.32.0. `wrela tool forms` writes every one in about ten seconds.
+Each is measured on rays between the fit's own places (his arms and his hands, on the radii kept of their sampled meshes), on toolchain 0.32.0. `wrela tool forms` writes every one in about ten seconds.

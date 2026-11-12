@@ -1,15 +1,10 @@
-// Hakuro's sampled pieces, made as the idol's parts are: the reference body's own surface sampled
-// into distance grids (his hands and his jacket: `*_grid`, engine::sampled), so the fingers
-// and the muscle between are the sculpt's, not pieces fitted to it. Each is realized from its
-// samples, then skinned by the reference rig's own weights round it (`*_weights`, `skinning`),
-// every finger joint, so he bends where and as it does. His arms, his legs, his trunk, his
-// neck and his head aren't among them: they're drawn along their charts (`hakuro::charts`).
+// Hakuro's sampled piece, made as the idol's parts are: his jacket, the reference's own surface
+// sampled into a distance grid (`jacket_grid`, engine::sampled), realized from its samples, then
+// skinned by the reference rig's own weights round it (`body_weights`, `skinning`), so it bends
+// where and as he does. Nothing else of him is sampled: his arms, his hands, his legs, his
+// trunk, his neck and his head are drawn along their charts (`hakuro::charts`).
 
 use body_weights
-use hand_left_grid
-use hand_left_weights
-use hand_right_grid
-use hand_right_weights
 use jacket_grid
 use shapes::{TAILS_AXIS, TAILS_FROM, TAILS_TO, hem, tails}
 use skinning::{WeightTables, Weights, weights_at}
@@ -17,11 +12,6 @@ use engine::realize::{BLOCK, Mesh, SkinVertex, Tally}
 use engine::realize::corner_offset
 use engine::sampled::{BLOCK_WORDS, Lattice, STORED, Samples, realize_sampled}
 use std::gpu::{GlobalId, GpuBuffer, GpuSpan, Slots, Unorm8x4, buffer, dispatch}
-
-/// The skeleton's bone numbers (`hakuro::skeleton` adds them in this order: the trunk, then
-/// each pair left and right).
-const B_UPPER: u32 = 8
-const B_HAND: u32 = 12
 
 /// The samples' distance at `p` (as `engine::sampled::Samples::distance`, on the GPU).
 fn sampled_at(l: Lattice, slots: [u32], words: [u32], p: vec3) -> f32 {
@@ -48,26 +38,6 @@ fn sampled_at(l: Lattice, slots: [u32], words: [u32], p: vec3) -> f32 {
         mix(mix(v[4], v[5], f.x), mix(v[6], v[7], f.x), f.y),
         f.z,
     )
-}
-
-/// His hand on `side`, from inside the forearm's wrap to the fingertips: sampled finer, each
-/// finger's joints weighted as the reference's are.
-pub fn hand(side: u32) -> Mesh {
-    if side == 0 {
-        weighted(
-            hand_left_grid::samples(B_HAND),
-            hand_left_weights::weights(),
-            reach: 1.5,
-            pull: 0.0,
-        )
-    } else {
-        weighted(
-            hand_right_grid::samples(B_HAND + 1),
-            hand_right_weights::weights(),
-            reach: 1.5,
-            pull: 0.0,
-        )
-    }
 }
 
 /// Each of a sampled shape's vertices skinned by a weight lattice (`skinning::weights_at`: the

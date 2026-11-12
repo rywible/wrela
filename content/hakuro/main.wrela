@@ -2,14 +2,14 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use arms::{Drape, drape_room, draped, follow_legs, hand, jacket}
+use arms::{Drape, drape_room, draped, follow_legs, jacket}
 use hakuro::{
     CHARTS, Charted, Cloth, WIDE_CHARTS, body_paint, chart_cut, chart_hidden, chart_paint,
-    charted_as, charted_at_rest, charted_now, charts, coat, hands, head, hero, jacket_paint,
-    sampled_now, shaded, shaded_wide, skeleton, wide_charts,
+    charted_as, charted_at_rest, charted_now, charts, coat, head, hero, jacket_paint, sampled_now,
+    shaded, shaded_wide, skeleton, wide_charts,
 }
 use engine::chart
-use engine::chart::{Grids, Limb, Part, Radial}
+use engine::chart::{Grids, Grown, Limb, Part, Radial}
 use engine::character::{ByChannels, colours}
 use engine::character::skin_matrix
 use engine::creature::{Bone, Creature, MAX_BONES, PartMask, Parts, Skeleton}
@@ -95,10 +95,6 @@ pub const POSED: f32 = 1.0
 /// The body's grid: cells of about 13 mm (what a realization's scratch has room for over a
 /// T-pose's span); the coat's tails', about 7 mm; the head's, about 5 mm.
 const HOW = CreatureLook { surface: Tolerance { tolerance: 1.0e-3, radius: 0.021, largest: 0.013 } }
-/// His hands' grid: cells of about 6 mm (their fingers are thin).
-const HOW_HANDS = CreatureLook {
-    surface: Tolerance { tolerance: 0.5e-3, radius: 0.010, largest: 0.006 },
-}
 const HOW_COAT = CreatureLook {
     surface: Tolerance { tolerance: 0.5e-3, radius: 0.012, largest: 0.007 },
 }
@@ -201,13 +197,13 @@ const HIP_CURL = [
 const TURNS = [0.0, -0.7853982, -1.5707963, 3.1415927, 1.5707963]
 
 pub struct State {
-    meshes: [Mesh; 7],
+    meshes: [Mesh; 4],
     /// Each view's charted parts as its pose has them (`hakuro::Charted`), the grids charted
     /// forms are drawn on, and where his jacket is on its chart.
     charted: [Charted; 5],
     grids: Grids,
     cover: GpuBuffer<u32>,
-    colours: [GpuBuffer<Unorm8x4>; 4],
+    colours: [GpuBuffer<Unorm8x4>; 3],
     palettes: GpuBuffer<mat4>,
     drape: Drape,
     last: f32,
@@ -226,9 +222,6 @@ pub fn init() -> State {
     let ct = coat()
     let coat_mesh = follow_legs(realize_once(ct, HOW_COAT))
     let c2 = colours(coat_mesh, ct.field(), ByChannels {}, cell: 0.003)
-    let ar = hands()
-    let hands_mesh = realize_once(ar, HOW_HANDS)
-    let c3 = colours(hands_mesh, ar.field(), ByChannels {}, cell: 0.003)
     let pose = posed()
     // (Each view's palette, then each one's a moment ago: `LAGGED`.)
     var palettes: GpuBuffer<mat4> = buffer(10 * MAX_BONES)
@@ -247,13 +240,12 @@ pub fn init() -> State {
     tallies.push(read(body.tally.items()))
     tallies.push(read(head_mesh.tally.items()))
     tallies.push(read(coat_mesh.tally.items()))
-    tallies.push(read(hands_mesh.tally.items()))
     State {
-        meshes: [body, head_mesh, coat_mesh, hands_mesh, jacket(), hand(0), hand(1)],
+        meshes: [body, head_mesh, coat_mesh, jacket()],
         charted,
         grids: chart::grids(),
         cover: hakuro::jacket_covers(),
-        colours: [c0, c1, c2, c3],
+        colours: [c0, c1, c2],
         palettes,
         drape: drape_room(5),
         last: 0.0,
@@ -301,7 +293,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     var depth = depth_texture(width: width, height: height)
     let pass = begin_screen_pass_with_depth(mut depth, clear: vec4(0.85, 0.82, 0.76, 1.0))
     // (Each of his meshes with its own creature's fields: they're of different types.)
-    let fields = (hero(), head(), coat(), hands())
+    let fields = (hero(), head(), coat())
     for k in 0..5 {
         draw(
             pass,
@@ -367,18 +359,14 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             cull: Cull::Back,
         )
     }
-    // (His hands, the old fitted ones (`meshes[3]`), are no longer drawn: `hand` samples them.)
-    // (His jacket and hands, sampled from the reference: no fields to read, so their own
-    // normals and his body's paint at their place at rest.)
-    for m in 4..7 {
-        if !sampled_now(m - 4) {
-            continue
-        }
+    // (His jacket, sampled from the reference: no fields to read, so its own normals and his
+    // body's paint at its place at rest.)
+    if sampled_now() {
         for k in 0..5 {
             draw(
                 pass,
                 fielded.bind(
-                    verts: s.meshes[m].verts.items(),
+                    verts: s.meshes[3].verts.items(),
                     palettes: s.palettes.items(),
                     first: k * MAX_BONES,
                     view: v,
@@ -388,10 +376,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                     lights: LIGHTS,
                     shadow: s.shadow,
                     shadow_sampler: s.smp,
-                    jacket: if m == 4 { 1 } else { 0 },
                 ),
-                indices: s.meshes[m].quads.items(),
-                indirect: s.meshes[m].draw.items(),
+                indices: s.meshes[3].quads.items(),
+                indirect: s.meshes[3].draw.items(),
                 cull: Cull::Back,
             )
         }
@@ -405,17 +392,46 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         for a in 0..CHARTS {
             if charted_now(a) {
                 let c = s.charted[k].limbs[a]
-                chart_drawn(
-                    pass,
-                    s,
-                    limbs[a],
-                    rest.limbs[a],
-                    c,
-                    hakuro::shaded_part(a, c.form),
-                    v,
-                    height,
-                    a,
-                )
+                let onto = hakuro::grows_from(a)
+                if onto < CHARTS {
+                    chart_drawn_onto(
+                        pass,
+                        s,
+                        limbs[a],
+                        rest.limbs[a],
+                        c,
+                        hakuro::shaded_hand(c.form),
+                        v,
+                        height,
+                        a,
+                        s.charted[k].limbs[onto],
+                        hakuro::grown(a),
+                    )
+                } else if hakuro::of_hand(a) {
+                    chart_drawn(
+                        pass,
+                        s,
+                        limbs[a],
+                        rest.limbs[a],
+                        c,
+                        hakuro::shaded_hand(c.form),
+                        v,
+                        height,
+                        a,
+                    )
+                } else {
+                    chart_drawn(
+                        pass,
+                        s,
+                        limbs[a],
+                        rest.limbs[a],
+                        c,
+                        hakuro::shaded(c.form),
+                        v,
+                        height,
+                        a,
+                    )
+                }
             }
         }
         for a in 0..WIDE_CHARTS {
@@ -507,6 +523,52 @@ fn chart_drawn<P: RenderPass, const A: u32, const R: u32, const S: u32>(
             cull: Cull::Back,
         )
     }
+}
+
+/// `chart_drawn`, for a part that grows from another (`onto`, as the pose has it): its side
+/// rising from it and filleted where the two meet (`how`; `chart::vertex_onto`).
+fn chart_drawn_onto<P: RenderPass, const A: u32, const R: u32, const S: u32, const B: u32, const Q: u32>(
+    pass: P,
+    s: State,
+    part: Part<A, R>,
+    rest: Limb<A, R>,
+    form: Limb<A, R>,
+    shade: Radial<A, S>,
+    v: View,
+    height: u32,
+    index: u32,
+    onto: Limb<B, Q>,
+    how: Grown,
+) {
+    let level = form.level(v.eye, f32(height), tan(0.5 * FOV))
+    let span = chart::level_span(level)
+    draw(
+        pass,
+        chart::vertex_onto.bind(
+            rest: rest,
+            form: form,
+            band: part.band,
+            under: part.sunk,
+            level: level,
+            seen: v,
+            onto: onto,
+            how: how,
+        ),
+        charted_pixel.bind(
+            shade: shade,
+            length: form.path.length(),
+            cover: s.cover.items(),
+            view: v,
+            lights: LIGHTS,
+            shadow: s.shadow,
+            shadow_sampler: s.smp,
+            part: index,
+        ),
+        indices: s.grids.indices,
+        first_index: span.x,
+        index_count: span.y,
+        cull: Cull::Back,
+    )
 }
 
 /// The camera's field of view, top to bottom (radians).
@@ -605,8 +667,9 @@ pub fn fielded_pixel<F: Parts<Cloth>>(
     vec4(lights.light(c.albedo, c.rough, n, v.world, view, lit), 1.0)
 }
 
-/// A pixel of a mesh with no fields behind it (his sampled arms), in plain light: its own
-/// normal, and his body's paint where it is on him at rest.
+/// A pixel of his sampled jacket, a mesh with no fields behind it, in plain light: its own
+/// normal, and his jacket's paint where it is on him at rest (it carries on down over his
+/// trousers: `jacket_paint`).
 @fragment
 pub fn painted_pixel(
     v: Fielded,
@@ -614,10 +677,8 @@ pub fn painted_pixel(
     lights: Lights,
     shadow: DepthTexture,
     shadow_sampler: ComparisonSampler,
-    jacket: u32,
 ) -> vec4 {
-    // (1 for his jacket, whose paint carries on down over his trousers: `jacket_paint`.)
-    let c = if jacket == 1 { jacket_paint(v.rest) } else { body_paint(v.rest) }
+    let c = jacket_paint(v.rest)
     var n = normalize(v.normal)
     let d = normalize(v.world - view.eye)
     if dot(n, d) > 0.0 {

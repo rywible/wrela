@@ -9,13 +9,13 @@
 // skeleton are its template's.)
 
 use engine::chart
-use engine::chart::{Band, JOINTS, Limb, Part, Radial}
+use engine::chart::{Band, Grown, JOINTS, Limb, Part, Radial}
 use std::math::TAU
 use engine::creature::{Bone, Creature, Skeleton, creature, hard, smooth, split}
 use engine::character::Shaded
 use shapes::{
-    digits, palm, thumb, HEAD_JOINT, HEAD_SCALE, boot_foot, boot_paint, boot_shaft, ellip, fox,
-    fox_paint, hair, tails, unscaled,
+    HEAD_JOINT, HEAD_SCALE, boot_foot, boot_paint, boot_shaft, ellip, fox, fox_paint, hair, tails,
+    unscaled,
 }
 use std::derive::{Box3, Interval}
 use std::field::{Blend, Bound, Surface, cuboid, oval, round_cone}
@@ -233,6 +233,12 @@ pub const WIDE_CHARTS: u32 = 2
 pub const WRAP_FROM: f32 = 0.75
 pub const GAUNTLET_FROM: f32 = 0.634
 pub const WRAP_OVER: f32 = 0.0015
+
+/// Where the wrap and the gauntlet end, as a fraction of an arm's path's length: well inside
+/// his palm's own end of each. An arm's path is shorter where his elbow is bent (it cuts the
+/// corner), so a fraction of it falls nearer his elbow then: at 0.86 the wrap stopped short of
+/// his palm in his guard, and the sky showed between them as a pale crescent in his wristband.
+pub const WRAP_TO: f32 = 0.91
 pub const GAUNTLET_OVER: f32 = 0.0035
 
 /// His charted limbs. His left arm, bare, and his right, in his jacket's sleeve, each drawn to
@@ -262,7 +268,7 @@ pub fn charts() -> [Part<16, 13>; CHARTS] {
     )
     let over = |arm: Part<16, 13>, from: f32, by: f32| Part {
         form: arm.form.plus(chart::round(by)),
-        band: Band { f: vec2(from, 0.86), theta: arm.band.theta },
+        band: Band { f: vec2(from, WRAP_TO), theta: arm.band.theta },
         sunk: vec2(0.0, 0.1),
         ..arm,
     }
@@ -343,8 +349,11 @@ pub const HAND_PIECES: u32 = 6
 /// stops reading it (`studio/forms`' `hand_spec`).
 pub const TIP_CAP: f32 = 0.12
 
-/// How much of his palm's path its end closes over, past his knuckles' line.
-pub const PALM_CAP: f32 = 0.045
+/// How much of a finger's path its root closes over, inside his palm.
+pub const ROOT_CAP: f32 = 0.1
+
+/// How much of his palm's path its end closes over, up to his knuckles' line.
+pub const PALM_CAP: f32 = 0.1
 
 /// The first of his hand's pieces on `side` among his charted parts (`HAND_PIECES` of them).
 pub fn hand_first(side: u32) -> u32 {
@@ -401,27 +410,38 @@ fn hand_piece(side: u32, i: u32) -> Part<16, 13> {
         root: hand,
         form: forms[i],
         changes: [chart::unchanged(); JOINTS],
-        band: Band { f: vec2(0.05, 1.0), theta: vec2(0.0, TAU) },
-        // (His thumb's root under his palm; his fingers' not: their knuckles stand on the
-        // back of his hand.)
-        sunk: vec2(if i == 4 { FINGER_UNDER } else { 0.0 }, 0.25),
-        caps: vec2(0.0, TIP_CAP),
+        band: Band { f: vec2(0.0, 1.0), theta: vec2(0.0, TAU) },
+        // (His fingers' roots aren't drawn under his palm: their knuckles stand on the back
+        // of his hand. His thumb's is, by 2 mm as far as its first joint: there it lies on
+        // his palm's own surface, and level with it the two met in a ragged line. Each root
+        // closes inside his palm: open, the ball of his thumb showed its cut rim.)
+        sunk: if i == 4 { vec2(0.002, 0.5) } else { vec2(0.0, 0.25) },
+        caps: vec2(ROOT_CAP, TIP_CAP),
     }
+}
+
+/// The charted part that part `part` grows from, where it meets it as skin does
+/// (`chart::vertex_onto`): a thumb's is its hand's palm. `CHARTS` for a part that grows from
+/// none. (A finger stands on its knuckle as it is: the crease there is the line a fist's
+/// knuckles are drawn with, and filleted, a fist at a blow read as "a blunt lump".)
+pub fn grows_from(part: u32) -> u32 {
+    if !of_hand(part) || (part - HAND_LEFT) % HAND_PIECES != 4 {
+        return CHARTS
+    }
+    HAND_LEFT + ((part - HAND_LEFT) / HAND_PIECES) * HAND_PIECES + 5
+}
+
+/// How his thumb grows from his palm (`chart::vertex_onto`): its root, which no reference was
+/// read for, rises from the heel of his hand at the wrist, and the foot of its ball is
+/// filleted along his palm as far as the thumb's own knuckle.
+pub fn grown(part: u32) -> Grown {
+    Grown { fillet: 0.009, reach: 0.8, rooted: 0.2 }
 }
 
 /// Whether charted part `part` is a piece of his hand.
 pub fn of_hand(part: u32) -> bool {
     part >= HAND_LEFT && part < HAND_LEFT + 2 * HAND_PIECES
 }
-
-/// Whether his hands are drawn along their charts, in place of their sampled meshes: each a
-/// palm, four fingers and a thumb (`hand_piece`). Off. Judged blind against his sampled hands
-/// over four rounds, his charted fist took the impact drawing 15 votes to none and his guard 6
-/// to 2, but his open hand at his hip, seen from the front, lost 15 to none ("fingers fused
-/// into one tube", where the sampled hand's thumb and knuckles are picked out by their
-/// shade), and a thin spike stood at a sharply bent wrist. docs/charted-forms.md says what's
-/// left. Set here (`--set` reaches only a program's own constants).
-pub const HANDS_CHARTED: bool = false
 
 /// His jacket's pieces among his charted parts (`charts`' order, then `wide_charts`'): its
 /// collar, its two shoulders, and its body.
@@ -489,16 +509,13 @@ pub fn wide_charts() -> [Part<24, 21>; WIDE_CHARTS] {
 /// and his upper arm (`charts`, `wide_charts`). Off: judged blind against his sampled jacket it
 /// took 6 votes to 25 (ragged edges at its shoulders and collar where a cover cuts it, blotches
 /// where one piece lies over another, no thickness at a rim), so his jacket stays sampled, and
-/// docs/charted-forms.md says what's left. His arms, his legs, his trunk, his neck and his
-/// head are drawn along theirs always; his hands stay sampled. Set here (`--set` reaches only
-/// a program's own constants).
+/// docs/charted-forms.md says what's left. His arms, his hands, his legs, his trunk, his neck
+/// and his head are drawn along theirs always. Set here (`--set` reaches only a program's own
+/// constants).
 pub const JACKET_CHARTED: bool = false
 
 /// Whether charted part `part` (`charts`' order, then `wide_charts`') is drawn.
 pub fn charted_now(part: u32) -> bool {
-    if of_hand(part) {
-        return HANDS_CHARTED
-    }
     !of_jacket(part) || JACKET_CHARTED
 }
 
@@ -513,10 +530,10 @@ pub fn of_jacket(part: u32) -> bool {
     part == COLLAR || part == YOKE_LEFT || part == YOKE_RIGHT || part == JACKET_BODY
 }
 
-/// Whether sampled mesh `k` (`arms::jacket`, then his hands) is drawn: not where a charted
-/// part is drawn in its place.
-pub fn sampled_now(k: u32) -> bool {
-    !(k == 0 && JACKET_CHARTED) && !(k >= 1 && HANDS_CHARTED)
+/// Whether his sampled jacket (`arms::jacket`) is drawn: not where his charted jacket is drawn
+/// in its place.
+pub fn sampled_now() -> bool {
+    !JACKET_CHARTED
 }
 
 /// His charted parts as a pose has them: his limbs and his head (`charts`' order), and his
@@ -571,19 +588,13 @@ pub fn shaded(form: Radial<16, 13>) -> Radial<16, 9> {
     form.softened(SHADED_DETAIL).kept()
 }
 
-/// How fine the detail his hands' shading keeps (`SHADED_DETAIL`'s, for a hand's pieces): all
-/// of the four harmonics a pixel reads. A palm is a flat section, which is its second and
-/// fourth harmonics: softened as a limb is, the back of his open hand was lit as a tube's and
-/// read as "a flat, unshaded paddle".
-pub const HAND_DETAIL: f32 = 8.0
-
-/// What charted part `part`'s pixels read their normals from, a limb-sized part: `shaded`,
-/// with his hands' pieces kept finer.
-pub fn shaded_part(part: u32, form: Radial<16, 13>) -> Radial<16, 9> {
-    if of_hand(part) {
-        return form.softened(HAND_DETAIL).kept()
-    }
-    shaded(form)
+/// What a piece of his hand's pixels read their normals from: its form as it is. A palm is a
+/// flat section, which is its even harmonics to the last: softened as a limb is, the back of
+/// his open hand was lit as a tube's and read as "a flat, unshaded paddle". And a thumb's ball
+/// that rises from his palm (`grown`) is lit there as the palm's side is made, so the palm's
+/// own pixels read the same side.
+pub fn shaded_hand(form: Radial<16, 13>) -> Radial<16, 13> {
+    form
 }
 
 /// What his trunk's and his jacket's pixels read their normals from: the posed form softened,
@@ -725,61 +736,6 @@ impl Surface for Hair {
 
 fn hair_paint(p: vec3) -> Cloth {
     HAIR
-}
-
-/// A piece of a hand (`piece` 0 the palm, 1 the fingers, 2 the thumb), on its bone at `at`:
-/// the left hand's shapes (`shapes::palm`, `digits`, `thumb`), mirrored for the right
-/// (`side` −1).
-pub struct HandPiece: Copy + GpuData {
-    pub at: vec3,
-    pub side: f32,
-    pub piece: u32,
-}
-
-/// His hands' size against the shapes written for them: big hands for his build.
-const HAND_SCALE: f32 = 1.15
-
-impl Surface for HandPiece {
-    fn bound(self) -> Bound {
-        let c = if self.piece == 0 {
-            vec3(0.06, -0.006, 0.01)
-        } else if self.piece == 1 { vec3(0.04, -0.005, -0.005) } else { vec3(0.035, -0.005, 0.018) }
-        Bound {
-            centre: vec3(c.x * self.side, c.y, c.z) * HAND_SCALE,
-            radius: 0.12 * HAND_SCALE,
-            slope: 0.5,
-        }
-    }
-
-    /// By its bound on the gradient from its centre's distance (`BootFoot`'s).
-    fn interval(self, over: Box3) -> Interval {
-        let r = 1.5 * 0.5 * length(over.hi - over.lo)
-        let d = self.distance(over.center())
-        Interval { lo: d - r, hi: d + r }
-    }
-
-    /// The shapes as written, made `HAND_SCALE` times as big about the wrist.
-    fn distance(self, p: vec3) -> f32 {
-        let q = p / HAND_SCALE + self.at
-        let l = vec3(q.x * self.side, q.y, q.z)
-        HAND_SCALE * (if self.piece == 0 { palm(l) } else if self.piece == 1 { digits(l) } else {
-            thumb(l)
-        })
-    }
-
-    /// Cones, a rounded box narrowed across by up to a fifth: about 1.25, with room.
-    fn lipschitz(self, near: f32) -> f32 {
-        1.5
-    }
-}
-
-/// His bare left hand, and his right's black glove.
-fn skin_paint(p: vec3) -> Cloth {
-    SKIN
-}
-
-fn glove_paint(p: vec3) -> Cloth {
-    LEATHER
 }
 
 /// A boot's foot, on the left foot's bone (its image on the right's).
@@ -1167,51 +1123,6 @@ pub fn hero() -> Creature<Cloth> {
             seam: smooth(0.004),
             mirror: true,
         )
-}
-
-/// His hands, realized on their own finer grid (their fingers are thin): the same skeleton, so one
-/// palette poses them with the rest of him.
-pub fn hands() -> Creature<Cloth> {
-    let s = skeleton()
-    let b = |name: Text| s.find(name)
-    creature(s)
-        .join(
-            "hand left",
-            b("hand left"),
-            HandPiece { at: s.rest(b("hand left")), side: 1.0, piece: 0 }.with_at(skin_paint),
-            seam: smooth(0.02),
-        )
-        .join(
-            "fingers left",
-            b("fingers left"),
-            HandPiece { at: s.rest(b("fingers left")), side: 1.0, piece: 1 }.with_at(skin_paint),
-            seam: smooth(0.010),
-        )
-        .join(
-            "thumb left",
-            b("thumb left"),
-            HandPiece { at: s.rest(b("thumb left")), side: 1.0, piece: 2 }.with_at(skin_paint),
-            seam: smooth(0.010),
-        )
-        .join(
-            "hand right",
-            b("hand right"),
-            HandPiece { at: s.rest(b("hand right")), side: -1.0, piece: 0 }.with_at(glove_paint),
-            seam: smooth(0.02),
-        )
-        .join(
-            "fingers right",
-            b("fingers right"),
-            HandPiece { at: s.rest(b("fingers right")), side: -1.0, piece: 1 }.with_at(glove_paint),
-            seam: smooth(0.010),
-        )
-        .join(
-            "thumb right",
-            b("thumb right"),
-            HandPiece { at: s.rest(b("thumb right")), side: -1.0, piece: 2 }.with_at(glove_paint),
-            seam: smooth(0.010),
-        )
-        .bounded(Box3 { lo: vec3(-0.95, 1.22, -0.22), hi: vec3(0.95, 1.66, 0.12) })
 }
 
 /// His coat's tails, realized on their own finer grid (thin cloth): on his pelvis's bone.
