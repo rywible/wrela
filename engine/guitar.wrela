@@ -1,0 +1,2243 @@
+// An electric guitar: six steel strings a pick sets moving, a pickup under them, and an
+// amplifier and its speaker, which are half the instrument.
+//
+// Each string is a loop: a wave goes round it once a period, losing a little each time, its
+// highs first (Karplus and Strong, "Digital synthesis of plucked-string and drum timbres", and
+// Jaffe and Smith, "Extensions of the Karplus-Strong plucked-string algorithm", both Computer
+// Music Journal 7(2), 1983; as one loop with its losses in one filter, Karjalainen, Välimäki
+// and Tolonen, "Plucked-string models: from the Karplus-Strong algorithm to digital waveguides
+// and beyond", CMJ 22(3), 1998). What goes round is the string's speed, which is what a pickup
+// hears. (engine::bowed's string is two lines either side of a bow that holds it; nothing
+// holds this one, so it is one.)
+//
+// What it models:
+// - the pick: it pulls the string aside at a place and lets it go. Let go, the string's speed
+//   at any point is a pulse as wide as the pick's distance from the bridge, there and back, so
+//   a pick near the bridge is bright and one nearer the neck round. The pulse's edges are as
+//   sharp as the pick is hard and the stroke fast. A string picked while it rings is stopped by
+//   the pick first; down strokes and up strokes pull opposite ways;
+// - the string: how long it rings (longer low than high), and how long its top does (new
+//   strings ring bright for longer). A note picked hard starts a few cents sharp and settles,
+//   as a string pulled far aside is stretched (Tolonen, Välimäki and Karjalainen, "Modeling of
+//   tension modulation nonlinearity in plucked strings", IEEE Trans. Speech and Audio
+//   Processing 8(3), 2000). Steel is stiff, so a string's partials are a little sharp of
+//   harmonics, the more the higher (`stiff_for`), and a string moves two ways at once, toward
+//   the pickup and across it, a cent or two apart. So the wave is never the same twice: its
+//   partials drift against each other, and its two ways beat;
+// - the pick's scrape as it leaves the string: a few milliseconds of noise at a note's start;
+//   and a stopped string's slipping under its finger and on its fret, a little noise that
+//   comes and goes with the string's own motion (`Guitar::sizzle`);
+// - the hands: a finger let go stops its string; the picking hand's heel on the strings at
+//   the bridge mutes them (a thud that dies in half a second, its top much sooner); a finger hammered on or
+//   pulled off changes the string's length without the pick; a bend or a slide takes the pitch
+//   there over a time; a held note can be swayed (a bend's vibrato only ever goes sharp),
+//   wider the longer it is held; a note can be slid into from a fret under. A fingertip is
+//   softer than the nut and takes a stopped note's top, the sooner the higher the note, so a
+//   note up the neck is bright as it is picked and round after (`Guitar::finger`). Fingers
+//   are heard: a scratch as one leaves a string, a rub as one slides, and one is a moment late
+//   leaving its string for the next note's (`Guitar::fingers`, `Hand::late`). No
+//   hand does anything twice the same way: each stroke's place and angle, where each finger
+//   lands, each string's tuning, the fingers' press and each sway's depth, wait and rate are
+//   all a little off, each its own way (`Guitar::loose`);
+// - the pickup: it hears the string at its own place, and a wave passes that place twice, once
+//   each way, upside down the second time. So harmonics with a node there are missing: at the
+//   neck the sound is hollow and round, at the bridge thin and bright (Tillman, "Response
+//   Effects of Guitar Pickup Position and Width", till.com, 2000; Paiva, Pakarinen and
+//   Välimäki, "Acoustics and modeling of pickups", J. Audio Eng. Soc. 60(10), 2012). The place
+//   is a distance from the bridge, so the missing harmonics move as a finger shortens the
+//   string. A pickup has width: it is heard at two places, a single coil's close together, a
+//   humbucker's two coils further apart, which takes more of the top. Its coil and the cable
+//   are a resonance, a peak of a few decibels at 3 to 5 kHz and nothing much above it;
+// - the amplifier (`Amp`, its controls; `Amped`, it running): lows taken out first (so that
+//   driven hard it stays tight, not woolly), two valves one after the other, each clipping
+//   one side sooner than the other and the second upside down, then the tone controls and a
+//   pair of power valves that clip both sides alike (Pakarinen and Yeh, "A review of digital
+//   techniques for modeling vacuum-tube guitar amplifiers", CMJ 33(2), 2009). All six strings
+//   go through it together, which is why a driven chord growls: the valves make tones at the
+//   sums and differences of its notes. What makes it crunch and not only clip is what isn't
+//   steady in it: a valve's knee can be a corner on the side where its grid draws current;
+//   driven past it, the valve chokes for a moment (its rest is pushed down, and comes back
+//   over a hundredth of a second), so a hard stroke sputters and a chord's beating shows; a
+//   small sound is partly missed where one power valve hands over to the other; a loud sound
+//   pulls their supply down, so a note's start is louder than what follows; and it hisses. A
+//   gate before it can shut all that out between notes. The amplifiers below are the same
+//   one set differently: clean, crunch, lead, and five kinds of rock and metal;
+// - the speaker: a 12-inch cone in a box passes 90 Hz to 5 kHz, with a bump at each end, and
+//   from 900 Hz up unevenly: a cone there has resonances of its own, here 16 of them, each a
+//   peak or a hollow of a few decibels. It is what makes a driven amplifier bearable: without
+//   it the clipping's top is a fizz.
+//
+// The first version had none of the stiffness, the second way of moving, the scrape, the
+// looseness, the sag or the cone's resonances. Its
+// clean sound was heard as a guitar; its lead as a synthesizer, and its crunch as a poor
+// plug-in. Driven hard, an exact string's wave is one pulse the same every period, held at
+// one level: a synthesizer's pulse wave. A held driven A4's harmonics moved 0.1 to 0.3 dB
+// from steady, and a note's first 30 ms were no louder than the rest of it
+// (`a_driven_note_isnt_a_frozen_wave`).
+//
+// Clipping makes harmonics far past what 48,000 samples a second can hold, and those come back
+// as tones that belong to no note. So the valves run at four times the rate: the sound is
+// brought up through two half-band filters, clipped, and brought back down through two more
+// (`Double`, `Halve`). A 1245 Hz tone through `LEAD_AMP` has its strongest stray tone 34 dB
+// under the note with the valves at the audio rate, and 76 dB under at four times it
+// (`the_valves_leave_no_tones_that_arent_the_notes`). Through `DEATH_METAL`, whose knee is a
+// corner and whose drive is the most there is, it is 50 dB under at four times the rate.
+//
+// A player picks it (`Picking` notes, which `pickings` makes from a performance): a chord is
+// strummed, each string a moment after the one before, down on the beat and up off it; each
+// note goes to the string it lies lowest on that is free; a slurred note is hammered on or
+// pulled off, or bent if it is a step away and the hand bends (as a finger pushes a string:
+// slowly at first, quickest in the middle); a note marked staccato is palm-muted. No strum's
+// strings are evenly apart or evenly hard.
+//
+// No note is measured from a recording yet: the strings' times, the pick, the pickups'
+// resonances, the amplifier's corners and the speaker's are set from how the instrument is
+// built, for a fit against recorded notes to settle. Not modelled: a string ringing in
+// sympathy with another, fret noise, the amplifier's hum and hiss, and feedback from the
+// speaker to the strings.
+//
+// Everything on the audio thread is f32 arithmetic in a fixed order, so both hosts give the
+// same samples.
+
+use perform::Performance
+use score::{NO_SLUR, STACCATO, Score, TICKS}
+use std::audio::SAMPLE_RATE
+use std::collections::Vec
+use std::math::{PI, TAU}
+use tone::{Band, Noise, Svf, band, gain_of, key_hz, one_pole, scatter, seeded}
+
+/// The audio thread's rate.
+const RATE: f32 = f32(SAMPLE_RATE)
+
+/// A guitar's strings.
+pub const STRINGS: u32 = 6
+
+const NONE: u32 = 4294967295
+
+/// Each string's memory (samples, a power of two): a string as low as 24 Hz fits, a bass
+/// guitar's lowest tuned down.
+const SPAN: u32 = 2048
+
+/// A Stratocaster's pickups are 6.375, 3.875 and 1.625 inches from the bridge of a string of
+/// 25.5 inches, and a single coil hears about an inch of string, a humbucker 2.5 (Tillman).
+/// Heard at two places, a pickup's first missing band is where a width twice their distance
+/// apart would put it: half an inch apart for a single coil, an inch and a quarter for a
+/// humbucker.
+const NECK: f32 = 0.25
+const BRIDGE: f32 = 0.0637
+const SINGLE: f32 = 0.0196
+const HUMBUCKER_WIDE: f32 = 0.049
+
+/// How stiff the open strings of a common set are (0.046 to 0.010 inches, the lowest three
+/// wound on cores of 0.018, 0.016 and 0.014 inches, on a 25.5 inch scale): each from its
+/// steel, its thickness, its length and its pitch, `π³ E d⁴ / (64 T L²)` (Fletcher and
+/// Rossing, ch. 2), with a wound string's stiffness its core's. Computed, not measured.
+const STIFF: [f32; 6] = [0.00013, 0.00007, 0.000045, 0.00011, 0.00004, 0.000013]
+
+/// An amplifier and its speaker: what each of its controls is set to. Every number is one a
+/// player would turn: start from the nearest of the amplifiers below and change what is wrong.
+pub struct Amp: Copy {
+    /// How hard the valves are driven (dB; the hardest stroke's swing reaches about 1 before
+    /// them). Under 0 it is clean; 15 to 25 crunches; from 35 a single note sings for seconds.
+    pub drive: f32 = -6.0,
+    /// The corner under which the lows are taken out before the valves (Hz). Low (50), the
+    /// lows are clipped with the rest: thick, woolly, a fuzz. High (300), only the middle is
+    /// clipped: tight, a low string's chug stays a punch.
+    pub tight: f32 = 70.0,
+    /// The valves: how much sooner each clips one side than the other (0: both alike, as a
+    /// fuzz's diodes do), and how sharp the knee is where it clips (0: round, smooth; 1: a
+    /// corner, gritty).
+    pub lean: f32 = 0.2,
+    pub edge: f32 = 0.0,
+    /// How much a valve driven past its knee chokes on it (0: not at all): its rest is
+    /// pushed down and takes a hundredth of a second to come back, so a hard stroke's start
+    /// sputters and a chord's beating shows as grit. Over a half it spits and gates.
+    pub spit: f32 = 0.0,
+    /// The tone controls, after the valves (each a gain: 1 leaves its band as it is), and
+    /// where the middle is (Hz): the bass is what is under two fifths of that, the treble
+    /// what is over two and a half times it.
+    pub bass: f32 = 1.0,
+    pub mid: f32 = 1.0,
+    pub treble: f32 = 1.0,
+    pub mid_hz: f32 = 630.0,
+    /// The power valves: how hard they are driven; how far their supply sags under a loud
+    /// sound (0: not at all), which makes a note's start louder than what follows and the
+    /// amplifier spongy; and how much of a small sound is missed where one valve hands over
+    /// to the other (0: none), a buzz in a note's tail.
+    pub power: f32 = 1.0,
+    pub sag: f32 = 0.5,
+    pub cross: f32 = 0.0,
+    /// The hiss the amplifier hears with the pickup (dB of the hardest stroke's swing), and
+    /// the level under which a gate before the amplifier shuts (dB; under -150 there is no
+    /// gate): a gate cuts a muted note's tail and the hiss between notes.
+    pub hiss: f32 = -96.0,
+    pub gate: f32 = -200.0,
+    /// The speaker: the corner under which it gives nothing, with its bump there (Hz); the
+    /// cone's own peak (Hz, and how much of it is added); and the corner over which it gives
+    /// nothing (Hz).
+    pub cab_low: f32 = 90.0,
+    pub cab_peak_hz: f32 = 2600.0,
+    pub cab_peak: f32 = 0.5,
+    pub cab_high: f32 = 4800.0,
+    /// How uneven the cone's own resonances make the speaker from 900 Hz up (0: smooth; 1: a
+    /// peak may double what is there, a hollow halve it), and the seed they are scattered by
+    /// (another number: another speaker), which the player's hand is seeded from too.
+    pub cab_rough: f32 = 0.5,
+    pub cone: u32 = 12,
+    /// The level of the whole (dB).
+    pub level: f32 = 0.0,
+}
+
+/// What makes an electric guitar's sound: the strings, the pick, the pickup, and the amplifier
+/// and speaker it is played through.
+pub struct Guitar: Copy {
+    /// The open strings' keys (MIDI's numbering), lowest first, and how many frets each has.
+    pub open: [f32; 6] = [40.0, 45.0, 50.0, 55.0, 59.0, 64.0],
+    pub frets: u32 = 22,
+    /// Seconds a note takes to fall 60 dB at E2 and at E6; between, evenly by the octave.
+    pub ring_low: f32 = 12.0,
+    pub ring_high: f32 = 4.0,
+    /// Seconds what a note has near 3 kHz takes to fall 60 dB: new strings' is longer.
+    pub shine: f32 = 1.2,
+    /// A fingertip is softer than the nut, and takes some of a wave's top each time the wave
+    /// comes back from it: the seconds a stopped note at 110 Hz keeps what it has near 3 kHz.
+    /// A note an octave up meets the finger twice as often and keeps it half as long (and none
+    /// keeps it longer than `shine`). So a note high on the neck is bright as it is picked and
+    /// round a moment later, which is what a driven amplifier makes sing; with the top kept
+    /// (as every note kept it at first), a high note stayed a sharp pulse and the amplifier
+    /// made a buzz of it, heard as a synthesizer.
+    pub finger: f32 = 1.2,
+    /// How stiff each open string is: its `n`th partial is the root of `1 + stiff n²` sharp of
+    /// a harmonic.
+    pub stiff: [f32; 6] = STIFF,
+    /// A string moves two ways, toward the pickup and across it, and its two ends hold it a
+    /// little differently each way: the cents the second way is sharp of the first, and how
+    /// much of it the pickup hears beside the first.
+    pub planes: f32 = 1.6,
+    pub across: f32 = 0.4,
+    /// The pick: where it is along the open string from the bridge (a share of the string),
+    /// how long its edge takes to let the string go (ms) at the softest stroke and at the
+    /// hardest, and the power of a stroke's hardness the string's swing goes by.
+    pub pick_at: f32 = 0.13,
+    pub pick_soft: f32 = 0.45,
+    pub pick_hard: f32 = 0.1,
+    pub touch: f32 = 1.3,
+    /// How loud the pick's scrape is as it leaves the string, beside the stroke's swing.
+    pub scrape: f32 = 0.12,
+    /// How loud the fingers are on the strings, beside the hardest stroke's swing: the scratch
+    /// as a finger leaves a string it stopped, and the rub of one sliding along it (louder on
+    /// the three wound strings). A driven amplifier makes much of them.
+    pub fingers: f32 = 0.015,
+    /// How much a stopped string slips under its finger and on its fret as it moves: noise in
+    /// the string, as a share of the string's own motion (two and a half times as much on the
+    /// three wound strings, whose windings catch).
+    pub sizzle: f32 = 0.018,
+    /// The cents the hardest stroke starts sharp, and the seconds that takes to settle.
+    pub sharp: f32 = 8.0,
+    pub settles: f32 = 0.25,
+    /// A palm-muted note: the seconds it takes to fall 60 dB, and the share of a low E's
+    /// period the hand's heel smooths the string's wave over each time round (more: duller).
+    pub mute: f32 = 0.5,
+    pub mute_over: f32 = 0.1,
+    /// Seconds a string takes to fall 60 dB once its finger has let go.
+    pub stop: f32 = 0.07,
+    /// The pickup: where it is along the open string from the bridge and how wide (shares of
+    /// the string), and its resonance (Hz, and how sharp).
+    pub pickup_at: f32 = NECK,
+    pub pickup_width: f32 = SINGLE,
+    pub pickup_hz: f32 = 4200.0,
+    pub pickup_q: f32 = 2.2,
+    /// The amplifier and speaker it is played through.
+    pub amp: Amp = Amp {},
+    /// How far the tuning and the fingers are from exact (1: as a player's are; 0: exactly in
+    /// tune, every note where it is asked).
+    pub loose: f32 = 1.0,
+}
+
+// ---- the amplifiers ---------------------------------------------------------------------------
+//
+// None is a copy of a maker's amplifier, and none was set by ear or against a recording: each
+// is set from what players of the music say they turn, for an ear to correct. Each one's
+// `level` puts the same riff at the same loudness.
+
+/// Clean: round and glassy, breaking up only when a chord is hit hard.
+pub const CLEAN_AMP: Amp = Amp {}
+
+/// Turned up until chords growl, with grit in it: a knee with some corner, valves that choke
+/// a little on a hard stroke, a buzz in the tails.
+pub const CRUNCH_AMP: Amp = Amp {
+    drive: 22.0,
+    tight: 140.0,
+    edge: 0.5,
+    spit: 0.3,
+    mid: 0.8,
+    treble: 1.1,
+    cross: 0.02,
+    hiss: -84.0,
+    cab_peak: 0.6,
+    level: -12.0,
+}
+
+/// Driven hard, its lows cut before the valves, round at the knee: a single note sings for
+/// seconds.
+pub const LEAD_AMP: Amp = Amp {
+    drive: 38.0,
+    tight: 300.0,
+    edge: 0.2,
+    spit: 0.1,
+    mid: 1.1,
+    treble: 0.9,
+    hiss: -84.0,
+    cab_peak: 0.4,
+    cab_high: 4300.0,
+    level: -14.3,
+}
+
+/// Dad rock: an old amplifier turned most of the way up. Not much drive before the power
+/// valves, which are pushed and sag; the middle forward; it cleans up when picked softly and
+/// barks when hit.
+pub const DAD_ROCK: Amp = Amp {
+    drive: 15.0,
+    tight: 110.0,
+    edge: 0.4,
+    spit: 0.2,
+    bass: 0.9,
+    mid: 1.25,
+    treble: 1.0,
+    mid_hz: 800.0,
+    power: 1.6,
+    sag: 0.9,
+    cross: 0.03,
+    hiss: -86.0,
+    cab_peak: 0.5,
+    cab_high: 5000.0,
+    level: -12.0,
+}
+
+/// Hair metal: the same amplifier with more valves' worth of drive. Bright, the upper middle
+/// biting, smooth at the knee so chords stay clear and a lead sustains.
+pub const HAIR_METAL: Amp = Amp {
+    drive: 30.0,
+    tight: 180.0,
+    edge: 0.3,
+    spit: 0.15,
+    bass: 0.9,
+    mid: 1.0,
+    treble: 1.4,
+    mid_hz: 900.0,
+    sag: 0.4,
+    hiss: -86.0,
+    cab_peak_hz: 3200.0,
+    cab_peak: 0.8,
+    cab_high: 5500.0,
+    level: -14.7,
+}
+
+/// Stoner rock: a fuzz into a big amplifier. The lows go into the clipping with everything
+/// else, both sides clip alike and hard, the valves choke and spit, the supply sags, and the
+/// speaker is dark: thick, woolly and slow.
+pub const STONER: Amp = Amp {
+    drive: 40.0,
+    tight: 45.0,
+    lean: 0.05,
+    edge: 0.7,
+    spit: 0.6,
+    bass: 1.5,
+    mid: 1.3,
+    treble: 0.5,
+    mid_hz: 400.0,
+    power: 1.3,
+    sag: 1.2,
+    hiss: -82.0,
+    cab_low: 75.0,
+    cab_peak: 0.2,
+    cab_high: 3400.0,
+    level: -13.5,
+}
+
+/// Death metal: all the drive there is, a hard knee, the middle scooped out after it, the
+/// lows and the top turned up: a grind, with a gate to keep it shut between notes.
+pub const DEATH_METAL: Amp = Amp {
+    drive: 46.0,
+    tight: 240.0,
+    edge: 0.8,
+    spit: 0.2,
+    bass: 1.5,
+    mid: 0.45,
+    treble: 1.6,
+    mid_hz: 550.0,
+    sag: 0.2,
+    hiss: -84.0,
+    gate: -58.0,
+    cab_peak_hz: 2400.0,
+    cab_peak: 0.9,
+    cab_high: 5200.0,
+    level: -16.6,
+}
+
+/// Metalcore: as much drive, but the lows cut hard before the valves and a supply that
+/// doesn't sag, so a muted low string is a punch and not a boom; the low middle scooped, the
+/// upper middle forward, and a gate that shuts the moment the strings stop.
+pub const METALCORE: Amp = Amp {
+    drive: 44.0,
+    tight: 380.0,
+    edge: 0.5,
+    spit: 0.05,
+    bass: 1.2,
+    mid: 0.7,
+    treble: 1.25,
+    mid_hz: 400.0,
+    sag: 0.1,
+    hiss: -86.0,
+    gate: -52.0,
+    cab_peak_hz: 2800.0,
+    cab_peak: 0.7,
+    level: -16.1,
+}
+
+/// A wall: stoner rock's weight, death metal's drive and knee, and metalcore's gate. The lows
+/// are cut before the valves enough to keep a muted string a punch, and put back after them;
+/// the middle is left in, so two of these a side fill a room and don't hollow it.
+pub const WALL: Amp = Amp {
+    drive: 45.0,
+    tight: 150.0,
+    lean: 0.1,
+    edge: 0.75,
+    spit: 0.35,
+    bass: 1.6,
+    mid: 0.9,
+    treble: 1.25,
+    mid_hz: 480.0,
+    power: 1.2,
+    sag: 0.6,
+    hiss: -84.0,
+    gate: -58.0,
+    cab_low: 80.0,
+    cab_peak_hz: 2500.0,
+    cab_peak: 0.6,
+    cab_high: 4600.0,
+    level: -15.0,
+}
+
+/// A bass guitar's amplifier: driven until it growls a little, its speaker wide at the bottom
+/// and shut above 2.8 kHz.
+pub const BASS_AMP: Amp = Amp {
+    drive: 14.0,
+    tight: 30.0,
+    edge: 0.3,
+    spit: 0.1,
+    bass: 1.4,
+    mid: 1.0,
+    treble: 0.8,
+    mid_hz: 500.0,
+    sag: 0.4,
+    hiss: -90.0,
+    cab_low: 42.0,
+    cab_peak_hz: 1800.0,
+    cab_peak: 0.3,
+    cab_high: 2800.0,
+    level: -12.0,
+}
+
+// ---- the guitars ------------------------------------------------------------------------------
+
+/// The neck's single coil, into the clean amplifier.
+pub const CLEAN: Guitar = Guitar { amp: CLEAN_AMP }
+
+/// The bridge's humbucker, the pick nearer the bridge: what the driven amplifiers are played
+/// with. `Guitar { amp: STONER, ..HUMBUCKER }` is it through another amplifier.
+pub const HUMBUCKER: Guitar = Guitar {
+    pickup_at: BRIDGE,
+    pickup_width: HUMBUCKER_WIDE,
+    pickup_hz: 3000.0,
+    pickup_q: 1.8,
+    pick_at: 0.1,
+}
+
+/// The humbucker into the crunch: chords growl, and a palm-muted low string chugs.
+pub const CRUNCH: Guitar = Guitar { amp: CRUNCH_AMP, ..HUMBUCKER }
+
+/// The humbucker into the lead.
+pub const LEAD: Guitar = Guitar { amp: LEAD_AMP, ..HUMBUCKER }
+
+/// A bass guitar: the same instrument an octave down (its lowest four strings are a bass's
+/// four), its strings thicker, so stiffer and longer ringing, its pickup further from the
+/// bridge, through the bass amplifier. Stiffness: guessed at twice a guitar's, not computed.
+pub const BASS: Guitar = Guitar {
+    open: [28.0, 33.0, 38.0, 43.0, 47.0, 52.0],
+    ring_low: 16.0,
+    ring_high: 6.0,
+    shine: 0.9,
+    stiff: [0.00025, 0.00016, 0.00011, 0.00008, 0.00006, 0.00004],
+    pick_at: 0.16,
+    pickup_at: 0.17,
+    pickup_width: HUMBUCKER_WIDE,
+    pickup_hz: 2500.0,
+    pickup_q: 1.2,
+    amp: BASS_AMP,
+}
+
+/// `g` tuned `down` semitones lower, every string.
+pub fn tuned_down(g: Guitar, down: f32) -> Guitar {
+    var open = g.open
+    for s in 0..STRINGS {
+        open[s] = open[s] - down
+    }
+    Guitar { open, ..g }
+}
+
+// ---- the notes --------------------------------------------------------------------------------
+
+/// A note for the guitar: when it starts and ends (samples), its key (MIDI's numbering; a
+/// fraction is a fraction of a semitone), the string it is on (0 the lowest), how hard it is
+/// picked (0 to 1), whether the hand's heel mutes it, whether it is picked at all (if not, it
+/// is hammered on or pulled off from the note before on its string), the seconds its pitch
+/// takes to arrive from that note's (0: at once; a bend or a slide), the cents it is swayed
+/// once it has been held a while (0: not), and the semitones under itself it is picked at
+/// and slid up from (0: picked where it is).
+pub struct Picking: Copy {
+    pub from: u32,
+    pub to: u32,
+    pub key: f32,
+    pub string: u32,
+    pub hard: f32 = 0.6,
+    pub muted: bool = false,
+    pub picked: bool = true,
+    pub glide: f32 = 0.0,
+    pub sway: f32 = 0.0,
+    pub scoop: f32 = 0.0,
+}
+
+/// A guitarist's habits.
+pub struct Hand: Copy {
+    /// Seconds from one string to the next in a strummed chord, and how uneven a strum is (1:
+    /// each gap from six tenths of that to fourteen, each string up to 15% harder or softer
+    /// than the chord; 0: every gap and every string alike).
+    pub strum: f32 = 0.011,
+    pub uneven: f32 = 1.0,
+    /// A chord that starts an odd number of these ticks into its bar is strummed upward, from
+    /// the highest string, and a little softer (0: every strum is down). An eighth note: down
+    /// on the beat, up off it.
+    pub up_every: u32 = 480,
+    pub up_soft: f32 = 0.85,
+    /// How many of a chord's strings an upward strum reaches, from the highest.
+    pub up_strings: u32 = 4,
+    /// Seconds a note that isn't muted is let ring past its written end, unless its string is
+    /// wanted sooner (0: a finger lets go as the note ends).
+    pub ring: f32 = 0.0,
+    /// Whether a note marked staccato is palm-muted.
+    pub mutes: bool = true,
+    /// A note slurred from one at most this many semitones away is bent to (0: every slur is
+    /// hammered on or pulled off). A whole step takes `bend_time` seconds, a half step seven
+    /// tenths of that.
+    pub bends: u32 = 0,
+    pub bend_time: f32 = 0.17,
+    /// The cents a note played alone is swayed, if it is held `sway_over` seconds or more.
+    pub sway: f32 = 0.0,
+    pub sway_over: f32 = 0.45,
+    /// The semitones under itself a note is picked and slid up from, when it starts a phrase
+    /// (nothing sounded for `breath` seconds before it; 0: never).
+    pub scoop: f32 = 0.0,
+    pub breath: f32 = 0.15,
+    /// Seconds a finger is late leaving its string when the next note is on another: the two
+    /// sound together a moment (from a third of this to nearly twice it).
+    pub late: f32 = 0.0,
+}
+
+/// A hand that plays chords and riffs: no bends, no vibrato.
+pub const RHYTHM: Hand = Hand {}
+
+/// A hand that plays a line: a slur of a whole step or less is a bend, a long note sways, a
+/// phrase's first note is slid into from a fret under, and a finger is a hundredth of a
+/// second late leaving its string for the next.
+pub const SOLO: Hand = Hand { bends: 2, sway: 45.0, scoop: 1.0, late: 0.012 }
+
+/// The string `key` lies lowest on: the highest whose open key is at or under it.
+pub fn string_for(g: Guitar, key: f32) -> u32 {
+    var s = 0
+    for i in 0..STRINGS {
+        if g.open[i] <= key + 0.01 {
+            s = i
+        }
+    }
+    s
+}
+
+/// Whether `key` can be played on string `s`.
+fn reaches(g: Guitar, s: u32, key: f32) -> bool {
+    key + 0.01 >= g.open[s] && key <= g.open[s] + f32(g.frets) + 0.01
+}
+
+/// A string is free for a note if what it last played ends by this long after the note starts.
+const OVERLAP: u32 = 1440
+
+/// The string for a note at `key` from sample `from`: the one it lies lowest on, or, if that
+/// one is still sounding another note (`busy`: when each string's last note ends), the next
+/// lower one that reaches it; if none is free, the one it lies lowest on.
+fn free_string(g: Guitar, key: f32, from: u32, busy: [u32; 6]) -> u32 {
+    let best = string_for(g, key)
+    for back in 0..best + 1 {
+        let s = best - back
+        if reaches(g, s, key) && busy[s] <= from + OVERLAP {
+            return s
+        }
+    }
+    best
+}
+
+/// The notes of voice `voice` in `p`, a performance of `score`, as a guitarist plays them on
+/// `g`: each from its onset to its release, picked as hard as its velocity.
+/// - Notes written to start together are a chord: each on its own string, strummed from the
+///   lowest string at the chord's onset (or from the highest, `Hand::up_every`, and then only
+///   its `Hand::up_strings` highest).
+/// - A note under the same slur as the one before, where that one's string reaches it, isn't
+///   picked: it is hammered on or pulled off, or bent to (`Hand::bends`).
+/// - A note marked staccato is palm-muted (`Hand::mutes`): it is left to die under the hand
+///   (`Guitar::mute`), however short it is played, unless its string is picked again first.
+pub fn pickings(
+    score: Score,
+    p: Performance,
+    voice: u32,
+    g: Guitar = Guitar {},
+    hand: Hand = Hand {},
+) -> Vec<Picking> {
+    var mine: Vec<u32> = Vec::new()
+    for i in 0..p.notes.len() {
+        if p.notes[i].voice == voice {
+            mine.push(i)
+        }
+    }
+    var out: Vec<Picking> = Vec::new()
+    var busy = [0; 6]
+    var last_slur = NO_SLUR
+    var last_string = 0
+    var last_alone = false
+    // The note before, if it was played alone: where it is in `out`, and when it was let go
+    // as written.
+    var last_at = NONE
+    var last_end = 0
+    var at = 0
+    loop {
+        if at >= mine.len() {
+            break
+        }
+        // The notes written to start with this one.
+        let start = score.notes[p.notes[mine[at]].note].start
+        var end = at + 1
+        loop {
+            if end >= mine.len() || score.notes[p.notes[mine[end]].note].start != start {
+                break
+            }
+            end += 1
+        }
+        if end - at == 1 {
+            let n = p.notes[mine[at]]
+            let written = score.notes[n.note]
+            let key = f32(n.key)
+            let from = samples(n.onset)
+            let to = max(samples(n.release), from + 1)
+            let slurred = written.slur != NO_SLUR && written.slur == last_slur && last_alone
+            var note = Picking {
+                from,
+                to,
+                key,
+                string: 0,
+                hard: clamp(n.velocity, 0.0, 1.0),
+                muted: hand.mutes && written.has(STACCATO),
+            }
+            if slurred && reaches(g, last_string, key) {
+                let before = out[out.len() - 1]
+                note.string = last_string
+                note.picked = false
+                note.muted = before.muted
+                let apart = abs(key - before.key)
+                // An open string can't be bent to, nor from.
+                let stopped = key > g.open[last_string] + 0.5 &&
+                    before.key > g.open[last_string] + 0.5
+                if stopped && apart <= f32(hand.bends) + 0.01 {
+                    note.glide = hand.bend_time * sqrt(max(apart, 0.25) / 2.0)
+                }
+            } else {
+                note.string = free_string(g, key, from, busy)
+                // Slid into, if it starts a phrase or is leaned on, and there is a fret under.
+                let starts = last_at == NONE || from >= last_end + samples(f64(hand.breath))
+                let room = key - hand.scoop > g.open[note.string] - 0.01
+                if hand.scoop > 0.0 && room && !note.muted && starts {
+                    note.scoop = hand.scoop
+                }
+                // The finger on the note before is late leaving, if that was another string.
+                if last_at != NONE && out[last_at].string != note.string && !out[last_at].muted {
+                    let lingers = hand.late * (0.3 + 1.4 * scatter(n.note, b: 3, c: 5))
+                    if hand.late > 0.0 && out[last_at].to <= from + OVERLAP {
+                        out[last_at].to = max(out[last_at].to, from + samples(f64(lingers)))
+                    }
+                }
+            }
+            let long = to - from >= samples(f64(hand.sway_over))
+            if long && !note.muted && key > g.open[note.string] + 0.5 {
+                note.sway = hand.sway
+            }
+            busy[note.string] = to
+            note.to = if note.muted { from + samples(f64(g.mute)) } else {
+                to + samples(f64(hand.ring))
+            }
+            last_string = note.string
+            last_slur = written.slur
+            last_alone = true
+            last_at = out.len()
+            last_end = to
+            out.push(note)
+        } else {
+            // A chord, its notes from the lowest key up: each takes a string, and the strum
+            // crosses them in the strings' order.
+            var first = samples(p.notes[mine[at]].onset)
+            for k in at..end {
+                first = min(first, samples(p.notes[mine[k]].onset))
+            }
+            let begun = out.len()
+            for k in at..end {
+                let n = p.notes[mine[k]]
+                let written = score.notes[n.note]
+                let key = f32(n.key)
+                let string = free_string(g, key, first, busy)
+                // Every note of the chord holds its string from the strum's start.
+                busy[string] = 4294967295
+                out.push(
+                    Picking {
+                        from: first,
+                        to: max(samples(n.release), first + 1),
+                        key,
+                        string,
+                        hard: clamp(n.velocity, 0.0, 1.0),
+                        muted: hand.mutes && written.has(STACCATO),
+                    },
+                )
+            }
+            let up = hand.up_every > 0 &&
+                start % hand.up_every == 0 &&
+                (start % score.meter.bar() / hand.up_every) % 2 == 1
+            let apart = f32(samples(f64(hand.strum)))
+            // Each note's place in the strum: how many of the chord's strings come before its.
+            var places: Vec<u32> = Vec::new()
+            for a in begun..out.len() {
+                var before = 0
+                for b in begun..out.len() {
+                    let earlier = if up { out[b].string > out[a].string } else {
+                        out[b].string < out[a].string
+                    }
+                    if earlier {
+                        before += 1
+                    }
+                }
+                places.push(before)
+            }
+            for a in begun..out.len() {
+                // The gaps before it, none quite the usual, and how hard its string is hit.
+                var after = 0.0
+                for k in 0..places[a - begun] {
+                    after += apart * (1.0 + hand.uneven * (0.8 * scatter(start, b: k, c: 7) - 0.4))
+                }
+                let hit = 1.0 +
+                    hand.uneven * (0.3 * scatter(start, b: places[a - begun], c: 11) - 0.15)
+                var note = out[a]
+                note.from = first + u32(after + 0.5)
+                note.to = max(note.to, note.from + 1)
+                note.hard = clamp(note.hard * hit * (if up { hand.up_soft } else { 1.0 }), 0.0, 1.0)
+                out[a] = note
+            }
+            for a in begun..out.len() {
+                busy[out[a].string] = out[a].to
+                out[a].to = if out[a].muted { out[a].from + samples(f64(g.mute)) } else {
+                    out[a].to + samples(f64(hand.ring))
+                }
+            }
+            // An upward strum reaches only its first strings.
+            if up {
+                var kept = begun
+                for a in begun..out.len() {
+                    if places[a - begun] < hand.up_strings {
+                        out[kept] = out[a]
+                        kept += 1
+                    }
+                }
+                out.truncate(kept)
+            }
+            last_slur = NO_SLUR
+            last_alone = false
+            last_at = NONE
+        }
+        at = end
+    }
+    // By when each starts: a strum's strings, and a note that follows it closely.
+    out.sort_by(|a, b| a.from < b.from)
+    out
+}
+
+fn samples(seconds: f64) -> u32 {
+    u32(max(seconds, 0.0) * f64(SAMPLE_RATE) + 0.5)
+}
+
+// ---- the amplifier ----------------------------------------------------------------------------
+
+/// A half-band filter's taps either side of its middle (which is a half), nearest first: the
+/// rest are zero, so doubling or halving a rate through it costs few multiplies. Each is a
+/// Kaiser-windowed sinc. The first is the pair between the audio rate and twice it: within
+/// 0.001 dB to 9 kHz, and 79 dB down from 39 kHz, so that what folds back under 9 kHz is 79 dB
+/// down (the speaker passes nothing over 5 kHz). The second is the pair between twice the rate
+/// and four times it, where there is more room: 69 dB down from 87 kHz.
+const NEAR: [f32; 5] = [0.304193017, -0.069794264, 0.018637952, -0.003130997, 0.000094291]
+const FAR: [f32; 5] = [0.285025375, -0.035972276, 0.000946901, 0.0, 0.0]
+
+/// A rate doubled: each sample in gives two out, the sample itself (as it was `reach` samples
+/// ago) and the one halfway to the next.
+struct Double: Copy {
+    taps: [f32; 5],
+    reach: u32,
+    was: [f32; 10],
+}
+
+fn double(taps: [f32; 5], reach: u32) -> Double {
+    Double { taps, reach, was: [0.0; 10] }
+}
+
+impl Double {
+    @audio
+    fn next(mut self, x: f32) -> (f32, f32) {
+        for d in 0..9 {
+            self.was[9 - d] = self.was[8 - d]
+        }
+        self.was[0] = x
+        let k = self.reach
+        var between = 0.0
+        for j in 0..k {
+            between += self.taps[j] * (self.was[k - 1 - j] + self.was[k + j])
+        }
+        (self.was[k], 2.0 * between)
+    }
+}
+
+/// A rate halved: two samples in give one out, with what the lower rate can't hold taken out
+/// first.
+struct Halve: Copy {
+    taps: [f32; 5],
+    reach: u32,
+    was: [f32; 20],
+}
+
+fn halve(taps: [f32; 5], reach: u32) -> Halve {
+    Halve { taps, reach, was: [0.0; 20] }
+}
+
+impl Halve {
+    @audio
+    fn next(mut self, a: f32, b: f32) -> f32 {
+        for d in 0..18 {
+            self.was[19 - d] = self.was[17 - d]
+        }
+        self.was[1] = a
+        self.was[0] = b
+        let middle = 2 * self.reach - 1
+        var y = 0.5 * self.was[middle]
+        for j in 0..self.reach {
+            y += self.taps[j] * (self.was[middle - 1 - 2 * j] + self.was[middle + 1 + 2 * j])
+        }
+        y
+    }
+}
+
+/// A valve: it clips softly, more softly on the side where it shuts off than on the side
+/// where its grid starts to draw current, which is a knee as sharp as `edge` (0: as round as
+/// the other side; 1: a corner).
+@audio
+fn valve(x: f32, edge: f32) -> f32 {
+    if x > 0.0 {
+        return (1.0 - edge) * tanh(x) + edge * min(x, 1.0)
+    }
+    tanh(x)
+}
+
+/// The valves run at this many times the audio rate.
+const TIMES: f32 = 4.0
+/// Between the valves: nothing under this passes (Hz: a coupling capacitor), and the top is
+/// rounded from this corner (Hz), as a valve's own capacitance does.
+const BLOCKS: f32 = 30.0
+const ROUNDS: f32 = 6500.0
+/// A valve driven past its knee draws current through its grid, which charges the capacitor
+/// before it and pushes the valve's rest down, so it clips lopsidedly until the charge leaks
+/// away (Pakarinen and Yeh call it blocking distortion). At `Amp::spit` of 1, what is over
+/// the knee moves the rest by `CHARGES` of itself each sample, and the charge leaks away in
+/// `LEAKS` seconds.
+const CHARGES: f32 = 0.002
+const LEAKS: f32 = 0.015
+/// The supply's sag follows the power valves' sound over about a twentieth of a second (a
+/// corner at 3 Hz).
+const SAGS: f32 = 3.0
+/// The gate hears the pickup's level come up in a millisecond and fall over a hundredth of a
+/// second, and opens or shuts over two milliseconds. (Hearing the level fall over a twentieth
+/// of a second, it took a quarter of a second to shut after a loud chord.)
+const GATE_UP: f32 = 0.02
+const GATE_DOWN: f32 = 0.002
+const GATE_MOVES: f32 = 0.01
+/// The cone's own resonances: how many, the lowest's frequency (Hz) and the octaves they
+/// are spread over, one to each equal part of that, scattered within it. Each is 4 to 10
+/// sharp, and adds or takes away (which, and how much of `Amp::cab_rough`, the seed
+/// scatters too), so the speaker's answer from 900 Hz to 5 kHz is peaks and hollows a few
+/// decibels either way, as a cone's is once it stops moving as one piece. Under 900 Hz there
+/// are none: a body of resonances over the whole range (engine::bowed's `Body`, 96 of them)
+/// was tried as the speaker, and its low ones took 20 ms to speak, so a low note's first 30 ms
+/// were 3.7 dB under the rest of it.
+const CONES: u32 = 16
+const CONE_FROM: f32 = 900.0
+const CONE_OCTAVES: f32 = 2.6
+
+/// An amplifier and its speaker being played through: what the audio thread owns.
+pub struct Amped {
+    /// The hiss, and its level.
+    noise: Noise,
+    hiss: f32,
+    /// The gate: the level under which it shuts (0: there is none), the pickup's level as it
+    /// hears it, and how far open it is.
+    gate_at: f32,
+    heard: f32,
+    open: f32,
+    /// The lows taken out first: the corner's share, and what is under it.
+    tight: f32,
+    under: f32,
+    up_near: Double,
+    up_far: Double,
+    down_far: Halve,
+    down_near: Halve,
+    /// Each valve's gain, its lean, its knee, and what the valve gives at rest.
+    gain: f32,
+    lean: f32,
+    edge: f32,
+    rest: f32,
+    /// The grids: the share of what is over the knee that charges each sample, the share of
+    /// the charge that leaks, and each valve's charge.
+    charges: f32,
+    leaks: f32,
+    charge: [f32; 2],
+    /// Between the valves and after them: the corners' shares, and what each holds.
+    blocks: f32,
+    rounds: f32,
+    steady: f32,
+    round: f32,
+    steady2: f32,
+    /// The tone controls: their corners' shares, what is under each, and the three gains.
+    bass_at: f32,
+    treble_at: f32,
+    lows: f32,
+    not_tops: f32,
+    bass: f32,
+    mid: f32,
+    treble: f32,
+    /// The power valves: how hard they are driven, and how much of a small sound they miss
+    /// where one hands over to the other.
+    power: f32,
+    cross: f32,
+    /// The supply: how far it sags, the share of the way its load is followed each sample,
+    /// the load (the power valves' mean square), and what is left of the supply.
+    sag: f32,
+    sags: f32,
+    load: f32,
+    supply: f32,
+    /// The speaker: its floor, its cone's peak and its top (two filters, together as steep as
+    /// four poles and flat to the corner), and the cone's own resonances with what each adds.
+    floor: Band,
+    floor_state: Svf,
+    peak: Band,
+    peak_state: Svf,
+    peak_gain: f32,
+    top: [Band; 2],
+    top_state: [Svf; 2],
+    cone: [Band; 16],
+    cone_state: [Svf; 16],
+    cone_gain: [f32; 16],
+    level: f32,
+}
+
+/// An amplifier set as `a` says, ready to play through.
+pub fn amped(a: Amp) -> Amped {
+    var scatter = seeded(a.cone)
+    var cone = [Band {}; 16]
+    var cone_gain = [0.0; 16]
+    for m in 0..CONES {
+        let along = (f32(m) + 0.5 + 0.4 * scatter.next()) / f32(CONES)
+        cone[m] = band(hz: CONE_FROM * exp2(CONE_OCTAVES * along), q: 7.0 + 3.0 * scatter.next())
+        let much = 0.3 + 0.7 * abs(scatter.next())
+        cone_gain[m] = a.cab_rough * (if scatter.next() < 0.0 { -0.7 * much } else { much })
+    }
+    Amped {
+        noise: seeded(a.cone + 31),
+        hiss: gain_of(a.hiss),
+        gate_at: if a.gate > -150.0 { gain_of(a.gate) } else { 0.0 },
+        heard: 0.0,
+        open: if a.gate > -150.0 { 0.0 } else { 1.0 },
+        tight: one_pole(a.tight),
+        under: 0.0,
+        up_near: double(NEAR, reach: 5),
+        up_far: double(FAR, reach: 3),
+        down_far: halve(FAR, reach: 3),
+        down_near: halve(NEAR, reach: 5),
+        gain: gain_of(0.5 * a.drive),
+        lean: a.lean,
+        edge: a.edge,
+        rest: valve(a.lean, a.edge),
+        charges: CHARGES * a.spit,
+        leaks: 1.0 / (LEAKS * TIMES * RATE),
+        charge: [0.0; 2],
+        blocks: one_pole(BLOCKS / TIMES),
+        rounds: one_pole(ROUNDS / TIMES),
+        steady: 0.0,
+        round: 0.0,
+        steady2: 0.0,
+        bass_at: one_pole(a.mid_hz / 2.5 / TIMES),
+        treble_at: one_pole(a.mid_hz * 2.5 / TIMES),
+        lows: 0.0,
+        not_tops: 0.0,
+        bass: a.bass,
+        mid: a.mid,
+        treble: a.treble,
+        power: a.power,
+        cross: a.cross,
+        sag: a.sag,
+        sags: one_pole(SAGS / TIMES),
+        load: 0.0,
+        supply: 1.0,
+        floor: band(hz: a.cab_low, q: 1.1),
+        floor_state: Svf {},
+        peak: band(hz: a.cab_peak_hz, q: 2.0),
+        peak_state: Svf {},
+        peak_gain: a.cab_peak,
+        top: [band(hz: a.cab_high, q: 0.541), band(hz: a.cab_high, q: 1.307)],
+        top_state: [Svf {}; 2],
+        cone,
+        cone_state: [Svf {}; 16],
+        cone_gain,
+        level: gain_of(a.level),
+    }
+}
+
+impl Amped {
+    /// One sample at four times the rate through the valves and the tone controls.
+    @audio
+    fn valves(mut self, x: f32) -> f32 {
+        // The first valve, about a rest its grid's charge has pushed down.
+        let into = self.gain * x + self.lean - self.charge[0]
+        let a = valve(into, self.edge) - self.rest
+        self.charge[0] += self.charges * max(into - 1.0, 0.0) - self.leaks * self.charge[0]
+        // Between the valves nothing steady passes, and the top is rounded.
+        self.steady += self.blocks * (a - self.steady)
+        self.round += self.rounds * (a - self.steady - self.round)
+        // The second valve is upside down, as each valve turns its signal over: it clips the
+        // other side sooner.
+        let next = -self.gain * self.round + self.lean - self.charge[1]
+        let b = self.rest - valve(next, self.edge)
+        self.charge[1] += self.charges * max(next - 1.0, 0.0) - self.leaks * self.charge[1]
+        self.steady2 += self.blocks * (b - self.steady2)
+        let c = b - self.steady2
+        // The tone controls: what is under the bass's corner, what is over the treble's, and
+        // the middle between.
+        self.lows += self.bass_at * (c - self.lows)
+        self.not_tops += self.treble_at * (c - self.not_tops)
+        let toned = self.bass * self.lows +
+            self.mid * (self.not_tops - self.lows) +
+            self.treble * (c - self.not_tops)
+        // The power valves: a pair, one pushing and one pulling, so both sides clip alike.
+        // Where one hands over to the other a small sound is missed. What they can give is
+        // what their supply is, and a loud sound pulls the supply down.
+        var push = self.power * toned / self.supply
+        if self.cross > 0.0 {
+            push -= self.cross * tanh(push / self.cross)
+        }
+        let out = self.supply * tanh(push)
+        self.load += self.sags * (out * out - self.load)
+        self.supply = 1.0 / (1.0 + self.sag * self.load)
+        out
+    }
+
+    /// What the valves make of `x` (a sample at the audio rate), before the speaker.
+    @audio
+    fn driven(mut self, x: f32) -> f32 {
+        // The gate, and the hiss it shuts out with the rest.
+        let level = abs(x)
+        self.heard += (if level > self.heard { GATE_UP } else { GATE_DOWN }) * (level - self.heard)
+        if self.gate_at > 0.0 {
+            let wide = min(self.heard / self.gate_at, 1.0)
+            self.open += GATE_MOVES * (wide * wide - self.open)
+        }
+        let heard = self.open * (x + self.hiss * self.noise.next())
+        self.under += self.tight * (heard - self.under)
+        let (a, b) = self.up_near.next(heard - self.under)
+        let (a0, a1) = self.up_far.next(a)
+        let (b0, b1) = self.up_far.next(b)
+        let v0 = self.valves(a0)
+        let v1 = self.valves(a1)
+        let first = self.down_far.next(v0, v1)
+        let v2 = self.valves(b0)
+        let v3 = self.valves(b1)
+        let second = self.down_far.next(v2, v3)
+        self.down_near.next(first, second)
+    }
+
+    /// What the amplifier and its speaker make of `x`, the pickup's sample.
+    @audio
+    pub fn next(mut self, x: f32) -> f32 {
+        let y = self.driven(x)
+        let over = self.floor_state.high(self.floor, y)
+        let peaked = over + self.peak_gain * self.peak_state.pass(self.peak, over)
+        let once = self.top_state[0].low(self.top[0], peaked)
+        let smooth = self.top_state[1].low(self.top[1], once)
+        var rough = smooth
+        for m in 0..CONES {
+            rough += self.cone_gain[m] * self.cone_state[m].pass(self.cone[m], smooth)
+        }
+        self.level * rough
+    }
+}
+
+// ---- the strings ------------------------------------------------------------------------------
+
+/// The planes a string moves in: toward the pickup, and across it.
+const PLANES: u32 = 2
+/// The all-pass filters in each plane's loop that make the string stiff.
+const STIFFS: u32 = 4
+/// The swing of the hardest stroke: the pickup's sound then reaches about 1.
+const PICK: f32 = 0.5
+/// What a string keeps of its ringing where the pick touches it for a new stroke.
+const HUSH: f32 = 0.2
+/// A finger hammered on or pulled off: the share of the way to its new length the string goes
+/// each sample (there in 3 ms), and the swing it adds, beside a picked note's as hard.
+const SNAP: f32 = 0.02
+const TAP: f32 = 0.35
+/// Where a ringing string's top is set (Hz).
+const SHINE_HZ: f32 = 3000.0
+/// The hand on a string, the picking hand's heel or a finger letting go, takes the wave's top
+/// each time round: the wave comes back as its mean over the last `span` samples, which holds
+/// every tone back the same time, so the note's harmonics stay in tune as they die. (A low-pass
+/// strong enough to mute a low E, with one pole, held its fundamental back 60 samples and its
+/// third harmonic 35: the harmonics rang 45 and 76 cents sharp, and a muted note read 22 cents
+/// sharp.) A muted low E's span is `Guitar::mute_over` of its period; a higher note's is less
+/// by the 3/2 power of its pitch, so that each note's first few harmonics die in the same
+/// times. Each plane of each string remembers `PALM` samples for it.
+const PALM: u32 = 256
+const LOW_E: f32 = 82.41
+/// The pick's scrape lasts this many samples (4 ms).
+const SCRAPES: u32 = 192
+/// A hand is never the same twice. Each stroke's place along the string is within this share
+/// of the usual, either way, and its angle (how much of it sets the string moving across the
+/// pickup rather than toward it) between `TILT` less `TILTS` and `TILT` more (radians). A
+/// stopped note's pitch drifts `DRIFTS` cents (RMS), slowly, as the finger's press does, each
+/// string's its own way; a finger's press stretches the string, so a stopped note is up to
+/// `LANDS` cents sharp, each its own amount; a bent note lands within `BEND_LANDS` cents. And
+/// no guitar is quite in tune: each string is within `TUNED` cents of its pitch. (At 1.5, 1.5
+/// and 2 cents, chords high on the neck were still heard as nearer a synthesizer than the
+/// low ones. At 2.5, 4 and 3 cents, with bends landing within 6, each sway its own depth by
+/// four tenths and a finger 35 ms late off its string, a lead was heard as an amateur's: a
+/// good player's bends land, their sway is even, and their fingers are quick and quiet. What
+/// is loose now is what no hand can help.) So two strings' harmonics that would sit on each other beat slowly instead,
+/// which is what moves in a driven chord.
+const PLACES: f32 = 0.12
+const TILT: f32 = 0.5
+const TILTS: f32 = 0.25
+const DRIFTS: f32 = 1.2
+const LANDS: f32 = 2.5
+const TUNED: f32 = 3.0
+const BEND_LANDS: f32 = 2.5
+/// A hand is never still: its own tremor presses and eases the strings, and every stopped
+/// note's pitch trembles with it, `TREMBLES` cents (RMS), noise through a low-pass at
+/// `TREMBLE_HZ`. It is the hand's, so the notes of a chord tremble together; each finger adds
+/// `TREMBLE_OWN` of its own. And a string pushed across its fret by a bend, or slid along,
+/// rubs: noise as loud as `Guitar::fingers` times `RUBS` when the pitch moves `RUB_AT` cents a
+/// sample (a whole step's bend at its quickest), louder on the wound strings.
+///
+/// And a stopped string is never held quite fast: it slips a little under the fingertip and
+/// on the fret as it moves, which is noise in the string as loud as `Guitar::sizzle` of the
+/// string's own motion (so it is the note's: it comes and goes with it).
+///
+/// What the sizzle is for: without it a held driven note has 65 to 76 dB less between its
+/// harmonics than at them, cleaner than anything a hand holds, and was heard as a
+/// synthesizer. The tremble alone leaves it there. With noise in every stopped string that
+/// was as loud whatever the string was doing (35 to 47 dB under the harmonics, and on the
+/// wound strings 14 dB more than on the plain ones), the lead was heard as natural, but with
+/// something apart from the note, and a chord's frequencies as pulled apart. And a rub under
+/// every sway pulsed twice a sway and grew as the sway widened. A sway rubs nothing now, and
+/// the noise is a share of the string's motion.
+///
+/// Set beside two recordings (docs/citations.md, the guitar's references), by how far a held
+/// sound's spectral peaks stand over the median between them in three bands (150 to 500 Hz,
+/// 500 Hz to 1.5 kHz, 1.5 to 4 kHz). A recorded solo's last note: 31, 40 and 26 dB; the lead's
+/// A4 here with a sizzle of 0.012: 35, 42 and 39 dB. A recorded metal riff, mid-phrase: 9 to
+/// 16, 18 to 20 and 12 to 14 dB; the death metal and metalcore amplifiers' riff here: 19 to
+/// 22, 19 to 22 and 15 to 16 dB. So the model is still the cleaner, most of all at the top
+/// of a single note and at the bottom of a riff, and the sizzle went up half as much again.
+const TREMBLES: f32 = 0.55
+const TREMBLE_OWN: f32 = 0.2
+const TREMBLE_HZ: f32 = 12.0
+const RUBS: f32 = 1.0
+const RUB_AT: f32 = 0.04
+/// (A bend was first the string's length going a share of the way to its new length each
+/// sample: quickest at the start and slowing ever after, which is a synthesizer's glide, and
+/// was heard as one.)
+/// A sway: its usual rate (Hz), the seconds a note is held before it starts, and the seconds
+/// it takes to come in. None of it is the same twice (engine::bowed found a vibrato at one
+/// rate and one depth, coming in the same on every note, to be a synthesizer's): each note's
+/// depth and wait are within `SWAY_OWN` of the usual, and through a note the depth wanders by
+/// `SWAY_LOOSE` of itself and the rate by a quarter of that.
+const SWAY_HZ: f32 = 5.8
+const SWAY_AFTER: f32 = 0.22
+const SWAY_IN: f32 = 0.35
+const SWAY_OWN: f32 = 0.2
+const SWAY_LOOSE: f32 = 0.12
+/// A sway widens while its note is held: by this share of itself each second, for two seconds.
+/// And its first swing is slow: it starts at `SWAY_SLOW` of its rate and is up to it in
+/// `SWAY_QUICKENS` seconds. (A recorded solo's last note, held 1.2 s: straight for a quarter
+/// of a second, a first swing of a third of a second, then swings of a sixth of a second, 85
+/// to 140 cents from top to bottom. The sways here were under 50.)
+const SWAY_GROWS: f32 = 0.3
+const SWAY_SLOW: f32 = 0.6
+const SWAY_QUICKENS: f32 = 0.35
+/// A note slid into arrives in this many seconds; a finger leaving its string scratches for
+/// `LIFTS` samples (10 ms).
+const SCOOPS: f32 = 0.055
+const LIFTS: u32 = 480
+/// One cent as a share of a string's length.
+const CENT: f32 = 0.000577623
+/// A string whose pickup has given under `STILL` for this many samples is still.
+const STILL: f32 = 1e-7
+const STILL_FOR: u32 = 4096
+
+/// What a one-pole low-pass of coefficient `c` keeps of a tone at `hz`, and the samples it
+/// holds that tone back.
+@audio
+fn pole_keeps(c: f32, hz: f32) -> f32 {
+    let w = TAU * hz / RATE
+    (1.0 - c) / sqrt(1.0 - 2.0 * c * cos(w) + c * c)
+}
+
+@audio
+fn pole_delay(c: f32, hz: f32) -> f32 {
+    let w = TAU * hz / RATE
+    atan(c * sin(w) / (1.0 - c * cos(w))) / w
+}
+
+/// The coefficient of the one-pole low-pass in the loop of a string at `hz` whose sound near
+/// `top_hz` falls 60 dB in `t60` seconds: each time round, the low-pass keeps of that tone
+/// what a fall that fast leaves it.
+@audio
+fn pole_for(hz: f32, top_hz: f32, t60: f32) -> f32 {
+    let keeps = clamp(exp(-6.9078 / (hz * max(t60, 0.002))), 0.05, 0.99999)
+    let w = TAU * min(max(top_hz, 2.0 * hz), 0.4 * RATE) / RATE
+    let m = keeps * keeps
+    let b = (1.0 - m * cos(w)) / (1.0 - m)
+    clamp(1.0 / (b + sqrt(max(b * b - 1.0, 0.0))), 0.0, 0.995)
+}
+
+/// The samples an all-pass filter of coefficient `a` holds back a tone `w` radians a sample.
+/// With `a` under 0 it holds low tones back longer than high ones.
+@audio
+fn stiff_delay(a: f32, w: f32) -> f32 {
+    1.0 - 2.0 * atan(a * sin(w) / (1.0 + a * cos(w))) / w
+}
+
+/// A stiff string's harmonics aren't quite harmonics: its `n`th partial is at `n` times the
+/// note times the root of `1 + b n²` (Fletcher and Rossing, The Physics of Musical
+/// Instruments, 2nd ed., 1998, ch. 2), because a stiff string carries high tones faster. In
+/// the loop that is `STIFFS` all-pass filters, which hold high tones back less than low ones
+/// (Van Duyne and Smith, "A simplified approach to modeling dispersion caused by stiffness in
+/// strings and plates", ICMC 1994). This is their coefficient for a string at `hz` whose
+/// stiffness is `b`: the one that puts the partial nearest 500 Hz (the fourth or higher, and
+/// under 6 kHz) where the stiffness puts it, found by halving 20 times. The partials over it
+/// then come out near where they should, since what such a filter holds a tone back falls as
+/// the tone's square, as a stiff string's does. (Set by the partial nearest 1.2 kHz instead,
+/// a low E's partials under it were twice as sharp as they should be.)
+@audio
+fn stiff_for(hz: f32, b: f32) -> f32 {
+    let w = TAU * hz / RATE
+    let n = max(min(max(floor(500.0 / hz + 0.5), 4.0), floor(6000.0 / hz)), 2.0)
+    let sooner = RATE / hz * (1.0 - sqrt((1.0 + b) / (1.0 + b * n * n)))
+    var lo = -0.97
+    var hi = 0.0
+    for _ in 0..20 {
+        let a = 0.5 * (lo + hi)
+        if f32(STIFFS) * (stiff_delay(a, w) - stiff_delay(a, n * w)) > sooner {
+            lo = a
+        } else {
+            hi = a
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// A smooth step: 0 at 0 and under, 1 at 1 and over.
+@audio
+fn rise(u: f32) -> f32 {
+    if u <= 0.0 {
+        return 0.0
+    }
+    if u >= 1.0 {
+        return 1.0
+    }
+    0.5 - 0.5 * cos(PI * u)
+}
+
+/// One string.
+struct Wire: Copy {
+    /// Whether it moves; whether a finger holds its note, and the sample that note ends; and
+    /// whether the note is the open string's.
+    on: bool = false,
+    held: bool = false,
+    ends: u32 = 0,
+    open: bool = true,
+    /// Its note's pitch (Hz), and the samples since the note began.
+    hz: f32 = 110.0,
+    since: u32 = 0,
+    /// The loop: the samples back it is read, the length it is going to and the share of the
+    /// way it goes each sample; what comes back each time round in each plane; the low-pass it
+    /// comes back through; and the coefficient of the filters that make it stiff.
+    length: f32 = 400.0,
+    want: f32 = 400.0,
+    glide: f32 = 1.0,
+    gain: [f32; 2] = [0.99; 2],
+    pole: f32 = 0.0,
+    stiff: f32 = 0.0,
+    /// A hand on it: the samples its wave is smoothed over each time round (1: no hand).
+    span: u32 = 1,
+    /// What each plane's loop holds: its low-pass, the hand's sum, and the stiffness filters'
+    /// last samples in and out (plane `p`'s from `p * STIFFS`).
+    low: [f32; 2] = [0.0; 2],
+    sum: [f32; 2] = [0.0; 2],
+    went: [f32; 8] = [0.0; 8],
+    came: [f32; 8] = [0.0; 8],
+    /// The stroke now letting go: its swing (signed: the way the pick went), the share of it
+    /// in each plane, its width and its edge (samples), the samples of it done and in all, and
+    /// how loud the pick's scrape is.
+    swing: f32 = 0.0,
+    tilt: [f32; 2] = [1.0, 0.0],
+    wide: f32 = 1.0,
+    edge: f32 = 1.0,
+    done: u32 = 0,
+    whole: u32 = 0,
+    scrape: f32 = 0.0,
+    /// The way the last stroke went.
+    way: f32 = -1.0,
+    /// The samples left for which the pick stops what was ringing.
+    hush: u32 = 0,
+    /// The cents it is sharp from its stroke, falling; the cents its note is off, as the hand
+    /// landed; the cents it is swayed, and the seconds before the sway starts.
+    sharp: f32 = 0.0,
+    off: f32 = 0.0,
+    sway: f32 = 0.0,
+    sway_after: f32 = 0.22,
+    /// Where its sway is in its turn (0 to 1).
+    swaying: f32 = 0.0,
+    /// Its finger's slow drift and its quick tremble (each about 1 RMS), and the cents the
+    /// finger had moved the pitch a sample ago.
+    drift: f32 = 0.0,
+    tremble: f32 = 0.0,
+    moved: f32 = 0.0,
+    /// A bend on its way: the cents the pitch was from the note's when the bend began, and
+    /// the samples of it done and in all.
+    bend: f32 = 0.0,
+    bent: u32 = 0,
+    bends: u32 = 0,
+    /// A finger's noise on it: how loud, and the samples of it done and in all.
+    rub: f32 = 0.0,
+    rubbed: u32 = 0,
+    rubs: u32 = 0,
+    /// The samples its pickup has been still.
+    quiet: u32 = 0,
+}
+
+/// A guitar being played: what the audio thread owns.
+pub struct Picked {
+    g: Guitar,
+    notes: Vec<Picking>,
+    next: u32,
+    sample: u32,
+    /// The open strings' pitches (Hz).
+    open: [f32; 6],
+    wires: [Wire; 6],
+    /// Plane `p` of string `s` has its line from `(2 s + p) * SPAN`; the sample being written.
+    lines: [f32; 24576],
+    at: u32,
+    /// What came back round each plane of each string over the last `PALM` samples, from
+    /// `(2 s + p) * PALM`: what a hand on it smooths.
+    palm: [f32; 3072],
+    /// How far back each string is read for the pickup's two places (samples): the far place's
+    /// first pass is the sample just written.
+    far: [f32; 6],
+    near_first: [f32; 6],
+    near_second: [f32; 6],
+    /// The pickup's resonance, the share of a stroke's sharpness kept each sample, and how
+    /// much of a turn a sway makes each sample at its full rate (it wanders).
+    coil: Band,
+    coil_state: Svf,
+    settle: f32,
+    turn: f32,
+    /// The hand: what makes each stroke and each note its own, its slow wanders (the sway's
+    /// depth and the sway's rate), and the pick's scrape. And the cents each string is out
+    /// of tune.
+    hand: Noise,
+    loose: [f32; 2],
+    scrape: Noise,
+    tuned: [f32; 6],
+    /// The hand's tremble (about 1 RMS).
+    shake: f32,
+    amp: Amped,
+    /// When its last note ends, and the samples since any string moved.
+    last: u32,
+    idle: u32,
+}
+
+/// A guitar, `g`, that plays `notes` (in the order they start), from its first sample. `seat`
+/// is which player it is: another seat's hand wanders another way.
+pub fn picked(notes: take Vec<Picking>, g: Guitar, seat: u32 = 0) -> Picked {
+    assert(
+        g.pickup_at > 0.5 * g.pickup_width && g.pickup_width >= 0.0 && g.pick_at > 0.0,
+        "the pickup and the pick are along the string from the bridge",
+    )
+    var open = [0.0; 6]
+    var far = [0.0; 6]
+    var near_first = [0.0; 6]
+    var near_second = [0.0; 6]
+    for s in 0..STRINGS {
+        open[s] = key_hz(g.open[s])
+        assert(RATE / open[s] < f32(SPAN - 8), "an open string is no lower than 24 Hz")
+        // A wave passes a place a share `x` along the string from the bridge, and again `x`
+        // of a period later, upside down.
+        let period = RATE / open[s]
+        let a = (g.pickup_at + 0.5 * g.pickup_width) * period
+        let b = (g.pickup_at - 0.5 * g.pickup_width) * period
+        far[s] = min(a, f32(SPAN - 4))
+        near_first[s] = 0.5 * (a - b)
+        near_second[s] = min(0.5 * (a + b), f32(SPAN - 4))
+    }
+    var last = 0
+    for n in notes {
+        assert(n.string < STRINGS, "a guitar's strings are 0 to 5")
+        last = max(last, n.to)
+    }
+    var hand = seeded(g.amp.cone + 7919 * (seat + 1))
+    var tuned = [0.0; 6]
+    for s in 0..STRINGS {
+        tuned[s] = g.loose * TUNED * hand.next()
+    }
+    Picked {
+        g,
+        notes,
+        next: 0,
+        sample: 0,
+        open,
+        wires: [Wire {}; 6],
+        lines: [0.0; 24576],
+        at: 0,
+        palm: [0.0; 3072],
+        far,
+        near_first,
+        near_second,
+        coil: band(hz: g.pickup_hz, q: g.pickup_q),
+        coil_state: Svf {},
+        settle: exp(-1.0 / (max(g.settles, 0.01) * RATE)),
+        turn: 0.0,
+        hand,
+        loose: [0.0; 2],
+        scrape: seeded(g.amp.cone + 104729 * (seat + 1)),
+        tuned,
+        shake: 0.0,
+        amp: amped(g.amp),
+        last,
+        idle: 0,
+    }
+}
+
+impl Picked {
+    /// How long it plays, in seconds: to its last note's end.
+    pub fn seconds(self) -> f32 {
+        f32(self.last) / RATE
+    }
+
+    /// How long a note at `key` rings (seconds to fall 60 dB).
+    @audio
+    fn ring(self, key: f32) -> f32 {
+        let g = self.g
+        g.ring_low * pow(g.ring_high / g.ring_low, clamp((key - 40.0) / 48.0, 0.0, 1.0))
+    }
+
+    /// The sample `back` samples ago in the line that starts at `base` (a fraction of a sample
+    /// by the two either side).
+    @audio
+    fn read(self, base: u32, back: f32) -> f32 {
+        let whole = u32(back)
+        let part = back - f32(whole)
+        let i = base + ((self.at + SPAN - whole) & (SPAN - 1))
+        let j = base + ((self.at + SPAN - whole - 1) & (SPAN - 1))
+        self.lines[i] + part * (self.lines[j] - self.lines[i])
+    }
+
+    /// Sets string `s`'s loop for a note at `hz` that falls 60 dB in `ring` seconds, with a
+    /// hand on the string or not: what comes back each time round, through what, and the
+    /// length that makes the loop one period long with what its filters hold the wave back.
+    @audio
+    fn tune(mut self, s: u32, hz: f32, ring: f32, hand: bool, press: f32 = 1.0) {
+        let g = self.g
+        let period = RATE / hz
+        // A stopped note's top goes to the fingertip.
+        let stopped = hz > 1.03 * self.open[s]
+        let top = if stopped { min(g.shine, g.finger * 110.0 / hz) } else { g.shine }
+        let pole = pole_for(hz, SHINE_HZ, top)
+        // A string stopped shorter is stiffer for its length.
+        let ratio = hz / self.open[s]
+        let stiff = stiff_for(hz, g.stiff[s] * ratio * ratio)
+        var span = 1
+        var smoothed = 1.0
+        if hand {
+            let low_e = press * g.mute_over * RATE / LOW_E * pow(LOW_E / hz, 1.5)
+            span = clamp(u32(low_e), 2, max(min(PALM - 1, u32(0.45 * period)), 2))
+            // What a mean over `span` samples keeps of the note itself.
+            let half = PI * hz / RATE
+            smoothed = abs(sin(half * f32(span)) / (f32(span) * sin(half)))
+            for i in 0..PLANES * PALM {
+                self.palm[2 * s * PALM + i] = 0.0
+            }
+        }
+        let lost = pole_keeps(pole, hz) * smoothed
+        self.wires[s].hz = hz
+        self.wires[s].pole = pole
+        self.wires[s].stiff = stiff
+        self.wires[s].span = span
+        self.wires[s].sum = [0.0; 2]
+        // Across the pickup the string gives more to the bridge, and rings four fifths as long.
+        self.wires[s].gain = [
+            min(exp(-6.9078 / (hz * max(ring, 0.002))) / lost, 0.99995),
+            min(exp(-6.9078 / (hz * max(0.8 * ring, 0.002))) / lost, 0.99995),
+        ]
+        self.wires[s].want = clamp(
+            period -
+                pole_delay(pole, hz) -
+                0.5 * f32(span - 1) -
+                f32(STIFFS) * stiff_delay(stiff, TAU * hz / RATE),
+            4.0,
+            f32(SPAN - 4),
+        )
+    }
+
+    /// Starts note `n`.
+    @audio
+    fn begin(mut self, n: Picking) {
+        let g = self.g
+        let s = n.string
+        let hz = key_hz(n.key)
+        let was_on = self.wires[s].on
+        let was_hz = self.wires[s].hz
+        if n.muted {
+            // The heel never presses twice alike.
+            let press = 1.0 + 0.25 * self.hand.next()
+            self.tune(s, hz, ring: g.mute, hand: true, press: press)
+        } else {
+            self.tune(s, hz, ring: self.ring(n.key), hand: false)
+        }
+        var w = self.wires[s]
+        let v = clamp(n.hard, 0.0, 1.0)
+        // The stroke's width: the pick's place, a little off the usual.
+        let place = g.pick_at * (1.0 + PLACES * self.hand.next())
+        let wide = max(min(place * RATE / self.open[s], 0.5 * RATE / hz), 1.0)
+        if n.picked || !was_on {
+            // The pick: it stops what was ringing for one trip round the string, and lets
+            // the string go at its new length, scraping as it leaves.
+            if was_on {
+                w.hush = u32(w.length) + 2
+            } else {
+                w.low = [0.0; 2]
+                w.went = [0.0; 8]
+                w.came = [0.0; 8]
+                w.hush = 0
+            }
+            w.length = w.want
+            w.glide = 1.0
+            w.way = -w.way
+            w.swing = w.way * PICK * pow(v, g.touch)
+            let angle = TILT + TILTS * self.hand.next()
+            w.tilt = [cos(angle), sin(angle)]
+            w.edge = max((g.pick_soft + (g.pick_hard - g.pick_soft) * v) * 0.001 * RATE, 1.0)
+            w.wide = wide
+            w.done = 0
+            w.whole = max(u32(w.wide + w.edge) + 1, SCRAPES)
+            w.scrape = g.scrape * PICK * pow(v, g.touch)
+            w.sharp = g.sharp * v * v
+            w.off = LANDS * (0.5 + 0.5 * self.hand.next())
+            w.bends = 0
+            if n.scoop > 0.0 {
+                // Slid into: picked a fret or two under, the finger already on its way up,
+                // rubbing the string as it goes.
+                w.bend = -100.0 * n.scoop
+                w.bent = 0
+                w.bends = max(u32(SCOOPS * (1.0 + 0.25 * self.hand.next()) * RATE), 1)
+                w.rub = g.fingers * PICK * (if s < 3 { 2.0 } else { 0.6 })
+                w.rubbed = 0
+                w.rubs = w.bends
+            }
+        } else {
+            // No pick. A bend: the string is at its new length at once, and its pitch is
+            // carried from where it was to the note's as a finger pushes a string, slowly at
+            // first, quickest in the middle, settling at the end (never in quite the same
+            // time, nor to quite the same place). Or a finger hammers on or pulls off: the
+            // length changes at once, and the finger adds a little swing.
+            if n.glide > 0.0 {
+                let time = n.glide * (1.0 + 0.2 * self.hand.next())
+                var still_to_go = 0.0
+                if w.bent < w.bends {
+                    still_to_go = w.bend * (1.0 - rise(f32(w.bent) / f32(w.bends)))
+                }
+                w.bend = 1200.0 * log2(was_hz / hz) + still_to_go
+                w.bent = 0
+                w.bends = max(u32(time * RATE), 1)
+                w.length = w.want
+                w.glide = 1.0
+                w.off = BEND_LANDS * self.hand.next()
+            } else {
+                w.glide = SNAP
+                w.swing = w.way * TAP * PICK * pow(v, g.touch)
+                w.edge = max(g.pick_soft * 0.001 * RATE, 1.0)
+                w.wide = wide
+                w.done = 0
+                w.whole = u32(w.wide + w.edge) + 1
+                w.scrape = 0.0
+                w.off = LANDS * (0.5 + 0.5 * self.hand.next())
+                w.bends = 0
+            }
+        }
+        w.on = true
+        w.held = true
+        w.ends = n.to
+        w.since = 0
+        w.open = abs(n.key - g.open[s]) < 0.5
+        w.swaying = 0.0
+        w.sway = n.sway * (1.0 + SWAY_OWN * self.hand.next())
+        w.sway_after = SWAY_AFTER * (1.0 + SWAY_OWN * self.hand.next())
+        w.quiet = 0
+        self.wires[s] = w
+    }
+
+    /// The next sample of string `s`, as the pickup hears it.
+    @audio
+    fn string(mut self, s: u32) -> f32 {
+        let g = self.g
+        var w = self.wires[s]
+        // A finger lets go: the string is stopped.
+        if w.held && self.sample >= w.ends {
+            self.tune(s, w.hz, ring: g.stop, hand: true)
+            let stopped = self.wires[s]
+            w.pole = stopped.pole
+            w.stiff = stopped.stiff
+            w.span = stopped.span
+            w.sum = [0.0; 2]
+            w.gain = stopped.gain
+            w.want = stopped.want
+            w.glide = SNAP
+            w.held = false
+            w.sway = 0.0
+            if !w.open {
+                w.rub = 0.5 * g.fingers * PICK
+                w.rubbed = 0
+                w.rubs = LIFTS
+            }
+        }
+        // The pitch: the length on its way, the stroke's sharpness falling, and what a finger
+        // on the string adds: where it landed, its drift, and a sway.
+        w.length += w.glide * (w.want - w.length)
+        var cents = w.sharp + self.tuned[s]
+        w.sharp = w.sharp * self.settle
+        w.since += 1
+        if !w.open {
+            // The finger's press wanders: noise through a low-pass at 1 Hz, about 1 RMS.
+            let slow = TAU / RATE
+            w.drift += slow * (self.hand.next() / (0.57735 * sqrt(0.5 * slow)) - w.drift)
+            // The hand's tremble, and this finger's own.
+            let quick = TAU * TREMBLE_HZ / RATE
+            w.tremble += quick * (self.hand.next() / (0.57735 * sqrt(0.5 * quick)) - w.tremble)
+            let trembles = TREMBLES * self.shake + TREMBLE_OWN * w.tremble
+            cents += g.loose * (w.off + DRIFTS * w.drift + trembles)
+            let held = f32(w.since) / RATE
+            if w.sway > 0.0 && held > w.sway_after {
+                let swayed = held - w.sway_after
+                let depth = w.sway *
+                    min(swayed / SWAY_IN, 1.0) *
+                    (1.0 + SWAY_GROWS * min(swayed, 2.0))
+                let loose = max(1.0 + SWAY_LOOSE * self.loose[0], 0.0)
+                cents += depth * loose * (0.5 - 0.5 * cos(TAU * w.swaying))
+                // Each note's sway starts from the note's own pitch, slowly.
+                let quickened = SWAY_SLOW + (1.0 - SWAY_SLOW) * min(swayed / SWAY_QUICKENS, 1.0)
+                w.swaying = fract(w.swaying + quickened * self.turn)
+            }
+        }
+        // A bend is far enough that a cent isn't a fixed share of the length.
+        var longer = 1.0 - CENT * cents
+        let bending = w.bent < w.bends
+        if bending {
+            cents += w.bend * (1.0 - rise(f32(w.bent) / f32(w.bends)))
+            w.bent += 1
+            longer = exp2(-cents / 1200.0)
+        }
+        let back = clamp(w.length * longer, 4.0, f32(SPAN - 4))
+        // How fast the finger is moving the pitch: a string pushed across its fret rubs.
+        let by_finger = cents - w.sharp - self.tuned[s]
+        let rubbing = min(abs(by_finger - w.moved) / RUB_AT, 2.0)
+        w.moved = by_finger
+        // The stroke: the string's speed where it was let go is a pulse, with the pick's
+        // scrape over its start.
+        var stroke = 0.0
+        if w.done < w.whole {
+            let i = f32(w.done)
+            stroke = w.swing * (rise((i + 1.0) / w.edge) - rise((i + 1.0 - w.wide) / w.edge))
+            if w.done < SCRAPES && w.scrape > 0.0 {
+                let through = (i + 0.5) / f32(SCRAPES)
+                stroke += w.scrape * sin(PI * through) * sin(PI * through) * self.scrape.next()
+            }
+            w.done += 1
+        }
+        // A finger's noise on the string: the rub of a string moved across its fret, and the
+        // scratch of a finger leaving or sliding.
+        if bending && !w.open && w.held {
+            let wound = if s < 3 { 2.0 } else { 0.4 }
+            stroke += RUBS * wound * g.fingers * PICK * rubbing * self.scrape.next()
+        }
+        if w.rubbed < w.rubs {
+            let through = (f32(w.rubbed) + 0.5) / f32(w.rubs)
+            stroke += w.rub * sin(PI * through) * sin(PI * through) * self.scrape.next()
+            w.rubbed += 1
+        }
+        let hushed = w.hush > 0
+        if hushed {
+            w.hush -= 1
+        }
+        // A stopped string's slipping: this sample's.
+        var slips = 0.0
+        if !w.open && w.held {
+            slips = (if s < 3 { 2.5 } else { 1.0 }) * g.sizzle * self.scrape.next()
+        }
+        var heard = 0.0
+        for p in 0..PLANES {
+            let base = (2 * s + p) * SPAN
+            // The plane across the pickup is a little sharp of the one toward it.
+            let far_back = if p == 0 { back } else { back * (1.0 - CENT * g.planes) }
+            // The wave as it was that many samples ago: by the four samples round that moment
+            // (a cubic through them: Laakso, Välimäki, Karjalainen and Laine, "Splitting the
+            // unit delay", IEEE Signal Processing Magazine 13(1), 1996), which keeps the top
+            // that the two nearest alone would lose a little of each time round.
+            let whole = u32(far_back)
+            let d = far_back - f32(whole)
+            let from = self.at + SPAN - whole
+            let x0 = self.lines[base + ((from + 1) & (SPAN - 1))]
+            let x1 = self.lines[base + (from & (SPAN - 1))]
+            let x2 = self.lines[base + ((from - 1) & (SPAN - 1))]
+            let x3 = self.lines[base + ((from - 2) & (SPAN - 1))]
+            var round = -d * (d - 1.0) * (d - 2.0) / 6.0 * x0 +
+                (d + 1.0) * (d - 1.0) * (d - 2.0) / 2.0 * x1 -
+                (d + 1.0) * d * (d - 2.0) / 2.0 * x2 +
+                (d + 1.0) * d * (d - 1.0) / 6.0 * x3
+            // What the trip round took: a hand on the string, then the string's stiffness,
+            // then its own top.
+            if w.span > 1 {
+                let k = (2 * s + p) * PALM
+                w.sum[p] += round - self.palm[k + ((self.at + PALM - w.span) & (PALM - 1))]
+                self.palm[k + (self.at & (PALM - 1))] = round
+                round = w.sum[p] / f32(w.span)
+            }
+            for k in 0..STIFFS {
+                let i = p * STIFFS + k
+                let out = w.stiff * (round - w.came[i]) + w.went[i]
+                w.went[i] = round
+                w.came[i] = out
+                round = out
+            }
+            w.low[p] += (1.0 - w.pole) * (round - w.low[p])
+            var y = w.gain[p] * w.low[p]
+            if hushed {
+                y = HUSH * y
+            }
+            y += w.tilt[p] * stroke + slips * abs(y)
+            self.lines[base + self.at] = y
+            // The pickup's two places: at each the wave passes, and passes again upside
+            // down. It hears the plane across it less.
+            let passes = 0.5 *
+                (y -
+                    self.read(base, self.far[s]) +
+                    self.read(base, self.near_first[s]) -
+                    self.read(base, self.near_second[s]))
+            heard += if p == 0 { passes } else { g.across * passes }
+        }
+        if abs(heard) < STILL && w.done >= w.whole && w.rubbed >= w.rubs {
+            w.quiet += 1
+        } else {
+            w.quiet = 0
+        }
+        self.wires[s] = w
+        if w.quiet > STILL_FOR {
+            self.wires[s].on = false
+            self.wires[s].held = false
+            for i in 0..PLANES * SPAN {
+                self.lines[2 * s * SPAN + i] = 0.0
+            }
+        }
+        heard
+    }
+
+    /// The next sample of what the pickup gives the amplifier.
+    @audio
+    fn pickup(mut self) -> f32 {
+        let t = self.sample
+        loop {
+            if self.next >= self.notes.len() || self.notes[self.next].from > t {
+                break
+            }
+            self.begin(self.notes[self.next])
+            self.next += 1
+        }
+        // The hand's wanders: noise through one-pole low-passes at 1 Hz, scaled to about 1 RMS
+        // (as engine::bowed's are).
+        let slow = TAU / RATE
+        let scale = 1.0 / (0.57735 * sqrt(0.5 * slow))
+        for k in 0..2 {
+            self.loose[k] += slow * (scale * self.hand.next() - self.loose[k])
+        }
+        let quick = TAU * TREMBLE_HZ / RATE
+        self.shake += quick * (self.hand.next() / (0.57735 * sqrt(0.5 * quick)) - self.shake)
+        var heard = 0.0
+        var moving = false
+        for s in 0..STRINGS {
+            if self.wires[s].on {
+                heard += self.string(s)
+                moving = true
+            }
+        }
+        self.at = (self.at + 1) & (SPAN - 1)
+        self.turn = SWAY_HZ * (1.0 + 0.25 * SWAY_LOOSE * self.loose[1]) / RATE
+        self.idle = if moving { 0 } else { self.idle + 1 }
+        self.sample += 1
+        self.coil_state.low(self.coil, heard)
+    }
+
+    /// The next sample.
+    @audio
+    fn one(mut self) -> f32 {
+        let coil = self.pickup()
+        self.amp.next(coil)
+    }
+
+    /// The next samples, into `out`.
+    @audio
+    pub fn play(mut self, out: mut [f32]) {
+        for n in 0..out.len() {
+            out[n] = self.one()
+        }
+    }
+
+    /// Whether nothing of it sounds, nor will: its notes are done, and no string has moved
+    /// for half a second.
+    @audio
+    pub fn silent(self) -> bool {
+        self.next >= self.notes.len() && self.idle > 24000
+    }
+
+    /// Adds its next samples to samples `from` to `to` of `left` and `right`, the same to both.
+    /// Its notes' times count from its first sample, so it is sounded from a piece's start
+    /// without a gap.
+    @audio
+    pub fn sound(mut self, left: mut [f32], right: mut [f32], from: u32, to: u32) {
+        for n in from..to {
+            let y = self.one()
+            left[n] += y
+            right[n] += y
+        }
+    }
+}
+
+// The tests render on the program's thread, as the audio thread would.
+
+/// `quanta` quanta of `p`, sample by sample.
+fn rendered(p: mut Picked, quanta: u32) -> Vec<f32> {
+    var out: Vec<f32> = Vec::with_capacity(128 * quanta)
+    var quantum = [0.0; 128]
+    for _ in 0..quanta {
+        p.play(mut quantum)
+        for i in 0..128 {
+            out.push(quantum[i])
+        }
+    }
+    out
+}
+
+/// `count` samples of what `p`'s pickup gives, before the amplifier and the speaker (whose
+/// own resonances ring a moment at their own pitches).
+fn picked_up(p: mut Picked, count: u32) -> Vec<f32> {
+    var out: Vec<f32> = Vec::with_capacity(count)
+    for _ in 0..count {
+        out.push(p.pickup())
+    }
+    out
+}
+
+/// The mean square of the `width` samples of `x` from `at`.
+fn power(x: [f32], at: u32, width: u32) -> f32 {
+    var sum = 0.0
+    for i in at..at + width {
+        sum += x[i] * x[i]
+    }
+    sum / f32(width)
+}
+
+/// The pitch (Hz) of the `width` samples of `x` from `at`, sought within 3% of `near`: the lag
+/// at which it repeats best, between samples by a parabola.
+fn pitch_of(x: [f32], at: u32, width: u32, near: f32) -> f32 {
+    let lo = u32(RATE / (1.03 * near))
+    let hi = u32(RATE / (0.97 * near)) + 1
+    var best = lo
+    var best_score = -2.0
+    var scores: Vec<f32> = Vec::new()
+    for lag in lo - 1..hi + 2 {
+        var both = 0.0
+        var a = 0.0
+        var b = 0.0
+        for i in at..at + width {
+            both += x[i] * x[i + lag]
+            a += x[i] * x[i]
+            b += x[i + lag] * x[i + lag]
+        }
+        let score = both / sqrt(max(a * b, 1e-30))
+        scores.push(score)
+        if lag >= lo && lag <= hi && score > best_score {
+            best_score = score
+            best = lag
+        }
+    }
+    let k = best - (lo - 1)
+    let (before, here, after) = (scores[k - 1], scores[k], scores[k + 1])
+    let bend = before - 2.0 * here + after
+    let shift = if bend < -1e-9 { 0.5 * (before - after) / bend } else { 0.0 }
+    RATE / (f32(best) + clamp(shift, -0.5, 0.5))
+}
+
+/// How far `hz` is from `asked`, in cents.
+fn cents(hz: f32, asked: f32) -> f32 {
+    1200.0 * log2(hz / asked)
+}
+
+/// One note on `g`, on the string it lies lowest on.
+fn one_note(g: Guitar, key: f32, to: u32, muted: bool = false) -> Picked {
+    picked(Vec::from([Picking { from: 0, to, key, string: string_for(g, key), muted }]), g)
+}
+
+/// A guitar with nothing loose in it: strings that aren't stiff and move one way, exactly in
+/// tune, under fingers that land where they are asked, and a pick that doesn't stretch them.
+fn exact(g: Guitar) -> Guitar {
+    Guitar { sharp: 0.0, loose: 0.0, sizzle: 0.0, stiff: [0.0; 6], planes: 0.0, ..g }
+}
+
+/// What a loop's filters hold a tone back, the loop is that much shorter to make up for: an
+/// open low E, notes up the neck and at the top of the fingerboard are within 3 cents of what
+/// is asked, and so is a palm-muted low E, whose wave the hand smooths over a tenth of its
+/// period each time round.
+@test
+fn each_note_sounds_as_asked_ringing_or_muted() {
+    let plain = exact(CLEAN)
+    for key in [40.0, 57.0, 76.0, 86.0] {
+        var p = one_note(plain, key, to: 48000)
+        let x = picked_up(mut p, count: 25600)
+        let hz = pitch_of(x, at: 9600, width: 7200, near: key_hz(key))
+        let off = cents(hz, key_hz(key))
+        assert(abs(off) < 3.0, f"key {key} sounds {off} cents from itself")
+    }
+    var m = one_note(plain, 40.0, to: 48000, muted: true)
+    let x = picked_up(mut m, count: 7680)
+    let off = cents(pitch_of(x, at: 1200, width: 3600, near: key_hz(40.0)), key_hz(40.0))
+    assert(abs(off) < 3.0, f"a muted low E sounds {off} cents from itself")
+}
+
+/// A note held rings on; a finger let go stops its string within a fifth of a second; and a
+/// palm-muted note has all but died in the time a ringing one has hardly fallen.
+@test
+fn a_held_note_rings_a_stopped_one_dies_and_a_palm_mutes() {
+    var held = one_note(CLEAN, 45.0, to: 96000)
+    let h = rendered(mut held, quanta: 500)
+    let early = power(h, at: 4800, width: 4800)
+    let late = power(h, at: 52800, width: 4800)
+    assert(late > 0.1 * early, f"held a second, a note has {late / early} of its power")
+    var let_go = one_note(CLEAN, 45.0, to: 24000)
+    let l = rendered(mut let_go, quanta: 500)
+    let after = power(l, at: 33600, width: 4800)
+    assert(after < 1e-4 * early, f"a fifth of a second after its finger, {after / early}")
+    assert(let_go.silent(), "a stopped string never came to rest")
+    var muted = one_note(CLEAN, 45.0, to: 96000, muted: true)
+    let m = rendered(mut muted, quanta: 200)
+    let thud = power(m, at: 0, width: 4800)
+    let gone = power(m, at: 19200, width: 4800)
+    assert(thud > 0.05 * early, f"a muted note's start has {thud / early} of a ringing one's")
+    assert(gone < 0.02 * thud, f"0.4 s on, a muted note has {gone / thud} of its start")
+}
+
+/// How strong the tone at `hz` is over the `width` samples of `x` from `at` (dB).
+fn tone_db(x: [f32], at: u32, width: u32, hz: f32) -> f32 {
+    var re = 0.0
+    var im = 0.0
+    for i in 0..width {
+        let turn = TAU * fract(hz * f32(i) / RATE)
+        re += x[at + i] * cos(turn)
+        im += x[at + i] * sin(turn)
+    }
+    8.685889 * log(2.0 * sqrt(re * re + im * im) / f32(width) + 1e-12)
+}
+
+/// The strongest tone under 6 kHz in `x` (a fifth of a second from `at`) that a harmonic of
+/// `hz` over the audio rate's half would fold back to, and isn't itself a harmonic: in dB
+/// beside the note.
+fn strays(x: [f32], at: u32, hz: u32) -> f32 {
+    let note = tone_db(x, at, width: 9600, hz: f32(hz))
+    var worst = -200.0
+    for k in 2..160 {
+        let f = (k * hz) % 48000
+        let folded = if f > 24000 { 48000 - f } else { f }
+        if k * hz > 24000 && folded > 40 && folded < 6000 && folded % hz != 0 {
+            worst = max(worst, tone_db(x, at, width: 9600, hz: f32(folded)) - note)
+        }
+    }
+    worst
+}
+
+/// Clipping a tone makes harmonics past half the audio rate, which 48,000 samples a second
+/// can't hold: they come back as tones that are no harmonic of the note. A 1245 Hz tone
+/// through `LEAD_AMP`'s valves, with the valves run at the audio rate (and their corners set
+/// for it), has such a tone 34.2 dB under the note; run at four times the rate, between
+/// half-band filters, the strongest is 76.0 dB under. (At 660 Hz: 43.7 and 97.9; at 415 Hz:
+/// 57.7 and 100.4.)
+@test
+fn the_valves_leave_no_tones_that_arent_the_notes() {
+    var a = amped(LEAD.amp)
+    var x: Vec<f32> = Vec::with_capacity(24000)
+    for i in 0..24000 {
+        x.push(a.driven(0.5 * sin(TAU * fract(1245.0 * f32(i) / RATE))))
+    }
+    let worst = strays(x, at: 9600, hz: 1245)
+    assert(worst < -65.0, f"the strongest stray tone is {worst} dB beside the note")
+}
+
+/// A score's one voice, played exactly at 120 quarter notes a minute.
+fn deadpan_picks(lines: [Text], g: Guitar, hand: Hand) -> Vec<Picking> {
+    let s = score::score("test", score::meter(beats: 4, unit: 4)).voice("guitar", lines)
+    pickings(s, perform::deadpan(s, tempo: 120.0), 0, g, hand)
+}
+
+/// A chord's notes each take a string, and the strum crosses them a moment apart: from the
+/// lowest string on the beat; off it from the highest, softer, and only four strings far.
+@test
+fn a_chord_is_strummed_down_on_the_beat_and_up_off_it() {
+    let picks = deadpan_picks(
+        ["<e2 b2 e3 g#3 b3 e4>/8 <e2 b2 e3 g#3 b3 e4>/8 r/4 r/2 |"],
+        CLEAN,
+        Hand { uneven: 0.0 },
+    )
+    assert(picks.len() == 10, f"a down strum of six and an up strum of four are {picks.len()}")
+    // An open E chord lies on all six strings, lowest key on the lowest.
+    for i in 0..6 {
+        assert(picks[i].string == i, f"the down strum's note {i} is on string {picks[i].string}")
+        assert(picks[i].from == i * 528, f"the down strum's note {i} starts at {picks[i].from}")
+    }
+    for i in 0..4 {
+        let n = picks[6 + i]
+        assert(n.string == 5 - i, f"the up strum's note {i} is on string {n.string}")
+        assert(n.from == 12000 + i * 528, f"the up strum's note {i} starts at {n.from}")
+        assert(n.hard < picks[0].hard, "an up strum is softer")
+    }
+}
+
+/// A slurred note isn't picked: with a hand that bends, a step up is bent to, and the pitch
+/// arrives; a wider slur is hammered on. A note marked staccato is palm-muted.
+@test
+fn a_slur_is_bent_or_hammered_and_a_staccato_is_muted() {
+    let picks = deadpan_picks(["a4/2 ( b4/4 e5/8 ) e3/8 !staccato |"], LEAD, Hand { bends: 2 })
+    assert(picks[0].picked && !picks[1].picked && !picks[2].picked && picks[3].picked)
+    assert(picks[1].string == picks[0].string && picks[1].glide > 0.0, "a step up is bent to")
+    assert(picks[2].glide == 0.0, "a fourth up is hammered on")
+    assert(picks[3].muted && !picks[0].muted, "the staccato note alone is muted")
+    // The bent note, a quarter of a second after it starts (the second note is at 1 s).
+    var p = picked(picks.clone(), exact(CLEAN))
+    let x = picked_up(mut p, count: 66560)
+    let off = cents(pitch_of(x, at: 60000, width: 4800, near: key_hz(71.0)), key_hz(71.0))
+    assert(abs(off) < 6.0, f"the bend arrives {off} cents from its note")
+    let before = cents(pitch_of(x, at: 38400, width: 4800, near: key_hz(69.0)), key_hz(69.0))
+    assert(abs(before) < 4.0, f"the note before the bend is {before} cents from itself")
+    // A finger pushes slowly at first: 20 to 40 ms into a bend of a sixth of a second the
+    // pitch has gone a tenth of the way. (A length going a share of the way each sample, a
+    // synthesizer's glide, had gone a third of the way: 70 cents.)
+    let near = key_hz(69.0) * exp2(15.0 / 1200.0)
+    let early = cents(pitch_of(x, at: 48960, width: 960, near: near), key_hz(69.0))
+    assert(early > 2.0 && early < 40.0, f"20 to 40 ms into the bend the pitch is {early} cents up")
+}
+
+/// The frequency (Hz) of the partial of `x` nearest `near`, sought from 8 cents under it to 30
+/// over, a cent at a time, over the `width` samples from `at`.
+fn partial_hz(x: [f32], at: u32, width: u32, near: f32) -> f32 {
+    var best = near
+    var most = -400.0
+    for c in 0..39 {
+        let hz = near * exp2((f32(c) - 8.0) / 1200.0)
+        let db = tone_db(x, at, width, hz)
+        if db > most {
+            most = db
+            best = hz
+        }
+    }
+    best
+}
+
+/// A stiff string's partials are sharp of harmonics, the more the higher: a low E's tenth is
+/// 11 cents sharp of ten times the note, and the note itself is where it is asked (the loop
+/// is shorter by what the stiffness filters hold the note back).
+@test
+fn a_stiff_strings_partials_are_as_sharp_as_its_stiffness_says() {
+    let g = Guitar { sharp: 0.0, loose: 0.0, planes: 0.0, ..CLEAN }
+    var p = one_note(g, 40.0, to: 48000)
+    let x = picked_up(mut p, count: 28800)
+    let note = key_hz(40.0)
+    let first = cents(partial_hz(x, at: 4800, width: 19200, near: note), note)
+    let tenth = cents(partial_hz(x, at: 4800, width: 19200, near: 10.0 * note), 10.0 * note)
+    let stiff = 600.0 * log2((1.0 + g.stiff[0] * 100.0) / (1.0 + g.stiff[0]))
+    assert(abs(first) < 2.0, f"a stiff low E sounds {first} cents from itself")
+    assert(abs(tenth - stiff) < 3.0, f"its tenth partial is {tenth} cents sharp, not {stiff}")
+}
+
+/// How far the `n`th harmonic of a held A4 on `g` strays from a straight line through its
+/// levels (RMS dB), over 30 ms frames a hundredth of a second apart from 0.15 s to 0.55 s.
+fn strays_from_steady(g: Guitar, n: f32) -> f32 {
+    var p = one_note(g, 69.0, to: 48000)
+    let x = rendered(mut p, quanta: 230)
+    var levels = [0.0; 41]
+    var mean = 0.0
+    for f in 0..41 {
+        levels[f] = tone_db(x, at: 7200 + 480 * f, width: 1440, hz: n * key_hz(69.0))
+        mean += levels[f] / 41.0
+    }
+    // The line of best fit through the levels.
+    var rise = 0.0
+    var run = 0.0
+    for f in 0..41 {
+        rise += (f32(f) - 20.0) * (levels[f] - mean)
+        run += (f32(f) - 20.0) * (f32(f) - 20.0)
+    }
+    var off = 0.0
+    for f in 0..41 {
+        let line = mean + rise / run * (f32(f) - 20.0)
+        off += (levels[f] - line) * (levels[f] - line) / 41.0
+    }
+    sqrt(off)
+}
+
+/// A driven note isn't a frozen wave. Valves clip a held note to one level, so what the ear
+/// follows in it is how its harmonics move. From strings that aren't stiff and move one way,
+/// dead in tune, the driven wave is the same every period: an A4's second and third
+/// harmonics stray 0.1 dB from steady, and the lead was heard as a synthesizer. A stiff
+/// string's partials drift against each other, its two ways of moving beat, and a hand
+/// trembles: the same harmonics stray 0.8 dB. (The second and third because they are strong:
+/// a weak harmonic's level is the valves' doing, and moves either way.)
+@test
+fn a_driven_note_isnt_a_frozen_wave() {
+    // Both with no fingertip taking the note's top, which moves a harmonic too, one way only.
+    let held = Guitar { finger: 1000.0, ..LEAD }
+    let frozen = 0.5 * (strays_from_steady(exact(held), 2.0) + strays_from_steady(exact(held), 3.0))
+    let alive = 0.5 * (strays_from_steady(held, 2.0) + strays_from_steady(held, 3.0))
+    assert(alive > 0.5, f"a driven A4's low harmonics stray {alive} dB from steady")
+    assert(
+        frozen < 0.3 * alive,
+        f"from an exact string they stray {frozen} dB, {alive} from a real one",
+    )
+}
+
+/// The mean square of `count` samples of what `a`'s valves make of a 440 Hz tone `level` high.
+fn driven_power(a: mut Amped, level: f32, count: u32) -> f32 {
+    var sum = 0.0
+    for i in 0..count {
+        let y = a.driven(level * sin(TAU * fract(440.0 * f32(i) / RATE)))
+        sum += y * y
+    }
+    sum / f32(count)
+}
+
+/// How loud a quiet 440 Hz tone comes through an amplifier whose valves choke `spit` much in
+/// the 20 ms just after a loud one, beside 150 ms later (dB).
+fn just_after_a_loud_sound(spit: f32) -> f32 {
+    var a = amped(Amp { drive: 30.0, spit, sag: 0.0, hiss: -200.0 })
+    var x: Vec<f32> = Vec::with_capacity(12000)
+    for i in 0..12000 {
+        let level = if i < 2400 { 1.0 } else { 0.01 }
+        x.push(a.driven(level * sin(TAU * fract(440.0 * f32(i) / RATE))))
+    }
+    tone_db(x, at: 2496, width: 960, hz: 440.0) - tone_db(x, at: 9600, width: 960, hz: 440.0)
+}
+
+/// A valve that chokes: a loud sound charges its grid, and for a few hundredths of a second
+/// after it a quiet sound hardly gets through (14 dB down); one that doesn't choke passes the
+/// quiet sound at once (1 dB down).
+@test
+fn a_valve_that_chokes_sputters_after_a_loud_sound() {
+    let choked = just_after_a_loud_sound(0.8)
+    let free = just_after_a_loud_sound(0.0)
+    assert(
+        choked < -10.0,
+        f"just after a loud sound a choking valve passes a quiet one {choked} dB",
+    )
+    assert(abs(free) < 2.0, f"a valve that doesn't choke passes it {free} dB")
+}
+
+/// A gate shuts when the strings stop, and the hiss goes with them; without one the hiss is
+/// always there.
+@test
+fn a_gate_shuts_the_hiss_out() {
+    var gated = amped(Amp { drive: 40.0, hiss: -80.0, gate: -55.0 })
+    var open = amped(Amp { drive: 40.0, hiss: -80.0 })
+    let _ = driven_power(mut gated, level: 0.3, count: 4800)
+    let _ = driven_power(mut open, level: 0.3, count: 4800)
+    // A fifth of a second for the gate to shut, then a tenth of a second of nothing played.
+    let _ = driven_power(mut gated, level: 0.0, count: 9600)
+    let _ = driven_power(mut open, level: 0.0, count: 9600)
+    let shut = driven_power(mut gated, level: 0.0, count: 4800)
+    let hiss = driven_power(mut open, level: 0.0, count: 4800)
+    assert(hiss > 1e-6, f"an amplifier driven this hard hisses: {hiss}")
+    assert(shut < 1e-4 * hiss, f"behind a gate the hiss is {shut}, {hiss} without")
+}
+
+/// The highs' share of what the pickup gives 0.3 to 0.4 s into an A4 on `g`: the energy of
+/// its sample-to-sample differences beside its energy.
+fn highs_share(g: Guitar) -> f32 {
+    var p = one_note(g, 69.0, to: 48000)
+    let x = picked_up(mut p, count: 19200)
+    var whole = 0.0
+    var highs = 0.0
+    for i in 14400..19200 {
+        whole += x[i] * x[i]
+        highs += (x[i] - x[i - 1]) * (x[i] - x[i - 1])
+    }
+    highs / whole
+}
+
+/// A fingertip takes a stopped note's top: 0.3 s into an A4 on the first string, what the
+/// pickup gives has far less of its highs beside the whole than the same note with no
+/// fingertip in the loop.
+@test
+fn a_fingertip_takes_a_stopped_notes_top() {
+    let stopped = highs_share(exact(CLEAN))
+    let bare = highs_share(Guitar { finger: 1000.0, ..exact(CLEAN) })
+    assert(stopped < 0.75 * bare, f"highs' share with a fingertip {stopped}, without {bare}")
+}
+
+/// A hand that plays a line slides into a phrase's first note from a fret under, and is late
+/// leaving one string for the next, so the two notes sound together a moment.
+@test
+fn a_phrase_is_slid_into_and_a_finger_is_late_off_its_string() {
+    let picks = deadpan_picks(["a4/4 d4/4 r/2 |"], LEAD, SOLO)
+    assert(picks[0].scoop == 1.0 && picks[1].scoop == 0.0, "the first note alone is slid into")
+    assert(picks[0].string != picks[1].string, "the two notes are on two strings")
+    assert(
+        picks[0].to > picks[1].from && picks[0].to < picks[1].from + 4800,
+        f"the first note ends at {picks[0].to}, the second starts at {picks[1].from}",
+    )
+}

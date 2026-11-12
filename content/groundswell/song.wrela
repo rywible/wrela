@@ -1,0 +1,713 @@
+// "Groundswell": a hymn, and the bass that turns it minor. At 80, in D major and B minor,
+// twenty-six bars, about a minute and twenty seconds. Original music, written here, by Claude
+// for Ryan. Nothing of any recording or score is quoted.
+//
+// Written from the wrela-music skill's taste sheet (references/taste.md): the tracks Ryan named,
+// the moments in them he loves, and what was found to be happening at each. The brief was only
+// "write me a new track", so that sheet is the brief, and this says which of its devices are
+// the piece's spine:
+//
+// - the bass is a character (device 8), and it is the thing withheld (device 1): for thirty
+//   seconds there is no bass and no drum, and then both arrive on one downbeat, with no fill;
+// - the same material, new weight (device 2): the loud part is the quiet part note for note.
+//   The tune, the voices' chords and the bell are unchanged; only the ground under them is new;
+// - the cut is the resolution (device 3): the loud part ends off its home chord with the tune
+//   leaning, cuts on the bar line, and the quiet chord that follows makes that note sweet.
+// Under those: a tune that hovers and is then held (6), a loop of held notes over a walking
+// bass with no dominant chord (5), and many quiet parts with a few high piano notes (7, 9).
+//
+// The concept. A hymn sung over nothing, and then the ground comes in under it. Hushed,
+// mournful, heavy. 80 BPM, a slow backbeat, the off sixteenths swung a little (58%).
+//
+// The one bold thing: the key the bass decides. Three voices hold F sharp, A and D, and lean
+// up a step and back in every third bar (to G, B and D): D major, G major, D major, an amen.
+// A tune is sung over that, twice, in D major. Then the bass's first note is B. Nothing above
+// it changes, and all of it is B minor now. The bass walks down a fourth by step, a bar to a
+// note, B, A, G, F sharp, and climbs back: B minor with its seventh, D over A, G major, D over F
+// sharp, round and round, with no dominant chord anywhere. Everything else in the piece is
+// plainer than it needs to be so that this is the one surprise: every note is in the one
+// scale, the tune is in eighths and longer, its stressed notes are on beats or an eighth early.
+//
+// The one thing to remember, the tune. Four bars: two notes a step apart rock, the lower one
+// arriving an eighth early and left hanging (the ninth over D; the eleventh over B minor);
+// they rock again; and that time the hanging note leaps a fifth onto the last eighth of the
+// bar, to B, and holds it a whole bar while the chord under it becomes G and makes it a third;
+// then it walks down by step and stops one step short of home, on E. It never sings the D it
+// leans toward until the last bar of the piece.
+//
+//   D (Bm7)           D (D/A)             G                 D (D/F♯)
+//   F♯–  F♯ E––  ·    F♯–  F♯ E––  · B~   ~B–––––  A G      F♯–––E––  ·
+//
+// Chosen from six kinds tried on paper (scripts/melody.py): this one; a note chanted three
+// times with a turn under it (nine tenths chord notes, nothing leaning: the safe cell); a leap
+// of a sixth up from A and a walk down to D (a face, but it closes on the home note every bar
+// and outlines the chord: what would be written for any brief); sighs, G falling to F sharp on
+// each first beat (no leap, no air, and a G rubbing against the voices' held F sharp in every
+// bar); a quick low figure answered by one long high note (two things to remember, and its
+// figure is the chord broken); and one long note a bar (this one's skeleton with no rhythm).
+// This one because it is the only one that leaves something owed, its rhythm can be clapped
+// back, and the note a listener would miss is plain: the B.
+//
+// What the tune does in each part (energy out of ten; the level meant, by bar):
+//
+// - bars 1-2, the room (1; about -30 dB): the voices come in on D major over a cello's D. The
+//   bell says the tune's first three notes once, high. The voice sings two notes up the
+//   scale, D and E, alone.
+// - bars 3-10, the hymn (3; about -22): the tune, twice, plainly and softly, over the voices
+//   and the cello: no bass, no drum. The bell puts a note or two in its rests; the second time
+//   a viola joins the voices and the bell answers (once with E and D, the step home the voice
+//   doesn't take). Halfway through bar 10 everything stops: half a beat of nothing, and the
+//   voice sings its two notes alone again.
+// - bars 11-18, the ground (8; about -13): the bass and the drums, on the downbeat. The tune
+//   again, note for note, sung harder. The bass answers in its rests: in the first bar of each
+//   round with the tune's own way down from B (B, A, F sharp). From bar 15 a second voice sings
+//   over the tune, on A where it rocks and a third over it where it moves, with a clap and a
+//   shaker. In bar 18 the drums and the bass stop after the first beat.
+// - bars 19-22, the swell (10; about -11): the leap, widened once: from the hanging E up a
+//   seventh to the high D, the tune's one highest note and the hymn's home note, held seven
+//   beats, the second voice a third over it, a violin an octave over it. Then the tune's walk
+//   down at half its speed: four even half notes, B, A, G, F sharp, with the bass, the bass drum
+//   and everyone striking each. The bass has stopped walking: it stays on G, and the last half
+//   note, F sharp, is the major seventh over it.
+// - bars 23-26, home (2; about -24): the cut, on the bar line, with no fill. The F sharp is
+//   held across it, and the voices' D major makes it a third. The bell says the tune's three
+//   notes, half a bar late. The voice sings them once more, and this time the hanging E steps
+//   down to D, as the bass comes back to play D: the only time it does.
+//
+// The palette, by role:
+//   held        three voices (a pad made to sing); a cello and a viola bowing with them
+//   foundation  a bass drum tuned to B, a fat snare and a clap behind the beat, hats, a shaker,
+//               a ride in the swell; the bass in two layers, a sub and a round one an octave
+//               over it, so the line is there on a small speaker
+//   moving      the bass's answers; the shaker's sixteenths
+//   lead        a sung lead; a second voice, late; the violin over it in the swell
+//   fill        the bell: the electric piano's overtone, high and soft, with an echo
+//
+// Cut when it was finished: a violin holding D over the whole ground. Soloed it was 12 dB under
+// the other held parts, and the swell is stronger for being where the violin first plays.
+//
+// What it can't do. The tracks it is modelled on are voices, guitars and a band, and the
+// engine has no voice: a sung synthesizer stands for one, and a pad for a choir. Their tempos
+// lift a little into a loud part, and one session has one tempo. Several are in three; the
+// skill's checkers read four only, so this is in four.
+//
+// No ear has heard it. Measured on the last take: -13.5 LUFS, a peak of -1.0 dB, nothing
+// clipped, a crest of 14.6 dB, a tilt of -2.5 dB an octave. By bar the hymn sits near -21 dB,
+// the ground near -13, the swell near -11.5 and the second bar after the cut at -27: 8 dB up,
+// 2 up, 15 down. scripts/feel.py raises no flags on the whole or on any part (no note struck
+// hard, a semitone sounding under 1% of the time, nothing outside the scale); the lead plays
+// the tune as written, cell for cell of scripts/melody.py's roll; soloed, the lead has the
+// 500 Hz octave to itself by 12 dB, and the bass's upper layer has the 125 Hz one.
+
+use engine::bowed::{CELLO, VIOLA, VIOLIN, bowings}
+use engine::drum::{CLAP, Drum, HAT, KICK, RIDE, SNARE}
+use engine::pattern::{Feel, Pattern, pattern, struck, swung, tacet}
+use engine::perform::{Mark, Performance, Taste, bar, perform}
+use engine::score::{Meter, Score, meter, score}
+use engine::session::{Master, Session, Strip, session}
+use engine::synth::{LEAD, PAD, Patch, SUB}
+use engine::tine::{SUITCASE, Tine}
+use engine::tone::Shape
+
+pub const TITLE: Text = "Groundswell"
+pub const TEMPO: f32 = 80.0
+pub const BARS: u32 = 26
+/// Where an off sixteenth falls between its eighths: the ghost notes lean.
+const SWING: f32 = 0.58
+
+fn four() -> Meter {
+    meter(beats: 4, unit: 4)
+}
+
+// ---- the sounds -------------------------------------------------------------------------------
+
+/// The bass drum: tuned to B, the note the bass comes in on, and short enough to leave the
+/// bass its octave.
+const BOOM: Drum = Drum {
+    tone_hz: 61.7,
+    tone_t60: 0.32,
+    sweep: 2.6,
+    sweep_time: 0.014,
+    drive: 2.4,
+    click: 0.2,
+    ..KICK,
+}
+
+/// The snare: fat and low, tuned to F sharp, its wires ringing a quarter of a second.
+const FAT: Drum = Drum {
+    tone_hz: 185.0,
+    tone: 0.9,
+    noise: 1.6,
+    band_hz: 1700.0,
+    top_hz: 9000.0,
+    noise_t60: 0.26,
+    click: 0.2,
+    ..SNARE,
+}
+
+/// A shaker: a short breath of high noise, softer and duller when it is struck softly.
+const SHAKER: Drum = Drum {
+    noise: 1.0,
+    band_hz: 7200.0,
+    band_q: 1.1,
+    cut_hz: 4500.0,
+    noise_t60: 0.06,
+    range_db: 18.0,
+    soft_hz: 5000.0,
+    ring_touch: 0.4,
+}
+
+/// A crash cymbal: metal and noise together, wide open, two seconds long. (The engine's own
+/// crash, a plate, was new when this was written, and its second hit came out 8 dB over its
+/// first at the same velocity; this one's two hits are within 1 dB.)
+const CRASH: Drum = Drum {
+    metal: 0.8,
+    metal_tune: 1.15,
+    noise: 0.9,
+    band_hz: 6000.0,
+    band_q: 0.4,
+    cut_hz: 2600.0,
+    noise_t60: 2.0,
+    ring_touch: 0.0,
+    ..HAT,
+}
+
+/// The bass's lower layer: the sub, held (it doesn't die away like a drum machine's).
+const DEEP: Patch = Patch {
+    glide: 0.07,
+    amp: Shape { attack: 0.006, decay: 1.2, sustain: 0.7, release: 0.1 },
+    drive: 2.4,
+    range_db: 24.0,
+    ..SUB,
+}
+
+/// The bass's upper layer, an octave over it: a triangle and a sine with a little sawtooth
+/// under a low filter that a harder note opens, so the line is there on a small speaker and
+/// its answers speak.
+const ROUND: Patch = Patch {
+    saw: 0.25,
+    triangle: 0.6,
+    sine: 0.5,
+    glide: 0.07,
+    cutoff: 430.0,
+    open: 1.6,
+    q: 0.8,
+    follow: 0.3,
+    touch: 0.6,
+    filter: Shape { attack: 0.004, decay: 0.3, sustain: 0.4, release: 0.1 },
+    amp: Shape { attack: 0.005, decay: 0.9, sustain: 0.65, release: 0.1 },
+    drive: 1.3,
+    lean: 0.2,
+    range_db: 24.0,
+    voices: 1,
+    level: 0.5,
+}
+
+/// The voices: the pad made to sound sung, a triangle over a sawtooth with a late vibrato,
+/// coming in over a fifth of a second, dark and wide.
+const CHOIR: Patch = Patch {
+    saw: 0.3,
+    triangle: 0.5,
+    spread: 10.0,
+    wide: 0.9,
+    vibrato: 7.0,
+    vibrato_hz: 5.0,
+    vibrato_wake: 0.4,
+    cutoff: 800.0,
+    open: 1.2,
+    q: 0.8,
+    follow: 0.4,
+    filter: Shape { attack: 0.25, decay: 1.0, sustain: 0.7, release: 0.6 },
+    amp: Shape { attack: 0.2, decay: 0.8, sustain: 0.85, release: 0.6 },
+    ..PAD,
+}
+
+/// The lead: sung. A sawtooth and a triangle, two a few cents apart, under a low filter that a
+/// harder note opens a long way: sung softly in the hymn it is round and dark (its filter near
+/// 1 kHz), and over the ground it has an edge (near 1.6 kHz, 2 kHz and more in the swell). A
+/// vibrato comes in once a note is held, and slurred notes slide.
+const SUNG: Patch = Patch {
+    saw: 0.5,
+    triangle: 0.4,
+    spread: 6.0,
+    wide: 0.4,
+    glide: 0.07,
+    vibrato: 11.0,
+    vibrato_hz: 5.3,
+    vibrato_wake: 0.3,
+    cutoff: 680.0,
+    open: 2.0,
+    touch: 1.6,
+    filter: Shape { attack: 0.01, decay: 0.45, sustain: 0.5, release: 0.25 },
+    amp: Shape { attack: 0.01, decay: 0.6, sustain: 0.85, release: 0.2 },
+    drive: 0.8,
+    range_db: 30.0,
+    level: 0.8,
+    ..LEAD,
+}
+
+/// The bell: the electric piano with more of its overtone, played high and softly.
+const BELL: Tine = Tine { bell: 0.16, tremolo: 0.5, top_hz: 9000.0, ..SUITCASE }
+
+// ---- the drums --------------------------------------------------------------------------------
+
+/// A drum's part: the bars' text.
+fn drum(name: Text, lines: [Text]) -> Pattern {
+    pattern(name, four(), lines)
+}
+
+fn silent(bars: u32) -> Pattern {
+    tacet(four(), bars: bars)
+}
+
+/// The bass drum. Over the ground: on one, and with the bass on the "and" of three; a soft
+/// one leans into that in every second bar, and the fourth bar walks into the next with the
+/// bass. It stops after the first beat of bar 18. In the swell's last two bars it strikes the
+/// tune's half notes.
+fn kick() -> Pattern {
+    let walks: Text = "X... .... ..x. .... | X... ...o ..x. .... | X... .... ..x. .... |"
+    silent(10)
+        .then(drum("kick", [walks, "X... ...o ..x. ..x. |", walks, "X... .... .... .... |"]))
+        .then(
+            drum(
+                "kick",
+                [
+                    "X... .... ..x. .... | X... ...o ..x. .... | X... .... X... .... | X... .... X... .... |",
+                ],
+            ),
+        )
+        .then(silent(4))
+}
+
+/// The snare: two and four, behind the beat, with ghost notes that drag into the bass drum.
+/// Nothing in bar 18.
+fn snare() -> Pattern {
+    let back: Text = ".... X... .o.. X... | .... X... .o.. X..o | .... X... .o.. X... |"
+    silent(10)
+        .then(drum("snare", [back, ".... X... .o.o X..o |", back, ".... .... .... .... |"]))
+        .then(
+            drum(
+                "snare",
+                [
+                    ".... X... .o.. X... | .... X... .o.. X..o | .... X... .... X... | .... X... .... X... |",
+                ],
+            ),
+        )
+        .then(silent(4))
+}
+
+/// A clap with the snare, further behind, from the ground's second half; nothing in bar 18.
+fn clap() -> Pattern {
+    let back = drum("clap", [".... x... .... x..."])
+    silent(14)
+        .then(back.times(3))
+        .then(silent(1))
+        .then(back.times(4))
+        .then(silent(4))
+}
+
+/// The hat: the eighths, the beats a little harder, a swung sixteenth every second bar. It
+/// stops after the first beat of bar 18, as every drum does.
+fn hat() -> Pattern {
+    let two = drum("hat", ["x.o. x.o. x.o. x.o. | x.o. x.oo x.o. x.o."])
+    silent(10)
+        .then(two.times(3))
+        .then(drum("hat", ["x.o. x.o. x.o. x.o. | x... .... .... .... |"]))
+        .then(two.times(2))
+        .then(silent(4))
+}
+
+/// The shaker: every sixteenth, quietly, the off ones softer and late; from the ground's
+/// second half, and not in bar 18.
+fn shaker() -> Pattern {
+    let bar = drum("shaker", ["xoxo xoxo xoxo xoxo"])
+    silent(14)
+        .then(bar.times(3))
+        .then(silent(1))
+        .then(bar.times(4))
+        .then(silent(4))
+}
+
+/// A ride on every beat of the swell.
+fn ride() -> Pattern {
+    silent(18).then(drum("ride", ["x... x... x... x..."]).times(4)).then(silent(4))
+}
+
+/// A crash where the ground comes in, and where the swell does.
+fn crash() -> Pattern {
+    let one = drum("crash", ["X... .... .... ...."])
+    silent(10).then(one.clone()).then(silent(7)).then(one).then(silent(7))
+}
+
+// ---- the parts written as notes ---------------------------------------------------------------
+
+fn part(name: Text, lines: [Text]) -> Score {
+    score(TITLE, four()).voice(name, lines)
+}
+
+/// `bars` bars of rest for the part `name`.
+fn rests(name: Text, bars: u32) -> Score {
+    var s = part(name, ["r/1 |"])
+    for _ in 1..bars {
+        s = take s.then(part(name, ["r/1 |"]))
+    }
+    s
+}
+
+// The ground. The bass walks down a fourth by step, a bar to a note: B, A, G, F sharp, and
+// climbs back by A. Each bar is the root, long, and the root again an eighth before the third
+// beat (where the tune's hanging note falls); then, in the tune's rest, an answer: a fall from
+// the octave (B, A, F sharp: the tune's own way down) in the first bar, the octave alone in the
+// second, nothing under the tune's long note in the third, and the climb home in the fourth.
+// Two layers an octave apart play it (`GROUND_` the sub, `ROUND_` the layer over it).
+const GROUND_B: Text = "b1/4. !mf b1/8 r/8 b2/8 ( a2/8 f#2/8 ) |"
+const GROUND_A: Text = "a1/4. a1/8 r/8 a2/8 r/4 |"
+const GROUND_G: Text = "g1/4. g1/8~ g1/2 |"
+const GROUND_F: Text = "f#1/4. f#1/8 r/8 f#2/8 r/8 a1/8 |"
+/// Bar 18: it stops after its first note, and the voices leap alone.
+const GROUND_STOPS: Text = "f#1/4. r/8 r/2 |"
+/// The swell's last two bars: it stays on G, and strikes the tune's four half notes.
+const GROUND_STAYS: Text = "g1/2 g1/2 | g1/2 g1/2 |"
+/// The swell's first bar: the ground's first, harder.
+const GROUND_SWELLS: Text = "b1/4. !f b1/8 r/8 b2/8 ( a2/8 f#2/8 ) |"
+
+const ROUND_B: Text = "b2/4. !mf b2/8 r/8 b3/8 ( a3/8 f#3/8 ) |"
+const ROUND_A: Text = "a2/4. a2/8 r/8 a3/8 r/4 |"
+const ROUND_G: Text = "g2/4. g2/8~ g2/2 |"
+const ROUND_F: Text = "f#2/4. f#2/8 r/8 f#3/8 r/8 a2/8 |"
+const ROUND_STOPS: Text = "f#2/4. r/8 r/2 |"
+const ROUND_STAYS: Text = "g2/2 g2/2 | g2/2 g2/2 |"
+const ROUND_SWELLS: Text = "b2/4. !f b2/8 r/8 b3/8 ( a3/8 f#3/8 ) |"
+
+/// The sub: nothing for ten bars; the ground twice; twice more as far as G, where it stays;
+/// and D, once, under the last bar.
+fn bass() -> Score {
+    rests("bass", bars: 10)
+        .then(part("bass", [GROUND_B, GROUND_A, GROUND_G, GROUND_F]))
+        .then(part("bass", [GROUND_B, GROUND_A, GROUND_G, GROUND_STOPS]))
+        .then(part("bass", [GROUND_SWELLS, GROUND_A, GROUND_STAYS]))
+        .then(rests("bass", bars: 3))
+        .then(part("bass", ["d2/1 !pp |"]))
+}
+
+fn round() -> Score {
+    rests("round", bars: 10)
+        .then(part("round", [ROUND_B, ROUND_A, ROUND_G, ROUND_F]))
+        .then(part("round", [ROUND_B, ROUND_A, ROUND_G, ROUND_STOPS]))
+        .then(part("round", [ROUND_SWELLS, ROUND_A, ROUND_STAYS]))
+        .then(rests("round", bars: 3))
+        .then(part("round", ["d3/1 !pp |"]))
+}
+
+// The cloud: three voices on F sharp, A and D, which never leave but to lean up a step in every
+// third bar (F sharp to G, A to B, the D staying) and come back: D major, G major, D major, a
+// hymn's amen. With the ground under them the same notes are the chords above. They sit under
+// the tune and never on its notes: with the top voice on the tune's own F sharp, a pad and a
+// lead on one pitch, the two added or cancelled by the luck of their phases, and one bar came
+// out 4 dB softer than the same bar in the take before.
+const CLOUD: Text = "<f#3 a3 d4>/1~ | <f#3 a3 d4>/1 | <g3 b3 d4>/1 | <f#3 a3 d4>/1 |"
+
+/// The voices: softly through the room and the hymn (they stop halfway through bar 10); fuller
+/// over the ground; in the swell with two more voices on top, and then G major alone, so that
+/// the tune's last F sharp is a seventh over its G and not a semitone under one; softly home,
+/// where the last bar leaves the D to the lead.
+fn choir() -> Score {
+    part("choir", ["<f#3 a3 d4>/1~ !pp | <f#3 a3 d4>/1 |"])
+        .then(part("choir", ["<f#3 a3 d4>/1~ !p | <f#3 a3 d4>/1 | <g3 b3 d4>/1 | <f#3 a3 d4>/1 |"]))
+        .then(
+            part("choir", ["<f#3 a3 d4>/1~ | <f#3 a3 d4>/1 | <g3 b3 d4>/1 | <f#3 a3 d4>/2 r/2 |"]),
+        )
+        .then(
+            part("choir", ["<f#3 a3 d4>/1~ !mp | <f#3 a3 d4>/1 | <g3 b3 d4>/1 | <f#3 a3 d4>/1 |"]),
+        )
+        .then(part("choir", [CLOUD]))
+        .then(
+            part(
+                "choir",
+                [
+                    "<f#3 a3 d4 f#4 a4>/1~ !f | <f#3 a3 d4 f#4 a4>/1 | <g3 b3 d4>/1~ | <g3 b3 d4>/1 |",
+                ],
+            ),
+        )
+        .then(
+            part("choir", ["<f#3 a3 d4>/1 !pp | <g3 b3 d4>/1 | <f#3 a3 d4>/1 | <f#3 a3>/1 |"]),
+        )
+}
+
+// The tune. Its first three bars are the same every time it is sung; its fourth is where it
+// stops a step short (`TUNE_SHORT`), sings its two notes alone into the ground (`TUNE_ALONE`),
+// or leaps to the high D into the swell (`TUNE_LEAPS`). The second F sharp slides to the E,
+// which is leaned on where it rocks; the long B slides down through A to G.
+const TUNE: Text = "f#4/4 f#4/8 ( e4/4 !accent ) r/4. | f#4/4 f#4/8 ( e4/4 !accent ) r/4 b4/8~ ( | b4/2. a4/8 g4/8 ) |"
+const TUNE_SHORT: Text = "f#4/4. ( e4/4 ) r/4. |"
+const TUNE_ALONE: Text = "f#4/4. ( e4/4 ) r/8 d4/8 !mf e4/8 |"
+const TUNE_LEAPS: Text = "f#4/4. ( e4/4 ) r/4 d5/8~ !f |"
+/// The swell: the high D held seven beats; then the walk down at half speed, four even half
+/// notes, the last held across the bar line into the hymn's chord.
+const TUNE_SWELLS: Text = "d5/1~ | d5/2. r/4 | b4/2 ( a4/2 | g4/2 f#4/2~ | f#4/2 ) r/2 |"
+/// Home: the three notes once more, and the E steps down to D at last.
+const TUNE_HOME: Text = "f#4/4 !p f#4/8 ( e4/8~ e4/2 | d4/1 ) |"
+
+/// The lead: two notes alone; the tune twice over the hymn, twice over the ground; the swell;
+/// and home.
+fn lead() -> Score {
+    part("lead", ["r/1 | r/2. d4/8 !p e4/8 |"])
+        .then(part("lead", [TUNE, TUNE_SHORT, TUNE, TUNE_ALONE]))
+        .then(part("lead", [TUNE, TUNE_SHORT, TUNE, TUNE_LEAPS, TUNE_SWELLS]))
+        .then(rests("lead", bars: 1))
+        .then(part("lead", [TUNE_HOME]))
+}
+
+/// A second voice, from the ground's second half: on A where the tune rocks, a third over it
+/// where it moves; a third over the high D; a third over the tune's last note across the cut;
+/// and a third over its last D.
+fn harmony() -> Score {
+    rests("harmony", bars: 14)
+        .then(
+            part(
+                "harmony",
+                [
+                    "a4/4 !mf a4/8 a4/4 r/4. | a4/4 a4/8 a4/4 r/4 d5/8~ ( | d5/2. c#5/8 b4/8 ) |",
+                    "a4/4. a4/4 r/4 f#5/8~ !f |",
+                    "f#5/1~ | f#5/2. r/4 | d5/2 d5/2 | b4/2 ( a4/2~ | a4/2 ) r/2 |",
+                ],
+            ),
+        )
+        .then(rests("harmony", bars: 2))
+        .then(part("harmony", ["f#4/1 !p |"]))
+}
+
+/// The bell: the tune's three notes in the room; a note or two in each of the tune's rests
+/// the first time it is sung (bars 3-6 and 11-14), and an answer the second time (bars 7-9 and
+/// 15-17), one of them E and D, the step home the voice doesn't take; the three notes again
+/// after the cut, half a bar late; and up D major's notes to F sharp at the end.
+fn bell() -> Score {
+    let first: Text = "r/2 r/8 a5/4. | r/2 d6/4 r/4 | r/2 g5/8 b5/4. | r/2 r/8 a5/8 d6/4 |"
+    let answers: Text = "r/2 r/8 a5/8 f#6/4 | r/2 e6/8 d6/8 r/4 | r/4 b5/8 d6/8~ d6/2 | r/1 |"
+    part("bell", ["r/1 | f#5/4 !p f#5/8 e5/4 r/4. |"])
+        .then(part("bell", [first, answers]))
+        .then(part("bell", [first, answers]))
+        .then(rests("bell", bars: 4))
+        .then(part("bell", ["r/2 f#6/4 !p f#6/8 e6/8~ | e6/4 r/2. |"]))
+        .then(rests("bell", bars: 1))
+        .then(part("bell", ["r/8 a5/8 !p d6/8 f#6/8~ f#6/2 |"]))
+}
+
+/// The cello: D under the hymn, a new bow every two bars; the voices' lowest note over the
+/// ground; D again, home.
+fn cello() -> Score {
+    part(
+        "cello",
+        [
+            "d3/1~ !pp | d3/1 | d3/1~ !p | d3/1 | d3/1~ | d3/1 | d3/1~ | d3/1 | d3/1~ | d3/2 r/2 |",
+        ],
+    )
+        .then(
+            part(
+                "cello",
+                ["f#3/1~ !mp ( | f#3/1 | g3/1 | f#3/1 ) | f#3/1~ ( | f#3/1 | g3/1 | f#3/1 ) |"],
+            ),
+        )
+        .then(part("cello", ["f#3/1~ !mf ( | f#3/1 | g3/1~ | g3/1 ) |"]))
+        .then(part("cello", ["d3/1~ !pp | d3/1 | d3/1~ | d3/1 |"]))
+}
+
+/// The viola: the voices' middle note, from the tune's second singing.
+fn viola() -> Score {
+    rests("viola", bars: 6)
+        .then(part("viola", ["a3/1~ !p ( | a3/1 | b3/1 | a3/2 ) r/2 |"]))
+        .then(
+            part(
+                "viola",
+                ["a3/1~ !mp ( | a3/1 | b3/1 | a3/1 ) | a3/1~ ( | a3/1 | b3/1 | a3/1 ) |"],
+            ),
+        )
+        .then(part("viola", ["a3/1~ !mf ( | a3/1 | b3/1~ | b3/1 ) |"]))
+        .then(rests("viola", bars: 4))
+}
+
+/// The violin: only in the swell, the tune an octave over the lead.
+fn violin() -> Score {
+    rests("violin", bars: 18)
+        .then(
+            part(
+                "violin",
+                ["d6/1~ !mf | d6/2. r/4 | b5/2 ( a5/2 | g5/2 f#5/2~ | f#5/2 ) r/2 |"],
+            ),
+        )
+        .then(rests("violin", bars: 3))
+}
+
+/// A score as a player with `taste` plays it, sitting in time as `feel` says.
+fn played(s: Score, taste: Taste, feel: Feel) -> Performance {
+    swung(perform(s, taste, [Mark::Hold { at: bar(1), by: 1.0 }; 0]), feel)
+}
+
+// ---- the session ------------------------------------------------------------------------------
+
+/// The whole track, ready to play.
+pub fn build() -> Session {
+    var s = session(
+        TEMPO,
+        Master {
+            gain: 4.0,
+            glue_db: -16.0,
+            glue: 0.3,
+            makeup: 4.0,
+            warmth: 1.0,
+            ceiling: -1.0,
+            room_time: 1.4,
+            room_size: 1.6,
+            room_db: -4.0,
+            echo_beats: 0.75,
+            echo_again: 0.4,
+            echo_db: -5.0,
+            duck_time: 0.16,
+        },
+    )
+    s.drum(
+        "kick",
+        BOOM,
+        struck(kick(), TEMPO, Feel { swing: SWING, loose: 0.001, uneven: 0.03, seed: 1 }, key: 36),
+        Strip { gain: -4.0, room: 0.04 },
+    )
+    s.drum(
+        "snare",
+        FAT,
+        struck(
+            snare(),
+            TEMPO,
+            Feel { swing: SWING, late: 0.012, loose: 0.002, uneven: 0.06, seed: 2 },
+            key: 38,
+        ),
+        Strip { gain: -7.0, low_cut: 110.0, drive: 1.2, room: 0.3 },
+    )
+    s.drum(
+        "clap",
+        CLAP,
+        struck(
+            clap(),
+            TEMPO,
+            Feel { swing: SWING, late: 0.02, loose: 0.003, uneven: 0.08, seed: 3 },
+            key: 39,
+        ),
+        Strip { gain: -5.0, pan: -0.2, low_cut: 300.0, room: 0.35 },
+    )
+    s.drum(
+        "hat",
+        HAT,
+        struck(
+            hat(),
+            TEMPO,
+            Feel { swing: SWING, late: -0.004, loose: 0.003, uneven: 0.12, seed: 4 },
+            key: 42,
+        ),
+        Strip { gain: -3.0, pan: 0.45, room: 0.1 },
+    )
+    s.drum(
+        "shaker",
+        SHAKER,
+        struck(
+            shaker(),
+            TEMPO,
+            Feel { swing: SWING, late: -0.003, loose: 0.003, uneven: 0.18, seed: 5 },
+            key: 70,
+        ),
+        Strip { gain: -9.5, pan: -0.5, low_cut: 2000.0, room: 0.2 },
+    )
+    s.drum(
+        "ride",
+        RIDE,
+        struck(ride(), TEMPO, Feel { loose: 0.003, uneven: 0.1, seed: 6 }, key: 51),
+        Strip { gain: -7.0, pan: -0.35, room: 0.2 },
+    )
+    s.drum(
+        "crash",
+        CRASH,
+        struck(crash(), TEMPO, Feel { seed: 7 }, key: 49),
+        Strip { gain: -17.0, pan: 0.25, room: 0.3 },
+    )
+    s.key("kick")
+    s.synth(
+        "bass",
+        DEEP,
+        played(
+            bass(),
+            Taste { tempo: TEMPO, metre: 0.1, legato: 0.04, detache: 0.06 },
+            Feel { swing: SWING },
+        ),
+        Strip { gain: 0.0, high_cut: 1500.0, duck: 5.0 },
+    )
+    s.synth(
+        "round",
+        ROUND,
+        played(
+            round(),
+            Taste { tempo: TEMPO, metre: 0.1, legato: 0.04, detache: 0.08 },
+            Feel { swing: SWING },
+        ),
+        Strip { gain: -1.0, low_cut: 100.0, high_cut: 2500.0, duck: 3.0 },
+    )
+    s.synth(
+        "choir",
+        CHOIR,
+        played(choir(), Taste { tempo: TEMPO, detache: 0.02 }, Feel {}),
+        Strip { gain: -3.0, low_cut: 180.0, high_cut: 6000.0, room: 0.5 },
+    )
+    s.synth(
+        "lead",
+        SUNG,
+        played(
+            lead(),
+            Taste { tempo: TEMPO, legato: 0.05, detache: 0.08, jitter_velocity: 0.04, seed: 8 },
+            Feel {},
+        ),
+        Strip { gain: 0.0, low_cut: 180.0, room: 0.3, echo: 0.2 },
+    )
+    s.synth(
+        "harmony",
+        Patch { vibrato: 8.0, ..SUNG },
+        played(
+            harmony(),
+            Taste { tempo: TEMPO, legato: 0.05, detache: 0.08, jitter_velocity: 0.04, seed: 9 },
+            Feel {},
+        ),
+        Strip { gain: -10.0, pan: 0.35, low_cut: 250.0, room: 0.35, echo: 0.2 },
+    )
+    s.tine(
+        "bell",
+        BELL,
+        played(
+            bell(),
+            Taste { tempo: TEMPO, detache: 0.02, jitter_velocity: 0.08, seed: 10 },
+            Feel {},
+        ),
+        Strip { gain: -8.5, pan: 0.4, low_cut: 400.0, room: 0.45, echo: 0.4 },
+    )
+    let strings = Taste { tempo: TEMPO, legato: 0.04, detache: 0.03 }
+    let cello_part = cello()
+    let cello_played = played(cello_part, strings, Feel {})
+    s.bowed(
+        "cello",
+        CELLO,
+        bowings(cello_part, cello_played, 0, -22.0),
+        Strip { gain: -9.0, pan: 0.4, low_cut: 120.0, room: 0.4 },
+    )
+    let viola_part = viola()
+    let viola_played = played(viola_part, strings, Feel {})
+    s.bowed(
+        "viola",
+        VIOLA,
+        bowings(viola_part, viola_played, 0, -22.0),
+        Strip { gain: -13.0, pan: -0.4, low_cut: 150.0, room: 0.45 },
+    )
+    let violin_part = violin()
+    let violin_played = played(violin_part, strings, Feel {})
+    s.bowed(
+        "violin",
+        VIOLIN,
+        bowings(violin_part, violin_played, 0, -22.0),
+        Strip { gain: -15.0, pan: -0.55, low_cut: 200.0, room: 0.5 },
+    )
+    s
+}

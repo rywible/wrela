@@ -1,0 +1,8 @@
+# The bowed strings, for the audio tool (`wrela tool audio -- content/strings wav <out.wav>
+# --take n`): each instrument's scale, dry, to check and voice it by, and music for them
+# together.
+[package]
+name = "strings"
+
+[dependencies]
+engine = { workspace = true }

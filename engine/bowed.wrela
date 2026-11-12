@@ -1,0 +1,2421 @@
+// A bowed string instrument: four strings on one bridge, one of them bowed, heard through a
+// body. A cello, a violin, a viola and a double bass are the same instrument with other strings
+// and another body (`Fiddle`).
+//
+// Each string is two delay lines either side of a bow, whose hair sticks to the string and
+// slips (McIntyre, Schumacher and Woodhouse, JASA 74(5), 1983; Smith, "Efficient simulation of
+// the reed-bore and bow-string mechanisms", ICMC 1986). The friction's curve is the STK's bow
+// table (Cook and Scavone, "The Synthesis ToolKit (STK)", ICMC 1999).
+//
+// It plays notes as a string player bows them (`Bowing`):
+// - a note is played on the highest string whose open pitch is at or under it, as a hand in the
+//   first position plays it. Its pitch is there at once: a finger comes down, or the bow goes to
+//   another string; nothing slides;
+// - a note that starts a new bow stops the one before: the bow slows almost to a stop and sets
+//   off the other way. Notes under one slur share a bow, and only the finger changes (or the
+//   bow goes to the next string);
+// - every stroke starts with its string already in a bowed string's motion (one slip a period),
+//   kept from when the player first tried the instrument and fitted to the string and the
+//   speed: a string bowed from rest takes a tenth of a second to find that motion, and
+//   scratches or breaks to its octave until it does;
+// - a string that is left rings on if it is open, and dies as its finger lifts if it was
+//   stopped; all four stand on one bridge, so each feels a little of the others' motion;
+// - a stopped note held a while is given a vibrato.
+// The bow's speed sets how loud, how hard it presses how bright. The player knows how loud each
+// pitch comes out (having tried each), and an ear trims the bow to the level asked.
+//
+// Behind the instrument is a player (`bowings`, `Playing`): no note of a line is a slab. Each
+// leans toward the next or falls away into silence, a long one swells, a line is louder as it
+// climbs, a down-bow sinks and an up-bow grows, the vibrato is wider on a louder note and
+// follows the bow through each note, a bow from silence starts more gently than one within
+// the line, and the left hand moves to each note a moment before its time.
+//
+// The body is 96 modes, twelve an octave from 55 Hz, unevenly placed and weighted as a wooden
+// box's are, each sixth of an octave of them set to a level (a `Fiddle`'s `body`) so that the
+// instrument's notes have the harmonics a recording's have (the audio tool's `follow`). This
+// began in content/cello as one of three ways to make a bowed string, played beside a recording
+// of a cello: a filtered sawtooth and a set of measured harmonics were the others. This one was
+// chosen by ear and the others are gone.
+
+use perform::{Performance, deadpan}
+use score::{NO_SLUR, Score, meter, score}
+use tone::{Band, Noise, Svf, band, gain_of, key_hz, seeded}
+use std::audio::SAMPLE_RATE
+use std::collections::Vec
+use std::math::{PI, TAU}
+
+/// The audio thread's rate.
+const RATE: f32 = f32(SAMPLE_RATE)
+
+/// The body's bands, and the lowest's frequency (Hz): the audio tool's `track`'s.
+pub const BANDS: u32 = 48
+const LOWEST: f32 = 55.0
+
+/// Band `j`'s frequency (Hz).
+fn band_hz(j: u32) -> f32 {
+    LOWEST * exp2(f32(j) / 6.0)
+}
+
+/// How hard a note at `db` is played, from 0 (-45 dB and under) to 1 (-10 dB and over).
+@audio
+fn hard(db: f32) -> f32 {
+    clamp((db + 45.0) / 35.0, 0.0, 1.0)
+}
+
+/// The body's modes: twelve an octave from 55 Hz, over eight octaves. A wooden box answers at
+/// its own resonances, each a few percent wide, with hollows between: a note's harmonics come
+/// out uneven, one strong and its neighbour weak, and differently for every pitch. (A body of
+/// 48 broad band filters gave every note the same evenly falling harmonics, a filtered
+/// sawtooth's: in the recording a harmonic is 7.0 dB from the mean of its two neighbours, in
+/// that body's cello 3.4 dB.) No cello's modes are measured here: the modes are placed and
+/// weighted by a seeded scatter, a body's kind of irregularity, not one instrument's own, and
+/// each band of two modes is then set to the level the recording shows over that band.
+const MODES: u32 = 96
+/// How far a mode strays from its even place (a share of a twelfth of an octave, either way),
+/// and the weakest a mode is beside the strongest.
+const STRAYS: f32 = 0.35
+const WEAKEST: f32 = 0.4
+
+/// How sharp a mode at `hz` is: broad at the bottom (6 at 55 Hz), sharper going up (30 from
+/// 1.1 kHz), so that the body rings about 0.2 s at its lowest modes and under 0.1 s from 500 Hz
+/// up. (With the low modes sharper, 10 at 55 Hz and 20 at 190 Hz, a low note rang on in the
+/// body as loud as the note slurred after it for a tenth of a second, and the player, who
+/// learns each pitch's loudness in a fifth of a second, took the low notes for quieter than
+/// they are and played them 6 dB too loud.)
+fn sharp(hz: f32, sharpest: f32) -> f32 {
+    clamp(4.0 + 6.0 * log2(hz / 55.0), 6.0, sharpest)
+}
+
+/// What a mode at `centre`, `q` sharp, makes of a sine at `hz`: its real and imaginary parts.
+fn answer(centre: f32, q: f32, hz: f32) -> vec2 {
+    let w = tan(PI * hz / RATE) / tan(PI * centre / RATE)
+    let k = 1.0 / q
+    // j w k / (1 - w² + j w k)
+    let (dr, di) = (1.0 - w * w, w * k)
+    let den = dr * dr + di * di
+    vec2(w * k * di / den, w * k * dr / den)
+}
+
+/// A body: modes side by side, their outputs summed. Each mode's frequency (Hz), how sharp
+/// it is, and its gain (its sign is which way it pushes).
+pub struct Body {
+    hz: [f32; 96],
+    q: [f32; 96],
+    gains: [f32; 96],
+    bands: [Band; 96],
+    state: [Svf; 96],
+}
+
+/// A body whose mean response over each band (a sixth of an octave about `band_hz`) is `db`,
+/// its modes scattered by the seed `wood`: another number is another body.
+/// Band `b` holds modes `2 b` and `2 b + 1`. The modes overlap, so each band's gain is found
+/// by trying: 40 times, each is moved by what its band is off (its mean power at nine
+/// frequencies across it).
+pub fn body(db: [f32; 48], wood: u32, sharpest: f32 = 30.0) -> Body {
+    var grain = seeded(wood)
+    var hz = [0.0; 96]
+    var q = [0.0; 96]
+    var weight = [0.0; 96]
+    var bands = [Band {}; 96]
+    for m in 0..MODES {
+        hz[m] = LOWEST * exp2((f32(m) - 0.5 + STRAYS * grain.next()) / 12.0)
+        q[m] = sharp(hz[m], sharpest)
+        // How strong it is beside its band's other mode, and which way it pushes: two
+        // neighbours pushing the same way leave a hollow between them.
+        let strength = WEAKEST + (1.0 - WEAKEST) * abs(grain.next())
+        weight[m] = if grain.next() < 0.0 { -strength } else { strength }
+        bands[m] = band(hz: hz[m], q: q[m])
+    }
+    var level = [0.0; 48]
+    for b in 0..BANDS {
+        level[b] = gain_of(db[b])
+    }
+    for _ in 0..40 {
+        var got = [0.0; 48]
+        for b in 0..BANDS {
+            var power = 0.0
+            for i in 0..9 {
+                let at = band_hz(b) * exp2((f32(i) - 4.0) / 54.0)
+                var sum = vec2(0.0)
+                for m in 0..MODES {
+                    sum += level[m / 2] * weight[m] * answer(hz[m], q[m], at)
+                }
+                power += sum.x * sum.x + sum.y * sum.y
+            }
+            got[b] = sqrt(power / 9.0)
+        }
+        for b in 0..BANDS {
+            level[b] *= clamp(gain_of(db[b]) / max(got[b], 1e-9), 0.25, 4.0)
+        }
+    }
+    var gains = [0.0; 96]
+    for m in 0..MODES {
+        gains[m] = level[m / 2] * weight[m]
+    }
+    Body { hz, q, gains, bands, state: [Svf {}; 96] }
+}
+
+impl Body {
+    /// Stills it: what it was ringing with is gone.
+    pub fn still(mut self) {
+        self.state = [Svf {}; 96]
+    }
+
+    /// How much of a sine at `hz` comes through (1 is all of it).
+    pub fn answers(self, hz: f32) -> f32 {
+        var sum = vec2(0.0)
+        for m in 0..MODES {
+            sum += self.gains[m] * answer(self.hz[m], self.q[m], hz)
+        }
+        length(sum)
+    }
+
+    /// `x` through the body.
+    @audio
+    pub fn pass(mut self, x: f32) -> f32 {
+        var y = 0.0
+        for m in 0..MODES {
+            y += self.gains[m] * self.state[m].pass(self.bands[m], x)
+        }
+        y
+    }
+}
+
+/// An instrument: its four strings' pitches open (Hz, low to high), the lowest pitch its
+/// player learns (Hz: the player knows the 48 semitones from it), its body's bands (dB) and the
+/// seed its modes are scattered by, the level of the whole (dB), and the frequency (Hz) below
+/// which nothing is wanted of it (two high-passes there, together a fourth-order one, take what
+/// rumble the strings' lowest motion leaves).
+pub struct Fiddle: Copy {
+    pub open: [f32; 4],
+    pub lowest: f32,
+    pub body: [f32; 48],
+    pub wood: u32 = 1007,
+    pub gain: f32 = 0.0,
+    pub floor: f32 = 55.0,
+    /// The harmonic from which a note brightens with how hard it is played (`BRIGHTENS`): a
+    /// cello's sixth, a violin's ninth, as their recorded notes show; a viola's and a double
+    /// bass's are taken from those two, not measured.
+    pub bright_from: f32 = 6.0,
+    /// The sharpest its body's modes are. A small body's modes crowd together higher up, and
+    /// its answer there is smoother than a few sharp modes give: a violin's recorded notes have
+    /// each harmonic 5.3 dB from the mean of its neighbours, and with modes as sharp as a
+    /// cello's the violin here had 7.7 dB.
+    pub sharpest: f32 = 30.0,
+    /// How strong the body's grain is beside the sound itself (0: none). At 0.7 a violin's
+    /// harmonics were 7.6 dB from the mean of their neighbours where its recorded notes' are
+    /// 5.3 dB: too rough an answer, a comb's.
+    pub grain: f32 = 0.3,
+    /// Its players' vibrato: the rate (Hz) and the depth (cents either way). A cellist's by
+    /// default; a violinist's is some 6.3 Hz and a quarter of a semitone either way (Seashore's
+    /// measurements of violinists: about 6.5 Hz and a quarter tone from bottom to top).
+    pub sway_hz: f32 = 5.6,
+    pub sway_cents: f32 = 14.0,
+    /// How uneven the hair's pull is all through a stroke: the bow's speed is this share of
+    /// itself up and down (RMS) from moment to moment, as fast as the string (`CATCH_PITCH`). Under a high
+    /// note's fundamental a recorded violin is not silent: from 250 Hz (where its body starts
+    /// to sound) up to the note, each third of an octave has 31 to 44 dB less than the note, a
+    /// bed the body makes of the bow's unevenness. With a steady bow the violin here had 43 to
+    /// 54 dB less, 9 to 12 dB short, and an ear called it not full, with a synthesizer's edge:
+    /// one wave, the same every period. At this it has the recorded notes' bed within 3 dB,
+    /// band by band. (More of the hair's hiss, `ROSIN` at four times this, raised the bed 5 dB
+    /// and no further, and was over the recorded notes' hiss higher up.) Measured on the
+    /// violin's notes only; the viola's and the double bass's take the same on trust.
+    ///
+    /// This is its size at `MF`. The hair's unevenness doesn't fall away as the bow slows: for
+    /// each dB a note is under `MF` it is `BREATHES` dB more of the bow's speed (and as much
+    /// less over it), so the bed stays about where it is while the note comes and goes. A
+    /// recorded violin's soft note is breathy: under its fundamental each third of an octave
+    /// has 27 to 36 dB less than the note at pianissimo, 35 to 45 at mezzo-forte and 53 to 62
+    /// at fortissimo. (With the bed falling away with the note, a soft note here was a clean
+    /// tone with one vibrato, 43 to 47 dB over its bed: what an ear twice picked out, by the
+    /// second, as "very synthy". It has 29 to 35 dB less now at pianissimo.)
+    pub coarse: f32 = 0.024,
+    /// Each string's own colour, lowest string first, for what one body can't give them all:
+    /// how much more of the string's harmonics there is over its fundamental (`richness`, dB,
+    /// from `RICH_FROM` times the note's pitch up), and how much more it gives above
+    /// `BRILLIANT_FROM` Hz (`brilliance`, dB; under 0, less). A violin's strings are not one
+    /// string at four tunings: its E is plain steel and far brighter than its wound strings,
+    /// and note for note its recorded A and G strings have their harmonics 6 to 9 dB further
+    /// over the fundamental than a body voiced to the middle of all its notes gave them here.
+    /// (The violin's notes on its A string had their second to sixth harmonics 14, 6, 7, 10
+    /// and 16 dB weaker beside the fundamental than the same notes recorded on a violin's A
+    /// string: nearly plain tones. An ear picked out one of them, a held E flat, as "very
+    /// synthy", and had heard the higher notes edge back toward a synthesizer: on the E
+    /// string a note had 10 dB less than a recorded one from 5 to 12 kHz. With these the
+    /// middle of each string's notes is within 5 dB of the recorded string's, harmonic by
+    /// harmonic to the sixth, and within 3 dB by band above.)
+    ///
+    /// A string's richness is a loud note's. It is all there from `MF` up, none `RICH_OVER`
+    /// dB under, and turned the other way below that (as far under as it was over): a recorded
+    /// violin's A string played pianissimo has its second to eighth harmonics 6 to 12 dB lower
+    /// beside the fundamental than at mezzo-forte, and no higher at fortissimo. (Given the
+    /// same richness at every level, a soft note had a loud note's harmonics, its fundamental
+    /// 9 dB under the whole where a recorded soft note's leads: an ear heard that as a
+    /// synthesizer too.)
+    pub brilliance: [f32; 4] = [0.0; 4],
+    pub richness: [f32; 4] = [0.0; 4],
+    /// The samples of a string's period that lie between the bow and the bridge but in no
+    /// delay line (the bridge's own delay): counted, they keep the bow at `BOW_AT` of the
+    /// string however short it is. Left out (0), the bow sits further along a short string: a
+    /// sixth of the way on a violin's notes over 600 Hz, where a player's bow is nearer a tenth,
+    /// and the sixth harmonic of each of those notes was 28 to 32 dB under its strongest, a
+    /// hole where a recorded note has 0 to 17 dB. The bridge's delay is about 2.5 samples; at
+    /// that a violin's G5 started at its octave and three notes spoke late, so the violin
+    /// counts 1.5, which brings the sixth harmonics back to 12 to 17 dB under and leaves every
+    /// note speaking as it did. The cello counts none: it was called finished as it is.
+    pub bridge_side: f32 = 0.0,
+    /// How unsteady the arm is: the bow's speed drifts by this share of itself (RMS), and its
+    /// weight with it (by `WEIGHS` dB for all of the speed: what the string gives above its
+    /// fundamental and above the brightness's corner comes and goes), both as slowly as
+    /// `UNSTEADY_HZ`. Held without vibrato, a recorded violin's note is not still: each of its
+    /// first six harmonics moves 0.5 to 1.5 dB (RMS, over 40 ms, its slow drift taken off; 2
+    /// to 5 dB on some notes), mostly not together. With a steady arm the violin's here moved
+    /// 0.1 to 0.3 dB: one wave held, which an ear named exactly, "that regular oscillation
+    /// classic synthy sound". At this they move 0.5 to 1.2 dB. (A sharper body, a larger
+    /// tremble of the pitch and a rougher bow's place were each tried first and moved them
+    /// under 0.2 dB more.) The cello's arm is steady: it was called finished so.
+    pub unsteady: f32 = 0.0,
+}
+
+/// A cello: C2, G2, D3 and A3. Its body, like the other instruments' here, is voiced to notes
+/// recorded in an anechoic chamber (docs/citations.md, the dry references): the instrument
+/// plays its chromatic scale at `MF`, each note's harmonics are set beside the recorded note's
+/// (the audio tool's `follow`), and each band is moved toward the middle of what its harmonics
+/// are off, smoothly from band to band (no band more than 8 dB from the mean of its
+/// neighbours), until they agree: to 1.4 dB by band. (Its first body was set the same way
+/// against a recording of the Prelude made in a room, and had that recording's colour: thin
+/// from 140 to 250 Hz. An ear found this one the more natural.)
+pub const CELLO: Fiddle = Fiddle {
+    open: [65.41, 98.0, 146.83, 220.0],
+    lowest: 55.0,
+    body: [
+        -39.75, -35.06, -29.70, -27.16, -21.45, -14.05, -8.85, -4.94, -5.08, 9.59, 10.41, 12.91,
+        8.20, -2.13, 3.54, 7.46, 1.83, 8.18, 1.30, 4.67, 5.94, -2.48, 4.25, 4.07, -1.98, -4.35,
+        0.38, -2.73, -5.20, -0.94, -5.22, -6.69, 0.80, -2.39, -6.63, -9.88, -13.42, -19.36, -15.72,
+        -16.01, -14.52, -16.63, -17.40, -13.56, -16.74, -16.91, -14.25, -15.75,
+    ],
+    gain: -0.60,
+    // Its recorded notes brighten from about their sixth harmonic. This is lower by an ear's
+    // choice: the take of the Prelude that an ear called almost perfect was made when every
+    // note brightened from 1.2 kHz up, and from here the cello is within a decibel of it.
+    bright_from: 3.5,
+    // No grain: an ear called this cello finished without it (and, hearing it both ways,
+    // asked for nothing more).
+    grain: 0.0,
+    // A steady bow: this cello was called finished with one.
+    coarse: 0.0,
+}
+
+/// A violin: G3, D4, A4 and E5, voiced as the cello is (to 1.0 dB by band).
+pub const VIOLIN: Fiddle = Fiddle {
+    open: [196.0, 293.66, 440.0, 659.26],
+    lowest: 195.998,
+    body: [
+        -4.04, -4.04, -4.04, -4.04, -4.04, -4.04, -4.04, -4.04, -4.04, -4.04, -4.04, -4.04, -4.04,
+        -4.04, -0.68, 2.68, 1.69, 6.28, 4.55, 2.59, 3.63, -11.32, -10.57, 4.67, 3.91, -5.94, -4.60,
+        -2.99, -1.82, -0.33, 3.23, 7.38, 4.95, -0.78, -1.15, 2.72, 3.94, 5.11, 2.19, -5.82, -6.39,
+        -7.46, -10.57, -11.15, -13.06, -12.25, -7.22, -4.04,
+    ],
+    wood: 1721,
+    floor: 150.0,
+    bright_from: 9.0,
+    sway_hz: 6.3,
+    sway_cents: 24.0,
+    sharpest: 12.0,
+    richness: [5.0, 0.0, 8.0, 0.0],
+    brilliance: [0.0, -8.0, 0.0, 10.0],
+    bridge_side: 1.5,
+    unsteady: 0.07,
+}
+
+/// A viola: C3, G3, D4 and A4, voiced as the cello is (to 2.6 dB by band: its band at 440 Hz
+/// is the one that won't settle).
+pub const VIOLA: Fiddle = Fiddle {
+    open: [130.81, 196.0, 293.66, 440.0],
+    lowest: 130.813,
+    body: [
+        -7.52, -7.52, -7.52, -7.52, -7.52, -7.52, -7.52, -7.52, -7.52, -7.52, -7.52, -7.52, -7.52,
+        -7.87, 3.47, 15.05, 15.05, 10.84, -3.25, -1.34, 11.55, 8.43, -3.99, -1.37, 6.29, 4.15, 2.72,
+        1.05, 0.20, 2.35, -2.27, -6.94, -7.64, -12.08, -13.93, -12.96, -13.39, -14.05, -13.79,
+        -11.56, -10.79, -11.13, -9.71, -8.64, -6.50, -6.57, -8.06, -7.52,
+    ],
+    wood: 1690,
+    floor: 100.0,
+    bright_from: 7.5,
+    sway_hz: 5.9,
+    sway_cents: 19.0,
+    unsteady: 0.07,
+}
+
+/// A double bass: E1, A1, D2 and G2, voiced as the cello is (to 1.1 dB by band).
+pub const BASS: Fiddle = Fiddle {
+    open: [41.2, 55.0, 73.42, 98.0],
+    lowest: 41.203,
+    body: [
+        -2.20, 9.99, 15.32, 9.99, 14.29, 15.32, 15.32, 15.32, 14.95, 6.79, 10.06, 11.31, 6.94, 6.11,
+        8.70, 7.53, 6.45, 11.48, 9.75, 6.50, 4.34, -4.59, -7.73, -1.00, 0.29, -0.08, 4.20, 0.76,
+        -5.07, -5.22, -4.32, -7.30, -9.46, -10.07, -7.89, -10.31, -19.23, -17.85, -16.25, -19.67,
+        -15.19, -6.13, -2.20, -2.20, -2.20, -2.20, -2.20, -2.20,
+    ],
+    wood: 1565,
+    floor: 30.0,
+    sway_hz: 5.2,
+    sway_cents: 12.0,
+    unsteady: 0.07,
+}
+
+// ---- the strings ------------------------------------------------------------------------------
+
+const STRINGS: u32 = 4
+
+/// Each string's memory either side of the bow (samples, a power of two), and where the bow is
+/// along it (from the bridge).
+const SPAN: u32 = 2048
+const BOW_AT: f32 = 0.127
+/// The bow doesn't stay at one place on the string: it wanders this share of its distance from
+/// the bridge either way, this many times a second, so the harmonics it leaves weakest aren't
+/// always the same ones. (It was 8%, to keep a harmonic with a node where the bow is from
+/// ringing on alone; what the hair takes, `HAIR`, does that now.)
+const WANDERS: f32 = 0.03
+const WANDER_HZ: f32 = 1.7
+/// Nor is the bow's place steady from moment to moment: the hair is a ribbon, and where along
+/// it the string is held shifts all the time, by this share of the bow's distance from the
+/// bridge (RMS), as fast as `ROUGH_HZ`. A harmonic's strength depends on where the bow is, the
+/// more the higher the harmonic, so each upper harmonic flutters on its own. In notes held
+/// without vibrato in an anechoic chamber, a violin's and a cello's harmonics from the fourth
+/// up move 2 to 4 dB about their level from one hundredth of a second to the next, and the
+/// first by half a dB; with the bow's place smooth they moved 0.2 to 0.6 dB: a held note was a
+/// frozen wave, a synthesizer's. (An uneven grip was tried first: it moved nothing, since a
+/// bowed string's slip is timed by the wave's return, not by the hair's hold.)
+const ROUGH: f32 = 0.02
+const ROUGH_HZ: f32 = 30.0
+/// The pitch trembles too, a bow's weight flattening a note a little as it changes: this many
+/// cents (RMS), as fast as the place does. (The recorded notes: 0.4 to 1.8 cents.)
+///
+/// Every instrument has all of both. (A violin was given a quarter of them and a viola half,
+/// on the strength of one recorded open string, a violin's D, which has 44 dB less than its
+/// harmonics beside them and 54 dB less midway between. That note is the odd one: a violin's
+/// other recorded notes, open and stopped, have 16 to 31 dB less beside their harmonics and 37
+/// to 46 dB less midway, and the violin here with a quarter had 41 to 44 and 45 to 56: too
+/// clean, a held wave. With all of it, it has 29 to 32 and 37 to 49.)
+const TREMBLES: f32 = 1.5
+const TREMBLE_HZ: f32 = 30.0
+/// How much of a wave comes back from the bridge each time round: an open string's (it rings
+/// for seconds), a string's under a finger (the fingertip takes more), and a string's whose
+/// finger has just lifted (which stops it). None is measured: the recording has no string
+/// ringing alone to measure.
+const RINGS: f32 = 0.975
+const FINGERED: f32 = 0.965
+const STOPPED: f32 = 0.8
+/// The pole of the low-pass a wave comes back through, and the samples the loop holds beside
+/// the string's two lengths: one in each delay line, the low-pass's delay, and one for the
+/// free string's loss below; less `EARLY`, what a bowed string's slip comes early by. (Counted
+/// without it, every note was sharp by the same 0.3 of a sample: 1 cent at the cello's bottom,
+/// 5 at its top, and 20 at a violin's G6.)
+const POLE: f32 = 0.554
+const EARLY: f32 = 0.3
+const BESIDE: f32 = 3.0 + POLE / (1.0 - POLE) - EARLY
+/// A string the bow has left loses its high harmonics within a few hundredths of a second and
+/// rings on at its low ones: each time round, a wave is mixed with its neighbours a sample
+/// either side, this much of each (0: none; a quarter takes most of the top). Under the bow
+/// there is none of it: the bow keeps the string's corner sharp. Without it a string that was
+/// left rang on as bright as when it was bowed, and was as loud as the note after it.
+const FREE_LOSS: f32 = 0.25
+/// The share of the bridge's motion each string feels from the others: what makes an open
+/// string ring in sympathy with a note played on another.
+const SHARED: f32 = 0.012
+/// What the hair takes of a wave it turns back while it holds the string. A bow that held the
+/// string at a point would turn all of it back, and a partial with a node at that point would
+/// pass it untouched: nothing but the bridge would damp it, and it rang on beside the note at
+/// its own pitch, a little off the note's harmonic (a held open G grew a ring at 784 Hz; with
+/// the bow wandering it no longer grew, but between its harmonics from 350 Hz to 1.4 kHz the
+/// cello still had 25 to 30 dB less than the note where an anechoic cello has 52 to 56 dB
+/// less). Hair has width and gives: it holds the string over a length no partial has a node
+/// all along, and takes some of every wave it turns back. A twentieth leaves 38 to 39 dB less
+/// there; a fifth left 44 to 49 dB less, but sent a violin's and a viola's upper strings to
+/// their octaves (two slips a period on 24 of a violin's 37 notes), and a tenth still broke
+/// three.
+const HAIR: f32 = 0.05
+/// The hair's noise beside the slip it rides on: rosin's hiss, only while the string slips.
+/// It is set by notes recorded in an anechoic chamber: between an open string's harmonics
+/// there is 45 to 60 dB less than the note, octave by octave, on a cello and on a violin. At
+/// this, the instruments here have 44 to 54 dB less. (It was 0.03, by guess, which left 35 to
+/// 43 dB less; and once 0.13, to match a recording made in a room, where it was heard as a
+/// scraping tone under every note: what that recording has between its harmonics is its
+/// room's.)
+const ROSIN: f32 = 0.01
+/// The body's smear: three all-pass filters after it, their lengths (samples: 1.7, 2.9 and
+/// 4.4 ms) and their gain. A string's slip is one sharp step a period; a wooden body's modes ring
+/// on after it, each at its own phase, so what is heard is spread over a few milliseconds and
+/// not a pulse. Without this the audio tool's `clicks` found a click every period (996 a minute
+/// over the Prelude's opening, where the recording has none): a buzz.
+const SMEARS: [u32; 3] = [83, 139, 211]
+const SMEAR_GAIN: f32 = 0.55
+/// The body's grain. A wooden box's answer isn't smooth between its big resonances: it has
+/// hundreds of small ones, and what reaches a listener from one side of it changes within a
+/// few tens of hertz. So a note's pitch need only tremble a cent or two for each of its upper
+/// harmonics to rise and fall on its own (Weinreich, "Directional tone color", JASA 101(4),
+/// 1997): in notes held without vibrato in an anechoic chamber, a violin's and a cello's
+/// harmonics from the fourth up move 2 to 4 dB about their level from one hundredth of a
+/// second to the next, each apart from the others, and the first by half a dB. Through the 96
+/// modes alone they moved 0.2 to 0.6 dB: a held note was a frozen wave, a synthesizer's. The
+/// grain is the sound again, `GRAIN_TAPS` times over the next `GRAIN_SPAN` samples (35 ms),
+/// at scattered moments, either way up and dying away (sparse noise for a dense answer:
+/// Karjalainen and Jarvelainen, "Reverberation modeling using velvet noise", AES 30th Conf.,
+/// 2007), together an instrument's `grain` as strong as the sound itself.
+const GRAIN_TAPS: u32 = 48
+const GRAIN_SPAN: u32 = 1680
+/// The pitches the player knows the instrument's loudness at: every semitone from the
+/// instrument's `lowest`, four octaves; and the samples each is tried for as the player learns them (the first half to
+/// settle, the second measured), each started in a bowed string's motion as a stroke is. A
+/// body of modes is louder at one note than at its neighbour: knowing six pitches an octave,
+/// each bowed from rest for a fifth of a second, the player was up to 6 dB out on a note
+/// between them (E2 came out at -12 dB asked for -18, and the E3 after it at -22), more than
+/// an ear can put right within a short note.
+const KNOWN: u32 = 48
+/// The samples kept of each side of a bowed string's motion: more than the longest known
+/// string's (a double bass's E1, 41 Hz, 1165 samples).
+const KEEPS: u32 = 1280
+const TRIED: u32 = 7200
+/// The samples the first string tried is bowed from rest, to find the motion that is kept.
+const SETTLES: u32 = 14400
+
+/// The hair's hold on the string: how easily it lets go, in the stroke's speeds, from a soft
+/// bow's to how much less a hard one's (the STK's bow table at its usual weight is 0.3). In this
+/// range a string that is in a bowed string's own motion, one slip a period, stays in it. Looser
+/// (0.3 and over) and every note slipped twice a period, its octave; firmer (0.16 to 0.08) and a
+/// string bowed from rest never let go. A hold with a memory (held until pulled 4.5 speeds
+/// clear) was tried and was worse: two slips a period nearly everywhere.
+const LOOSE: f32 = 0.2
+const HARDER: f32 = 0.06
+
+/// The bow's change of direction: the samples before a new bow's note that the bow starts to
+/// slow (14 ms), and the share of the way to its new speed it goes each sample, slowing (most
+/// of the way in 4 ms) and setting off. While it slows for a turn the hair quiets the string:
+/// the string's motion dies away by `HUSHES` seconds' time constant (to half by the turn).
+/// The new bow starts with `BITES` of its speed, about where the string was left, and comes
+/// up to it as `RISES` says. (Before, a slowing bow let the string ring on at full strength,
+/// and the turn cut it off and set it going again at three tenths: the note before stopped
+/// dead, and the new note's start was a thing apart from the note, which swelled in after it.)
+///
+/// Tried and taken out, each heard as worse than this: the bow turning 30 ms before the
+/// note's time; a stroke shaped to the recording's notes (2 to 3 dB up above 1.5 kHz for a
+/// note's first tenth of a second, 1 dB down by its end), by an accent on the bow's speed and a
+/// letting-up before each turn with a shelf above 1.2 kHz following both, which matched the
+/// recording's levels band by band within 1 dB and sounded tamped down; and a slow drift of
+/// the bow's speed. What a recording's levels show round a note's start is the room's and the
+/// other strings' as much as the bow's.
+///
+/// How a new bow starts is the player's choice, note by note (a `Bowing`'s `gentle`): at once,
+/// from `BITES` of its speed, as a quick note must; or, on a note with time to spare, from
+/// `GENTLEST` of it, coming up as much more slowly as it starts lower (the share of the way
+/// each sample goes as the square of the start). `bowings` starts a note under `GENTLE_OVER`
+/// seconds at once and one of `GENTLE_BY` seconds or more as gently as can be. (With every
+/// bow starting at once, a violin's note a second long dipped 7 dB at the turn and was back
+/// within 3 dB of its level 9 ms after the dip and within 1 dB after 18 ms: an ear called its
+/// separate notes abrupt, not bowed. Started as gently as can be it dips 13 dB and is back in
+/// 31 and 52 ms. A recorded violin's note takes 85 to 108 ms to come from 20 dB under its
+/// level to 3 dB under, from silence, in an anechoic chamber.)
+///
+/// A bow that sets off gently catches the string in jerks until it is at speed: its speed is
+/// uneven by `CATCHES` of itself (RMS) for the gentlest start, less the nearer it is to its
+/// speed, and not at all for a bow that starts at once. The jerks are as fast as the string:
+/// `CATCH_PITCH` times the note's pitch. A recorded violin's note is mostly noise for its first
+/// 40 to 80 ms, the bow catching the string before it has a bowed string's motion: midway
+/// between its harmonics it has nearly what it has at them (0 to 10 dB less), 17 to 28 dB less
+/// by 80 ms, and 35 to 43 dB less held. A stroke here starts in a bowed string's motion, and
+/// with a steady bow it had 23 to 39 dB less from 20 ms on: a clean wave switched on. With the
+/// jerks it has 2 to 15 dB less over its first 40 ms, 11 to 19 from 20 ms, 16 to 23 from 40
+/// ms, and is clean by 120 ms. (An ear, hearing it at 0.6 beside none: it is the bow's sound,
+/// and a touch more of it. Two other ways were tried first and changed the sound by under a
+/// decibel: the hair's noise raised while the bow is under its speed, and the string set
+/// going ragged.)
+///
+/// Under `CATCH_FULL` Hz a note has less of the catch, and of the hair's unevenness through
+/// the stroke (`Fiddle::coarse`), in proportion to its pitch: by trying. With all of the
+/// catch, jerks at one rate for every string, a low string spoke late (a viola's and a
+/// cello's notes 5 to 8 dB under their level from 0.1 to 0.2 s in, a double bass's up to 12
+/// dB) and a viola's C sharp sounded its octave for 0.3 s; and all of the unevenness left a
+/// violin's low notes with 3 to 4 dB more hiss from 1 to 6 kHz, where they already had more
+/// than its recorded notes.
+const BITES: f32 = 0.5
+const GENTLEST: f32 = 0.25
+const GENTLE_OVER: f32 = 0.25
+const GENTLE_BY: f32 = 1.0
+const CATCHES: f32 = 0.8
+const CATCH_PITCH: f32 = 1.0
+const CATCH_FULL: f32 = 400.0
+const SLOWS: u32 = 672
+const FALLS: f32 = 0.0052
+const RISES: f32 = 0.003
+const HUSHES: f32 = 0.02
+/// The vibrato on a stopped note. Its rate and depth are the instrument's (`Fiddle`): a
+/// violinist's is quicker and wider than a cellist's. None of it is the same twice: a player's
+/// rate is their own (within `SWAY_OWN` Hz of the instrument's, by the player's seat), each
+/// note's depth and wait are a fifth either side of the usual, and through a note the depth
+/// wanders by `SWAY_LOOSE` of itself and the rate by a quarter of that. (At one rate and one
+/// depth, the same in every player, a held note's pitch repeated itself cycle after cycle to
+/// 0.98, and four players moved as one: a synthesizer's vibrato.)
+///
+/// A player who knows a note is long vibrates it from near its start: after `SWAY_SOON`
+/// seconds, coming in over `SWAY_IN_SOON`. Only a note of under `SWAY_LONG` seconds is left
+/// plain for `SWAY_AFTER` seconds first (so a quick note has none), coming in over `SWAY_IN`.
+/// (With every note waiting a quarter of a second and then swelling into its vibrato, a
+/// violin's one-second notes were straight for their first half: a keyboard's delayed
+/// vibrato.) A note between `SWAY_SHORT` and `SWAY_LONG` seconds is between the two. (It was
+/// one or the other at half a second: of two eighth notes side by side, 0.49 and 0.51 s, one
+/// had no vibrato and the other all of it.)
+///
+/// A hand that is vibrating doesn't stop for a new note: `SWAY_KEEPS` of what its vibrato
+/// has over half its depth is the next stopped note's from its start, and grows from there.
+/// A vibrato that had hardly begun (under half its depth) isn't carried. (Every note began
+/// dead straight and swelled into its vibrato on one schedule, 5 to 9 cents wide in its first
+/// tenth of a second and 17 to 24 in its third, note after note: an ear called the pitch
+/// changes robotic. Carried, a note after a vibrated one is 12 to 21 cents wide in its first
+/// tenth.)
+const SWAY_AFTER: f32 = 0.25
+const SWAY_IN: f32 = 0.3
+const SWAY_SHORT: f32 = 0.3
+const SWAY_LONG: f32 = 0.5
+const SWAY_KEEPS: f32 = 0.5
+const SWAY_SOON: f32 = 0.08
+const SWAY_IN_SOON: f32 = 0.2
+const SWAY_OWN: f32 = 0.5
+const SWAY_LOOSE: f32 = 0.25
+/// The left hand's move to a note (a `Bowing`'s `slide`, seconds; 0: the pitch is there at
+/// once, exactly). Under one bow on one string the pitch comes from the last note's over that
+/// time, easing out and in, `SLIDE_VARIES` of it longer or shorter each time; and a finger put
+/// down lands up to `LANDS` cents off, and is rolled true with a time constant of `LAND_TIME`
+/// seconds. `bowings` gives every note but a voice's first `SLIDE` seconds and `SLIDE_MORE`
+/// for each semitone it comes (up to `SLIDE_FAR`): a finger's time to stop a string, not a
+/// slide an ear would hear as one. None of these numbers is measured (there is no dry
+/// recording of a slurred line to measure): they are chosen. (With the pitch switched in one
+/// sample and exactly on the note, an ear called the pitch changes robotic.)
+const SLIDE: f32 = 0.012
+const SLIDE_MORE: f32 = 0.002
+const SLIDE_FAR: f32 = 7.0
+const SLIDE_VARIES: f32 = 0.3
+const LANDS: f32 = 6.0
+const LAND_TIME: f32 = 0.06
+/// A stopped note's pitch is never quite still: a finger's drift, this many cents (RMS), slow.
+/// (Notes played without vibrato in an anechoic chamber wander 1 to 4 cents either way from
+/// moment to moment and 5 to 17 cents over a few seconds.)
+const DRIFTS: f32 = 2.5
+/// A bowed string is brighter the harder it is played: for each dB a note is over `MF` (the
+/// level the instrument's body is voiced at), what the strings give the bridge above a corner
+/// is `BRIGHTENS` dB up as well (what a two-pole high-pass keeps, added to the rest), and as
+/// much down under it. The corner is at one of the note's harmonics, the instrument's
+/// `bright_from`, kept between `BRIGHT_LOW` and `BRIGHT_HIGH` Hz. In
+/// notes recorded in an anechoic chamber, a cello's first four harmonics rise and fall with
+/// the level, and from the fifth to the seventh on there is more: fortissimo is 5 dB over
+/// mezzo-forte and another 4 to 7 dB up from the seventh harmonic; pianissimo as far the other
+/// way. A violin's are the same from a harmonic or two further up. (Without this a note asked 8
+/// dB louder was 0.0 dB brighter, and a cello voiced to mezzo-forte notes sounded as if under
+/// water however it was bowed. With the corner at 1.2 kHz for every note, a violin played
+/// forte was 6 dB up from its second harmonic, where a real one's second to fourth only follow
+/// the level: an electronic edge.)
+const MF: f32 = -26.0
+const BRIGHTENS: f32 = 1.0
+const BRIGHT_LOW: f32 = 700.0
+const BRIGHT_HIGH: f32 = 2500.0
+const BRILLIANT_FROM: f32 = 4000.0
+const RICH_FROM: f32 = 1.6
+const RICH_OVER: f32 = 4.5
+const BREATHES: f32 = 1.0
+const UNSTEADY_HZ: f32 = 8.0
+/// How a gently started note forms. Before the string speaks the hair is on it: a scratch,
+/// soft noise through the body (most of it under `SCRATCH_HZ`), `SCRATCH_DB` beside the note's
+/// level, for up to `SCRATCH_TIME` seconds before a note from silence (0.6 to 1.4 of it, drawn
+/// note by note) and `SCRATCH_TURN` seconds at a bow's turn within a line, dying into the note
+/// over `SCRATCH_FALLS` seconds. Then the note forms dark and brightens: what is over its
+/// fundamental is held `FORMS` dB under at first (`FORM_LINE` of that within a line, where the
+/// string was sounding a moment ago) and comes up over `FORM_TIME` seconds. A note started at
+/// once has neither.
+///
+/// A recorded violin's note, from silence in an anechoic chamber, begins as noise alone, 14 to
+/// 30 dB under the note, for 10 to 70 ms (160 ms in one), no harmonic in it; then the tone
+/// forms in 20 to 100 ms, the fundamental first or all together, the upper harmonics as much
+/// as 20 to 100 ms behind it, never ahead. Here, before this, a note had its harmonics from
+/// its first instant, and bright first: its fifth harmonic within 4 dB of its settled level
+/// 20 ms in, when its fundamental was 18 dB under, the fundamental not up until 150 ms: the
+/// wrong way round, and an ear said the attack still sounded like a synthesizer. Now it is
+/// noise alone for 20 to 40 ms, 15 to 20 dB under the note, then the fundamental, with the
+/// second and third harmonics 10 to 20 dB behind it at first and level with it by 100 ms.
+const FORMS: f32 = 14.0
+const FORM_TIME: f32 = 0.04
+const SCRATCH_TIME: f32 = 0.03
+const SCRATCH_TURN: f32 = 0.008
+const SCRATCH_FALLS: f32 = 0.012
+const SCRATCH_DB: f32 = -20.0
+const SCRATCH_HZ: f32 = 1200.0
+const FORM_LINE: f32 = 0.3
+const WEIGHS: f32 = 25.0
+
+/// A note for the bow: when it starts and ends (samples), its pitch (Hz), how loud (dB of full
+/// scale), whether it starts a new bow (else it is slurred from the note before), how
+/// gently a new bow starts it (0: at once; 1: as gently as can be), and the seconds the left
+/// hand takes to bring the pitch to it (0: it is there at once).
+pub struct Bowing: Copy {
+    pub from: u32,
+    pub to: u32,
+    pub hz: f32,
+    pub db: f32,
+    pub fresh: bool,
+    pub gentle: f32 = 0.0,
+    pub slide: f32 = 0.0,
+    /// The note's shape: how far its level is from `db` by its end (`lean`, dB) and `CREST` of
+    /// the way through it (`bloom`, dB), moving smoothly between; and how much of the
+    /// player's usual vibrato it has (`sway`; 0: none).
+    pub lean: f32 = 0.0,
+    pub bloom: f32 = 0.0,
+    pub sway: f32 = 1.0,
+}
+
+/// The share of its speed a new bow starts with, as gently as `gentle` says.
+@audio
+fn bite(gentle: f32) -> f32 {
+    BITES - (BITES - GENTLEST) * clamp(gentle, 0.0, 1.0)
+}
+
+/// A player's habits in shaping a line: what makes of a score's notes a played line, no two
+/// notes alike. Each is a strength; 0 turns it off. (Before there was a player, every note
+/// was a slab: level within 1 dB from its first third to its last, the same vibrato whatever
+/// the note, a line's soft notes all within a decibel of each other. An ear: "a very samey
+/// feeling on all the notes", and that a master player was wanted behind the instrument.)
+pub struct Playing: Copy {
+    /// How far a note's level goes toward the next note's by its end (1: all the way): a
+    /// line's loudness moves through its notes, not in steps between them.
+    pub toward: f32 = 0.5,
+    /// How much a long note swells toward its middle (dB): none for a note of `BLOOM_OVER`
+    /// seconds or less, all of it from `BLOOM_BY` seconds.
+    pub bloom: f32 = 3.5,
+    /// How far a note with silence after it falls away by its end (dB), and how far the last
+    /// note of all does.
+    pub release: f32 = 7.0,
+    pub last: f32 = 16.0,
+    /// How much louder a line is as it climbs: dB for each semitone a note is above the
+    /// middle of its voice's notes (below, softer).
+    pub climb: f32 = 0.35,
+    /// A bow is heavier at the hand than at the tip: a down-bow's note falls by this much
+    /// over a second (dB), and an up-bow's rises.
+    pub bow_weight: f32 = 0.8,
+    /// How much wider the vibrato is for each 6 dB a note is over the line's level (narrower
+    /// under it), and how much of it a quick note (under `SWAY_LONG` seconds) has.
+    pub sway_loud: f32 = 0.3,
+    pub sway_quick: f32 = 0.6,
+    /// How gently a new bow starts within a line, beside one from silence.
+    pub line: f32 = 0.7,
+}
+
+/// The longest silence between two notes that are still one line (seconds).
+const JOINED: f64 = 0.08
+/// Where in a note its `bloom` is, from its start (0) to its end (1).
+const CREST: f32 = 0.4
+const BLOOM_OVER: f32 = 0.4
+const BLOOM_BY: f32 = 1.4
+/// How much wider a note's vibrato is for each dB its level is over where it began (narrower
+/// under), and how much quicker.
+const SWAY_FOLLOWS: f32 = 0.08
+const SWAY_QUICKENS: f32 = 0.006
+
+/// The notes of voice `voice` in `p`, a performance of `score`, as a player bows them: each
+/// from its onset to its release, as loud as its velocity says (a velocity of a half is
+/// `level` dB, each tenth more 2.4 dB), a note under the same slur as the one before sharing
+/// its bow, a new bow starting the more gently the longer its note, the left hand moved to
+/// each note after the first; and each note shaped by the player's habits (`playing`).
+pub fn bowings(
+    score: Score,
+    p: Performance,
+    voice: u32,
+    level: f32 = -22.0,
+    playing: Playing = Playing {},
+) -> Vec<Bowing> {
+    // The voice's notes, and the middle of its range.
+    var mine: Vec<u32> = Vec::new()
+    var lowest = 1e9
+    var highest = -1e9
+    for k in 0..p.notes.len() {
+        if p.notes[k].voice == voice {
+            mine.push(k)
+            lowest = min(lowest, f32(p.notes[k].key))
+            highest = max(highest, f32(p.notes[k].key))
+        }
+    }
+    let middle = 0.5 * (lowest + highest)
+    // How loud each begins.
+    var loud: Vec<f32> = Vec::with_capacity(mine.len())
+    for k in mine {
+        let n = p.notes[k]
+        loud.push(level + 24.0 * (n.velocity - 0.5) + playing.climb * (f32(n.key) - middle))
+    }
+    var out: Vec<Bowing> = Vec::with_capacity(mine.len())
+    var last = NO_SLUR
+    // The first new bow is a down-bow.
+    var down = false
+    for i in 0..mine.len() {
+        let n = p.notes[mine[i]]
+        let slur = score.notes[n.note].slur
+        let fresh = slur == NO_SLUR || slur != last
+        last = slur
+        if fresh {
+            down = !down
+        }
+        let length = f32(n.release - n.onset)
+        let after = i > 0 && n.onset - p.notes[mine[i - 1]].release < JOINED
+        let before = i + 1 < mine.len() && p.notes[mine[i + 1]].onset - n.release < JOINED
+        // The left hand: the first note's finger is down before the bow moves; every other
+        // is moved to, the move half before the note's time and half after.
+        let far = if i == 0 { 0.0 } else {
+            min(abs(f32(n.key) - f32(p.notes[mine[i - 1]].key)), SLIDE_FAR)
+        }
+        let slide = if i == 0 { 0.0 } else { SLIDE + SLIDE_MORE * far }
+        let early = if after && !fresh { 0.5 * f64(slide) } else { 0.0 }
+        // The note's shape: toward the next note, or away into silence; a long note swells;
+        // the bow's weight.
+        let weight = (if down { -1.0 } else { 1.0 }) * playing.bow_weight * min(length, 1.0)
+        let through = if before { playing.toward * (loud[i + 1] - loud[i]) } else { 0.0 }
+        let away = if before { 0.0 } else if i + 1 == mine.len() { -playing.last } else {
+            -playing.release * clamp((length - 0.2) / 0.6, 0.0, 1.0)
+        }
+        let swell = playing.bloom * clamp((length - BLOOM_OVER) / (BLOOM_BY - BLOOM_OVER), 0.0, 1.0)
+        // The vibrato: wider on a louder note, less of it on a quick one.
+        let quick = clamp((length - SWAY_SHORT) / (SWAY_LONG - SWAY_SHORT), 0.0, 1.0)
+        let sway = clamp(1.0 + playing.sway_loud * (loud[i] - level) / 6.0, 0.5, 1.2) *
+            (playing.sway_quick + (1.0 - playing.sway_quick) * quick)
+        // The bow's start: gentler the longer the note, and less so within a line.
+        let soft = clamp((length - GENTLE_OVER) / (GENTLE_BY - GENTLE_OVER), 0.0, 1.0)
+        let from = u32(max(n.onset - early, 0.0) * f64(SAMPLE_RATE) + 0.5)
+        if early > 0.0 && out.len() > 0 {
+            out[out.len() - 1].to = from
+        }
+        out.push(
+            Bowing {
+                from,
+                to: u32(max(n.release, 0.0) * f64(SAMPLE_RATE) + 0.5),
+                hz: key_hz(f32(n.key)),
+                db: loud[i],
+                fresh,
+                gentle: if after { playing.line * soft } else { soft },
+                slide,
+                lean: through + away + weight,
+                bloom: swell + CREST * (through + weight),
+                sway,
+            },
+        )
+    }
+    out
+}
+
+/// Four strings, one of them bowed: what the audio thread owns.
+pub struct Bowed {
+    notes: Vec<Bowing>,
+    next: u32,
+    /// The strings' pitches open (Hz), and the lowest pitch the player knows.
+    open: [f32; 4],
+    lowest: f32,
+    body: Body,
+    floor: [Band; 2],
+    floor_state: [Svf; 2],
+    /// The smear's lines (the `k`th from `256 k`) and the sample being written.
+    smear: [f32; 768],
+    smear_at: u32,
+    /// The grain: when each of its returns comes (samples after), how strong, and the sound
+    /// it is taken from.
+    grain_after: [u32; 48],
+    grain_gain: [f32; 48],
+    grain_line: [f32; 2048],
+    grain_at: u32,
+    gain: f32,
+    sample: u32,
+    /// Where the bow's wandering is in its turn (0 to 1).
+    wander: f32,
+    /// String `s`'s lines from `s * SPAN`, and the sample being written.
+    neck: [f32; 8192],
+    bridge: [f32; 8192],
+    at: u32,
+    /// Each string's low-pass at the bridge (now, and one and two samples ago), their sum a
+    /// sample ago, each string's length (samples) as it was last stopped, and which is under the
+    /// bow.
+    held: [f32; 4],
+    held1: [f32; 4],
+    held2: [f32; 4],
+    together: f32,
+    length: [f32; 4],
+    under: u32,
+    /// What the player knows: how loud a bow at speed 1 sounds at each of the `KNOWN` pitches,
+    /// from having tried each (`learn`).
+    carried: [f32; 48],
+    /// The player's ear: the sound's level as heard (its mean square), and the trim it keeps
+    /// on the bow's speed to hold the level asked.
+    heard: f32,
+    reach: f32,
+    /// Bowed strings' motions, kept from when the player tried the instrument: for each of the
+    /// `KNOWN` pitches, and last for the open top string the trying itself starts from, the wave either side
+    /// of the bow (`KEEPS` samples back toward the bridge, then `KEEPS` toward the nut) under
+    /// a bow at speed 1, the string's length then, and its low-pass at the bridge. A stroke
+    /// starts from the motion kept for the nearest pitch, fitted to its string and its speed:
+    /// a string bowed from rest takes a tenth of a second to find it, half of a short note, and
+    /// scratches until it does.
+    kept: Vec<f32>,
+    kept_length: [f32; 49],
+    kept_held: [f32; 49],
+    /// Whether every pitch's motion is kept yet (until then a stroke starts from the top
+    /// string's).
+    learned: bool,
+    /// Whether the string under the bow is slipping now, and the samples since it last began
+    /// to.
+    slipping: bool,
+    since_slip: u32,
+    /// How many times the string has begun to slip, and how many of those came too soon: what
+    /// a test reads to know whether notes broke.
+    pub slips: u32,
+    pub second_slips: u32,
+    /// The samples the bow has been on a string, and those of them the hair held it.
+    pub bowed_samples: u32,
+    pub held_samples: u32,
+    noise: Noise,
+    /// The bow's quick unevenness (each about 1 RMS): of its place, and of the pitch; and how
+    /// much of it this instrument shows.
+    rough: [f32; 2],
+    rises: f32,
+    coarse: f32,
+    catches: f32,
+    catch: Noise,
+    shake: f32,
+    /// The bow now: the note it plays (its pitch, its level, the sample it ends and the
+    /// samples since it began), whether it is on a string, which way it goes (1 or -1), how
+    /// much of its speed it has (0 stopped to 1), and how much it is making for.
+    hz: f32,
+    db: f32,
+    ends: u32,
+    since: u32,
+    /// Whether the bow is slowing for a turn (a new bow's note is next).
+    turning: bool,
+    on: bool,
+    way: f32,
+    drive: f32,
+    want: f32,
+    sway: f32,
+    /// The left hand's move to this note: how far off the note the pitch was when it began
+    /// (cents), the seconds it takes, and how far off the finger lands (cents); the noise they
+    /// are drawn from; how much of its depth the vibrato has now, and how much of it was
+    /// carried into this note from the one before.
+    slide_from: f32,
+    slides: f32,
+    lands: f32,
+    finger: Noise,
+    sway_share: f32,
+    sway_kept: f32,
+    /// This note's shape (a `Bowing`'s `lean` and `bloom`) and the sample it began.
+    lean: f32,
+    bloom: f32,
+    begins: u32,
+    /// This player's vibrato rate (Hz) and usual depth (cents); this note's depth, its wait
+    /// and how long it takes to come in (seconds); the
+    /// hand's slow wanders (each about 1 RMS): of the vibrato's depth, of its rate, and of the
+    /// pitch; and the noise they come from.
+    sway_hz: f32,
+    sway_usual: f32,
+    sway_cents: f32,
+    sway_after: f32,
+    sway_in: f32,
+    loose: [f32; 3],
+    hand: Noise,
+    /// The harmonic the brightening starts from, its high-pass's memory, and how far up it is
+    /// now (dB).
+    bright_from: f32,
+    bright_over: Svf,
+    bright: f32,
+    brilliance: [f32; 4],
+    brilliant: bool,
+    brilliant_over: Svf,
+    brilliant_now: f32,
+    richness: [f32; 4],
+    bridge_side: f32,
+    unsteady: f32,
+    /// A gently started note's forming: how far its upper harmonics are held under (dB, dying
+    /// away), and the scratch before it (the note it was drawn for, its samples, its level, how
+    /// loud it is now, and its noise).
+    forming: f32,
+    pre_for: u32,
+    pre: u32,
+    pre_level: f32,
+    scratch_out: f32,
+    scratch_low: f32,
+    form_to: f32,
+    scratch_now: f32,
+    scratch_noise: Noise,
+    hand_noise: Noise,
+    hand_now: f32,
+    weight_now: f32,
+    rich: bool,
+    rich_over: Svf,
+    rich_now: f32,
+}
+
+/// The instrument `f` to play `notes` (by their starts), by the player in seat `seat` (players
+/// in different seats differ as people do: in their vibrato). The player learns the instrument
+/// here, so call it on the program's thread.
+pub fn bowed(notes: take Vec<Bowing>, f: Fiddle, seat: u32 = 0) -> Bowed {
+    // The body's grain: one return in each of `GRAIN_TAPS` equal parts of its span, at a
+    // moment and a sign the wood's seed scatters, weaker the later (60 dB down by the span's
+    // end), all scaled so that together they are the instrument's `grain` of the sound.
+    var scatter = seeded(f.wood + 31)
+    var grain_after = [0; 48]
+    var grain_gain = [0.0; 48]
+    let part = GRAIN_SPAN / GRAIN_TAPS
+    var squares = 0.0
+    for k in 0..GRAIN_TAPS {
+        grain_after[k] = 1 + k * part + u32(0.5 * (scatter.next() + 1.0) * f32(part - 1))
+        let fall = exp(-6.9 * f32(grain_after[k]) / f32(GRAIN_SPAN))
+        grain_gain[k] = if scatter.next() < 0.0 { -fall } else { fall }
+        squares += fall * fall
+    }
+    for k in 0..GRAIN_TAPS {
+        grain_gain[k] = grain_gain[k] * f.grain / sqrt(squares)
+    }
+    // What is this player's own: a seat's number, scattered.
+    var own = seeded(f.wood + 7919 * (seat + 1))
+    var length = [0.0; 4]
+    for s in 0..STRINGS {
+        length[s] = RATE / f.open[s] - BESIDE
+    }
+    var b = Bowed {
+        notes,
+        next: 0,
+        open: f.open,
+        lowest: f.lowest,
+        body: body(f.body, f.wood, f.sharpest),
+        floor: [band(hz: f.floor, q: 0.541), band(hz: f.floor, q: 1.307)],
+        floor_state: [Svf {}; 2],
+        smear: [0.0; 768],
+        smear_at: 0,
+        grain_after,
+        grain_gain,
+        grain_line: [0.0; 2048],
+        grain_at: 0,
+        gain: gain_of(f.gain),
+        sample: 0,
+        wander: 0.0,
+        neck: [0.0; 8192],
+        bridge: [0.0; 8192],
+        at: 0,
+        held: [0.0; 4],
+        held1: [0.0; 4],
+        held2: [0.0; 4],
+        together: 0.0,
+        length,
+        under: 0,
+        carried: [1.0; 48],
+        heard: 0.0,
+        reach: 1.0,
+        kept: Vec::filled((KNOWN + 1) * 2 * KEEPS, value: 0.0),
+        kept_length: [0.0; 49],
+        kept_held: [0.0; 49],
+        learned: false,
+        slipping: false,
+        since_slip: 0,
+        slips: 0,
+        second_slips: 0,
+        bowed_samples: 0,
+        held_samples: 0,
+        noise: seeded(13),
+        rough: [0.0; 2],
+        rises: RISES,
+        coarse: f.coarse,
+        catches: 0.0,
+        catch: seeded(f.wood + 15485863 * (seat + 1)),
+        shake: 0.0,
+        hz: 110.0,
+        db: -120.0,
+        ends: 0,
+        since: 0,
+        turning: false,
+        on: false,
+        // The first new bow turns this round: it is a down-bow.
+        way: -1.0,
+        drive: 0.0,
+        want: 0.0,
+        sway: 0.0,
+        slide_from: 0.0,
+        slides: 0.0,
+        lands: 0.0,
+        finger: seeded(f.wood + 104729 * (seat + 1)),
+        sway_share: 0.0,
+        sway_kept: 0.0,
+        lean: 0.0,
+        bloom: 0.0,
+        begins: 0,
+        sway_hz: f.sway_hz + SWAY_OWN * own.next(),
+        sway_usual: f.sway_cents,
+        sway_cents: f.sway_cents,
+        sway_after: SWAY_AFTER,
+        sway_in: SWAY_IN,
+        loose: [0.0; 3],
+        hand: own,
+        bright_from: f.bright_from,
+        bright_over: Svf {},
+        brilliance: f.brilliance,
+        brilliant: f.brilliance[0] != 0.0 ||
+            f.brilliance[1] != 0.0 ||
+            f.brilliance[2] != 0.0 ||
+            f.brilliance[3] != 0.0,
+        brilliant_over: Svf {},
+        brilliant_now: 0.0,
+        richness: f.richness,
+        bridge_side: f.bridge_side,
+        unsteady: f.unsteady,
+        forming: 0.0,
+        pre_for: 0,
+        pre: 0,
+        pre_level: 0.0,
+        scratch_out: 1.0,
+        scratch_low: 0.0,
+        form_to: 0.0,
+        scratch_now: 0.0,
+        scratch_noise: seeded(f.wood + 49979687 * (seat + 1)),
+        hand_noise: seeded(f.wood + 32452843 * (seat + 1)),
+        hand_now: 0.0,
+        weight_now: 0.0,
+        rich: f.richness[0] != 0.0 ||
+            f.richness[1] != 0.0 ||
+            f.richness[2] != 0.0 ||
+            f.richness[3] != 0.0,
+        rich_over: Svf {},
+        rich_now: 0.0,
+        bright: 0.0,
+    }
+    b.learn()
+    b
+}
+
+impl Bowed {
+    /// The string a note at `hz` is played on: the highest whose open pitch is at or under it
+    /// (an open string a little flat is still that string).
+    @audio
+    fn string_for(self, hz: f32) -> u32 {
+        var under = 0
+        for s in 0..STRINGS {
+            if self.open[s] <= 1.03 * hz {
+                under = s
+            }
+        }
+        under
+    }
+
+    /// How long it plays, in seconds: to its last note's end.
+    pub fn seconds(self) -> f32 {
+        var last = 0
+        for n in self.notes {
+            last = max(last, n.to)
+        }
+        f32(last) / RATE
+    }
+
+    /// The sample `back` samples ago in string `s`'s line (a fraction of a sample by the two
+    /// either side).
+    @audio
+    fn read(self, s: u32, neck: bool, back: f32) -> f32 {
+        let whole = u32(back)
+        let part = back - f32(whole)
+        let base = s * SPAN
+        let i = base + ((self.at + SPAN - whole) & (SPAN - 1))
+        let j = base + ((self.at + SPAN - whole - 1) & (SPAN - 1))
+        if neck {
+            self.neck[i] + part * (self.neck[j] - self.neck[i])
+        } else {
+            self.bridge[i] + part * (self.bridge[j] - self.bridge[i])
+        }
+    }
+
+    /// How loud a bow at speed 1 sounds at `hz`, as the player knows it.
+    @audio
+    fn known_at(self, hz: f32) -> f32 {
+        let p = clamp(12.0 * log2(max(hz, self.lowest) / self.lowest), 0.0, f32(KNOWN - 1))
+        let i = min(u32(p), KNOWN - 2)
+        let u = p - f32(i)
+        self.carried[i] + u * (self.carried[i + 1] - self.carried[i])
+    }
+
+    /// One sample of the four strings and the body. The bow, if it is `on` a string, is on the
+    /// one for `hz` at `speed` (which may be the other way, under 0), in a stroke whose full
+    /// speed is `full`, pressing as a note at `db` asks; `hush` is how much of the string's
+    /// wave the hair lets by each time it passes (1: all of it).
+    @audio
+    fn step(mut self, hz: f32, speed: f32, full: f32, on: bool, db: f32, hush: f32) -> f32 {
+        // The string for the pitch, and its length: a period, less what else the loop holds.
+        // A finger that changes the note on a string the bow is on carries the string's
+        // motion to its new length.
+        let under = self.string_for(hz)
+        let length = clamp(RATE / hz - BESIDE, 8.0, f32(SPAN - 4))
+        let was = self.length[under]
+        if on && under == self.under && abs(length - was) > 0.01 * was {
+            self.refit(under, was, length)
+        }
+        self.under = under
+        self.length[under] = length
+        let next = (self.at + 1) & (SPAN - 1)
+        // Where the bow is now.
+        let sways = self.sways()
+        self.wander = fract(self.wander + WANDER_HZ / RATE)
+        let quick = [TAU * ROUGH_HZ / RATE, TAU * TREMBLE_HZ / RATE]
+        for k in 0..2 {
+            self.rough[k] += quick[k] *
+                (self.noise.next() / (0.57735 * sqrt(0.5 * quick[k])) - self.rough[k])
+        }
+        var all = 0.0
+        var together = 0.0
+        for s in 0..STRINGS {
+            let length = self.length[s]
+            let place = self.share(length) * sways
+            let from_bridge = self.read(s, neck: false, back: max(length * place, 0.0))
+            let from_neck = self.read(s, neck: true, back: max(length * (1.0 - place), 0.0))
+            // The wave comes back from the bridge duller and upside down, with a little of the
+            // other strings' motion there, and from the nut upside down. A string not under
+            // the bow rings on if it is open, and is stopped if a finger was on it.
+            let open = abs(length + BESIDE - RATE / self.open[s]) < 0.04 * RATE / self.open[s]
+            let back = if open { RINGS } else if s == under { FINGERED } else { STOPPED }
+            let others = self.together - self.held[s]
+            self.held2[s] = self.held1[s]
+            self.held1[s] = self.held[s]
+            self.held[s] += (1.0 - POLE) * (from_bridge - self.held[s])
+            together += self.held[s]
+            // What comes back: a sample late, and from a string the bow isn't on, mixed with
+            // the samples either side, which takes its top.
+            let loss = if s == under && on { 0.0 } else { FREE_LOSS }
+            let came = loss * (self.held[s] + self.held2[s]) + (1.0 - 2.0 * loss) * self.held1[s]
+            let back_bridge = -back * came + SHARED * others
+            let back_nut = -from_neck
+            // The bow, on one string. The hair holds the string while their speeds are near
+            // and lets go as they part (the STK's bow table), measured in the stroke's own
+            // speed, so a soft bow and a hard one stick and slip alike. While the string
+            // slips, the rosin hisses.
+            var pushed = 0.0
+            var taken = 0.0
+            if s == under && on {
+                let slip = speed - (back_bridge + back_nut)
+                let scale = max(abs(speed), 1e-6)
+                let grip = abs(slip) / scale * (LOOSE - HARDER * hard(db)) + 0.75
+                let passed = min(1.0 / (grip * grip * grip * grip), 1.0)
+                let was_slipping = self.slipping
+                self.slipping = passed < 0.5
+                // What a test reads: slips begun, those begun too soon after the last (a
+                // second slip in a period), and how long the string is held.
+                let lets_go = self.slipping
+                let period = RATE / hz
+                if lets_go && !was_slipping {
+                    let gap = f32(self.since_slip)
+                    self.slips += 1
+                    if gap > 0.2 * period && gap < 0.8 * period {
+                        self.second_slips += 1
+                    }
+                    self.since_slip = 0
+                }
+                self.since_slip += 1
+                self.bowed_samples += 1
+                if !lets_go {
+                    self.held_samples += 1
+                }
+                pushed = slip * passed + ROSIN * self.noise.next() * abs(slip) * (1.0 - passed)
+                taken = HAIR * passed
+            }
+            let by = if s == under && on { hush } else { 1.0 }
+            // While the hair holds the string, a wave is turned back at the bow, less what the
+            // hair takes of it.
+            self.neck[s * SPAN + next] = by * (back_bridge + pushed + taken * back_nut)
+            self.bridge[s * SPAN + next] = by * (back_nut + pushed + taken * back_bridge)
+            all += from_bridge
+        }
+        self.at = next
+        self.together = together
+        // Brighter the harder it is played: what is over the shelf's corner, more or less of
+        // it, coming to a new note's brightness over a fiftieth of a second.
+        // (The bow's weight drifts with the arm: a little brighter, a little duller.)
+        let weight = self.unsteady * WEIGHS * self.weight_now
+        self.bright += 0.001 * (clamp(BRIGHTENS * (db - MF) + weight, -12.0, 12.0) - self.bright)
+        let corner = clamp(self.bright_from * hz, BRIGHT_LOW, BRIGHT_HIGH)
+        let over = self.bright_over.high(band(hz: corner, q: 0.7071), all)
+        all += (gain_of(self.bright) - 1.0) * over
+        // And by the string: one string's harmonics stand further over its fundamental than
+        // another's.
+        if self.rich || self.forming > 0.0 || self.rich_now != 0.0 {
+            // (A soft note has less of it: none from `RICH_OVER` dB under `MF`. A note that
+            // is forming has its upper harmonics held under.)
+            let loud = clamp(1.0 + (db - MF) / RICH_OVER, -1.0, 1.0)
+            self.rich_now += 0.001 *
+                (self.richness[under] * loud + weight - self.forming - self.rich_now)
+            let upper = self.rich_over.high(band(hz: RICH_FROM * hz, q: 0.7071), all)
+            all += (gain_of(self.rich_now) - 1.0) * upper
+        }
+        // A plain steel string gives more at the top than a wound one.
+        if self.brilliant {
+            self.brilliant_now += 0.001 * (self.brilliance[under] - self.brilliant_now)
+            let top = self.brilliant_over.high(band(hz: BRILLIANT_FROM, q: 0.7071), all)
+            all += (gain_of(self.brilliant_now) - 1.0) * top
+        }
+        if self.scratch_now > 0.0 {
+            let rough = self.scratches()
+            all += self.scratch_now * rough
+        }
+        let y = self.floor_state[0].high(self.floor[0], self.body.pass(all))
+        var x = self.floor_state[1].high(self.floor[1], y)
+        // The body's ring: each all-pass gives the sound back spread over its length, as loud
+        // at every frequency.
+        for k in 0..3 {
+            let line = 256 * k
+            let was = self.smear[line + ((self.smear_at + 256 - SMEARS[k]) & 255)]
+            let w = x + SMEAR_GAIN * was
+            self.smear[line + self.smear_at] = w
+            x = was - SMEAR_GAIN * w
+        }
+        self.smear_at = (self.smear_at + 1) & 255
+        // The body's grain.
+        self.grain_line[self.grain_at] = x
+        for k in 0..GRAIN_TAPS {
+            x += self.grain_gain[k] *
+                self.grain_line[(self.grain_at + 2048 - self.grain_after[k]) & 2047]
+        }
+        self.grain_at = (self.grain_at + 1) & 2047
+        x
+    }
+
+    /// String `s`'s motion, which fitted a length of `was` samples, fitted to `now`: the wave
+    /// either side of the bow stretched or squeezed to the new length, so the string goes on as
+    /// it was at its new pitch. (Left as it was, the wave no longer fits the string, and the
+    /// bow takes some hundredths of a second to form it again: a hole in a slur.)
+    @audio
+    fn refit(mut self, s: u32, was: f32, now: f32) {
+        // Each side of the bow by its own ratio: the bow's share of the string is not quite
+        // the same at every length.
+        let (at_was, at_now) = (self.share(was), self.share(now))
+        let ratio = was / now * (at_was / at_now)
+        var kept = [0.0; 2048]
+        // The line from the bow to the bridge, then the line from the bow to the nut.
+        let reach = u32(now * at_now) + 3
+        for d in 0..min(reach, SPAN) {
+            kept[d] = self.read(s, neck: false, back: f32(d) * ratio)
+        }
+        for d in 0..min(reach, SPAN) {
+            self.bridge[s * SPAN + ((self.at + SPAN - d) & (SPAN - 1))] = kept[d]
+        }
+        let beyond = was / now * ((1.0 - at_was) / (1.0 - at_now))
+        let far = u32(now * (1.0 - at_now)) + 3
+        for d in 0..min(far, SPAN) {
+            kept[d] = self.read(s, neck: true, back: f32(d) * beyond)
+        }
+        for d in 0..min(far, SPAN) {
+            self.neck[s * SPAN + ((self.at + SPAN - d) & (SPAN - 1))] = kept[d]
+        }
+    }
+
+    /// The next sample of a scratch's noise: soft, most of it under `SCRATCH_HZ`.
+    @audio
+    fn scratches(mut self) -> f32 {
+        self.scratch_low += (TAU * SCRATCH_HZ / RATE) *
+            (self.scratch_noise.next() - self.scratch_low)
+        self.scratch_low
+    }
+
+    /// How far from its usual place the bow is now, as a share of it: it wanders and is rough.
+    @audio
+    fn sways(self) -> f32 {
+        1.0 + WANDERS * sin(TAU * self.wander) + ROUGH * self.rough[0]
+    }
+
+    /// The share of a string's `length` samples that lie between the bow and the bridge, with
+    /// the bow at its usual place: `BOW_AT` of the whole period from the bridge, less the
+    /// `bridge_side` samples of the period that lie on that side but in no delay line.
+    @audio
+    fn share(self, length: f32) -> f32 {
+        if self.bridge_side == 0.0 {
+            return BOW_AT
+        }
+        max(BOW_AT * (length + BESIDE) - self.bridge_side, 1.5) / length
+    }
+
+    /// Keeps string `s`'s motion now as motion `which`.
+    fn keep(mut self, s: u32, which: u32) {
+        for d in 0..KEEPS {
+            self.kept[which * 2 * KEEPS + d] = self.read(s, neck: false, back: f32(d))
+            self.kept[(which * 2 + 1) * KEEPS + d] = self.read(s, neck: true, back: f32(d))
+        }
+        self.kept_length[which] = self.length[s]
+        self.kept_held[which] = self.held[s]
+    }
+
+    /// Starts string `s`, `length` samples long, in a bowed string's motion for a bow at
+    /// `speed` (under 0: the other way): the motion kept for the nearest pitch, at that speed,
+    /// each side of the bow fitted to the string's length on that side of where the bow is
+    /// now. (The motions were kept with the bow at `BOW_AT`. Fitted to the whole length only,
+    /// with the bow wandered a few percent off that place, a string slurred onto slipped a long
+    /// period and a short one by turns for a tenth of a second: the octave below under the
+    /// note. And when every stroke started from one motion, A3's, stretched or squeezed to the
+    /// string, a note under A3 began duller than it went on, its corner as round as the
+    /// stretch made it, and a note over A3 sharper: a note's first tenth of a second wasn't
+    /// the tone of the rest of it.)
+    @audio
+    fn start(mut self, s: u32, length: f32, speed: f32) {
+        let hz = RATE / (length + BESIDE)
+        let which = if self.learned {
+            u32(clamp(12.0 * log2(max(hz, self.lowest) / self.lowest) + 0.5, 0.0, f32(KNOWN - 1)))
+        } else { KNOWN }
+        let was = self.kept_length[which]
+        let place = self.share(length) * self.sways()
+        let near = was * self.share(was) / (length * place)
+        let reach = min(u32(length * place) + 3, SPAN - 2)
+        for d in 0..reach {
+            let at = min(f32(d) * near, f32(KEEPS - 2))
+            let i = u32(at)
+            let u = at - f32(i)
+            let from = which * 2 * KEEPS + i
+            let v = self.kept[from] + u * (self.kept[from + 1] - self.kept[from])
+            self.bridge[s * SPAN + ((self.at + SPAN - d) & (SPAN - 1))] = speed * v
+        }
+        let beyond = was * (1.0 - self.share(was)) / (length * (1.0 - place))
+        let far = min(u32(length * (1.0 - place)) + 3, SPAN - 2)
+        for d in 0..far {
+            let at = min(f32(d) * beyond, f32(KEEPS - 2))
+            let i = u32(at)
+            let u = at - f32(i)
+            let from = (which * 2 + 1) * KEEPS + i
+            let v = self.kept[from] + u * (self.kept[from + 1] - self.kept[from])
+            self.neck[s * SPAN + ((self.at + SPAN - d) & (SPAN - 1))] = speed * v
+        }
+        self.held[s] = speed * self.kept_held[which]
+        self.held1[s] = self.held[s]
+        self.held2[s] = self.held[s]
+        self.length[s] = length
+    }
+
+    /// Stills every string.
+    fn still(mut self) {
+        for i in 0..STRINGS * SPAN {
+            self.neck[i] = 0.0
+            self.bridge[i] = 0.0
+        }
+        self.held = [0.0; 4]
+        self.held1 = [0.0; 4]
+        self.held2 = [0.0; 4]
+        self.together = 0.0
+    }
+
+    /// The player learns the instrument. First the top string, open, is bowed from rest until
+    /// it slips once a period, and that motion is kept. Then each of the `KNOWN` pitches is
+    /// bowed at speed 1, started in that motion, for `TRIED` samples or 24 of its periods if
+    /// that is longer: how loud it sounds is noted, and the motion it has settled into is kept
+    /// for strokes at that pitch to start from.
+    fn learn(mut self) {
+        // (The bow is kept at `BOW_AT` throughout: its wandering is put back after each sample.)
+        self.learned = false
+        self.still()
+        for _ in 0..SETTLES {
+            let _ = self.step(self.open[3], speed: 1.0, full: 1.0, on: true, db: MF, hush: 1.0)
+            self.wander = 0.0
+            self.rough = [0.0; 2]
+        }
+        self.keep(self.under, KNOWN)
+        for i in 0..KNOWN {
+            let hz = self.lowest * exp2(f32(i) / 12.0)
+            self.still()
+            self.body.still()
+            self.start(self.string_for(hz), clamp(RATE / hz - BESIDE, 8.0, f32(SPAN - 4)), 1.0)
+            let tried = max(TRIED, u32(24.0 * RATE / hz))
+            var squares = 0.0
+            for n in 0..tried {
+                let y = self.step(hz, speed: 1.0, full: 1.0, on: true, db: MF, hush: 1.0)
+                self.wander = 0.0
+                self.rough = [0.0; 2]
+                self.rough = [0.0; 2]
+                if n >= tried / 2 {
+                    squares += y * y
+                }
+            }
+            self.carried[i] = max(sqrt(squares / f32(tried - tried / 2)), 1e-6)
+            self.keep(self.string_for(hz), i)
+        }
+        self.learned = true
+        // How loud the hair's noise comes out of the body (a tenth of a second of it), so a
+        // scratch can be set beside a note's level.
+        self.body.still()
+        self.floor_state = [Svf {}; 2]
+        var squares = 0.0
+        for i in 0..4800 {
+            let rough = self.scratches()
+            let through = self.body.pass(rough)
+            let once = self.floor_state[0].high(self.floor[0], through)
+            let y = self.floor_state[1].high(self.floor[1], once)
+            if i >= 960 {
+                squares += y * y
+            }
+        }
+        self.scratch_out = sqrt(squares / 3840.0)
+        // Nothing of the trying is left in the strings or the body.
+        self.still()
+        self.body.still()
+        self.floor_state = [Svf {}; 2]
+        self.smear = [0.0; 768]
+        self.grain_line = [0.0; 2048]
+        self.bright_over = Svf {}
+        self.bright = 0.0
+        self.brilliant_over = Svf {}
+        self.brilliant_now = 0.0
+        self.rich_over = Svf {}
+        self.rich_now = 0.0
+        for s in 0..STRINGS {
+            self.length[s] = RATE / self.open[s] - BESIDE
+        }
+    }
+
+    /// The next sample.
+    @audio
+    fn one(mut self) -> f32 {
+        let t = self.sample
+        // The next note. If it starts a new bow, the bow slows to a stop before it, and
+        // sets off the other way as it starts; if it is slurred, only the pitch changes.
+        if self.next < self.notes.len() {
+            let note = self.notes[self.next]
+            let bites = bite(note.gentle)
+            if note.fresh && self.on && t + SLOWS >= note.from {
+                self.want = 0.0
+                self.turning = true
+            }
+            // The hair touches the string before the string speaks: a scratch.
+            if note.gentle > 0.0 && (note.fresh || !self.on) {
+                // (Drawn when the note is near: by then the bow is on the string or off it.)
+                let near = t + u32(1.4 * RATE * SCRATCH_TIME) >= note.from
+                if near && self.pre_for != self.next + 1 {
+                    self.pre_for = self.next + 1
+                    let long = if self.on { SCRATCH_TURN } else {
+                        SCRATCH_TIME * (0.6 + 0.8 * abs(self.scratch_noise.next()))
+                    }
+                    self.pre = u32(RATE * long * clamp(note.gentle, 0.0, 1.0))
+                    self.pre_level = gain_of(note.db + SCRATCH_DB) / max(self.scratch_out, 1e-9)
+                    // The note forms dark and brightens: its upper harmonics are held under
+                    // at first (less so within a line, where the string was sounding a
+                    // moment ago).
+                    let line = if self.on { FORM_LINE } else { 1.0 }
+                    self.form_to = FORMS * clamp(note.gentle, 0.0, 1.0) * line
+                }
+                if self.pre_for == self.next + 1 && t + self.pre >= note.from && t < note.from {
+                    let along = f32(t + self.pre - note.from) / f32(max(self.pre, 1))
+                    self.scratch_now = self.pre_level * min(along / 0.3, 1.0)
+                    self.forming = max(self.forming, self.form_to * min(along / 0.3, 1.0))
+                }
+            }
+            if t >= note.from {
+                let string = self.string_for(note.hz)
+                let length = clamp(RATE / note.hz - BESIDE, 8.0, f32(SPAN - 4))
+                let full = self.reach * gain_of(note.db) / self.known_at(note.hz)
+                if note.fresh || !self.on {
+                    // A new bow: the other way, from a share of its speed, the string
+                    // already in a bowed string's motion at that speed.
+                    self.way = -self.way
+                    self.drive = bites
+                    self.rises = RISES * (bites / BITES) * (bites / BITES)
+                    self.catches = CATCHES * clamp(note.gentle, 0.0, 1.0)
+                    self.start(string, length, self.way * bites * full)
+                } else if string != self.under {
+                    // The same bow on another string: that string in motion at once.
+                    self.start(string, length, self.way * self.drive * full)
+                }
+                // The left hand: a finger moved to this note takes a moment to bring the pitch
+                // there (on the string the bow is on, under the same bow: a new bow's turn
+                // covers the move), and lands a little off.
+                let stopped = abs(note.hz - self.open[string]) >= 0.03 * self.open[string]
+                let moved = note.slide > 0.0 && self.on
+                self.slides = 0.0
+                self.slide_from = 0.0
+                self.lands = 0.0
+                if moved && !note.fresh && string == self.under {
+                    self.slides = note.slide * (1.0 + SLIDE_VARIES * self.finger.next())
+                    self.slide_from = 1200.0 * log2(self.hz / note.hz)
+                }
+                if moved && stopped {
+                    self.lands = LANDS * self.finger.next()
+                }
+                // A hand that was vibrating goes on vibrating: half of what was over half its
+                // depth is this note's from its start.
+                self.sway_kept = if stopped {
+                    SWAY_KEEPS * clamp(2.0 * self.sway_share - 1.0, 0.0, 1.0)
+                } else { 0.0 }
+                self.sway_share = 0.0
+                self.under = string
+                self.hz = note.hz
+                self.db = note.db
+                self.lean = note.lean
+                self.bloom = note.bloom
+                self.begins = t
+                self.ends = note.to
+                self.since = 0
+                // A long note is vibrated from near its start, a quick one left plain a
+                // while; a note between the two is between them.
+                let length = f32(note.to - min(note.from, note.to)) / RATE
+                let long = clamp((length - SWAY_SHORT) / (SWAY_LONG - SWAY_SHORT), 0.0, 1.0)
+                self.sway_cents = self.sway_usual * (1.0 + 0.2 * self.hand.next()) * note.sway
+                self.sway_after = (SWAY_AFTER + (SWAY_SOON - SWAY_AFTER) * long) *
+                    (1.0 + 0.2 * self.hand.next())
+                self.sway_in = SWAY_IN + (SWAY_IN_SOON - SWAY_IN) * long
+                self.on = true
+                self.want = 1.0
+                self.turning = false
+                self.next += 1
+            }
+        }
+        // A note's end with none straight after: the bow slows, and leaves the string.
+        if self.on && t >= self.ends {
+            let more = self.next < self.notes.len() && self.notes[self.next].from < t + 3840
+            if !more {
+                self.want = 0.0
+                if self.drive < 0.02 {
+                    self.on = false
+                }
+            }
+        }
+        self.drive += (if self.want > self.drive { self.rises } else {
+            FALLS
+        }) * (self.want - self.drive)
+        // A forming note brightens, and the scratch before it dies into it.
+        if self.forming > 0.0 || self.scratch_now > 0.0 {
+            let before = self.next < self.notes.len() &&
+                self.pre_for == self.next + 1 &&
+                t < self.notes[self.next].from &&
+                t + self.pre >= self.notes[self.next].from
+            if !before && self.forming > 0.0 {
+                self.forming -= self.forming / (FORM_TIME * RATE)
+                if self.forming < 0.01 {
+                    self.forming = 0.0
+                }
+            }
+            if !before && self.scratch_now > 0.0 {
+                self.scratch_now -= self.scratch_now / (SCRATCH_FALLS * RATE)
+                if self.scratch_now < 1e-7 {
+                    self.scratch_now = 0.0
+                }
+            }
+        }
+        // The note's shape: how far its level is from where it began (dB), now.
+        var shaped = 0.0
+        if self.lean != 0.0 || self.bloom != 0.0 {
+            let u = clamp(f32(t - self.begins) / f32(max(self.ends - self.begins, 1)), 0.0, 1.0)
+            shaped = if u < CREST {
+                let x = u / CREST
+                self.bloom * x * x * (3.0 - 2.0 * x)
+            } else {
+                let x = (u - CREST) / (1.0 - CREST)
+                self.bloom + (self.lean - self.bloom) * x * x * (3.0 - 2.0 * x)
+            }
+        }
+        // The pitch: a stopped note held a while sways.
+        self.since += 1
+        var hz = self.hz
+        let held = f32(self.since) / RATE
+        let s = self.string_for(self.hz)
+        let open = abs(self.hz - self.open[s]) < 0.03 * self.open[s]
+        // The hand's wanders: noise through one-pole low-passes at 1 Hz, scaled to about 1 RMS
+        // (noise from -1 to 1 is 0.577 RMS; the low-pass keeps the root of half its
+        // coefficient of that).
+        let slow = TAU / RATE
+        let scale = 1.0 / (0.57735 * sqrt(0.5 * slow))
+        for k in 0..3 {
+            self.loose[k] += slow * (scale * self.hand.next() - self.loose[k])
+        }
+        // The bow's tremble is every note's; a finger's drift and a vibrato are a stopped note's.
+        hz = hz * exp2(TREMBLES * self.rough[1] / 1200.0)
+        if !open {
+            var cents = DRIFTS * self.loose[2]
+            if held > self.sway_after || self.sway_kept > 0.0 {
+                self.sway_share = if self.sway_kept > 0.0 {
+                    min(self.sway_kept + held / self.sway_in, 1.0)
+                } else {
+                    min((held - self.sway_after) / self.sway_in, 1.0)
+                }
+                var depth = self.sway_cents * self.sway_share
+                var rate = self.sway_hz * (1.0 + 0.25 * SWAY_LOOSE * self.loose[1])
+                if shaped != 0.0 {
+                    // The vibrato follows the bow: wider and quicker as the note swells,
+                    // narrower and slower as it dies.
+                    depth = depth * clamp(1.0 + SWAY_FOLLOWS * shaped, 0.3, 1.3)
+                    rate = rate * clamp(1.0 + SWAY_QUICKENS * shaped, 0.85, 1.1)
+                }
+                cents += max(depth * (1.0 + SWAY_LOOSE * self.loose[0]), 0.0) * sin(TAU * self.sway)
+                self.sway = fract(self.sway + rate / RATE)
+            }
+            if self.lands != 0.0 {
+                cents += self.lands * exp(-held / LAND_TIME)
+            }
+            hz = hz * exp2(cents / 1200.0)
+        }
+        if held < self.slides {
+            // The finger's move: the pitch comes from where it was, easing out and in.
+            let along = held / self.slides
+            hz = hz * exp2(self.slide_from * (1.0 - along * along * (3.0 - 2.0 * along)) / 1200.0)
+        }
+        // The bow's speed: the level asked, over how loud the instrument is at this pitch,
+        // times the ear's trim; as much of it as the bow has, the way it is going.
+        let db = self.db + shaped
+        let wanted = gain_of(db)
+        let full = self.reach * wanted / self.known_at(self.hz)
+        var speed = self.way * self.drive * full
+        // The arm is not a motor: the bow's speed drifts about what is asked, slowly.
+        if self.unsteady > 0.0 {
+            let slow = TAU * UNSTEADY_HZ / RATE
+            self.hand_now += slow *
+                (self.hand_noise.next() / (0.57735 * sqrt(0.5 * slow)) - self.hand_now)
+            self.weight_now += slow *
+                (self.hand_noise.next() / (0.57735 * sqrt(0.5 * slow)) - self.weight_now)
+            speed = speed * (1.0 + self.unsteady * self.hand_now)
+        }
+        // The hair's pull is uneven; and setting off gently, it catches the string in jerks
+        // until the bow is at speed.
+        let catching = self.catches > 0.0 && self.want > self.drive
+        if catching || self.coarse > 0.0 {
+            let quick = min(TAU * CATCH_PITCH * self.hz / RATE, 0.5)
+            self.shake += quick * (self.catch.next() / (0.57735 * sqrt(0.5 * quick)) - self.shake)
+            let caught = if catching { self.catches * (1.0 - self.drive) } else { 0.0 }
+            // (A long string has less of both.)
+            let share = min(self.hz / CATCH_FULL, 1.0)
+            // The hair's unevenness doesn't fall away with the bow's speed: the softer the
+            // note, the more of it there is beside the note.
+            let breath = self.coarse * gain_of(clamp(BREATHES * (MF - db), -12.0, 12.0))
+            speed = speed * (1.0 + share * (caught + breath) * self.shake)
+        }
+        // Slowing for a turn, the hair quiets the string: its wave passes the bow twice a
+        // period, and loses the same share each time whatever the pitch.
+        let hush = if self.turning { exp(-0.5 / (self.hz * HUSHES)) } else { 1.0 }
+        let y = self.step(hz, speed, full, on: self.on, db: db, hush: hush)
+        // The ear: the level over 30 ms, and every 5 ms, once the note has had time to
+        // speak (0.15 s: a low string takes a tenth of a second to come up to a new bow),
+        // the trim moved a little toward what would bring the sound to the level asked.
+        // (Listening from the note's start, the ear took a low note that was still coming
+        // up for a quiet one, pressed on, and the note ended 5 dB over.)
+        self.heard += 0.0007 * (y * y - self.heard)
+        if t % 240 == 0 && self.on && self.drive > 0.9 && self.since > 7200 {
+            let ratio = wanted / max(sqrt(self.heard), 1e-6)
+            self.reach = clamp(self.reach * pow(clamp(ratio, 0.7, 1.4), 0.04), 0.1, 10.0)
+        }
+        self.sample += 1
+        self.gain * y
+    }
+
+    /// The next samples, into `out`.
+    @audio
+    pub fn play(mut self, out: mut [f32]) {
+        for n in 0..out.len() {
+            out[n] = self.one()
+        }
+    }
+
+    /// Whether nothing of it sounds, nor will: its last note ended three seconds ago.
+    @audio
+    pub fn silent(self) -> bool {
+        self.next >= self.notes.len() && !self.on && self.sample > self.ends + 144000
+    }
+
+    /// Adds its next samples to samples `from` to `to` of `left` and `right`, the same to both.
+    /// Its notes' times count from its first sample, so it is sounded from a piece's start
+    /// without a gap.
+    @audio
+    pub fn sound(mut self, left: mut [f32], right: mut [f32], from: u32, to: u32) {
+        for n in from..to {
+            let y = self.one()
+            left[n] += y
+            right[n] += y
+        }
+    }
+}
+
+// The tests render on the program's thread, as the audio thread would.
+
+/// How alike `x` is to itself `lag` samples later, from -1 to 1.
+fn repeats(x: [f32], lag: u32) -> f32 {
+    var both = 0.0
+    var a = 0.0
+    var b = 0.0
+    for i in 0..x.len() - lag {
+        both += x[i] * x[i + lag]
+        a += x[i] * x[i]
+        b += x[i + lag] * x[i + lag]
+    }
+    both / sqrt(max(a * b, 1e-30))
+}
+
+/// `quanta` quanta of `c`, sample by sample.
+fn rendered(c: mut Bowed, quanta: u32) -> Vec<f32> {
+    var out: Vec<f32> = Vec::with_capacity(128 * quanta)
+    var quantum = [0.0; 128]
+    for _ in 0..quanta {
+        c.play(mut quantum)
+        for i in 0..128 {
+            out.push(quantum[i])
+        }
+    }
+    out
+}
+
+/// A body asked to be flat is flat band by band, and uneven within the bands: from 110 Hz to
+/// 3.5 kHz each band's mean power is within 1.5 dB of what was asked, while from one 48th of an
+/// octave to the next its answer spreads over 3 dB about its mean, with hollows 10 dB deep.
+@test
+fn a_body_is_level_by_band_and_uneven_within() {
+    let b = body([0.0; 48], 1007)
+    for j in 6..37 {
+        var power = 0.0
+        for i in 0..9 {
+            let a = b.answers(band_hz(j) * exp2((f32(i) - 4.0) / 54.0))
+            power += a * a / 9.0
+        }
+        let off = 4.3429448 * log(power)
+        assert(abs(off) < 1.5, f"the band at {band_hz(j)} Hz is {off} dB off")
+    }
+    var sum = 0.0
+    var squares = 0.0
+    var deepest = 0.0
+    for i in 0..241 {
+        let db = 8.685889 * log(b.answers(110.0 * exp2(f32(i) / 48.0)))
+        sum += db
+        squares += db * db
+        deepest = min(deepest, db)
+    }
+    let mean = sum / 241.0
+    let spread = sqrt(squares / 241.0 - mean * mean)
+    assert(spread > 3.0, f"its answer spreads {spread} dB")
+    assert(deepest < -10.0, f"its deepest hollow is {deepest} dB")
+}
+
+/// A bow that lets go too easily slips twice a period on the shorter strings, and the note
+/// sounds an octave high: it repeats after half its period as well as after all of it.
+@test
+fn each_note_sounds_as_asked_not_its_octave() {
+    for hz in [98.0, 220.0, 440.0] {
+        let notes = Vec::from([Bowing { from: 0, to: 72000, hz, db: -18.0, fresh: true }])
+        var c = bowed(take notes, Fiddle { body: [0.0; 48], gain: 0.0, ..CELLO })
+        // Its second half second: before the vibrato has come in far.
+        let _ = rendered(mut c, quanta: 94)
+        let x = rendered(mut c, quanta: 94)
+        let period = u32(RATE / hz + 0.5)
+        let whole = repeats(x, lag: period)
+        let half = repeats(x, lag: period / 2)
+        assert(whole > 0.8, f"{hz} Hz repeats {whole} after a period")
+        assert(half < 0.6, f"{hz} Hz repeats {half} after half a period")
+    }
+}
+
+/// How strong the harmonic at `hz` is over the `width` samples of `x` from `at` (dB).
+fn harmonic_db(x: [f32], at: u32, width: u32, hz: f32) -> f32 {
+    var re = 0.0
+    var im = 0.0
+    for i in 0..width {
+        let turn = TAU * hz * f32(i) / RATE
+        re += x[at + i] * cos(turn)
+        im += x[at + i] * sin(turn)
+    }
+    8.685889 * log(2.0 * sqrt(re * re + im * im) / f32(width) + 1e-12)
+}
+
+/// The bow is an eighth of the way along the string, where the eighth harmonic has a node: a
+/// bow that stayed exactly there couldn't hold that harmonic, and on a held open G it grew
+/// from 7 dB under the fourth harmonic's band to 1 dB over it in a second and a half, a ring
+/// at 784 Hz. With the bow wandering, the eighth harmonic of a G held three seconds is no
+/// stronger in its last half second than in its first full one.
+@test
+fn a_held_note_grows_no_ring_where_the_bow_is() {
+    let notes = Vec::from([Bowing { from: 0, to: 144000, hz: 98.0, db: -18.0, fresh: true }])
+    var c = bowed(take notes, Fiddle { body: [0.0; 48], gain: 0.0, ..CELLO })
+    let x = rendered(mut c, quanta: 1125)
+    let early = harmonic_db(x, at: 24000, width: 24000, hz: 784.0)
+    let late = harmonic_db(x, at: 120000, width: 24000, hz: 784.0)
+    assert(late < early + 3.0, f"the eighth harmonic went from {early} dB to {late} dB")
+}
+
+/// The energy of each 10 ms of `x`.
+fn tens(x: [f32]) -> Vec<f32> {
+    var out: Vec<f32> = Vec::new()
+    var i = 0
+    while i + 480 <= x.len() {
+        var e = 0.0
+        for k in i..i + 480 {
+            e += x[k] * x[k]
+        }
+        out.push(e)
+        i += 480
+    }
+    out
+}
+
+@test
+fn a_new_bow_stops_the_string_and_a_slur_does_not() {
+    // Two notes on the D string, the second half a second in: with a new bow the sound dips
+    // round the change; slurred, it does not. The dip is in the upper harmonics more than in
+    // the level (the string's low harmonics and the body ring through a turn), so it is read
+    // from the sound's change from sample to sample, which leans on them: 3.8 dB at a new
+    // bow's least 10 ms, 0.6 dB at a slur's. (They were 5.3 and 1.2 dB before the instrument
+    // was voiced to anechoic notes and brightened with its level.)
+    let dip = |fresh: bool| -> f32 {
+        let notes = Vec::from(
+            [
+                Bowing { from: 0, to: 24000, hz: 164.81, db: -18.0, fresh: true },
+                Bowing { from: 24000, to: 48000, hz: 196.0, db: -18.0, fresh },
+            ],
+        )
+        var c = bowed(take notes, Fiddle { body: [0.0; 48], gain: 0.0, ..CELLO })
+        let x = rendered(mut c, quanta: 375)
+        var changes: Vec<f32> = Vec::with_capacity(x.len())
+        for i in 1..x.len() {
+            changes.push(x[i] - x[i - 1])
+        }
+        let e = tens(changes)
+        // The 10 ms pieces from 0.3 to 0.45 s are the first note at speed; those from 0.47 to
+        // 0.56 s are round the change.
+        var before = 0.0
+        for k in 30..45 {
+            before += e[k] / 15.0
+        }
+        var least = e[47]
+        for k in 47..56 {
+            least = min(least, e[k])
+        }
+        4.3429448 * log(before / max(least, 1e-30))
+    }
+    let bowed_again = dip(true)
+    let slurred = dip(false)
+    assert(bowed_again > 3.0, f"a new bow dipped the sound {bowed_again} dB")
+    assert(slurred < 0.5 * bowed_again, f"a slur dipped the sound {slurred} dB")
+}
+
+@test
+fn a_new_bow_started_gently_comes_up_more_slowly() {
+    // Two open strings of a violin, a new bow at half a second. The second note's level (dB)
+    // from 20 to 40 ms after its time, and from 0.25 to 0.45 s after: started at once it is
+    // nearly up by the first; started as gently as can be it is well under there still, and
+    // settles where the other does.
+    let levels = |gentle: f32| -> vec2 {
+        let notes = Vec::from(
+            [
+                Bowing { from: 0, to: 24000, hz: 293.66, db: -18.0, fresh: true },
+                Bowing { from: 24000, to: 48000, hz: 440.0, db: -18.0, fresh: true, gentle },
+            ],
+        )
+        var c = bowed(take notes, VIOLIN)
+        let e = tens(rendered(mut c, quanta: 375))
+        var settled = 0.0
+        for k in 75..95 {
+            settled += e[k] / 20.0
+        }
+        vec2(4.3429448 * log(0.5 * (e[52] + e[53])), 4.3429448 * log(settled))
+    }
+    let at_once = levels(0.0)
+    let gently = levels(1.0)
+    assert(
+        at_once.x > gently.x + 3.0,
+        f"20 ms in: at once {at_once.x} dB, gently {gently.x} dB",
+    )
+    assert(at_once.x > at_once.y - 3.0, f"at once: {at_once.x} dB 20 ms in, {at_once.y} dB settled")
+    assert(abs(at_once.y - gently.y) < 1.0, f"settled: {at_once.y} dB and {gently.y} dB")
+}
+
+/// The pitch (Hz) of the `width` samples of `x` from `at`, sought within 3% of `near`: the lag
+/// at which it repeats best, between samples by a parabola.
+fn pitch_of(x: [f32], at: u32, width: u32, near: f32) -> f32 {
+    let lo = u32(RATE / (1.03 * near))
+    let hi = u32(RATE / (0.97 * near)) + 1
+    var best = lo
+    var best_score = -2.0
+    var scores: Vec<f32> = Vec::new()
+    for lag in lo - 1..hi + 2 {
+        var both = 0.0
+        var a = 0.0
+        var b = 0.0
+        for i in at..at + width {
+            both += x[i] * x[i + lag]
+            a += x[i] * x[i]
+            b += x[i + lag] * x[i + lag]
+        }
+        let score = both / sqrt(max(a * b, 1e-30))
+        scores.push(score)
+        if lag >= lo && lag <= hi && score > best_score {
+            best_score = score
+            best = lag
+        }
+    }
+    let k = best - (lo - 1)
+    let (before, here, after) = (scores[k - 1], scores[k], scores[k + 1])
+    let bend = before - 2.0 * here + after
+    let shift = if bend < -1e-9 { 0.5 * (before - after) / bend } else { 0.0 }
+    RATE / (f32(best) + clamp(shift, -0.5, 0.5))
+}
+
+/// A string's loop holds a little less than its delay lines and filter count for: counted as
+/// they are, a violin's G6 was 20 cents sharp and its G3 two. A violin's notes at the bottom and
+/// near the top of its fingerboard, and a double bass's lowest, are within 7 cents as this
+/// test reads them (to a cent or two at a period of 30 samples), over the tenth of a second
+/// before a vibrato would come in.
+@test
+fn a_violin_is_in_tune_to_its_top_and_a_bass_at_its_bottom() {
+    for (f, hz) in [(VIOLIN, 196.0), (VIOLIN, 1568.0), (BASS, 41.2)] {
+        let notes = Vec::from([Bowing { from: 0, to: 24000, hz, db: -18.0, fresh: true }])
+        // (A steady arm: the string's tuning is what is read, not the arm's drift.)
+        var c = bowed(take notes, Fiddle { body: [0.0; 48], gain: 0.0, unsteady: 0.0, ..f })
+        let x = rendered(mut c, quanta: 110)
+        let got = pitch_of(x, at: 5280, width: 5760, near: hz)
+        let cents = 1200.0 * log2(got / hz)
+        assert(abs(cents) < 7.0, f"{hz} Hz sounds {cents} cents off")
+    }
+}
+
+@test
+fn a_stopped_note_held_sways_and_an_open_one_does_not() {
+    // Three seconds of G3 on the D string: from one second in, its pitch every 20 ms moves
+    // over 15 cents from lowest to highest. The open D's moves under 10: a bow's tremble, a
+    // cent or two either way, and no more.
+    let spread = |hz: f32| -> f32 {
+        let notes = Vec::from([Bowing { from: 0, to: 144000, hz, db: -18.0, fresh: true }])
+        var c = bowed(take notes, Fiddle { body: [0.0; 48], gain: 0.0, ..CELLO })
+        let x = rendered(mut c, quanta: 1100)
+        var lowest = 1e9
+        var highest = 0.0
+        var at = 48000
+        while at < 130000 {
+            let p = pitch_of(x, at, width: 1920, near: hz)
+            lowest = min(lowest, p)
+            highest = max(highest, p)
+            at += 960
+        }
+        1200.0 * log2(highest / lowest)
+    }
+    let stopped = spread(196.0)
+    let open = spread(146.83)
+    assert(stopped > 15.0, f"a held G3's pitch moves {stopped} cents")
+    assert(open < 10.0, f"an open D's pitch moves {open} cents")
+}
+
+@test
+fn a_vibrating_hand_goes_on_through_a_new_note() {
+    // A cello's G sharp, half a second, slurred from a second of G (stopped, vibrated by its
+    // end) or of the open D (not vibrated): how far its pitch moves, lowest to highest, over
+    // its first tenth of a second. After the G the hand is vibrating still (19 cents); after
+    // the open string the note is plain for most of that tenth (6 cents).
+    let spread = |before: f32| -> f32 {
+        let notes = Vec::from(
+            [
+                Bowing { from: 0, to: 48000, hz: before, db: -18.0, fresh: true },
+                Bowing { from: 48000, to: 72000, hz: 207.65, db: -18.0, fresh: false },
+            ],
+        )
+        var c = bowed(take notes, Fiddle { body: [0.0; 48], gain: 0.0, ..CELLO })
+        let x = rendered(mut c, quanta: 450)
+        var lowest = 1e9
+        var highest = 0.0
+        var at = 48480
+        while at < 51840 {
+            let p = pitch_of(x, at, width: 1920, near: 207.65)
+            lowest = min(lowest, p)
+            highest = max(highest, p)
+            at += 240
+        }
+        1200.0 * log2(highest / lowest)
+    }
+    let carried = spread(196.0)
+    let plain = spread(146.83)
+    assert(carried > 12.0, f"after a vibrated note the pitch moves {carried} cents")
+    assert(plain < 0.6 * carried, f"after an open string the pitch moves {plain} cents")
+}
+
+@test
+fn a_finger_takes_a_moment_to_bring_the_pitch_to_a_note() {
+    // F then G on a cello's D string under one bow. The string's length 5 ms after the change:
+    // with the hand moved to the note in 20 ms (a third longer or shorter) it is between the
+    // two notes' lengths; with no move it is the new note's at once.
+    let part = |slide: f32| -> f32 {
+        let notes = Vec::from(
+            [
+                Bowing { from: 0, to: 24000, hz: 174.61, db: -18.0, fresh: true },
+                Bowing { from: 24000, to: 48000, hz: 196.0, db: -18.0, fresh: false, slide },
+            ],
+        )
+        var c = bowed(take notes, Fiddle { body: [0.0; 48], gain: 0.0, ..CELLO })
+        for _ in 0..24240 {
+            let _ = c.one()
+        }
+        let (old, new) = (RATE / 174.61 - BESIDE, RATE / 196.0 - BESIDE)
+        (c.length[c.string_for(196.0)] - new) / (old - new)
+    }
+    let moved = part(0.02)
+    let at_once = part(0.0)
+    assert(moved > 0.15 && moved < 0.98, f"5 ms into a move the string is {moved} of the way back")
+    assert(abs(at_once) < 0.1, f"with no move the string is {at_once} of the way back")
+}
+
+/// How alike the `width` samples of `x` from `at` are to those `lag` samples later.
+fn repeats_from(x: [f32], at: u32, width: u32, lag: u32) -> f32 {
+    var both = 0.0
+    var here = 0.0
+    var there = 0.0
+    for i in at..at + width {
+        both += x[i] * x[i + lag]
+        here += x[i] * x[i]
+        there += x[i + lag] * x[i + lag]
+    }
+    both / sqrt(max(here * there, 1e-30))
+}
+
+@test
+fn a_bow_that_sets_off_gently_catches_the_string() {
+    // A violin's open A from silence. Started gently, its wave from 10 to 40 ms repeats from
+    // one period to the next to 0.84, and from 300 ms to 1.00; started at once it repeats to
+    // 0.99 from 10 ms.
+    let early_and_late = |gentle: f32| -> vec2 {
+        let notes = Vec::from(
+            [Bowing { from: 0, to: 24000, hz: 440.0, db: -18.0, fresh: true, gentle }],
+        )
+        var c = bowed(take notes, VIOLIN)
+        let x = rendered(mut c, quanta: 150)
+        vec2(
+            repeats_from(x, at: 480, width: 1440, lag: 109),
+            repeats_from(x, at: 14400, width: 1440, lag: 109),
+        )
+    }
+    let gently = early_and_late(1.0)
+    let at_once = early_and_late(0.0)
+    assert(gently.x < 0.93, f"started gently, the first periods repeat to {gently.x}")
+    assert(at_once.x > 0.96, f"started at once, the first periods repeat to {at_once.x}")
+    assert(gently.y > 0.99, f"started gently, the held note repeats to {gently.y}")
+}
+
+@test
+fn an_uneven_bow_puts_a_bed_under_a_high_note() {
+    // A violin's G5 for a second. From 0.4 s, what five band-passes at 400 Hz (an octave
+    // under the note) let by, beside the whole (dB): with the hair's pull uneven (-40), and
+    // steady (-48).
+    let under = |coarse: f32| -> f32 {
+        let notes = Vec::from([Bowing { from: 0, to: 48000, hz: 783.99, db: -26.0, fresh: true }])
+        var c = bowed(take notes, Fiddle { coarse, unsteady: 0.0, ..VIOLIN })
+        let x = rendered(mut c, quanta: 375)
+        let low = band(hz: 400.0, q: 3.0)
+        var state = [Svf {}; 5]
+        var bed = 0.0
+        var whole = 0.0
+        for i in 0..x.len() {
+            var y = x[i]
+            for k in 0..5 {
+                y = state[k].pass(low, y)
+            }
+            if i >= 19200 {
+                bed += y * y
+                whole += x[i] * x[i]
+            }
+        }
+        4.3429448 * log(bed / whole)
+    }
+    let uneven = under(VIOLIN.coarse)
+    let steady = under(0.0)
+    assert(uneven > steady + 5.0, f"uneven {uneven} dB, steady {steady} dB")
+}
+
+@test
+fn a_shaped_note_swells_and_falls_away() {
+    // A violin's open A for two seconds: its level (dB) from 0.2 to 0.3 s, from 0.7 to 0.9 s
+    // and from 1.85 to 1.95 s. Asked to be 4 dB up two fifths of the way through and 10 dB
+    // down by its end, it is; left unshaped, it is level.
+    let levels = |bloom: f32, lean: f32| -> vec3 {
+        let notes = Vec::from(
+            [Bowing { from: 0, to: 96000, hz: 440.0, db: -22.0, fresh: true, bloom, lean }],
+        )
+        var c = bowed(take notes, VIOLIN)
+        let e = tens(rendered(mut c, quanta: 750))
+        var early = 0.0
+        var middle = 0.0
+        var late = 0.0
+        for k in 20..30 {
+            early += e[k] / 10.0
+            late += e[k + 165] / 10.0
+        }
+        for k in 70..90 {
+            middle += e[k] / 20.0
+        }
+        vec3(4.3429448 * log(early), 4.3429448 * log(middle), 4.3429448 * log(late))
+    }
+    let shaped = levels(4.0, -10.0)
+    let plain = levels(0.0, 0.0)
+    assert(shaped.y > shaped.x + 2.0, f"shaped: {shaped.x} dB early, {shaped.y} dB in the middle")
+    assert(shaped.z < shaped.x - 6.0, f"shaped: {shaped.x} dB early, {shaped.z} dB late")
+    assert(
+        abs(plain.y - plain.x) < 1.5 && abs(plain.z - plain.x) < 1.5,
+        f"unshaped: {plain.x}, {plain.y}, {plain.z} dB",
+    )
+}
+
+@test
+fn a_player_shapes_each_note_by_the_line() {
+    // One written level throughout: a C for two beats slurred to a D for one, a beat's rest,
+    // then a G for a beat and a C for three.
+    let s = score("line", meter(beats: 4, unit: 4)).voice("v", ["c5/2 ( d5/4 ) r/4 | g5/4 c5/2. |"])
+    let p = deadpan(s, tempo: 60.0)
+    let b = bowings(s, p, 0)
+    assert(b.len() == 4, f"{b.len()} notes")
+    // The long first note swells.
+    assert(b[0].bloom > 1.0, f"a two-second note swells {b[0].bloom} dB")
+    // The slurred note's finger moves half before its time; with silence after, it falls away.
+    assert(b[1].from < 96000 && b[0].to == b[1].from, f"the slurred note starts at {b[1].from}")
+    assert(!b[1].fresh && b[1].lean < -3.0, f"a note before a rest leans {b[1].lean} dB")
+    // The line's highest note starts the loudest, with the widest vibrato.
+    assert(b[2].db > b[0].db && b[2].db > b[3].db, f"the G starts at {b[2].db} dB")
+    assert(b[2].sway > b[3].sway, f"vibrato: {b[2].sway} of the usual on the G, {b[3].sway} after")
+    // A bow from silence starts more gently than one within the line.
+    assert(
+        b[2].gentle > b[3].gentle,
+        f"gentle: {b[2].gentle} from silence, {b[3].gentle} in the line",
+    )
+    // The last note dies away.
+    assert(b[3].lean < -12.0, f"the last note leans {b[3].lean} dB")
+}
+
+@test
+fn a_steel_string_is_brighter_than_the_body_alone_makes_it() {
+    // A violin's G5, on its E string, for half a second: how much of the sound from 0.2 s is
+    // over 6 kHz (dB beside the whole), with the strings' own brightness and without (5 dB
+    // less).
+    let top = |f: Fiddle| -> f32 {
+        let notes = Vec::from([Bowing { from: 0, to: 24000, hz: 783.99, db: -26.0, fresh: true }])
+        var c = bowed(take notes, f)
+        let x = rendered(mut c, quanta: 190)
+        let over = band(hz: 6000.0, q: 0.7071)
+        var state = [Svf {}; 2]
+        var high = 0.0
+        var whole = 0.0
+        for i in 0..x.len() {
+            let once = state[0].high(over, x[i])
+            let y = state[1].high(over, once)
+            if i >= 9600 {
+                high += y * y
+                whole += x[i] * x[i]
+            }
+        }
+        4.3429448 * log(high / whole)
+    }
+    let steel = top(VIOLIN)
+    let plain = top(Fiddle { brilliance: [0.0; 4], ..VIOLIN })
+    assert(
+        steel > plain + 3.0,
+        f"over 6 kHz: {steel} dB with the string's brightness, {plain} dB without",
+    )
+}
+
+@test
+fn a_strings_harmonics_stand_over_its_fundamental_by_its_richness() {
+    // A violin's E flat 5, on its A string, for half a second: how much of the sound from
+    // 0.2 s two band-passes at its fundamental let by (dB beside the whole), with the
+    // strings' own richness (-10, as the recorded note's is) and without (-2.5: over half the
+    // note was its fundamental).
+    let fundamental = |f: Fiddle| -> f32 {
+        let notes = Vec::from([Bowing { from: 0, to: 24000, hz: 622.25, db: -26.0, fresh: true }])
+        var c = bowed(take notes, f)
+        let x = rendered(mut c, quanta: 190)
+        let at = band(hz: 622.25, q: 4.0)
+        var state = [Svf {}; 2]
+        var low = 0.0
+        var whole = 0.0
+        for i in 0..x.len() {
+            let once = state[0].pass(at, x[i])
+            let y = state[1].pass(at, once)
+            if i >= 9600 {
+                low += y * y
+                whole += x[i] * x[i]
+            }
+        }
+        4.3429448 * log(low / whole)
+    }
+    let rich = fundamental(VIOLIN)
+    let plain = fundamental(Fiddle { richness: [0.0; 4], ..VIOLIN })
+    assert(
+        rich < plain - 4.0,
+        f"the fundamental: {rich} dB of the note with the string's richness, {plain} dB without",
+    )
+}
+
+@test
+fn a_bow_keeps_its_place_on_a_short_string() {
+    // A violin's G5 for half a second: how much of the sound from 0.2 s two band-passes at
+    // its sixth harmonic let by (dB beside the whole), with the bridge's delay counted in the
+    // bow's place (-14) and without (-29): uncounted, the bow sits where that harmonic has
+    // a node.
+    let sixth = |f: Fiddle| -> f32 {
+        let notes = Vec::from([Bowing { from: 0, to: 24000, hz: 783.99, db: -26.0, fresh: true }])
+        var c = bowed(take notes, f)
+        let x = rendered(mut c, quanta: 190)
+        let at = band(hz: 6.0 * 783.99, q: 12.0)
+        var state = [Svf {}; 2]
+        var there = 0.0
+        var whole = 0.0
+        for i in 0..x.len() {
+            let once = state[0].pass(at, x[i])
+            let y = state[1].pass(at, once)
+            if i >= 9600 {
+                there += y * y
+                whole += x[i] * x[i]
+            }
+        }
+        4.3429448 * log(there / whole)
+    }
+    let counted = sixth(VIOLIN)
+    let uncounted = sixth(Fiddle { bridge_side: 0.0, ..VIOLIN })
+    assert(
+        counted > uncounted + 8.0,
+        f"the sixth harmonic: {counted} dB counted, {uncounted} dB not",
+    )
+}
+
+@test
+fn a_soft_note_is_breathier_than_a_loud_one() {
+    // A violin's G5 twice, half a second each: soft (7.5 dB under the level its body is voiced
+    // at), then at that level. What five band-passes at 400 Hz (an octave under the note) let
+    // by, beside each note (dB): the bow's unevenness is more of a soft note (-35) than of
+    // the louder one (-40).
+    let notes = Vec::from(
+        [
+            Bowing { from: 0, to: 24000, hz: 783.99, db: -33.5, fresh: true },
+            Bowing { from: 36000, to: 60000, hz: 783.99, db: -26.0, fresh: true },
+        ],
+    )
+    var c = bowed(take notes, VIOLIN)
+    let x = rendered(mut c, quanta: 470)
+    let low = band(hz: 400.0, q: 3.0)
+    var state = [Svf {}; 5]
+    var bed = [0.0; 2]
+    var whole = [0.0; 2]
+    for i in 0..x.len() {
+        var y = x[i]
+        for k in 0..5 {
+            y = state[k].pass(low, y)
+        }
+        if i >= 9600 && i < 24000 {
+            bed[0] += y * y
+            whole[0] += x[i] * x[i]
+        }
+        if i >= 45600 && i < 60000 {
+            bed[1] += y * y
+            whole[1] += x[i] * x[i]
+        }
+    }
+    let soft = 4.3429448 * log(bed[0] / whole[0])
+    let loud = 4.3429448 * log(bed[1] / whole[1])
+    assert(
+        soft > loud + 3.0,
+        f"the bed beside the note: {soft} dB soft, {loud} dB at the voiced level",
+    )
+}
+
+@test
+fn an_unsteady_arm_moves_a_held_note() {
+    // A violin's open A for a second: how far its level in each 40 ms strays from its mean
+    // from 0.3 s on (dB, RMS), with the arm unsteady (0.6) and steady (0.1).
+    let strays = |f: Fiddle| -> f32 {
+        let notes = Vec::from([Bowing { from: 0, to: 48000, hz: 440.0, db: -26.0, fresh: true }])
+        var c = bowed(take notes, f)
+        let e = tens(rendered(mut c, quanta: 375))
+        var levels: Vec<f32> = Vec::new()
+        var k = 30
+        while k + 4 <= 96 {
+            levels.push(4.3429448 * log(e[k] + e[k + 1] + e[k + 2] + e[k + 3]))
+            k += 4
+        }
+        var mean = 0.0
+        for v in levels {
+            mean += v / f32(levels.len())
+        }
+        var spread = 0.0
+        for v in levels {
+            spread += (v - mean) * (v - mean) / f32(levels.len())
+        }
+        sqrt(spread)
+    }
+    let unsteady = strays(VIOLIN)
+    let steady = strays(Fiddle { unsteady: 0.0, ..VIOLIN })
+    assert(
+        unsteady > steady + 0.3,
+        f"the level strays {unsteady} dB with an unsteady arm, {steady} dB with a steady one",
+    )
+}
+
+@test
+fn a_gently_started_note_scratches_first_and_forms_dark() {
+    // A violin's G5 twice from silence, half a second each: started gently at 0.2 s, and at
+    // once at 1.2 s. In the 20 ms before each: the hair on the string before it speaks, or
+    // nothing. And of the first: how much of its first 30 ms is over 2.5 kHz beside how much
+    // of its held sound is (dB): it forms dark and brightens. (The scratch is 22 dB under the
+    // held note; the first 30 ms 7 dB darker than it.)
+    let notes = Vec::from(
+        [
+            Bowing { from: 9600, to: 33600, hz: 783.99, db: -26.0, fresh: true, gentle: 1.0 },
+            Bowing { from: 57600, to: 81600, hz: 783.99, db: -26.0, fresh: true },
+        ],
+    )
+    var c = bowed(take notes, VIOLIN)
+    let x = rendered(mut c, quanta: 640)
+    let over = band(hz: 2500.0, q: 0.7071)
+    var state = [Svf {}; 2]
+    var before = [0.0; 2]
+    var early = [0.0; 2]
+    var held = [0.0; 2]
+    for i in 0..x.len() {
+        let once = state[0].high(over, x[i])
+        let y = state[1].high(over, once)
+        if i >= 8640 && i < 9600 {
+            before[0] += x[i] * x[i] / 960.0
+        }
+        if i >= 56640 && i < 57600 {
+            before[1] += x[i] * x[i] / 960.0
+        }
+        if i >= 9600 && i < 11040 {
+            early[0] += x[i] * x[i]
+            early[1] += y * y
+        }
+        if i >= 24000 && i < 33600 {
+            held[0] += x[i] * x[i]
+            held[1] += y * y
+        }
+    }
+    let level = held[0] / 9600.0
+    let scratch = 4.3429448 * log(before[0] / level)
+    let none = 4.3429448 * log(max(before[1], 1e-20) / level)
+    let dark = 4.3429448 * log(early[1] / early[0]) - 4.3429448 * log(held[1] / held[0])
+    assert(
+        scratch > -30.0 && scratch < -12.0,
+        f"before the gentle note, {scratch} dB beside the held note",
+    )
+    assert(none < -60.0, f"before the note started at once, {none} dB beside the held note")
+    assert(dark < -3.0, f"its first 30 ms is {dark} dB as bright as the held note")
+}
+
+@test
+fn a_note_slurred_onto_another_string_speaks_at_once() {
+    // E2 on the C string, then E3 on the D string under the same bow, a quarter of a second
+    // each. The D string's own wave (what leaves the bow for the bridge) repeats at its period,
+    // and not at half of it, from 10 ms into the note: it was started in a bowed string's
+    // motion, not from rest. (The sound is another matter: the body's low modes ring on with
+    // the E2 for some 50 ms, so the wave is read before the body.)
+    let notes = Vec::from(
+        [
+            Bowing { from: 0, to: 12000, hz: 82.41, db: -18.0, fresh: true },
+            Bowing { from: 12000, to: 24000, hz: 164.81, db: -18.0, fresh: false },
+        ],
+    )
+    var c = bowed(take notes, Fiddle { body: [0.0; 48], gain: 0.0, ..CELLO })
+    var quantum = [0.0; 128]
+    var wave: Vec<f32> = Vec::new()
+    for _ in 0..188 {
+        c.play(mut quantum)
+        for i in 0..128 {
+            wave.push(c.bridge[2 * SPAN + ((c.at + SPAN - (127 - i)) & (SPAN - 1))])
+        }
+    }
+    var second: Vec<f32> = Vec::new()
+    for i in 12480..18240 {
+        second.push(wave[i])
+    }
+    let period = u32(RATE / 164.81 + 0.5)
+    let whole = repeats(second, lag: period)
+    let half = repeats(second, lag: period / 2)
+    assert(whole > 0.9, f"the slurred note's string repeats {whole} after a period")
+    assert(half < 0.6, f"the slurred note's string repeats {half} after half a period")
+}

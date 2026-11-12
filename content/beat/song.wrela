@@ -19,7 +19,7 @@
 // before each chord (the pedal holds them), their chords are rolled and have roots under them,
 // the lead is an octave lower and sung, not plucked, and the room is entered through a smear.
 
-use engine::drum::{CLAP, HAT, KICK, OPEN_HAT, RIM, SNARE}
+use engine::drum::{CLAP, Drum, HAT, KICK, OPEN_HAT, RIM, SNARE}
 use engine::pattern::{Feel, Pattern, pattern, struck, swung, tacet}
 use engine::perform::{Mark, Pedal, Performance, Taste, bar, perform}
 use engine::score::{Meter, Score, meter, score}
@@ -28,6 +28,13 @@ use engine::synth::{LEAD, SUB}
 use engine::tine::SUITCASE
 
 pub const TITLE: Text = "Slack Water"
+
+/// The snare's wires (round 1.5 kHz), a little over the engine's 1.3 (1.3 dB more of them).
+/// The whole beat's octave at 1 kHz sat 4.7 dB under the line through its others, and the
+/// snare is most of what is there; an ear's note was that the groove wanted more snap. With
+/// this the octaves at 1, 2 and 4 kHz are 0.4, 0.7 and 1.0 dB up. (Driving the keys' strip to
+/// add harmonics there changed nothing measurable, so the keys are as they were.)
+const WIRES: f32 = 1.4
 pub const TEMPO: f32 = 86.0
 pub const BARS: u32 = 20
 const SWING: f32 = 0.58
@@ -201,7 +208,7 @@ pub fn build() -> Session {
     )
     s.drum(
         "snare",
-        SNARE,
+        Drum { noise: WIRES, ..SNARE },
         struck(
             snare(),
             TEMPO,

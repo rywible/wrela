@@ -1,0 +1,345 @@
+// The bowed strings, for the audio tool (`wrela tool audio -- content/strings wav <out.wav>
+// --take n`).
+//
+// Take 0 is a phrase for string quartet, eight bars in G minor, written for this (no recording
+// of it exists to copy): the first violin's line turns on a rising fourth (D to G) and a note
+// that leans down a half step onto the next (E flat to D); it is said, said a step lower, said
+// again and carried up to its one highest note, and closes on the fourth again. The others hold
+// the harmony in half notes. It is played by engine::perform's rules alone: the first violin a
+// little over the others, the bar's first beat leaned on, the last two bars slowing. Takes 1 to
+// 4 are its players alone, each in its seat: the first violin, the second, the viola, the cello.
+//
+// An ear's notes on the phrase so far: the instruments first sounded like synthesizers (a held
+// wave, one vibrato in all four); then the violin's separate notes were too abrupt, its tone
+// better but still a little electronic, and not yet bowed as the cello is. Since then a note
+// with time to spare is started gently (engine::bowed's `Bowing::gentle`), and the violin and
+// viola have all of a bow's unsteadiness, not a share of it.
+// The ear on that: the violin better again, still like a synthesizer, and "robotic on pitch
+// changes". Since then the left hand is a hand (a vibrato that carries through a new note,
+// a finger that takes a moment to bring the pitch and lands a little off), and a bow that
+// sets off gently catches the string in jerks as a real one does.
+// The ear on that: "almost there"; a touch more of the bow's sound at a note's start, the
+// sound fuller still, the tone still with a synthesizer's edge. Since then the catch is a
+// third stronger, and the hair's pull is uneven all through a stroke, which puts under a
+// high note the bed of body sound a recorded violin has there.
+// The ear on that: is the vibrato always the same; timing and note changes a bit off; "a
+// very samey feeling on all the notes"; a master player wanted behind the violin. It was:
+// every note was level within a decibel from end to end, with one vibrato. Since then the
+// notes are a player's (engine::bowed's `Playing`), and the players' scatter is a third of
+// what it was.
+// The ear on that: much better; the higher notes still edge back toward a synthesizer. They
+// are on the violin's E string, which was 7 to 21 dB duller from 3 to 8 kHz than a recorded
+// E string; each string now has its own brightness (engine::bowed's `Fiddle::brilliance`).
+// The ear on that: the first violin from 4 to 5 seconds, a held E flat on its A string, "very
+// synthy". Over half of that note was its fundamental (in a recorded one, a tenth): each
+// string now has its own richness too (`Fiddle::richness`). The scales below are played with
+// no vibrato, as the recorded notes they are measured against were.
+// The ear on that: 28 to 30 seconds "also sounds synthy now": a soft D on the same string,
+// which the richness had given a loud note's harmonics. What both notes lacked was breath: a
+// recorded violin's soft note is mostly its fundamental too, over a bed of the bow's noise
+// 27 to 36 dB under it, and these were clean tones 45 dB over theirs. The bow's unevenness
+// now stays as the note softens, a string's richness is only a loud note's, and the violins
+// and viola play a written piano as a soft note (see `UP`). Takes 30 to 33 are the scales at
+// pianissimo, for setting soft notes beside recorded ones.
+// The ear on that: the violin "still is synthy. It sounds like that regular oscillation classic
+// synthy sound". Held with no vibrato at all, a recorded violin's harmonics each move half a
+// decibel to a decibel and a half from moment to moment; these moved a tenth to three
+// tenths: one wave, held. The players' arms are now unsteady (engine::bowed's
+// `Fiddle::unsteady`), the cello's excepted.
+// The ear on that: "the attack on the violin still sounds synthy". A note here began bright
+// and thin, its harmonics there from the first instant and the fundamental last; a recorded
+// one begins as the bow's noise and forms fundamental first. A gently started note now has
+// its scratch and forms dark. Takes 40 to 43 are the scales with silence between the notes,
+// for setting a note's start beside a recorded one.
+//
+// Takes 10 to 13 are a cello's, a violin's, a viola's and a double bass's chromatic scale, three
+// octaves up from the lowest string, a second and a new bow to each note (started as gently as
+// a note that long is in a piece), with no room: what
+// each instrument is checked by (does it sound the note asked) and voiced by (its notes'
+// harmonics beside a dry recording's). Takes 20 to 23 are the same scales 5.5 dB louder,
+// forte: what shows how each instrument brightens with how hard it is played.
+
+use engine::bowed::{BASS, Bowed, Bowing, CELLO, Fiddle, VIOLA, VIOLIN, bowed, bowings}
+use engine::perform::{Mark, Performance, Taste, bar, perform}
+use engine::room::{Room, room}
+use engine::score::{Score, meter, score}
+use std::audio::{SAMPLE_RATE, play}
+use std::collections::Vec
+use std::io::print
+
+/// A scale's notes: how many, and the samples each lasts.
+const STEPS: u32 = 37
+const EACH: u32 = 48000
+
+/// The instrument take `which` is for.
+fn fiddle(which: u32) -> Fiddle {
+    match which % 10 {
+        1 => VIOLIN,
+        2 => VIOLA,
+        3 => BASS,
+        _ => CELLO,
+    }
+}
+
+/// The quartet's phrase.
+fn phrase() -> Score {
+    score("Phrase for string quartet", meter(beats: 4, unit: 4))
+        .voice(
+            "violin 1",
+            [
+                "d5/4. !p ( g5/8 ) g5/4 ( f5/8 eb5 ) |",
+                "eb5/4 ( d5 ) r bb4 |",
+                "c5/4. ( f5/8 ) f5/4 ( eb5/8 d5 ) |",
+                "d5/4 ( c5 ) r d5 !< |",
+                "d5/4. !mf ( g5/8 ) g5/4 ( a5/8 bb5 ) |",
+                "bb5/2 !> a5/4 ( g5 ) |",
+                "f#5/4 !p ( g5 ) eb5 ( d5 ) |",
+                "g5/1 !fermata |",
+            ],
+        )
+        .voice(
+            "violin 2",
+            [
+                "bb4/2 bb4 |",
+                "c5/4 ( bb4 ) a4/2 |",
+                "a4/2 a4 |",
+                "bb4/4 ( a4 ) a4/2 |",
+                "bb4/2 g4 |",
+                "g4/2 g4 |",
+                "d5/4 d5 c5 ( a4 ) |",
+                "bb4/1 !fermata |",
+            ],
+        )
+        .voice(
+            "viola",
+            [
+                "d4/2 d4 |",
+                "g3/4 g3 f#3/2 |",
+                "a3/2 c4 |",
+                "f4/4 f4 f#4/2 |",
+                "d4/2 bb3 |",
+                "bb3/2 eb4 |",
+                "a3/4 ( bb3 ) g3 ( f#3 ) |",
+                "g3/1 !fermata |",
+            ],
+        )
+        .voice(
+            "cello",
+            [
+                "g2/2 g2 |",
+                "c3/4 ( bb2 ) d3/2 |",
+                "f2/2 a2 |",
+                "bb2/4 ( a2 ) d3/2 |",
+                "g2/2 eb3 |",
+                "eb3/2 c3 |",
+                "d3/4 g2 c3 ( d3 ) |",
+                "g2/1 !fermata |",
+            ],
+        )
+}
+
+/// How the phrase is played: a player's habits, none of them this piece's own.
+fn played(s: Score) -> Performance {
+    perform(
+        s,
+        Taste {
+            tempo: 60.0,
+            lead: "violin 1",
+            voicing: 1.12,
+            under: 0.9,
+            metre: 0.06,
+            final_rit: 0.3,
+            final_bars: 2,
+            fermata: 1.5,
+            // The first violin a hair ahead of the rest, as a leader is; the note that starts
+            // a bar or its second half held a little.
+            melody_lead: 0.012,
+            agogic: 0.03,
+            // Four players are never quite together, but a few thousandths of a second apart,
+            // not a hundredth: at 0.014 two eighth notes side by side came out 0.46 and 0.54 s,
+            // which an ear heard as timing that was off, not as playing.
+            jitter_time: 0.004,
+            jitter_velocity: 0.03,
+        },
+        [
+            // The leaning notes (bars 2 and 4) are leaned on; a breath before the phrase is
+            // said again, louder, and before its close.
+            // A moment before the first note: its bow touches the string before it sounds.
+            Mark::Breathe { at: bar(1), length: 0.3 },
+            Mark::Hold { at: bar(2), by: 1.08 },
+            Mark::Hold { at: bar(4), by: 1.08 },
+            Mark::Breathe { at: bar(5), length: 0.12 },
+            Mark::Breathe { at: bar(7), length: 0.06 },
+        ],
+    )
+}
+
+/// The quartet's seats, from the left: where each is heard (-1 left to 1 right), and the level
+/// a velocity of a half is on each (dB): the cello a little up, so the bass is under the
+/// violins by 2 or 3 dB of loudness and not 4 or 5.
+const SEATS: [f32; 4] = [-0.5, -0.2, 0.2, 0.5]
+const LEVELS: [f32; 4] = [-27.5, -27.5, -27.0, -20.0]
+/// How much each player's sound is turned up afterwards (dB). The violins and the viola play
+/// 5.5 dB under where they did and are turned up by as much: a written mezzo-forte is then
+/// the level their bodies are voiced at (the engine's `MF`), and a written piano is soft to
+/// the instrument, round and breathy, where it had been a mezzo-forte played quietly. The
+/// cello plays as it did: an ear called its sound finished. (All four are then 1.5 dB down,
+/// to leave the loudest bar room under full scale.)
+const UP: [f32; 4] = [4.0, 4.0, 4.0, -1.5]
+
+/// How loud the room is beside the players.
+const ROOM: f32 = 0.22
+
+/// The scale's bows on `f`: a note every `every` samples (over `EACH`, there is silence
+/// between them, and each starts from it).
+fn scale(f: Fiddle, db: f32, every: u32 = 48000) -> Vec<Bowing> {
+    var out: Vec<Bowing> = Vec::new()
+    for i in 0..STEPS {
+        out.push(
+            Bowing {
+                from: every * i,
+                to: every * i + EACH,
+                hz: f.open[0] * exp2(f32(i) / 12.0),
+                db,
+                fresh: true,
+                gentle: 1.0,
+                sway: 0.0,
+            },
+        )
+    }
+    out
+}
+
+pub struct Piece {
+    which: u32,
+    started: bool,
+}
+
+pub fn init() -> Piece {
+    Piece { which: 0, started: false }
+}
+
+pub fn choose(p: mut Piece, which: u32) {
+    assert(!p.started, "a take is chosen before the piece starts")
+    assert(
+        which <= 4 ||
+            (which >= 10 && which <= 13) ||
+            (which >= 20 && which <= 23) ||
+            (which >= 30 && which <= 33) ||
+            (which >= 40 && which <= 43),
+        "the strings have takes 0 to 4, 10 to 13, 20 to 23, 30 to 33 and 40 to 43",
+    )
+    p.which = which
+}
+
+/// The players, each with a seat, and their room (no room for a scale).
+struct Players {
+    each: Vec<Bowed>,
+    left: [f32; 4],
+    right: [f32; 4],
+    room: Room,
+    wet: f32,
+}
+
+fn players(which: u32) -> Players {
+    var each: Vec<Bowed> = Vec::new()
+    var left = [0.0; 4]
+    var right = [0.0; 4]
+    if which <= 4 {
+        let s = phrase()
+        let p = played(s)
+        let fiddles = [VIOLIN, VIOLIN, VIOLA, CELLO]
+        for v in 0..4 {
+            // A take from 1 to 4 is one player alone.
+            let line = if which == 0 || which == v + 1 { bowings(s, p, v, LEVELS[v]) } else {
+                Vec::new()
+            }
+            each.push(bowed(take line, fiddles[v], seat: v))
+            // An equal-power seat.
+            let turn = 0.7853982 * (SEATS[v] + 1.0)
+            let up = pow(10.0, UP[v] / 20.0)
+            left[v] = up * cos(turn)
+            right[v] = up * sin(turn)
+        }
+    } else {
+        let f = fiddle(which)
+        // -26 dB is the level the bodies are voiced at: the engine's `MF`.
+        let db = if which >= 30 && which < 40 { -33.5 } else if which >= 20 && which < 30 {
+            -20.5
+        } else { -26.0 }
+        each.push(bowed(scale(f, db, every: if which >= 40 { 84000 } else { EACH }), f))
+        left[0] = 1.0
+        right[0] = 1.0
+    }
+    Players {
+        each,
+        left,
+        right,
+        room: room(time: 1.9, highs: 0.3, size: 1.6),
+        wet: if which <= 4 { ROOM } else { 0.0 },
+    }
+}
+
+@audio
+fn render(p: mut Players, left: mut [f32], right: mut [f32]) {
+    var l = [0.0; 128]
+    var r = [0.0; 128]
+    for v in 0..p.each.len() {
+        var dry = [0.0; 128]
+        p.each[v].play(mut dry)
+        for n in 0..128 {
+            l[n] += p.left[v] * dry[n]
+            r[n] += p.right[v] * dry[n]
+        }
+    }
+    for n in 0..128 {
+        let wet = p.room.hear(n, l[n], r[n])
+        left[n] = l[n] + p.wet * wet.x
+        right[n] = r[n] + p.wet * wet.y
+    }
+    p.room.sway()
+}
+
+pub fn frame(p: mut Piece, time: f32, width: u32, height: u32) {
+    if !p.started {
+        p.started = true
+        play(players(p.which), render)
+    }
+}
+
+/// The seconds from one scale note's start to the next's.
+fn every(which: u32) -> f32 {
+    if which >= 40 { 1.75 } else { 1.0 }
+}
+
+pub fn seconds(p: Piece) -> f32 {
+    if p.which <= 4 {
+        f32(played(phrase()).length) + 3.0
+    } else {
+        f32(STEPS) * every(p.which) + 1.0
+    }
+}
+
+/// Prints the take as the audio tool reads it: each note with when it starts and ends.
+pub fn describe(p: Piece) {
+    if p.which <= 4 {
+        let s = phrase()
+        engine::perform::describe(s, "phrase", played(s))
+        return
+    }
+    print(
+        f"{{\"title\":\"Strings\",\"take\":\"scale\",\"bars\":{STEPS},\"beats_per_bar\":1,\"seconds\":{seconds(p)}}}",
+    )
+    print("{\"voice\":0,\"name\":\"scale\"}")
+    let f = fiddle(p.which)
+    let low = 69.0 + 12.0 * log2(f.open[0] / 440.0)
+    for i in 0..STEPS {
+        let key = u32(low + 0.5) + i
+        print(
+            f"{{\"key\":{key},\"voice\":0,\"onset\":{f32(i) * every(p.which)},\"release\":{f32(i) * every(p.which) + 1.0},\"velocity\":0.67,\"bar\":{i + 1}}}",
+        )
+    }
+    for i in 0..STEPS + 1 {
+        print(f"{{\"beat\":{f32(i) * every(p.which)}}}")
+    }
+}

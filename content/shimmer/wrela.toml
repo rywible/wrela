@@ -1,0 +1,7 @@
+# "Heat Shimmer": a breakbeat track played by engine::session, for the audio tool to render
+# (`wrela tool audio -- content/shimmer wav <out.wav>`).
+[package]
+name = "shimmer"
+
+[dependencies]
+engine = { workspace = true }

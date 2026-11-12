@@ -214,6 +214,39 @@ impl Mode {
         self.im = 0.0
     }
 
+    /// Trades ringing with `other`, and gives back `other` as it then is: each takes a share
+    /// of the other's swing and gives up as much of its own (`turn` is the angle the two are
+    /// turned through, in radians when small; its sign is which way), so the two together ring
+    /// exactly as hard as before. Like a strike, it is no click: what each sounds now is as
+    /// it was.
+    @audio
+    pub fn trade(mut self, other: Mode, turn: f32) -> Mode {
+        let half = 0.5 * turn
+        let over = 1.0 / (1.0 + half * half)
+        let keeps = (1.0 - half * half) * over
+        let takes = 2.0 * half * over
+        var theirs = other
+        let mine = self.re
+        self.re = keeps * mine - takes * theirs.re
+        theirs.re = takes * mine + keeps * theirs.re
+        theirs
+    }
+
+    /// Takes some of its ringing away at once: it keeps `keeps` of its swing.
+    @audio
+    pub fn lose(mut self, keeps: f32) {
+        self.re *= keeps
+        self.im *= keeps
+    }
+
+    /// Adds `other`'s ringing to this one's: for two tuned alike, what sounds from here on is
+    /// both.
+    @audio
+    pub fn join(mut self, other: Mode) {
+        self.re += other.re
+        self.im += other.im
+    }
+
     /// The next sample.
     @audio
     pub fn next(mut self) -> f32 {
@@ -349,6 +382,37 @@ fn a_mode_falls_as_its_time_says_and_starts_from_zero() {
     }
     let fell = db(early) - db(late)
     assert(fell > 58.0 && fell < 62.0, f"a mode with half a second to fall 60 dB fell {fell} dB")
+}
+
+/// Two modes that trade ring together exactly as hard as before, whatever the angle; what each
+/// sounds at the trade is as it was (no click); and swing does change hands. (Modes that gave
+/// up a share and were pushed back as much on average drained a plate's top 27 dB in half a
+/// second.)
+@test
+fn two_modes_that_trade_keep_what_they_ring_with_together() {
+    var a = Mode {}
+    a.tune(hz: 3000.0, t60: 100.0)
+    a.strike(1.0)
+    var b = Mode {}
+    b.tune(hz: 3100.0, t60: 100.0)
+    b.strike(0.3)
+    var worst = 0.0
+    var jump = 0.0
+    for n in 0..2000 {
+        let ya = a.next()
+        let yb = b.next()
+        if n % 16 == 0 {
+            let before = a.re * a.re + a.im * a.im + b.re * b.re + b.im * b.im
+            b = a.trade(b, 0.9 * sin(f32(n)))
+            let after = a.re * a.re + a.im * a.im + b.re * b.re + b.im * b.im
+            worst = max(worst, abs(after / before - 1.0))
+            jump = max(jump, abs(a.im - ya) + abs(b.im - yb))
+        }
+    }
+    let theirs = b.re * b.re + b.im * b.im
+    assert(worst < 1e-5, f"a trade changed what two modes had together by {worst} of it")
+    assert(jump == 0.0, f"a trade moved what the modes sound by {jump}")
+    assert(abs(theirs - 0.09) > 0.01, f"after 125 trades the second mode has {theirs}, from 0.09")
 }
 
 @test

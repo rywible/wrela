@@ -1,9 +1,10 @@
 // A session: the tracks of a piece of music, mixed on the program's one stereo voice
 // (`std::audio`).
 //
-// A track is an instrument (a drum, a synthesizer, an electric piano), the notes it plays (as
-// engine::perform gives them: each note's key, onset, release and velocity, in seconds), and a
-// strip: its level, its place between the channels, what is cut from it, and how much of it
+// A track is an instrument (a drum, a synthesizer, an electric piano, a bowed string
+// instrument, a wind instrument, an electric guitar, a piano), the notes it plays (as engine::perform gives them: each note's key, onset,
+// release and velocity, in seconds; a bowed instrument's as its bow plays them, a wind's as
+// its player blows them, a guitar's as its player picks them), and a strip: its level, its place between the channels, what is cut from it, and how much of it
 // goes to the room and to the echo. The session plays every track on one clock, sums the strips
 // into a bus (the room is entered through a wait and a smear, so a drum's hit comes back as a
 // wash, not a flutter), and the master makes the bus fit a speaker: a compressor that holds the mix
@@ -15,6 +16,7 @@
 //       .drum("kick", KICK, notes, ..)      each track: its notes' events, sample by sample
 //       .synth("bass", SUB, notes, ..)        ─▶ its instrument ─▶ its strip ─┬─▶ bus
 //       .tine("keys", SUITCASE, ..)                                           ├─▶ echo ─▶ bus
+//       .bowed("cello", CELLO, bows, ..)                                      │
 //     std::audio::play(s, play_session)                                       └─▶ room ─▶ bus
 //                                           bus ─▶ glue ─▶ warmth ─▶ limiter ─▶ left, right
 //
@@ -25,8 +27,11 @@
 // Everything on the audio thread is f32 arithmetic in a fixed order, so both hosts give the same
 // samples. A session whose tracks are all given before it starts renders the same every run.
 
+use bowed::{Bowed, Bowing, Fiddle, bowed}
 use drum::{Drum, Drummer, drummer}
+use guitar::{Guitar, Picked, Picking, picked}
 use perform::{PedalPoint, Performance, Played}
+use piano::{Model, Piano, piano, play_piano}
 use room::{Entry, Room, entry, room}
 use std::audio::SAMPLE_RATE
 use std::collections::Vec
@@ -35,6 +40,7 @@ use std::math::PI
 use synth::{Patch, Synth, synth}
 use tine::{Tine, Tines, tines}
 use tone::{Band, Svf, band, gain_of, one_pole, warm}
+use wind::{Blown, Pipe, Wind, wind}
 
 /// The audio thread's rate.
 const RATE: f32 = f32(SAMPLE_RATE)
@@ -102,6 +108,10 @@ enum Kind: Copy + Eq {
     Drum,
     Synth,
     Tine,
+    Bowed,
+    Wind,
+    Guitar,
+    Piano,
 }
 
 /// A key pressed or let go, or the sustain pedal moved, at a sample.
@@ -162,6 +172,10 @@ pub struct Session {
     drums: Vec<Drummer>,
     synths: Vec<Synth>,
     tines: Vec<Tines>,
+    bowed: Vec<Bowed>,
+    winds: Vec<Wind>,
+    guitars: Vec<Picked>,
+    pianos: Vec<Piano>,
     /// The key track, if any; how hard its last hits press (falling), and the duck as the
     /// tracks feel it (eased in, so it isn't a click).
     key: u32,
@@ -218,6 +232,10 @@ pub fn session(tempo: f32, master: Master = Master {}, beats: u32 = 4) -> Sessio
         drums: Vec::new(),
         synths: Vec::new(),
         tines: Vec::new(),
+        bowed: Vec::new(),
+        winds: Vec::new(),
+        guitars: Vec::new(),
+        pianos: Vec::new(),
         key: NONE,
         pump: 0.0,
         pump_fall: exp(-3.0 / (max(master.duck_time, 0.005) * RATE)),
@@ -274,6 +292,87 @@ impl Session {
         self.add(name, Kind::Tine, self.tines.len() - 1, played.notes, played.sustain, strip)
     }
 
+    /// Adds a bowed string instrument, `fiddle`, that plays `bows` (engine::bowed's `bowings`
+    /// makes them from a performance): its player keeps its own time from the session's start,
+    /// so it takes no events. Its player learns the instrument here, which takes a moment.
+    pub fn bowed(mut self, name: Text, fiddle: Fiddle, bows: Vec<Bowing>, strip: Strip = Strip {}) {
+        // Its notes, for `describe`: a bow at -22 dB is a velocity of a half.
+        var notes: Vec<Played> = Vec::with_capacity(bows.len())
+        for b in bows {
+            notes.push(
+                Played {
+                    key: u32(69.0 + 12.0 * log2(b.hz / 440.0) + 0.5),
+                    voice: 0,
+                    onset: f64(b.from) / f64(SAMPLE_RATE),
+                    release: f64(b.to) / f64(SAMPLE_RATE),
+                    velocity: clamp(0.5 + (b.db + 22.0) / 24.0, 0.01, 1.0),
+                    note: 0,
+                },
+            )
+        }
+        self.bowed.push(bowed(bows.clone(), fiddle, seat: self.tracks.len()))
+        self.add(name, Kind::Bowed, self.bowed.len() - 1, notes, Vec::new(), strip)
+    }
+
+    /// Adds a wind instrument, `pipe`, that plays `notes` (engine::wind's `blown` makes them
+    /// from a performance): as a bowed instrument's, its player keeps its own time from the
+    /// session's start, and learns the instrument here.
+    pub fn wind(mut self, name: Text, pipe: Pipe, notes: Vec<Blown>, strip: Strip = Strip {}) {
+        // Its notes, for `describe`: a note at -22 dB is a velocity of a half.
+        var played: Vec<Played> = Vec::with_capacity(notes.len())
+        for b in notes {
+            played.push(
+                Played {
+                    key: u32(69.0 + 12.0 * log2(b.hz / 440.0) + 0.5),
+                    voice: 0,
+                    onset: f64(b.from) / f64(SAMPLE_RATE),
+                    release: f64(b.to) / f64(SAMPLE_RATE),
+                    velocity: clamp(0.5 + (b.db + 22.0) / 24.0, 0.01, 1.0),
+                    note: 0,
+                },
+            )
+        }
+        self.winds.push(wind(pipe, notes.clone()))
+        self.add(name, Kind::Wind, self.winds.len() - 1, played, Vec::new(), strip)
+    }
+
+    /// Adds an electric guitar, `guitar`, that plays `picks` (engine::guitar's `pickings`
+    /// makes them from a performance): as a bowed instrument's, its player keeps its own time
+    /// from the session's start, so it takes no events.
+    pub fn guitar(
+        mut self,
+        name: Text,
+        guitar: Guitar,
+        picks: Vec<Picking>,
+        strip: Strip = Strip {},
+    ) {
+        // Its notes, for `describe`.
+        var played: Vec<Played> = Vec::with_capacity(picks.len())
+        for n in picks {
+            played.push(
+                Played {
+                    key: u32(n.key + 0.5),
+                    voice: 0,
+                    onset: f64(n.from) / f64(SAMPLE_RATE),
+                    release: f64(n.to) / f64(SAMPLE_RATE),
+                    velocity: clamp(n.hard, 0.01, 1.0),
+                    note: 0,
+                },
+            )
+        }
+        self.guitars.push(picked(picks.clone(), guitar, seat: self.tracks.len()))
+        self.add(name, Kind::Guitar, self.guitars.len() - 1, played, Vec::new(), strip)
+    }
+
+    /// Adds a piano, `model` (engine::piano_grand's `GRAND`), that plays `played`: its notes and
+    /// both its pedals. As a bowed instrument's player, it keeps its own time from the
+    /// session's start, so it takes no events. It has a room of its own (`Model::room`), under
+    /// whatever its strip sends to the session's.
+    pub fn piano(mut self, name: Text, model: Model, played: Performance, strip: Strip = Strip {}) {
+        self.pianos.push(piano(model, played))
+        self.add(name, Kind::Piano, self.pianos.len() - 1, played.notes, Vec::new(), strip)
+    }
+
     fn add(
         mut self,
         name: Text,
@@ -288,6 +387,15 @@ impl Session {
         }
         var events: Vec<Event> = Vec::with_capacity(2 * notes.len())
         for n in notes {
+            self.seconds = max(self.seconds, n.release + TAIL)
+            // A bowed or a wind instrument's player, a guitar's or a piano's, has its notes
+            // already.
+            if kind == Kind::Bowed ||
+                kind == Kind::Wind ||
+                kind == Kind::Guitar ||
+                kind == Kind::Piano {
+                continue
+            }
             events.push(
                 Event {
                     at: samples(n.onset),
@@ -301,7 +409,6 @@ impl Session {
                     Event { at: samples(n.release), key: f32(n.key), velocity: 0.0, pedal: false },
                 )
             }
-            self.seconds = max(self.seconds, n.release + TAIL)
         }
         for p in pedal {
             events.push(Event { at: samples(p.at), key: 0.0, velocity: p.depth, pedal: true })
@@ -430,6 +537,11 @@ impl Session {
             Kind::Drum => self.drums[index].silent(),
             Kind::Synth => self.synths[index].silent(),
             Kind::Tine => self.tines[index].silent(),
+            Kind::Bowed => self.bowed[index].silent(),
+            Kind::Wind => self.winds[index].silent(),
+            Kind::Guitar => self.guitars[index].silent(),
+            // A piano's strings ring in sympathy and its room rings on: it is always sounded.
+            Kind::Piano => false,
         }
     }
 
@@ -463,6 +575,15 @@ impl Session {
                 Kind::Drum => self.drums[index].sound(mut tl, mut tr, from, until),
                 Kind::Synth => self.synths[index].sound(mut tl, mut tr, from, until),
                 Kind::Tine => self.tines[index].sound(mut tl, mut tr, from, until),
+                Kind::Bowed => self.bowed[index].sound(mut tl, mut tr, from, until),
+                Kind::Wind => self.winds[index].sound(mut tl, mut tr, from, until),
+                Kind::Guitar => self.guitars[index].sound(mut tl, mut tr, from, until),
+                // A piano plays a whole quantum at a time, and it has no events to split one.
+                Kind::Piano => {
+                    if from == 0 {
+                        play_piano(mut self.pianos[index], mut tl, mut tr)
+                    }
+                },
             }
             if until == 128 {
                 break
@@ -480,6 +601,10 @@ impl Session {
                     Kind::Drum => self.drums[index].hit(e.velocity),
                     Kind::Synth => self.synths[index].press(e.key, e.velocity),
                     Kind::Tine => self.tines[index].press(e.key, e.velocity),
+                    Kind::Bowed => {},
+                    Kind::Wind => {},
+                    Kind::Guitar => {},
+                    Kind::Piano => {},
                 }
                 let chokes = self.tracks[t].chokes
                 if chokes != NONE {
@@ -493,6 +618,10 @@ impl Session {
                     Kind::Drum => {},
                     Kind::Synth => self.synths[index].lift(e.key),
                     Kind::Tine => self.tines[index].lift(e.key),
+                    Kind::Bowed => {},
+                    Kind::Wind => {},
+                    Kind::Guitar => {},
+                    Kind::Piano => {},
                 }
             }
             from = until
@@ -879,4 +1008,59 @@ fn the_pedal_reaches_an_electric_piano_through_the_session() {
     let dry = later(false)
     let wet = later(true)
     assert(wet > 100.0 * dry && wet > 1e-4, f"with the pedal {wet}, without {dry}")
+}
+
+/// A bowed instrument plays through the session as any track does: a cello's note, sat to the
+/// right, sounds there and not on the left. (Its player keeps its own time, so the session gives
+/// it no events: this is the check that it is sounded at all.)
+@test
+fn a_bowed_instrument_plays_through_the_session() {
+    var s = session(tempo: 60.0)
+    let bows = Vec::from([Bowing { from: 0, to: 24000, hz: 146.83, db: -18.0, fresh: true }])
+    s.bowed("cello", bowed::CELLO, bows, Strip { pan: 1.0 })
+    let e = rendered(mut s, quanta: 200)
+    assert(e.y > 1e-3 && e.x < 1e-6 * e.y, f"a cello sat right: {e.x} left, {e.y} right")
+}
+
+/// A wind instrument plays through the session as a bowed one does: a clarinet's note, sat to
+/// the left, sounds there and not on the right.
+@test
+fn a_wind_instrument_plays_through_the_session() {
+    var s = session(tempo: 60.0)
+    let notes = Vec::from([Blown { from: 0, to: 24000, hz: 261.63, db: -20.0, tongued: true }])
+    s.wind("clarinet", wind::CLARINET, notes, Strip { pan: -1.0 })
+    let e = rendered(mut s, quanta: 200)
+    assert(e.x > 1e-4 && e.y < 1e-6 * e.x, f"a clarinet sat left: {e.x} left, {e.y} right")
+}
+
+/// An electric guitar plays through the session as a bowed instrument does: a note on its
+/// fourth string, sat to the right, sounds there and not on the left.
+@test
+fn an_electric_guitar_plays_through_the_session() {
+    var s = session(tempo: 60.0)
+    let picks = Vec::from([Picking { from: 0, to: 24000, key: 52.0, string: 2 }])
+    s.guitar("guitar", guitar::CLEAN, picks, Strip { pan: 1.0 })
+    let e = rendered(mut s, quanta: 200)
+    assert(e.y > 1e-4 && e.x < 1e-6 * e.y, f"a guitar sat right: {e.x} left, {e.y} right")
+}
+
+/// A piano plays through the session as a bowed instrument does: middle C on the grand, sat to
+/// the right, sounds there and not on the left.
+@test
+fn a_piano_plays_through_the_session() {
+    var s = session(tempo: 60.0)
+    let notes = Vec::from(
+        [Played { key: 60, voice: 0, onset: 0.0, release: 0.5, velocity: 0.6, note: 0 }],
+    )
+    let none = Vec::from([PedalPoint { at: 0.0, depth: 0.0 }])
+    let played = Performance {
+        notes,
+        sustain: none.clone(),
+        soft: none,
+        beats: Vec::from([0.0]),
+        length: 0.5,
+    }
+    s.piano("piano", piano_grand::GRAND, played, Strip { pan: 1.0 })
+    let e = rendered(mut s, quanta: 200)
+    assert(e.y > 1e-4 && e.x < 1e-6 * e.y, f"a piano sat right: {e.x} left, {e.y} right")
 }

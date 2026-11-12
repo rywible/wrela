@@ -1,0 +1,872 @@
+// "Heat Shimmer": a breakbeat at 172, in F minor, fifty-two bars, about a minute and a quarter.
+// Original music, written here, by Claude for Ryan. The brief: electronic, jazz and hip hop at
+// once, as an anime's summer arc is scored; nothing of any recording or score is quoted.
+//
+// Eight bars of harmony go round, a bar each (two chords in the fourth and the eighth):
+//
+//   D♭maj9 | C7♯9♭13 | Fm11 | E♭m9  A♭13♭9 | D♭maj9 | C7♯9♭13 | Fm11 | E♭m9  D9♯11
+//
+// the fourth of A♭ major, the dominant of F minor, F minor, and a way back: first by the fifth
+// (E♭m9, A♭13♭9), then by the tritone's substitute (D9♯11, a semitone over D♭).
+//
+// The concept: light and cocky with menace underneath; a fast break under a riff you could
+// clap; one focal sound at a time. Written with the wrela-music skill, whose sources say what
+// the hook's rules rest on.
+//
+// The hook is two bars, said four times (a sentence of eight bars):
+//
+//   D♭maj9   C · A♭ C · F · E♭~     C7♯9♭13       ~E♭ – – D♭ C – · ·
+//   Fm11     C · A♭ C · F · E♭~     E♭m9 A♭13♭9   ~E♭ – – D♭ C A B♭ B
+//   D♭maj9   C · A♭ C · F · F'~     C7♯9♭13       ~F' – – E  C – · ·
+//   Fm11     C · A♭ C · F · E♭~     E♭m9 D9♯11    ~E♭ – – D♭ C A♭ B♭ B
+//
+// A cell of five notes whose moves widen (a third down, a third up, a fifth down, a seventh
+// up); the last is pushed an eighth early and held over the bar line, where it is the
+// dominant's sharp ninth, and steps down, sharp ninth, flat ninth, root: the menace. The second
+// saying ends in a chromatic pickup back to the first note. The third time the leap is an
+// octave, to the hook's one highest note, and falls a half-step onto E natural, C7's third, the
+// one bright moment. The fourth falls back.
+//
+// It was chosen from six kinds tried on paper: a stutter with a chromatic climb (it only
+// rises), a repeated note with a lower neighbour (its top note comes eight times), long notes
+// over the drums (no leap, square), a song-like line on the chords' thirds and sevenths (good,
+// but not a riff), and the first two versions' hooks, which a listener called wandering (each
+// bar outlined its chord) and bland (three chord tones, one note length, said three times
+// unchanged).
+//
+// What the hook does in each part:
+//
+// - bars 1-8, the keys alone: an electric piano with its pedal, each chord twice a bar. The
+//   plucks add the hook a note at a time: its first and last notes (bars 3-4), all but one
+//   (5-6), then the whole (7-8), over soft hats, a rim, a riser and a snare roll.
+// - bars 9-24, the break: a bass drum and a snare in two-step with ghost notes, the bass
+//   walking into each root, the piano's chords stabbed off the beat (each arrives an eighth
+//   early, with the hook's held note). The hook in octaves (9-16), then with a third over it,
+//   a clap and a growl under the bass (17-24); its last held note is cut off.
+// - bars 25-32, half time: the snare on the third beat alone, rolling hats, a long sliding
+//   bass, and a voice singing the hook at half its speed, over F minor, D♭maj7♯11, C7♯9 and
+//   G♭maj7♯11; the second time with the octave. The piano says its first three notes back,
+//   high. A roll climbs through bar 32 and stops: its fourth beat is empty.
+// - bars 33-48, the break again, with a ride cymbal: a lead plays the hook with the plucks,
+//   sliding into its leap and holding it (33-40); starts it once more and lets the held note
+//   run down the altered scale, up F minor's eleventh to the piece's highest note, and down
+//   onto the hook's first note (41-44); then everything plays it, the plucks in thirds
+//   (45-46). In bar 47 the whole band strikes the cell's rhythm; the leap, the octave, hangs
+//   alone over C7 for two beats, and three chromatic steps (D, E♭, E) carry everything up to
+//   F.
+// - bars 49-52: F minor's ninth chord; the lead holds the F; the keys play the cell once, at
+//   half speed, and its leap is the octave, home.
+//
+// The off sixteenths swing a little (54% of the way between their eighths), so the ghost notes
+// lean.
+//
+// An ear's notes so far. On the first version: "why is this so good?", but no killer hook;
+// the melody wandered. On the second (one bar, C C · E♭ · C A♭, three times): the hook is
+// bland.
+
+use engine::drum::{CLAP, Drum, HAT, KICK, OPEN_HAT, RIM, SNARE}
+use engine::pattern::{Feel, Pattern, pattern, struck, swung, tacet}
+use engine::perform::{Mark, Pedal, Performance, Taste, bar, perform}
+use engine::score::{Meter, Score, meter, score}
+use engine::session::{Master, Session, Strip, session}
+use engine::synth::{LEAD, PAD, PLUCK, Patch, SUB}
+use engine::tine::{SUITCASE, Tine}
+use engine::tone::Shape
+
+pub const TITLE: Text = "Heat Shimmer"
+pub const TEMPO: f32 = 172.0
+pub const BARS: u32 = 52
+const SWING: f32 = 0.54
+
+fn four() -> Meter {
+    meter(beats: 4, unit: 4)
+}
+
+// ---- the sounds -------------------------------------------------------------------------------
+
+/// A break's bass drum: shorter and a little higher than the kit's, so sixteenths of it stay
+/// apart.
+const PUNCH: Drum = Drum {
+    tone_hz: 56.0,
+    tone_t60: 0.3,
+    sweep: 3.4,
+    sweep_time: 0.012,
+    drive: 2.8,
+    click: 0.2,
+    ..KICK,
+}
+
+/// A break's snare: tuned up, its wires brighter and shorter.
+const CRACK: Drum = Drum {
+    tone_hz: 215.0,
+    second_hz: 460.0,
+    noise: 1.5,
+    band_hz: 2100.0,
+    top_hz: 8500.0,
+    noise_t60: 0.19,
+    click: 0.3,
+    ..SNARE,
+}
+
+/// A ride cymbal: the hi-hat's metal lower and wider, ringing most of a second.
+const RIDE: Drum = Drum {
+    metal_tune: 1.3,
+    noise: 0.12,
+    band_hz: 6800.0,
+    band_q: 0.5,
+    cut_hz: 3800.0,
+    noise_t60: 0.8,
+    ring_touch: 0.1,
+    range_db: 18.0,
+    ..HAT,
+}
+
+/// A crash cymbal: metal and noise together, wide open, two seconds long.
+const CRASH: Drum = Drum {
+    metal: 0.8,
+    metal_tune: 1.15,
+    noise: 0.9,
+    band_hz: 6000.0,
+    band_q: 0.4,
+    cut_hz: 2600.0,
+    noise_t60: 2.0,
+    ring_touch: 0.0,
+    ..HAT,
+}
+
+/// The bass: the sub, driven harder and ringing longer, so a held note is a drum machine's
+/// long bass drum.
+const DEEP: Patch = Patch {
+    amp: Shape { attack: 0.004, decay: 2.4, sustain: 0.0, release: 0.06 },
+    drive: 2.8,
+    ..SUB,
+}
+
+/// A growl over the bass: two sawtooths a fifth of a semitone apart, beating, through a filter
+/// that barks at each note.
+const GROWL: Patch = Patch {
+    saw: 0.7,
+    pulse: 0.2,
+    width: 0.4,
+    spread: 22.0,
+    wide: 0.4,
+    glide: 0.06,
+    cutoff: 380.0,
+    open: 2.4,
+    q: 1.6,
+    follow: 0.3,
+    touch: 0.5,
+    filter: Shape { attack: 0.003, decay: 0.18, sustain: 0.4, release: 0.1 },
+    amp: Shape { attack: 0.003, decay: 0.3, sustain: 0.8, release: 0.06 },
+    drive: 3.0,
+    lean: 0.2,
+    range_db: 10.0,
+    voices: 1,
+    level: 0.4,
+}
+
+/// The lead: a pulse and a sawtooth, bright, sliding between slurred notes, its vibrato late.
+const FUSION: Patch = Patch {
+    saw: 0.35,
+    pulse: 0.4,
+    width: 0.32,
+    spread: 8.0,
+    wide: 0.5,
+    glide: 0.05,
+    vibrato: 12.0,
+    vibrato_hz: 5.6,
+    vibrato_wake: 0.22,
+    cutoff: 900.0,
+    open: 3.0,
+    q: 1.4,
+    follow: 0.5,
+    touch: 0.8,
+    filter: Shape { attack: 0.004, decay: 0.25, sustain: 0.5, release: 0.2 },
+    amp: Shape { attack: 0.004, decay: 0.4, sustain: 0.85, release: 0.12 },
+    drive: 1.2,
+    range_db: 12.0,
+    voices: 1,
+    level: 0.35,
+}
+
+/// The chords' bed: the pad, quicker in and out, so it can stop on a beat.
+const BED: Patch = Patch {
+    filter: Shape { attack: 0.5, decay: 1.2, sustain: 0.6, release: 0.2 },
+    amp: Shape { attack: 0.22, decay: 1.0, sustain: 0.8, release: 0.14 },
+    ..PAD,
+}
+
+/// A riser: noise and two sawtooths through a filter that takes two bars to open, climbing
+/// (its notes are slurred, so it slides from each to the next).
+const RISER: Patch = Patch {
+    saw: 0.25,
+    noise: 0.5,
+    spread: 14.0,
+    wide: 1.0,
+    glide: 1.6,
+    cutoff: 300.0,
+    open: 5.0,
+    q: 2.2,
+    filter: Shape { attack: 2.7, decay: 1.0, sustain: 1.0, release: 0.05 },
+    amp: Shape { attack: 2.6, decay: 1.0, sustain: 1.0, release: 0.04 },
+    range_db: 6.0,
+    voices: 1,
+    level: 0.3,
+}
+
+/// The piano that stabs: its pickup nearer the tine, so it barks sooner, with more of the
+/// overtone and less tremolo.
+const BARK: Tine = Tine {
+    bell: 0.15,
+    pole: 0.34,
+    knock: 0.1,
+    top_hz: 9500.0,
+    tremolo: 0.25,
+    ..SUITCASE,
+}
+
+// ---- the drums --------------------------------------------------------------------------------
+
+/// A drum's part: the bars' text.
+fn drum(name: Text, lines: [Text]) -> Pattern {
+    pattern(name, four(), lines)
+}
+
+fn silent(bars: u32) -> Pattern {
+    tacet(four(), bars: bars)
+}
+
+/// The break's first three bars, which every four-bar phrase of it shares.
+const KICK3: Text = "x.x. .... ..x. .... | x... ..x. ..x. .... | x.x. .... ..x. .... |"
+const SNARE3: Text = ".... X..o .o.. X..o | .... X..o .o.. X.o. | .... X..o .o.. X..o |"
+/// The break's first two bars, for the phrase that ends the piece.
+const KICK2: Text = "x.x. .... ..x. .... | x... ..x. ..x. .... |"
+const SNARE2: Text = ".... X..o .o.. X..o | .... X..o .o.. X.o. |"
+/// The hook's cell as the whole kit strikes it in bar 47 (the first and second beats, and the
+/// off-beats of two, three and four), and the three steps up that end bar 48.
+const CELL_HITS: Text = "X... X.X. ..X. ..X. |"
+const STEPS_UP: Text = ".... .... ..X. X.X. |"
+
+fn kick() -> Pattern {
+    let phrase = drum("kick", [KICK3, "x... ..x. .x.. .... |"])
+    let into_half = drum("kick", [KICK3, "x... ..x. .... .... |"])
+    let half = drum(
+        "kick",
+        ["x... .... .... ..x. | x... ..x. .... x... | x... .... .... x... | x... .... ..x. .... |"],
+    )
+    let half_out = drum(
+        "kick",
+        ["x... .... .... ..x. | x... ..x. .... x... | x... .... .... x... | x... .... x... .... |"],
+    )
+    let ending = drum("kick", [KICK2, CELL_HITS, STEPS_UP])
+    let chopped = drum(
+        "kick",
+        ["x.x. .... ..x. .x.. | x... ..x. ..x. .... | x.x. ...x ..x. .... | x... ..x. .x.. .... |"],
+    )
+    silent(8)
+        .then(phrase.times(3))
+        .then(into_half)
+        .then(half)
+        .then(half_out)
+        .then(phrase.clone())
+        .then(chopped)
+        .then(phrase)
+        .then(ending)
+        .then(drum("kick", ["X... .... .... .... |"]))
+        .then(silent(3))
+}
+
+fn snare() -> Pattern {
+    let roll_in = drum("snare", [".... .... .... o.o. | o.o. oooo xxxx [xx][xx][xX][XX] |"])
+    let phrase = drum("snare", [SNARE3, ".... X..o .o.X ..[ox]X |"])
+    let into_half = drum("snare", [SNARE3, ".... X... xxxx [xx][xx][xX]. |"])
+    let half = drum(
+        "snare",
+        [".... .... X... .... | .... .... X... ...o | .... .... X... .... | .... .... X... ..o. |"],
+    )
+    // The roll climbs through three beats and leaves the fourth empty.
+    let half_out = drum(
+        "snare",
+        [
+            ".... .... X... .... | .... .... X... ...o | .... .... X... o.o. |",
+            "o.o. oooo [oo][ox][xx][xX] .... |",
+        ],
+    )
+    let ending = drum("snare", [SNARE2, CELL_HITS, STEPS_UP])
+    // The second break's middle phrase: the same drum, its hits moved about.
+    let chopped = drum(
+        "snare",
+        [
+            ".... X..o .o.. X.oo | .o.. X..o .o.X ..X. | .... X..o .o.. X..o |",
+            ".... X.o. [ox]X.o X.[xx]X |",
+        ],
+    )
+    silent(6)
+        .then(roll_in)
+        .then(phrase.times(3))
+        .then(into_half)
+        .then(half)
+        .then(half_out)
+        .then(phrase.clone())
+        .then(chopped)
+        .then(phrase)
+        .then(ending)
+        .then(silent(4))
+}
+
+fn clap() -> Pattern {
+    let back = drum("clap", [".... x... .... x..."])
+    let half = drum("clap", [".... .... x... ...."])
+    silent(16)
+        .then(back.times(7))
+        .then(drum("clap", [".... x... .... ...."]))
+        .then(half.times(7))
+        .then(silent(1))
+        .then(back.times(14))
+        .then(drum("clap", [CELL_HITS, STEPS_UP]))
+        .then(silent(4))
+}
+
+fn hat() -> Pattern {
+    let soft = drum("hat", ["o.o. o.o. o.o. o.o."])
+    let two = drum("hat", ["X.x. X.xo X.x. X.xo | X.x. X.xo X.x. X..."])
+    // Half time: eighths, and rolls of three and of two to a sixteenth.
+    let rolls: Text = "x.x. x.x. x.x. x.[xxx]x | x.x. x.[xx]x x.x. x.x. | x.x. x.x. x.[xxx]x x.x. |"
+    silent(4)
+        .then(soft.times(3))
+        .then(drum("hat", ["o.o. o.o. x.x. x.x."]))
+        .then(two.times(7))
+        .then(drum("hat", ["X.x. X.xo X.x. X.xo | X.x. X.x. .... ...."]))
+        .then(drum("hat", [rolls, "x.x. x.x. x.xx [xxx][xxx]x. |"]))
+        .then(drum("hat", [rolls, "x.x. x.x. x.x. .... |"]))
+        .then(two.times(7))
+        .then(drum("hat", [CELL_HITS, STEPS_UP]))
+        .then(silent(4))
+}
+
+fn open_hat() -> Pattern {
+    let two = drum("open hat", [".... .... .... .... | .... .... .... ..x."])
+    silent(8).then(two.times(7)).then(silent(10)).then(two.times(7)).then(silent(6))
+}
+
+fn ride() -> Pattern {
+    silent(32).then(drum("ride", ["x... x.x. x... x.x."]).times(14)).then(silent(6))
+}
+
+/// A crash on the first beat of each part: bars 9, 17, 25, 33, 41 and 49.
+fn crash() -> Pattern {
+    let one = drum("crash", ["X... .... .... ...."])
+    let soft = drum("crash", ["x... .... .... ...."])
+    silent(8)
+        .then(one.clone())
+        .then(silent(7))
+        .then(soft.clone())
+        .then(silent(7))
+        .then(one.clone())
+        .then(silent(7))
+        .then(one.clone())
+        .then(silent(7))
+        .then(soft)
+        .then(silent(7))
+        .then(one)
+        .then(silent(3))
+}
+
+fn rim() -> Pattern {
+    silent(4)
+        .then(drum("rim", [".... .... x... ...."]).times(3))
+        .then(silent(17))
+        .then(drum("rim", ["...x .... .... .x.."]).times(7))
+        .then(silent(21))
+}
+
+// ---- the parts written as notes ---------------------------------------------------------------
+
+fn part(name: Text, lines: [Text]) -> Score {
+    score(TITLE, four()).voice(name, lines)
+}
+
+/// `bars` bars of rest for the part `name`.
+fn rests(name: Text, bars: u32) -> Score {
+    var s = part(name, ["r/1 |"])
+    for _ in 1..bars {
+        s = take s.then(part(name, ["r/1 |"]))
+    }
+    s
+}
+
+/// The keys, with the pedal: the eight bars alone at the start, each chord struck on the first
+/// beat and again an eighth before the third, a root under it; and the last chord, F minor with
+/// its ninth, and the hook's cell over it at half speed, its leap the octave.
+fn keys() -> Score {
+    let intro = score(TITLE, four())
+        .voice(
+            "keys",
+            [
+                "<f3 ab3 c4 eb4>/4. !mp <f3 ab3 c4 eb4>/8~ <f3 ab3 c4 eb4>/2 |",
+                "<e3 bb3 eb4 ab4>/4. <e3 bb3 eb4 ab4>/8~ <e3 bb3 eb4 ab4>/2 |",
+                "<ab3 bb3 eb4 g4>/4. <ab3 bb3 eb4 g4>/8~ <ab3 bb3 eb4 g4>/2 |",
+                "<gb3 bb3 db4 f4>/4. <gb3 bb3 db4 f4>/8 <gb3 a3 c4 f4>/2 |",
+                "<f3 ab3 c4 eb4>/4. !mf <f3 ab3 c4 eb4>/8~ <f3 ab3 c4 eb4>/2 |",
+                "<e3 bb3 eb4 ab4>/4. <e3 bb3 eb4 ab4>/8~ <e3 bb3 eb4 ab4>/2 |",
+                "<ab3 bb3 eb4 g4>/4. <ab3 bb3 eb4 g4>/8~ <ab3 bb3 eb4 g4>/2 |",
+                "<gb3 bb3 db4 f4>/2 <f#3 ab3 c4 e4>/2 !f |",
+            ],
+        )
+        .voice("left", ["db3/1 | c3/1 | f2/1 | eb3/2 ab2/2 | db3/1 | c3/1 | f2/1 | eb3/2 d3/2 |"])
+    let outro = score(TITLE, four())
+        .voice(
+            "keys",
+            [
+                "<ab3 eb4 g4 c5>/1 !f | c6/4 !mp r/4 ab5/4 c6/4 |",
+                "r/4 f5/4 !p r/4 f6/4 | r/1 |",
+            ],
+        )
+        .voice("left", ["f2/1 | r/1 | r/1 | r/1 |"])
+    (take intro).then(rests("keys", bars: 40)).then(outro)
+}
+
+/// Eight bars of the stabs: each chord arrives on the last eighth of the bar before it and is
+/// held over the bar line, then is struck again off the second beat. `seventh` and `last` are
+/// its last two bars.
+fn stab_round(seventh: Text, last: Text) -> Score {
+    part(
+        "stabs",
+        [
+            "<f3 ab3 c4 eb4>/4 !f r/8 <f3 ab3 c4 eb4>/8 <f3 ab3 c4 eb4>/8 r/4 <e3 bb3 eb4 ab4>/8~ |",
+            "<e3 bb3 eb4 ab4>/4 r/8 <e3 bb3 eb4 ab4>/8 r/4 r/8 <ab3 bb3 eb4 g4>/8~ |",
+            "<ab3 bb3 eb4 g4>/4 r/8 <ab3 bb3 eb4 g4>/8 <ab3 bb3 eb4 g4>/8 r/4 <gb3 bb3 db4 f4>/8~ |",
+            "<gb3 bb3 db4 f4>/4 r/8 <gb3 a3 c4 f4>/8 <gb3 a3 c4 f4>/8 r/4 <f3 ab3 c4 eb4>/8~ |",
+            "<f3 ab3 c4 eb4>/4 r/8 <f3 ab3 c4 eb4>/8 <f3 ab3 c4 eb4>/8 r/4 <e3 bb3 eb4 ab4>/8~ |",
+            "<e3 bb3 eb4 ab4>/4 r/8 <e3 bb3 eb4 ab4>/8 r/4 r/8 <ab3 bb3 eb4 g4>/8~ |",
+            seventh,
+            last,
+        ],
+    )
+}
+
+/// The stabs: the piano without its pedal. In the break, the round above; in half time, each
+/// chord held, and the hook's first three notes said back, high, where the voice rests. At the
+/// end, the cell's rhythm on F minor, C7 arriving with the leap, and three hits under the steps up.
+fn stabs() -> Score {
+    let turn: Text = "<gb3 bb3 db4 f4>/4 r/8 <f#3 ab3 c4 e4>/8 <f#3 ab3 c4 e4>/8 r/8 <f#3 ab3 c4 e4>/4 |"
+    let half = part(
+        "stabs",
+        [
+            "<ab3 c4 eb4 g4>/1 !mp !tenuto |",
+            "<ab3 c4 eb4 g4>/1 !tenuto |",
+            "<f3 ab3 c4 g4>/1 !tenuto |",
+            "<e3 bb3 eb4 ab4>/2 !tenuto c6/8 r/8 ab5/8 c6/8 |",
+            "<ab3 c4 eb4 g4>/1 !tenuto |",
+            "<ab3 c4 eb4 g4>/1 !tenuto |",
+            "<f3 bb3 c4 db4>/1 !tenuto |",
+            "<e3 bb3 eb4 ab4>/2. !tenuto r/4 |",
+        ],
+    )
+    let seventh: Text = "<ab3 bb3 eb4 g4>/4 r/8 <ab3 bb3 eb4 g4>/8 <ab3 bb3 eb4 g4>/8 r/4 <gb3 bb3 db4 f4>/8~ |"
+    rests("stabs", bars: 8)
+        .then(stab_round(seventh, turn))
+        .then(stab_round(seventh, "<gb3 bb3 db4 f4>/4 r/2. |"))
+        .then(half)
+        .then(stab_round(seventh, turn))
+        .then(
+            stab_round(
+                "<ab3 bb3 eb4 g4>/4 <ab3 bb3 eb4 g4>/8 <ab3 bb3 eb4 g4>/8 r/8 <ab3 bb3 eb4 g4>/8 r/8 <e3 bb3 eb4 ab4>/8~ |",
+                "<e3 bb3 eb4 ab4>/4 r/4 r/8 <e3 bb3 eb4 ab4>/8 <e3 bb3 eb4 ab4>/8 <e3 bb3 eb4 ab4>/8 |",
+            ),
+        )
+        .then(rests("stabs", bars: 4))
+}
+
+/// Eight bars of the break's bass for the part `name`: each root where the bass drum falls,
+/// then a walk into the next (its last step slurred, so the bass slides onto it). `seventh` and
+/// `last` are its last two bars.
+fn bass_round(name: Text, seventh: Text, last: Text) -> Score {
+    part(
+        name,
+        [
+            "db2/4. !f db2/8 r/8 db2/8 ab1/8 ( b1/8 ) |",
+            "c2/4. c2/8 r/8 bb1/8 c2/8 ( e2/8 ) |",
+            "f1/4. f1/8 r/8 f2/8 c2/8 ( e2/8 ) |",
+            "eb2/4. eb2/8 ab1/4 ab1/8 ( c2/8 ) |",
+            "db2/4. db2/8 r/8 db3/8 ab2/8 ( b1/8 ) |",
+            "c2/4. c2/8 r/8 bb1/8 c2/8 ( e2/8 ) |",
+            seventh,
+            last,
+        ],
+    )
+}
+
+const BASS_TURN: Text = "eb2/4. eb2/8 d2/4 d2/8 d2/8 |"
+const BASS_STOP: Text = "eb2/4. eb2/8 r/2 |"
+const BASS_SEVENTH: Text = "f1/4. f1/8 r/8 f2/8 ab2/8 ( f2/8 ) |"
+/// The end: the cell's rhythm on F, C arriving with the leap, and the three steps up with
+/// everything else.
+const BASS_CELL: Text = "f1/4 f1/8 f1/8 r/8 f1/8 r/8 c2/8~ |"
+const BASS_STEPS: Text = "c2/4 r/4 r/8 d2/8 eb2/8 e2/8 |"
+
+fn bass() -> Score {
+    // Half time: long notes that die away as a long bass drum does, sliding where slurred.
+    let half = part(
+        "bass",
+        [
+            "f1/2. !ff r/8 f1/8 |",
+            "f1/4. f1/8~ f1/4 ab1/8 ( c2/8 ) |",
+            "db2/2. db2/8 ( c2/8 ) |",
+            "c2/2 r/8 c2/8 e2/8 ( c2/8 ) |",
+            "f1/2. r/8 f1/8 |",
+            "f1/4. f1/8~ f1/4 f2/8 ( eb2/8 ) |",
+            "gb1/2. gb1/8 ( gb2/8 ) |",
+            "c2/2 c2/4 r/4 |",
+        ],
+    )
+    rests("bass", bars: 8)
+        .then(bass_round("bass", BASS_SEVENTH, BASS_TURN))
+        .then(bass_round("bass", BASS_SEVENTH, BASS_STOP))
+        .then(half)
+        .then(bass_round("bass", BASS_SEVENTH, BASS_TURN))
+        .then(bass_round("bass", BASS_CELL, BASS_STEPS))
+        .then(part("bass", ["f1/1~ !f | f1/1 | r/1 | r/1 |"]))
+}
+
+/// The growl doubles the bass from bar 17, and through the second break.
+fn growl() -> Score {
+    rests("growl", bars: 16)
+        .then(bass_round("growl", BASS_SEVENTH, BASS_STOP))
+        .then(rests("growl", bars: 8))
+        .then(bass_round("growl", BASS_SEVENTH, BASS_TURN))
+        .then(bass_round("growl", BASS_CELL, BASS_STEPS))
+        .then(rests("growl", bars: 4))
+}
+
+// The hook's bars as the plucks play them. `CELL` is the five notes, the last tied over the
+// bar line; `HIGH` is the cell with its leap an octave. The bars that follow them: `REST` steps
+// down sharp ninth, flat ninth, root and rests; `TURN` and `FALL` end in the chromatic pickup
+// (through A♭13♭9 and through D9♯11); `BRIGHT` falls from the octave to C7's third. `_8` is in
+// octaves; `_3` has a third over the upper octave as well.
+const CELL_8: Text = "<c5 c6>/8 !f r/8 <ab4 ab5>/8 <c5 c6>/8 r/8 <f4 f5>/8 r/8 <eb5 eb6>/8~ |"
+const HIGH_8: Text = "<c5 c6>/8 r/8 <ab4 ab5>/8 <c5 c6>/8 r/8 <f4 f5>/8 r/8 <f5 f6>/8~ |"
+const REST_8: Text = "<eb5 eb6>/4. <db5 db6>/8 <c5 c6>/4 r/4 |"
+const TURN_8: Text = "<eb5 eb6>/4. <db5 db6>/8 <c5 c6>/8 <a4 a5>/8 <bb4 bb5>/8 <b4 b5>/8 |"
+const BRIGHT_8: Text = "<f5 f6>/4. <e5 e6>/8 <c5 c6>/4 r/4 |"
+const FALL_8: Text = "<eb5 eb6>/4. <db5 db6>/8 <c5 c6>/8 <ab4 ab5>/8 <bb4 bb5>/8 <b4 b5>/8 |"
+const CELL_3: Text = "<c5 c6 eb6>/8 !f r/8 <ab4 ab5 c6>/8 <c5 c6 eb6>/8 r/8 <f4 f5 ab5>/8 r/8 <eb5 eb6 g6>/8~ |"
+/// The cell before the E♭ minor bars: the third over its leap is G♭, E♭ minor's, an eighth early
+/// with the chord.
+const CELL_3M: Text = "<c5 c6 eb6>/8 r/8 <ab4 ab5 c6>/8 <c5 c6 eb6>/8 r/8 <f4 f5 ab5>/8 r/8 <eb5 eb6 gb6>/8~ |"
+const HIGH_3: Text = "<c5 c6 eb6>/8 r/8 <ab4 ab5 c6>/8 <c5 c6 eb6>/8 r/8 <f4 f5 ab5>/8 r/8 <f5 f6 ab6>/8~ |"
+const REST_3: Text = "<eb5 eb6 g6>/4. <db5 db6 f6>/8 <c5 c6 e6>/4 r/4 |"
+const TURN_3: Text = "<eb5 eb6 gb6>/4. <db5 db6 f6>/8 <c5 c6 eb6>/8 <a4 a5>/8 <bb4 bb5>/8 <b4 b5>/8 |"
+const BRIGHT_3: Text = "<f5 f6 ab6>/4. <e5 e6 g6>/8 <c5 c6 e6>/4 r/4 |"
+/// The held leap cut off, into the half-time bars.
+const STOP_3: Text = "<eb5 eb6 gb6>/4. r/8 r/2 |"
+/// Bar 48: the octave hangs for two beats, then three chromatic steps up to F.
+const STEPS_3: Text = "<f5 f6 ab6>/2 r/8 <d5 d6>/8 <eb5 eb6>/8 <e5 e6>/8 |"
+
+/// The hook on the plucks. Bars 3-8 add it a note at a time, softly: its first and last notes,
+/// all but one, the whole. Then the eight bars in octaves (9-16 and 33-40), with a third over
+/// them (17-24, cut off at the end), and for the last four bars with everything.
+fn hook() -> Score {
+    let adding = part(
+        "hook",
+        [
+            "c5/8 !p r/4. r/4 r/8 eb5/8~ | eb5/4. r/8 r/2 |",
+            "c5/8 r/8 ab4/8 c5/8 r/4 r/8 eb5/8~ | eb5/4. db5/8 c5/4 r/4 |",
+            "c5/8 !mp r/8 ab4/8 c5/8 r/8 f4/8 r/8 eb5/8~ |",
+            "eb5/4. !mf db5/8 c5/8 ab4/8 bb4/8 b4/8 |",
+        ],
+    )
+    let octaves = || -> Score {
+        part("hook", [CELL_8, REST_8, CELL_8, TURN_8, HIGH_8, BRIGHT_8, CELL_8, FALL_8])
+    }
+    rests("hook", bars: 2)
+        .then(adding)
+        .then(octaves())
+        .then(part("hook", [CELL_3, REST_3, CELL_3M, TURN_3, HIGH_3, BRIGHT_3, CELL_3M, STOP_3]))
+        .then(rests("hook", bars: 8))
+        .then(octaves())
+        .then(rests("hook", bars: 4))
+        .then(part("hook", [CELL_3, REST_3, HIGH_3, STEPS_3]))
+        .then(part("hook", ["<f5 c6 f6>/4 !f r/2. | r/1 | r/1 | r/1 |"]))
+}
+
+/// The voice of the half-time bars: the hook at half its speed, four bars to a saying, each
+/// slid through from its fourth note on. The held note is the ninth of D♭ and steps down to C7's
+/// root; the second time the leap is the octave, the seventh of G♭, and the line ends rising
+/// on C7's third and fifth, a beat before the break.
+fn voice() -> Score {
+    let line = part(
+        "voice",
+        [
+            "c5/4 !mf r/4 ab4/4 ( c5/4 ) |",
+            "r/4 f4/2 ( eb5/4~ |",
+            "eb5/2. db5/4 |",
+            "c5/2 ) r/2 |",
+            "c5/4 r/4 ab4/4 ( c5/4 ) |",
+            "r/4 f4/2 ( f5/4~ |",
+            "f5/2. eb5/4 |",
+            "e5/2 g5/4 ) r/4 |",
+        ],
+    )
+    rests("voice", bars: 24).then(line).then(rests("voice", bars: 20))
+}
+
+/// The lead of the second break, all of it the hook. With the plucks, sliding into the leap
+/// and holding it where they die away (bars 33-40). Then the cell once more, its held note let
+/// go into a run: down the altered scale over C7, up F minor's eleventh to the piece's highest
+/// note, and down by step and half-step onto the hook's first note (41-44). Then the hook with
+/// everything; the octave hangs alone, three steps climb, and F is held over the end.
+fn lead() -> Score {
+    let with = part(
+        "lead",
+        [
+            "c6/8 !f r/8 ab5/8 ( c6/8 ) r/8 f5/4 ( eb6/8~ | eb6/4. ) db6/8 ( c6/4 ) r/4 |",
+            "c6/8 r/8 ab5/8 ( c6/8 ) r/8 f5/4 ( eb6/8~ | eb6/4. ) db6/8 ( c6/8 a5/8 ) bb5/8 ( b5/8 ) |",
+            "c6/8 r/8 ab5/8 ( c6/8 ) r/8 f5/4 ( f6/8~ | f6/4. ) e6/8 ( c6/4 ) r/4 |",
+            "c6/8 r/8 ab5/8 ( c6/8 ) r/8 f5/4 ( eb6/8~ | eb6/4. ) db6/8 ( c6/8 ab5/8 ) bb5/8 ( b5/8 ) |",
+        ],
+    )
+    let run = part(
+        "lead",
+        [
+            "c6/8 r/8 ab5/8 ( c6/8 ) r/8 f5/4 ( eb6/8~ |",
+            "eb6/8 db6/8 c6/8 bb5/8 ab5/8 g5/8 e5/8 db5/8 ) |",
+            "c5/8 ( f5/8 ab5/8 c6/8 eb6/8 f6/8 ) r/8 ab6/8~ |",
+            "ab6/4. gb6/8 ( f6/8 eb6/8 c6/8 b5/8 ) |",
+        ],
+    )
+    let all = part(
+        "lead",
+        [
+            "c6/8 r/8 ab5/8 ( c6/8 ) r/8 f5/4 ( eb6/8~ | eb6/4. ) db6/8 ( c6/4 ) r/4 |",
+            "c6/8 r/8 ab5/8 ( c6/8 ) r/8 f5/4 ( f6/8~ | f6/2 ) r/8 d6/8 ( eb6/8 e6/8 ) |",
+            "f6/1~ | f6/2 r/2 | r/1 | r/1 |",
+        ],
+    )
+    rests("lead", bars: 32).then(with).then(run).then(all)
+}
+
+/// The bed: held chords under the half-time bars (cut off with the roll) and under the last
+/// round, an octave up.
+fn bed() -> Score {
+    let half = part(
+        "bed",
+        [
+            "<f3 ab3 c4 eb4 g4>/1 !mp | <f3 ab3 c4 eb4 g4>/1 |",
+            "<db3 f3 ab3 c4 g4>/1 | <c3 e3 bb3 eb4 ab4>/1 |",
+            "<f3 ab3 c4 eb4 g4>/1 | <f3 ab3 c4 eb4 g4>/1 |",
+            "<gb3 bb3 db4 f4 c5>/1 | <c3 e3 bb3 eb4 ab4>/2. r/4 |",
+        ],
+    )
+    let last = part(
+        "bed",
+        [
+            "<f4 ab4 c5 eb5>/1 !mf | <e4 bb4 eb5 ab5>/1 | <ab4 bb4 eb5 g5>/1 |",
+            "<gb4 bb4 db5 f5>/2 <gb4 a4 c5 f5>/2 |",
+            "<f4 ab4 c5 eb5>/1 | <e4 bb4 eb5 ab5>/1 | <ab4 bb4 eb5 g5>/1 |",
+            "<e4 bb4 eb5 ab5>/4 r/2. |",
+        ],
+    )
+    rests("bed", bars: 24)
+        .then(half)
+        .then(rests("bed", bars: 8))
+        .then(last)
+        .then(rests("bed", bars: 4))
+}
+
+/// The riser: two bars up into each break; the second stops a beat early, with the roll.
+fn riser() -> Score {
+    rests("riser", bars: 6)
+        .then(part("riser", ["c3/4 !mf ( c5/2. | c6/1 ) |"]))
+        .then(rests("riser", bars: 22))
+        .then(part("riser", ["c3/4 !mf ( c5/2. | c6/2. ) r/4 |"]))
+        .then(rests("riser", bars: 20))
+}
+
+/// A score as a player with `taste` plays it, sitting in time as `feel` says.
+fn played(s: Score, taste: Taste, feel: Feel) -> Performance {
+    swung(perform(s, taste, [Mark::Hold { at: bar(1), by: 1.0 }; 0]), feel)
+}
+
+// ---- the session ------------------------------------------------------------------------------
+
+/// The whole track, ready to play.
+pub fn build() -> Session {
+    var s = session(
+        TEMPO,
+        Master {
+            gain: 4.0,
+            glue_db: -16.0,
+            glue: 0.35,
+            makeup: 5.0,
+            warmth: 1.0,
+            ceiling: -1.0,
+            room_time: 1.0,
+            room_size: 1.4,
+            room_db: -4.0,
+            echo_beats: 0.75,
+            echo_again: 0.4,
+            echo_db: -5.0,
+            duck_time: 0.11,
+        },
+    )
+    // The drums: the bass drum on the grid, the snare a hair behind it, the hats ahead.
+    s.drum(
+        "kick",
+        PUNCH,
+        struck(kick(), TEMPO, Feel { swing: SWING, loose: 0.001, uneven: 0.03, seed: 1 }, key: 36),
+        Strip { gain: -1.0, room: 0.03 },
+    )
+    s.drum(
+        "snare",
+        CRACK,
+        struck(
+            snare(),
+            TEMPO,
+            Feel { swing: SWING, late: 0.004, loose: 0.002, uneven: 0.08, seed: 2 },
+            key: 38,
+        ),
+        Strip { gain: -5.5, low_cut: 110.0, drive: 1.4, room: 0.22 },
+    )
+    s.drum(
+        "clap",
+        CLAP,
+        struck(
+            clap(),
+            TEMPO,
+            Feel { swing: SWING, late: 0.008, loose: 0.002, uneven: 0.08, seed: 3 },
+            key: 39,
+        ),
+        Strip { gain: -4.0, pan: -0.15, low_cut: 300.0, room: 0.3 },
+    )
+    s.drum(
+        "hat",
+        HAT,
+        struck(
+            hat(),
+            TEMPO,
+            Feel { swing: SWING, late: -0.003, loose: 0.002, uneven: 0.14, seed: 4 },
+            key: 42,
+        ),
+        Strip { gain: -8.0, pan: 0.35, room: 0.06 },
+    )
+    s.drum(
+        "open hat",
+        OPEN_HAT,
+        struck(open_hat(), TEMPO, Feel { swing: SWING, late: -0.003, seed: 5 }, key: 46),
+        Strip { gain: -7.0, pan: 0.4, room: 0.1 },
+    )
+    s.drum(
+        "ride",
+        RIDE,
+        struck(ride(), TEMPO, Feel { swing: SWING, loose: 0.003, uneven: 0.12, seed: 6 }, key: 51),
+        Strip { gain: -9.0, pan: -0.4, room: 0.1 },
+    )
+    s.drum(
+        "crash",
+        CRASH,
+        struck(crash(), TEMPO, Feel { seed: 7 }, key: 49),
+        Strip { gain: -13.0, pan: 0.2, room: 0.3 },
+    )
+    s.drum(
+        "rim",
+        RIM,
+        struck(
+            rim(),
+            TEMPO,
+            Feel { swing: SWING, late: 0.006, loose: 0.003, uneven: 0.08, seed: 8 },
+            key: 37,
+        ),
+        Strip { gain: -6.0, pan: -0.4, room: 0.3 },
+    )
+    s.chokes("hat", "open hat")
+    s.key("kick")
+    // The bass slides where it is slurred: its slurred notes overlap the next.
+    s.synth(
+        "bass",
+        DEEP,
+        played(bass(), Taste { tempo: TEMPO, legato: 0.04, detache: 0.06 }, Feel { swing: SWING }),
+        Strip { gain: -4.0, high_cut: 1500.0, duck: 6.0 },
+    )
+    s.synth(
+        "growl",
+        GROWL,
+        played(growl(), Taste { tempo: TEMPO, legato: 0.04, detache: 0.1 }, Feel { swing: SWING }),
+        Strip { gain: -1.0, low_cut: 110.0, high_cut: 3500.0, duck: 5.0 },
+    )
+    // The keys: rolled a little from the root up, the pedal changed with each root.
+    s.tine(
+        "keys",
+        SUITCASE,
+        played(
+            keys(),
+            Taste {
+                tempo: TEMPO,
+                bass: "left",
+                bass_weight: 0.9,
+                detache: 0.02,
+                pedal: Pedal::ByVoice { voice: "left", catch: 0.07, depth: 1.0 },
+                ring: 2.0,
+                roll: 0.016,
+                jitter_velocity: 0.05,
+                seed: 9,
+            },
+            Feel { swing: SWING, late: 0.004, loose: 0.003, seed: 9 },
+        ),
+        Strip { gain: -11.5, low_cut: 90.0, room: 0.3, echo: 0.08 },
+    )
+    // The stabs: short where they aren't marked held, and struck hard, so the piano barks.
+    s.tine(
+        "stabs",
+        BARK,
+        played(
+            stabs(),
+            Taste { tempo: TEMPO, detache: 0.35, roll: 0.006, jitter_velocity: 0.06, seed: 10 },
+            Feel { swing: SWING, late: 0.003, loose: 0.002, seed: 10 },
+        ),
+        Strip { gain: -14.5, pan: -0.2, low_cut: 140.0, room: 0.2, echo: 0.12, duck: 1.5 },
+    )
+    s.synth(
+        "hook",
+        PLUCK,
+        played(
+            hook(),
+            Taste { tempo: TEMPO, detache: 0.15, jitter_velocity: 0.05, seed: 11 },
+            Feel { swing: SWING, loose: 0.002, seed: 11 },
+        ),
+        Strip { gain: -2.5, pan: 0.25, low_cut: 250.0, room: 0.2, echo: 0.3 },
+    )
+    s.synth(
+        "voice",
+        LEAD,
+        played(
+            voice(),
+            Taste { tempo: TEMPO, legato: 0.05, detache: 0.08, jitter_velocity: 0.05, seed: 12 },
+            Feel { swing: SWING, late: 0.01, loose: 0.004, seed: 12 },
+        ),
+        Strip { gain: -3.0, pan: 0.1, low_cut: 150.0, room: 0.3, echo: 0.3 },
+    )
+    s.synth(
+        "lead",
+        FUSION,
+        played(
+            lead(),
+            Taste { tempo: TEMPO, legato: 0.04, detache: 0.1, jitter_velocity: 0.05, seed: 13 },
+            Feel { swing: SWING, late: 0.004, loose: 0.003, seed: 13 },
+        ),
+        Strip { gain: -4.0, pan: -0.1, low_cut: 200.0, room: 0.22, echo: 0.28 },
+    )
+    s.synth(
+        "bed",
+        BED,
+        played(bed(), Taste { tempo: TEMPO, detache: 0.02 }, Feel {}),
+        Strip { gain: -9.0, low_cut: 180.0, room: 0.4, duck: 2.0 },
+    )
+    s.synth(
+        "riser",
+        RISER,
+        played(riser(), Taste { tempo: TEMPO, legato: 0.05 }, Feel {}),
+        Strip { gain: -10.0, low_cut: 200.0, room: 0.4, echo: 0.2 },
+    )
+    s
+}

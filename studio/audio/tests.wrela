@@ -356,6 +356,28 @@ fn a_clicks_moment_is_its_notes() {
         clicks::kind_of(at(1.5), have_notes: false, onsets: onsets, releases: releases) ==
             "unknown",
     )
+    // 30 ms after an onset is still the note's attack: a drum's hit lasts that long.
+    assert(
+        clicks::kind_of(at(1.03), have_notes: true, onsets: onsets, releases: releases) == "attack",
+    )
+}
+
+/// Clicks every 3 ms are a wave's edges (a sawtooth at 333 Hz); one by itself, and two 20 ms
+/// either side of it, are not.
+@test
+fn clicks_at_a_steady_rate_are_a_waves_edges() {
+    var found: Vec<Click> = Vec::new()
+    for i in 0..6 {
+        found.push(Click { at: 1.0 + 0.003 * f64(i), db: 15.0 })
+    }
+    found.push(Click { at: 2.0, db: 15.0 })
+    found.push(Click { at: 2.02, db: 15.0 })
+    found.push(Click { at: 2.07, db: 15.0 })
+    let steady = clicks::in_waves(found)
+    for i in 0..6 {
+        assert(steady[i], f"click {i} of the train")
+    }
+    assert(!steady[6] && !steady[7] && !steady[8], "clicks at uneven gaps aren't a wave")
 }
 
 @test

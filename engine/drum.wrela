@@ -1,14 +1,26 @@
 // Drums: a drum machine's voices, each made as its circuit makes it.
 //
-// A drum is a few numbers (`Drum`) and five parts, any of them silent:
+// A drum is a few numbers (`Drum`) and six parts, any of them silent:
 // - a tone: a resonator a trigger's pulse sets ringing, which starts high and settles as the
-//   pulse dies (a bass drum's boom, a snare's shell), and a second tone beside it;
+//   pulse dies (a bass drum's boom, a snare's shell), and a second tone beside it. A harder
+//   blow stretches a skin, so it sounds a little higher; and a skin struck again while it
+//   still rings goes on from where it is, so a roll isn't one hit over and over;
 // - a thump: the trigger's pulse itself, a half sine a millisecond or two long, which is what
 //   a bass drum's attack is (not a click of noise);
 // - noise through a band, above a low cut and under a top: a snare's wires, and a clap's hands,
 //   which are that noise in a few quick bursts and then a tail. A snare's wires lie on its
 //   skin, so they rattle with it: their noise swells and thins with the tone's own wave;
-// - metal: six square waves at ratios no chord has, through the same band and cut: a cymbal;
+// - metal: six square waves at ratios no chord has, through the same band and cut: a drum
+//   machine's hi-hat;
+// - a plate: a real cymbal's bronze, as its modes: a hundred and more of them, each at its own
+//   pitch and dying at its own rate, the high ones soonest; all struck at once and then
+//   trading what they have, a wash of noise with partials in it (a crash), or two of them
+//   standing out as a note (a ride);
+// - a head: an acoustic drum's skin as its own modes, struck at a place by a stick that is on
+//   it a millisecond, its pitch a little high at the blow and settling, with a shell's modes
+//   beside it; and wires lying on its other head, which throws them off and catches them
+//   again: each landing rings that head and the shell, and takes speed from the struck one,
+//   so the buzz is the drum's own, comes in bursts as the head moves and dies with it;
 // - a click: a stick's tip, a few milliseconds of noise.
 //
 // The parts and their tunings follow the Roland TR-808's circuits: its bass drum is a damped
@@ -20,17 +32,33 @@
 // (an ideal membrane's are at 1, 1.59, 2.14, 2.30...: Fletcher and Rossing, The Physics of
 // Musical Instruments, 2nd ed., 1998, ch. 3).
 //
+// The plate follows what a struck cymbal is (Fletcher and Rossing, ch. 20: hundreds of modes,
+// nearer each other in pitch than the ear tells apart, and energy passing from the low ones to
+// the high ones in the first tenths of a second after a hard blow) and what two anechoic
+// recordings show (the University of Iowa Musical Instrument Samples' 18-inch crash and 21-inch
+// ride: docs/citations.md): a partial every 30 to 50 Hz; a crash loudest round 4 kHz and, as a
+// whole, in its first 20 ms, however it is struck (struck hard on its shoulder its 2, 4 and
+// 8 kHz octaves rise 7 to 12 dB more, 120 to 280 ms after the stick; struck less hard, or on
+// its bow, none of them rises 2 dB), each octave up ringing a little shorter (5 s at 500 Hz,
+// 3 s at 8 kHz), and the harder struck the nearer to noise between its partials; a ride level
+// from 500 Hz to 8 kHz at the stick and its top gone in a second while its low modes ring for
+// ten. Six squares held for two seconds are six pitches, a bell: in the 4 kHz octave the
+// squares' crash has 4 partials standing out and the real one 52. No partial of either cymbal
+// sags in pitch after the blow, so none does here.
+//
 // The squares and the noise run on whether or not the drum sounds, as the machine's do, so each
 // hit catches them somewhere else and no two hits are the same samples. Everything is f32
 // arithmetic in a fixed order, and the noise is seeded, so both hosts give the same samples.
 //
-// No patch is fitted to a recording yet: an ear's notes on the first set (a snare that was "a
-// sine and a spray of noise", a clap of three identical bursts, a bass drum whose attack was a
-// tick) are what this set answers.
+// The machine's patches are fitted to no recording: an ear's notes on the first set (a snare
+// that was "a sine and a spray of noise", a clap of three identical bursts, a bass drum whose
+// attack was a tick) are what they answer. The cymbals follow two anechoic ones, and the
+// snare drum (`SNARE_DRUM`) one recorded close and dry, wires off and on: docs/citations.md.
 
 use std::audio::SAMPLE_RATE
 use std::math::{PI, TAU}
-use tone::{Band, Noise, Svf, band, decay, gain_of, one_pole, pulse, seeded, warm}
+use std::collections::Vec
+use tone::{Band, Mode, Noise, Svf, band, decay, gain_of, one_pole, pulse, seeded, warm}
 
 /// The audio thread's rate.
 const RATE: f32 = f32(SAMPLE_RATE)
@@ -38,6 +66,44 @@ const RATE: f32 = f32(SAMPLE_RATE)
 /// The squares' frequencies (Hz): those commonly given for the six oscillators of the TR-808's
 /// cymbal and hi-hat circuit. They aren't checked against a machine.
 const METAL_HZ: [f32; 6] = [205.3, 304.4, 369.6, 522.7, 540.0, 800.0]
+
+/// The plate's modes: one every `PLATE_GAP` Hz, or every `PLATE_SHARE`th of the pitch where
+/// that is more (over 2 kHz, where the ear tells fewer apart); and the most of them. Under
+/// 1 kHz, where they are few, each is up to four tenths of that off its place. Over 1 kHz
+/// that is only the gap on average: the gap from each mode to the next is any size, as a
+/// plate's are, so some lie close enough to beat slowly. (Each near its place, none did, and
+/// every third of an octave of a cymbal fell as smoothly as one tone with an envelope: from
+/// one twentieth of a second to the next the crash's 4 and 8 kHz thirds moved 0.3 dB, where
+/// the anechoic crash's move 0.9 and 0.6 to 0.7, as bands of noise do. That was heard as an
+/// electronic edge.)
+const PLATE_GAP: f32 = 40.0
+const PLATE_SHARE: f32 = 50.0
+const PLATE_MOST: u32 = 256
+/// How hard the plate's bending shakes its modes: a third of an octave is pushed by the square
+/// of what bends the plate under it (beside the plate's level; times the patch's `wash`). Set
+/// by the anechoic crash's 500 Hz octave at its hardest blow, which falls 9 dB in its first
+/// 20 ms and 19 dB in its first 150 ms, then 5 dB in the next 450: what a low mode gives away
+/// goes by the square of what it has.
+const CASCADE: f32 = 0.28
+/// How much less a third's sound bends the plate for each octave up it is (the power of two it
+/// falls by). A plate is heard by how fast it moves and bent by how far, so the knock and the
+/// low modes bend it far more than modes as loud at 4 kHz, and it is they that feed the rest.
+const CASCADE_FALLS: f32 = 2.0
+/// How fast a blow sets a plate's modes trading (a second, at the loudness of the hardest
+/// blow; it goes by how hard the plate swings, the root of how loud it is), the seconds the
+/// trading takes to fall away to 1/e once nothing sets it, and how fast each mode trades with
+/// the next when all are: the share of its energy a second that changes hands, for each Hz
+/// of the usual gap between them. A plate has a mode every few Hz and a blow on its edge
+/// sets them all going, a hard one little more than a middling one: the anechoic crash
+/// struck hard on its shoulder is 0.12 of the way from tones to noise in its 2 and 4 kHz
+/// octaves at 0.3 s and 0.07 at 1.5 s; struck 15 dB less hard there, 0.08 and 0.04 (and
+/// struck lightly on its bow, 0.01). This plate's modes are 40 Hz apart and more, so each
+/// stands for the crowd between it and the next.
+const CROWD_RATE: f32 = 72.0
+const CROWD_STAYS: f32 = 0.5
+const CHURN: f32 = 0.6
+/// The modes of a stick's tick.
+const PLATE_TICKS: u32 = 24
 
 /// What makes a drum's sound. A level of 0 leaves a part out.
 pub struct Drum: Copy {
@@ -49,6 +115,58 @@ pub struct Drum: Copy {
     pub tone_t60: f32 = 0.5,
     pub sweep: f32 = 0.0,
     pub sweep_time: f32 = 0.02,
+    /// How much lower than the hardest blow's the softest blow's tones are (cents): a hard
+    /// blow stretches the skin.
+    pub tension: f32 = 0.0,
+    /// How unlike a roll's hits are (0: alike). A hit within 150 ms of the one before is part
+    /// of a roll, and is its own: at 1 its level is drawn within 1 dB either way, its pitch
+    /// within 10 cents, its brightness within 0.4 of an octave of its noise's corner, and the
+    /// stick lands nearer the head's centre or its edge (more of the first tone or of the
+    /// second), with a small lean for the weaker hand (half a decibel, 3 cents). The draws are
+    /// seeded, so a take repeats. A hit by itself, and a roll's first, take no draw: they are
+    /// as they always were. (Every second hit softer, lower and duller by a fixed amount was
+    /// heard as a machine taking turns.)
+    pub hands: f32 = 0.0,
+    /// The head: its level; its main mode (Hz); the seconds that mode takes to fall 60 dB
+    /// with the wires off (the others by `HEAD_RINGS`); where the stick lands, from 0 (the
+    /// centre) to 1 (the edge), and how far that moves from one hit to the next; the cents the
+    /// head is above its pitch at the hardest blow and the seconds it takes to settle most of
+    /// the way; and the stick's contact at the softest blow (ms: the hardest is half as long,
+    /// so it rings the higher modes harder). The head's modes, their rings and how hard a
+    /// blow at the centre and off it rings each are a recorded snare drum's (`HEAD_RATIOS`):
+    /// a blow at the centre rings the first and the fourth, and a blow nearer the edge more
+    /// of the others. Above those six the head has hundreds more, which a few stand for
+    /// (`HEAD_MORE`): the stick's crack is the head's own. Every hit lands at a place and a
+    /// weight of its own (seeded draws), a lone backbeat too. (That drum's main mode is 26 to
+    /// 45 cents high at a hard blow and settled 80 ms on; its top with the wires off falls
+    /// 9 dB an octave from 1.6 to 4 kHz and 24 dB from 1.6 to 8 kHz, as a stick's push a
+    /// quarter of a millisecond long gives.)
+    pub head: f32 = 0.0,
+    pub head_hz: f32 = 190.0,
+    pub head_t60: f32 = 0.25,
+    pub spot: f32 = 0.25,
+    pub spot_sway: f32 = 0.12,
+    pub stretch: f32 = 35.0,
+    pub stretch_time: f32 = 0.04,
+    pub contact_ms: f32 = 1.2,
+    /// The drum's other modes (`SHELL_RATIOS`: three that ring longest, and the snare-side
+    /// head's own): their level beside the head's.
+    pub shell: f32 = 0.0,
+    /// The wires: their level, and how hard they are held against the head (in the hardest
+    /// blow's swing). They lie on the snare-side head, which moves with the struck one, and
+    /// are thrown off as it swings back faster than they can follow; each time it catches a
+    /// strand again the strand slaps it and bounces, and each slap rings that head's modes:
+    /// the buzz is the drum ringing, in the drum's own colour, and there is no noise in it
+    /// but what the strands' landings make. The head gives each strand it catches some of its
+    /// speed, and the strands lying on it damp it, so a drum with its wires on rings shorter.
+    /// (Heard as a band of noise let through after each slap, the buzz had the right texture
+    /// and did not sit with the drum: a tone and a hiss with nothing between. Built by
+    /// reasoning as one drum, with a buzz level from 500 Hz to 8 kHz and 6 to 9 dB under the
+    /// tone, it was heard as worse: a recorded drum's buzz lies from 2 to 10 kHz, 18 dB under
+    /// its tone at first and as loud as it once the tone has fallen, and its middle is its
+    /// own modes, not its wires. See `WIRES`.) With wires, a hit has no noise of its own.
+    pub wires: f32 = 0.0,
+    pub wires_hold: f32 = 0.05,
     /// A second tone: its pitch, its level and its seconds to fall 60 dB. It sweeps as the
     /// first does.
     pub second_hz: f32 = 330.0,
@@ -83,6 +201,88 @@ pub struct Drum: Copy {
     /// machine's the squares are tuned (1: as they were).
     pub metal: f32 = 0.0,
     pub metal_tune: f32 = 1.0,
+    /// The plate: its level; its lowest and highest modes (Hz); where its modes are loudest
+    /// (Hz), and the decibels an octave they fall off below that and above it; the seconds a
+    /// mode at 1 kHz or under takes to fall 60 dB, how much shorter each octave over 1 kHz
+    /// rings (the power of the pitch: 0.55 is the anechoic crash, 0.86 the ride, whose top is
+    /// gone while its low modes wash on), and the decibels a second every mode dies faster
+    /// by than that; and how much duller the softest blow's plate is (decibels an octave,
+    /// over 1 kHz). A cymbal in a beat is shorter than one alone: with every mode faster by
+    /// the same amount, the balance between its octaves as it dies is the longer cymbal's,
+    /// only sooner. (A ride shortened by a steeper power, and with its modes under 1 kHz
+    /// ringing on past the one at 1 kHz, had its low modes last seven to eleven seconds over
+    /// a top gone in one: at 1.5 s its 500 Hz octave was 32 dB over its 4 to 8 kHz ones,
+    /// where the anechoic ride's is 14 dB over: a gong.)
+    pub plate: f32 = 0.0,
+    pub plate_low: f32 = 300.0,
+    pub plate_high: f32 = 14000.0,
+    pub plate_hz: f32 = 4000.0,
+    pub plate_under: f32 = 6.0,
+    pub plate_over: f32 = 10.0,
+    pub plate_t60: f32 = 3.0,
+    pub plate_damp: f32 = 0.3,
+    pub plate_fade: f32 = 0.0,
+    pub plate_touch: f32 = 4.0,
+    /// The wash (0: none; 1: all of this). The stick strikes the modes over 2 kHz every one
+    /// alike, as a short blow does, and together as loud as one tone at the plate's level,
+    /// not by the plate's shape (from 1 to 2 kHz, part each way); and after the blow the
+    /// plate's bending passes up what the stick's knock and the low modes have: each third of
+    /// an octave of modes is pushed, by the plate's shape, by the square of what sounds two
+    /// thirds or more under it (the knock most of all), and what it is given, those lose. A
+    /// plate struck hard passes energy up from the low modes first set going to its high ones
+    /// (Legge and Fletcher, "Nonlinearity, chaos, and the sound of shallow gongs", J. Acoust.
+    /// Soc. Am. 86(6), 1989), its modes exchanging energy until their motion is chaotic
+    /// (Chaigne, Touzé and Thomas, "Nonlinear vibrations and chaos in gongs and cymbals",
+    /// Acoust. Sci. & Tech. 26(5), 2005). So what blooms after the stick comes from
+    /// the plate's own motion, can't be more than the knock and the low modes had, and is
+    /// less for a soft blow. (Fed white noise for a fixed time, the bloom was the same
+    /// whatever was struck; fed by the octave under each third with nothing lost, the 8 kHz
+    /// octave swelled 19 dB where the anechoic crash's swells 7.)
+    pub wash: f32 = 0.0,
+    /// How far each mode's strength wanders (0: not at all; 1: about 8 dB either way, over a
+    /// few tenths of a second, with no period): in a plate rung hard each partial comes and
+    /// goes as the modes trade energy. With every mode steady, a third of an octave of a crash
+    /// had the same spectrum from one sixth of a second to the next (0.99 alike), a frozen
+    /// hiss; with each mode given a twin to beat with, a field of tremolos, which nothing
+    /// struck does. The anechoic crash's is 0.63 to 0.70 alike, and the ride's 0.95. (Every
+    /// strength starts at 1 and they spread from there, so a plate with much of this grows
+    /// louder over its first quarter of a second: a plate whose modes trade, by `crowd`,
+    /// needs none.)
+    pub restless: f32 = 0.0,
+    /// How much of a noise a blow makes of the plate (0: its modes ring as tones; 1: once the
+    /// blow has set them trading, a light blow less and for less long, each mode and the
+    /// next trade swing at random, the two keeping what they had together, so each is a band
+    /// of noise, and energy spreads up and down the plate without any being made; a little
+    /// of it, and they are tones whose strengths move as a ride's do). A ping's two modes and
+    /// a tick's stand apart and don't trade.
+    pub crowd: f32 = 0.0,
+    /// A plate's knock, the stick's low body: its level beside the plate's, its pitch (Hz),
+    /// how far either side of that it reaches (octaves), and the decibels more than the rest
+    /// of the hit it falls for the softest blow (a cymbal's low body is rung by a hard blow
+    /// far more than by a light one). The plate's modes within that reach of the pitch are
+    /// struck that much harder (most at the pitch), together as loud as one tone at this
+    /// level: the low body is a handful of the plate's own modes, which
+    /// trade and pass their energy up the plate as any do. (As one tone of its own at 410 Hz
+    /// it stood 42 dB over the middle of its octave, where the anechoic crash's strongest low
+    /// partial, at 407 to 410 Hz, stands 17 to 22 dB over, in an octave 0.07 to 0.25 of the
+    /// way to noise: a bell, or a gong.)
+    pub knock: f32 = 0.0,
+    pub knock_hz: f32 = 410.0,
+    pub knock_wide: f32 = 0.5,
+    pub knock_touch: f32 = 0.0,
+    /// A ping: two modes that stand out of the plate, at this pitch and half as high again
+    /// (the 21-inch ride's strongest above its wash are at 2484 and 3721 Hz), their level
+    /// beside the whole plate's and their seconds to fall 60 dB: a ride's note.
+    pub ping: f32 = 0.0,
+    pub ping_hz: f32 = 2500.0,
+    pub ping_t60: f32 = 1.2,
+    /// The stick's tick: modes round `tick_hz` (from six tenths of it to half as high again)
+    /// that the blow rings as hard as this beside the whole plate and that are gone in
+    /// `tick_t60` seconds. (Noise in that band for as long was heard as static at every
+    /// stroke; the anechoic ride's 8 kHz band is steady partials from the stick on.)
+    pub tick: f32 = 0.0,
+    pub tick_hz: f32 = 11000.0,
+    pub tick_t60: f32 = 0.08,
     /// The click's level.
     pub click: f32 = 0.0,
     /// The decibels between the softest hit and the hardest; how much duller the softest
@@ -105,6 +305,8 @@ struct Hit: Copy {
     /// still are and that's decay.
     phase: f32 = 0.0,
     phase2: f32 = 0.0,
+    /// How many times the patch's pitch its tones are (a softer blow's are lower).
+    tuned: f32 = 1.0,
     tone: f32 = 0.0,
     tone_fall: f32 = 0.0,
     second: f32 = 0.0,
@@ -146,6 +348,197 @@ pub struct Drummer {
     soft: f32,
     soft_held: f32,
     click_held: f32,
+    /// The plate: its modes (the ping's two first, then from the lowest up), each one's pitch
+    /// (Hz), its level in the plate, and the octaves it is over 1 kHz (0 under it); how many
+    /// of them still ring (from the first); the wash now feeding them, and the share of it
+    /// each sample keeps; and whether a hand has stopped them (their decays are the choke's).
+    plate: Vec<Mode>,
+    plate_hz: Vec<f32>,
+    plate_level: Vec<f32>,
+    plate_over: Vec<f32>,
+    /// Each mode's seconds to fall 60 dB, and the share of a blow it gets by the wash.
+    plate_rings: Vec<f32>,
+    plate_washed: Vec<f32>,
+    ringing: u32,
+    stopped: bool,
+    /// The drum's modes: the head's six, the stand-ins for its higher ones, the shell's three
+    /// and the snare-side head's; each one's pitch (Hz, the head at rest) and seconds to fall
+    /// 60 dB; what the blow now landing gives each (it comes in over the stick's contact, of
+    /// `contact` samples, `contact_left` to come); the cents the head is above its pitch now
+    /// and the share of them it keeps each 16 samples; the samples to the next setting of its
+    /// pitch; whether any of it sounds; the level its swing is measured against; and what a
+    /// change in each of the six's speed is as a strike (one over the sine of its turn a
+    /// sample).
+    skin: Vec<Mode>,
+    skin_hz: Vec<f32>,
+    skin_t60: Vec<f32>,
+    skin_blow: Vec<f32>,
+    contact: u32,
+    contact_left: u32,
+    stretched: f32,
+    stretch_keeps: f32,
+    skin_in: u32,
+    skin_live: bool,
+    skin_ref: f32,
+    skin_slow: [f32; 6],
+    /// The share of a slap each of the snare-side head's modes takes (their squares sum to 1).
+    slap_share: Vec<f32>,
+    /// The wires: where each strand is and how fast it moves (in the hardest blow's swing, a
+    /// sample), where the head was a sample ago, and whether each is off the head.
+    wire: [f32; 6],
+    wire_v: [f32; 6],
+    head_was: f32,
+    apart: [bool; 6],
+    /// The samples since the last hit (as `sound` counts them), whether that hit was the
+    /// weaker hand's, and what a roll's hits are drawn from.
+    since: u32,
+    weak: bool,
+    touch: Noise,
+    /// Each of the plate's modes' strength now (it wanders about 1), the samples to its next
+    /// move, and the level the plate's modes are measured against (the patch's, whatever the
+    /// blow).
+    plate_now: Vec<f32>,
+    wander_in: u32,
+    plate_ref: f32,
+    /// Where each mode's strength has wandered (the log of it), which third of an octave
+    /// above the plate's lowest mode each mode is in, and what each third sounded at the last
+    /// sample (beside the plate's level).
+    plate_drift: Vec<f32>,
+    plate_third: Vec<u32>,
+    thirds: [f32; 20],
+    /// What the stick's own blow gives each washed mode alike, and the share of the knock
+    /// each mode takes (their squares sum to 1).
+    plate_even: f32,
+    plate_knock: Vec<f32>,
+    /// How far the plate's modes have been set trading (0 to 1); the samples to the next
+    /// round of trades and whether it starts from the first mode or the second; the first of
+    /// the modes that trade and the one after the last; and the angle each mode and the next
+    /// are turned through at most in a round when all are trading.
+    crowd: f32,
+    trade_in: u32,
+    trade_from: u32,
+    trade_low: u32,
+    trade_high: u32,
+    plate_turn: Vec<f32>,
+    /// The highest third of an octave that has modes of the plate (the tick's aside); how
+    /// much each third's modes take of a drive (the squares of their shares, summed); and how
+    /// much each third has now (its modes' swings squared, over the last millisecond or so).
+    top_third: u32,
+    third_takes: [f32; 20],
+    third_has: [f32; 20],
+}
+
+/// The struck head's six lowest modes beside its main one, how hard a blow rings each beside
+/// the first (by where it lands: `spot_rings`), and their seconds to fall 60 dB beside the
+/// main one's, wires off. Measured from a snare drum recorded close and dry, wires off and on
+/// (Virtuosity Drums' snare microphone: docs/citations.md): struck at its centre with its
+/// wires off, its partials are at 226 Hz (the main one), 336 and 488 Hz (6 and 15 dB under it
+/// over its first third of a second), and 181, 629 and 671 Hz (21 to 22 dB under); off its
+/// centre the second and third are as strong as the first and the 181 Hz one is gone. They
+/// fall 30 dB in 150, 320, 250, 150 and 130 ms (the 629 Hz one's fall is not clear of its
+/// neighbours'). These are not an ideal membrane's ratios (1, 1.59, 2.14, 2.30): a drum's two
+/// heads and the air between them move as one.
+const HEAD_RATIOS: [f32; 6] = [1.0, 1.49, 2.16, 0.80, 2.78, 2.97]
+const HEAD_GAINS: [f32; 6] = [1.0, 0.34, 0.52, 0.11, 1.1, 0.12]
+const HEAD_RINGS: [f32; 6] = [1.0, 2.13, 1.67, 1.0, 1.33, 0.87]
+/// A head has far more modes than those six. `HEAD_MORE` stand for those from 6.2 to 42 times
+/// the main one (1.4 to 9.5 kHz for that drum), a fixed ratio apart and each up to four
+/// tenths of the gap off its place, each rung this hard beside the first: the crack of the
+/// stick is the head's own, and is duller for a softer blow because the stick is on the head
+/// longer. They ring 0.83 of the main mode's time at 9 times its pitch, less as the pitch
+/// rises, down to 0.45 of it (wires off, that drum's 2, 4 and 8 kHz octaves fall as 0.25,
+/// 0.17 and 0.15 s to 60 dB; its octaves from 1 to 8 kHz are 15, 20, 25 and 33 dB under its
+/// 250 Hz one from 10 to 30 ms, and this drum's are within 3 dB of that).
+const HEAD_MORE: u32 = 24
+const HEAD_MORE_FROM: f32 = 6.2
+const HEAD_MORE_TO: f32 = 42.0
+const HEAD_MORE_GAIN: f32 = 0.055
+/// The drum's other modes: three that ring longest (that drum's at 839, 1190 and 1341 Hz,
+/// which fall 30 dB in 390, 210 and 280 ms) and the snare-side head's own (552 Hz, which the
+/// wires ring and damp): each one's pitch beside the main mode's, how hard a blow rings it
+/// beside the main one, and its seconds to fall 60 dB with the wires off.
+const SHELL: u32 = 4
+const SHELL_RATIOS: [f32; 4] = [3.71, 5.27, 5.93, 2.44]
+const SHELL_GAINS: [f32; 4] = [0.062, 0.062, 0.028, 0.03]
+const SHELL_RINGS: [f32; 4] = [0.78, 0.42, 0.56, 0.16]
+/// The snare-side head, which the wires lie on. `SNARE_MODES` stand for its modes from 2.3 to
+/// 57.5 times the struck head's main one (520 Hz to 13 kHz for that drum; its wires add most
+/// from 3 to 8 kHz, level by thirds of an octave, 4 to 6 dB less at 2 and 10 kHz, 13 dB less
+/// at 12.5 kHz), a fixed ratio apart (each up to four tenths of the gap off its place), each
+/// damped by the wires until it is as wide as the gap to the next (it rings 60 ms at 520 Hz,
+/// 16 ms at 2 kHz, 4 ms at 8 kHz): what a slap rings is a short burst in the drum's own
+/// colour, which moves with the drum's tuning. Under 2 kHz what the buzz adds is the floor
+/// the drum's own partials stand in: with no buzz under 1.8 kHz this drum's 838 and 1190 Hz
+/// partials stood 20 to 27 dB over the middle of their thirds of an octave from 30 to 150 ms
+/// where that drum's stand 9 to 15, and it was heard as a tin can. And how much of a blow
+/// reaches that head at once, through the air in the drum (little: that drum's top in its
+/// first 10 ms is its struck head's).
+const SNARE_MODES: u32 = 48
+const SNARE_FROM: f32 = 2.3
+const SNARE_TO: f32 = 57.5
+const SNARE_AIR: f32 = 0.01
+/// The wires: `WIRES` strands, each a mass on a spring (the middle one would swing at 300 Hz,
+/// a fifth damped; the others are pulled from 0.6 to 1.4 times as hard and held from 0.7 to
+/// 1.3 times as hard, so they leave and land at different times), which bounce: a strand the
+/// head catches leaves it again with this share of the speed it landed with, until it lands
+/// too slowly to (under `WIRE_STILL` of the hardest blow's swing a sample). So the buzz
+/// outlasts the blow's first swings and has no beat of the head's in it, as that drum's
+/// (its 4 kHz octave is 18 dB under its 250 Hz one from 10 to 30 ms and as loud as it from
+/// 30 to 100 ms; its buzz reaches half its loudest within 3 ms of the blow).
+///
+/// Then: how hard a slap rings the snare-side head, and the power of its speed that goes by
+/// (under 1: a strand landing ten times as fast rings the head three times as hard; that
+/// drum's buzz is 18, 16 and 14 dB under its tone for blows 9 dB apart); what a slap rings
+/// of the struck head's third and fourth modes and of the snare-side head's own beside that
+/// (with its wires on that drum's 181, 487 and 552 Hz partials stand as high as its main
+/// one; most goes to the 181 Hz one, which keeps a body under the middle as the drum rings
+/// on: from 100 to 300 ms that drum's 150 to 300 Hz is 2 dB under its 400 Hz to 1.5 kHz);
+/// and the tilt that keeps the buzz level across its octaves while it lasts.
+///
+/// And what the wires cost the head: the share of its speed all the strands together take
+/// from its main mode when it catches them, how much of that its second mode pays, and the
+/// seconds the head would take to fall 60 dB by the damping of all of them lying on it alone
+/// (that drum's 250 Hz octave falls 30 dB in 130 ms with its wires off and 60 ms with them
+/// on). The wires are moved by the head's first two modes and, a little (`WIRE_LONG`), by
+/// the drum's three long-ringing ones, so the buzz lasts under them as they ring; never by a
+/// mode their slaps ring, which would feed itself.
+const WIRES: u32 = 6
+const WIRE_PULL: f32 = 0.00154
+const WIRE_DRAG: f32 = 0.0157
+const WIRE_BOUNCE: f32 = 0.9
+const WIRE_STILL: f32 = 0.00001
+const SLAP_GAIN: f32 = 1.27
+const SLAP_CURVE: f32 = 0.5
+const SLAP_LOWS: [f32; 3] = [0.03, 0.2, 0.3]
+const SLAP_TILT: f32 = 0.3
+const WIRE_LOAD: f32 = 0.11
+const WIRE_SHARES: [f32; 2] = [1.0, 0.3]
+const WIRE_REST: f32 = 1.0
+const WIRE_LONG: f32 = 0.1
+
+/// How much of each of the head's modes a blow `r` of the way from the centre to the edge
+/// rings: the mode's shape there, roughly (the first and fourth are whole at the centre; the
+/// rest are nothing there).
+fn spot_rings(r: f32) -> [f32; 6] {
+    let across = sin(PI * r)
+    [
+        cos(0.5 * PI * r),
+        across,
+        across * across,
+        (1.0 - r * r) * cos(3.6 * r),
+        across * across * across,
+        sin(TAU * r) * (1.0 - 0.4 * r),
+    ]
+}
+
+/// The seconds a plate's mode at `hz` takes to fall 60 dB.
+fn plate_ring(p: Drum, hz: f32) -> f32 {
+    // (Over 8 kHz a mode rings shorter again by its pitch: the anechoic crash's 16 kHz octave
+    // rings 0.9 to 1.5 s where its 8 kHz one rings 2.3 to 3.1 s, and beside the 4 to 8 kHz
+    // octaves its 10 to 20 kHz falls 10 dB in its first 0.3 s.)
+    let middle = p.plate_t60 * pow(max(hz, 1000.0) / 1000.0, -p.plate_damp)
+    let alone = middle * 8000.0 / max(hz, 8000.0)
+    1.0 / (1.0 / alone + p.plate_fade / 60.0)
 }
 
 /// A drummer for `patch`. `seed` sets its noise.
@@ -154,6 +547,169 @@ pub fn drummer(patch: Drum, seed: u32 = 1) -> Drummer {
     for i in 0..6 {
         // Each square starts somewhere of its own.
         metal[i] = fract(0.137 * f32(i + 1) + 0.61 * f32(seed % 7))
+    }
+    // The plate's modes, if it has a plate: the ping's two, then one for each place from the
+    // lowest up, a little off it, at a level of its own under the plate's shape. The levels
+    // are set so the modes together are as loud as one tone at the plate's level.
+    var plate: Vec<Mode> = Vec::new()
+    var plate_hz: Vec<f32> = Vec::new()
+    var plate_level: Vec<f32> = Vec::new()
+    var plate_over: Vec<f32> = Vec::new()
+    var plate_rings: Vec<f32> = Vec::new()
+    var plate_washed: Vec<f32> = Vec::new()
+    var plate_even = 0.0
+    var trade_low = 0
+    var trade_high = 0
+    var plate_knock: Vec<f32> = Vec::new()
+    if patch.plate > 0.0 {
+        if patch.ping > 0.0 {
+            for k in 0..2 {
+                let hz = patch.ping_hz * (1.0 + 0.5 * f32(k))
+                var m = Mode {}
+                m.tune(hz, patch.ping_t60)
+                plate.push(m)
+                plate_hz.push(hz)
+                plate_level.push(patch.ping * (1.0 - 0.3 * f32(k)))
+                plate_over.push(0.0)
+                plate_rings.push(patch.ping_t60)
+                plate_washed.push(0.0)
+            }
+        }
+        var grain = seeded(seed + 77)
+        var place = patch.plate_low
+        var squares = 0.0
+        let first = plate.len()
+        while place < patch.plate_high && plate.len() + PLATE_TICKS + 2 <= PLATE_MOST {
+            let gap = max(PLATE_GAP, place / PLATE_SHARE)
+            // (Under 1 kHz, where the modes are few, each is near its place; over it, the
+            // gap from each to the next is any size, this on average.)
+            let evenly = place < 1000.0
+            let hz = if evenly { place + 0.4 * gap * grain.next() } else { place }
+            let octaves = log2(hz / patch.plate_hz)
+            let shape = if octaves < 0.0 { patch.plate_under * octaves } else {
+                -patch.plate_over * octaves
+            }
+            let level = gain_of(shape) * (0.4 + 0.6 * abs(grain.next()))
+            let ring = plate_ring(patch, hz)
+            let over = max(log2(hz / 1000.0), 0.0)
+            var m = Mode {}
+            m.tune(hz, ring)
+            plate.push(m)
+            plate_hz.push(hz)
+            plate_level.push(level)
+            plate_over.push(over)
+            plate_rings.push(ring)
+            plate_washed.push(min(over, 1.0))
+            squares += level * level
+            place += if evenly { gap } else { gap * -log(max(0.5 + 0.5 * grain.next(), 1e-4)) }
+        }
+        for i in first..plate.len() {
+            plate_level[i] = plate_level[i] / sqrt(max(squares, 1e-12))
+        }
+        plate_even = 1.0 / sqrt(f32(max(plate.len() - first, 1)))
+        trade_low = first
+        trade_high = plate.len()
+        // The knock's share of each mode: most at its pitch, none its width off.
+        var struck = 0.0
+        let wide = max(patch.knock_wide, 0.05)
+        for i in 0..plate.len() {
+            let off = if i >= first { abs(log2(plate_hz[i] / patch.knock_hz)) / wide } else { 1.0 }
+            let share = if patch.knock > 0.0 && off < 1.0 { 0.5 + 0.5 * cos(PI * off) } else { 0.0 }
+            plate_knock.push(share)
+            struck += share * share
+        }
+        for i in 0..plate.len() {
+            plate_knock[i] = plate_knock[i] / sqrt(max(struck, 1e-12))
+        }
+        // The tick's modes, last: they die first.
+        if patch.tick > 0.0 {
+            for k in 0..PLATE_TICKS {
+                let along = (f32(k) + 0.4 * grain.next()) / f32(PLATE_TICKS)
+                let hz = min(patch.tick_hz * exp2(1.27 * along - 0.74), 0.45 * RATE)
+                var m = Mode {}
+                m.tune(hz, patch.tick_t60)
+                plate.push(m)
+                plate_hz.push(hz)
+                plate_level.push(
+                    patch.tick * (0.5 + 0.5 * abs(grain.next())) / sqrt(f32(PLATE_TICKS)),
+                )
+                plate_over.push(max(log2(hz / 1000.0), 0.0))
+                plate_rings.push(patch.tick_t60)
+                plate_washed.push(0.0)
+                plate_knock.push(0.0)
+            }
+        }
+    }
+    let plate_now: Vec<f32> = Vec::filled(plate.len(), value: 1.0)
+    // The drum: the head's six modes, the stand-ins for its higher ones, the shell's three
+    // and the snare-side head's.
+    var skin: Vec<Mode> = Vec::new()
+    var skin_hz: Vec<f32> = Vec::new()
+    var skin_t60: Vec<f32> = Vec::new()
+    var skin_slow = [0.0; 6]
+    var slap_share: Vec<f32> = Vec::new()
+    if patch.head > 0.0 {
+        var grain = seeded(seed + 55)
+        for i in 0..6 {
+            skin_hz.push(patch.head_hz * HEAD_RATIOS[i])
+            skin_t60.push(patch.head_t60 * HEAD_RINGS[i])
+            skin_slow[i] = 1.0 / sin(TAU * min(skin_hz[i], 0.45 * RATE) / RATE)
+        }
+        let more = log2(HEAD_MORE_TO / HEAD_MORE_FROM) / f32(HEAD_MORE)
+        for k in 0..HEAD_MORE {
+            let ratio = HEAD_MORE_FROM * exp2(more * (f32(k) + 0.5 + 0.4 * grain.next()))
+            skin_hz.push(patch.head_hz * ratio)
+            skin_t60.push(patch.head_t60 * clamp(0.83 * pow(8.8 / ratio, 0.55), 0.45, 1.0))
+        }
+        for i in 0..SHELL {
+            skin_hz.push(patch.head_hz * SHELL_RATIOS[i])
+            // (The wires shorten these too: that drum's 1 kHz octave is 6 dB lower from 100
+            // to 300 ms with its wires on. By more here than its 838 Hz partial is shortened,
+            // which falls 30 dB in 230 to 260 ms with them on: this drum's buzz ends sooner
+            // than that one's, and a partial ringing on bare after it is the tin can.)
+            skin_t60.push(SHELL_RINGS[i] * (1.0 - 0.55 * min(patch.wires, 1.0)))
+        }
+        let lowest = patch.head_hz * SNARE_FROM
+        let step = log2(SNARE_TO / SNARE_FROM) / f32(SNARE_MODES)
+        var squares = 0.0
+        for k in 0..SNARE_MODES {
+            let hz = lowest * exp2(step * (f32(k) + 0.5 + 0.4 * grain.next()))
+            skin_hz.push(hz)
+            // (A mode that takes T seconds to fall 60 dB is 2.2 / T Hz wide.)
+            skin_t60.push(2.2 / (hz * (exp2(step) - 1.0)))
+            // (Less at the two ends of the buzz.)
+            let ends = min(1.0, 0.4 + 0.05 * f32(min(k + 1, SNARE_MODES - k)))
+            let share = ends * pow(hz / lowest, SLAP_TILT)
+            slap_share.push(share)
+            squares += share * share
+        }
+        for k in 0..SNARE_MODES {
+            slap_share[k] = slap_share[k] / sqrt(squares)
+        }
+        for i in 0..skin_hz.len() {
+            var m = Mode {}
+            m.tune(skin_hz[i], skin_t60[i])
+            skin.push(m)
+        }
+    }
+    let skin_blow: Vec<f32> = Vec::filled(skin.len(), value: 0.0)
+    let plate_drift: Vec<f32> = Vec::filled(plate.len(), value: 0.0)
+    let top_third = min(u32(3.0 * log2(max(patch.plate_high / patch.plate_low, 1.0))), 19)
+    var third_takes = [0.0; 20]
+    var plate_third: Vec<u32> = Vec::with_capacity(plate.len())
+    for i in 0..plate.len() {
+        let above = 3.0 * log2(max(plate_hz[i] / patch.plate_low, 1.0))
+        let third = min(u32(above), 19)
+        plate_third.push(third)
+        let share = plate_washed[i] * plate_level[i]
+        third_takes[third] += share * share
+    }
+    // (A round of trades is every 16 samples and moves half of the angle's square, a third
+    // of the largest's on average: so the largest is the root of 96 times the share a sample.)
+    var plate_turn: Vec<f32> = Vec::with_capacity(plate.len())
+    for i in 0..plate.len() {
+        let gap = max(PLATE_GAP, plate_hz[i] / PLATE_SHARE)
+        plate_turn.push(sqrt(96.0 * CHURN * gap / RATE))
     }
     Drummer {
         patch,
@@ -170,6 +726,51 @@ pub fn drummer(patch: Drum, seed: u32 = 1) -> Drummer {
         soft: 1.0,
         soft_held: 0.0,
         click_held: 0.0,
+        plate,
+        plate_hz,
+        plate_level,
+        plate_over,
+        plate_rings,
+        plate_washed,
+        ringing: 0,
+        stopped: false,
+        since: 1 << 30,
+        weak: false,
+        touch: seeded(seed + 31),
+        skin,
+        skin_hz,
+        skin_t60,
+        skin_blow,
+        skin_slow,
+        slap_share,
+        contact: 0,
+        contact_left: 0,
+        stretched: 0.0,
+        stretch_keeps: exp(-16.0 / (max(patch.stretch_time, 0.001) * RATE)),
+        skin_in: 0,
+        skin_live: false,
+        skin_ref: max(patch.level * patch.head, 1e-6),
+        wire: [0.0; 6],
+        wire_v: [0.0; 6],
+        head_was: 0.0,
+        apart: [false; 6],
+        plate_now,
+        plate_drift,
+        plate_third,
+        thirds: [0.0; 20],
+        plate_even,
+        plate_knock,
+        crowd: 0.0,
+        trade_in: 0,
+        trade_from: 0,
+        trade_low,
+        trade_high,
+        plate_turn,
+        top_third,
+        third_takes,
+        third_has: [0.0; 20],
+        wander_in: 0,
+        plate_ref: max(patch.level * patch.plate, 1e-6),
     }
 }
 
@@ -191,25 +792,51 @@ impl Drummer {
     pub fn hit(mut self, velocity: f32) {
         let p = self.patch
         let v = clamp(velocity, 0.0, 1.0)
-        let level = p.level * gain_of(-p.range_db * (1.0 - v))
         // The hit before dies away under this one.
         let last = self.hits[1 - self.next]
+        // In a roll (the hit before under 150 ms ago) each hit is its own.
+        let rolling = self.since < u32(0.15 * RATE)
+        self.weak = rolling && !self.weak
+        self.since = 0
+        var louder = 0.0
+        var cents = 0.0
+        var brighter = 1.0
+        var spot = 0.0
+        if rolling && p.hands > 0.0 {
+            let lean = if self.weak { 1.0 } else { 0.0 }
+            louder = p.hands * (self.touch.next() - 0.5 * lean)
+            cents = p.hands * (10.0 * self.touch.next() - 3.0 * lean)
+            brighter = exp2(p.hands * (0.4 * self.touch.next() - 0.15 * lean))
+            spot = p.hands * self.touch.next()
+        }
+        let level = p.level * gain_of(-p.range_db * (1.0 - v) + louder)
         if last.on {
             self.hits[1 - self.next].fade_fall = min(last.fade_fall, decay(OVERTAKEN))
         }
         // A harder hit's noise rings longer.
         let rings = p.noise_t60 * (1.0 - p.ring_touch + 2.0 * p.ring_touch * v)
-        let burst_level = level * (p.noise + p.metal)
+        // (A drum with wires has no noise of its own: its noise is the wires'.)
+        let burst_level = if p.wires > 0.0 { 0.0 } else { level * (p.noise + p.metal) }
         let thump = if p.thump > 0.0 { max(u32(p.thump_ms * 0.001 * RATE), 2) } else { 0 }
         let first_gap = self.gap()
+        // A skin still ringing from the blow before goes on from where it is: a blow adds to
+        // its motion, it doesn't set it back to its start. (Every hit of a roll began the same
+        // wave again from the same place: one hit over and over.)
+        var phase = 0.0
+        var phase2 = 0.0
+        if last.on && last.tone + last.second > 0.02 * last.level * (p.tone + p.second) {
+            phase = last.phase
+            phase2 = last.phase2
+        }
         self.hits[self.next] = Hit {
             on: true,
             level,
-            phase: 0.0,
-            phase2: 0.0,
-            tone: level * p.tone,
+            phase,
+            phase2,
+            tuned: exp2((-p.tension * (1.0 - v) + cents) / 1200.0),
+            tone: level * p.tone * (1.0 - 0.25 * spot),
             tone_fall: decay(p.tone_t60),
-            second: level * p.second,
+            second: level * p.second * (1.0 + 0.5 * spot),
             second_fall: decay(p.second_t60),
             sweep: p.sweep,
             sweep_fall: exp(-1.0 / (max(p.sweep_time, 0.0005) * RATE)),
@@ -226,7 +853,81 @@ impl Drummer {
             fade_fall: 1.0,
         }
         self.next = 1 - self.next
-        self.soft = one_pole(p.soft_hz + v * v * (20000.0 - p.soft_hz))
+        self.soft = one_pole((p.soft_hz + v * v * (20000.0 - p.soft_hz)) * brighter)
+        // The head: the stick lands at a place and with a weight of its own, and gives each
+        // mode its share over its contact; the head is stretched, the more the harder.
+        if p.head > 0.0 {
+            let r = clamp(p.spot + p.spot_sway * self.touch.next(), 0.0, 0.95)
+            let own = level * gain_of(0.7 * self.touch.next())
+            let shares = spot_rings(r)
+            for i in 0..6 {
+                self.skin_blow[i] = own * p.head * HEAD_GAINS[i] * shares[i]
+            }
+            // The higher modes: each gets its share by where the stick landed, which no two
+            // blows repeat.
+            for k in 0..HEAD_MORE {
+                let pick = self.touch.next()
+                let way = if pick < 0.0 { -1.0 } else { 1.0 }
+                self.skin_blow[6 + k] = way *
+                    own *
+                    p.head *
+                    HEAD_MORE_GAIN *
+                    (0.4 + 0.6 * abs(pick))
+            }
+            let shell = 6 + HEAD_MORE
+            // The drum's long-ringing modes too: over a recorded drum's six hardest blows its
+            // 838 Hz partial stands from 0 to 10 dB under its main one, and one that rings the
+            // same every time is a tin can's. (0.72: that share's root mean square, so these
+            // modes are as loud on the whole as they were fitted.)
+            for i in 0..SHELL {
+                let pick = self.touch.next()
+                let share = (0.4 + 0.6 * abs(pick)) / 0.72
+                self.skin_blow[shell + i] = own * p.shell * SHELL_GAINS[i] * share
+            }
+            // The snare-side head takes the blow through the air: every mode alike, one way
+            // or the other.
+            let air = own * p.wires * SNARE_AIR / sqrt(f32(SNARE_MODES))
+            for k in 0..SNARE_MODES {
+                let pick = self.touch.next()
+                let way = if pick < 0.0 { -1.0 } else { 1.0 }
+                self.skin_blow[shell + SHELL + k] = way * air * (0.4 + 0.6 * abs(pick))
+            }
+            let ms = p.contact_ms * (1.0 - 0.5 * v) * (1.0 + 0.1 * self.touch.next())
+            self.contact = max(u32(ms * 0.001 * RATE), 2)
+            self.contact_left = self.contact
+            self.stretched = max(self.stretched, p.stretch * v * v)
+            self.skin_live = true
+        }
+        // The plate: the blow sets every mode ringing, each a little more or less and one way
+        // or the other (a stick never lands the same twice), a soft blow's high modes less;
+        // what a crash's high modes get as a wash is fed to them over the next tenth of a
+        // second, in `sound`.
+        let modes = self.plate.len()
+        if modes > 0 {
+            if self.stopped {
+                for i in 0..modes {
+                    self.plate[i].tune(self.plate_hz[i], self.plate_rings[i])
+                }
+                self.stopped = false
+            }
+            let dull = -0.1151 * p.plate_touch * (1.0 - v)
+            let knock = p.knock * gain_of(-p.knock_touch * (1.0 - v))
+            for i in 0..modes {
+                let over = self.plate_over[i]
+                let washed = p.wash * self.plate_washed[i]
+                let pick = self.noise.next()
+                let way = if pick < 0.0 { -1.0 } else { 1.0 }
+                // By the plate's shape a mode gets what of it isn't washed; of the stick's
+                // own blow, the same as every mode, what is; and its share of the knock.
+                let share = (1.0 - washed) * self.plate_level[i] +
+                    washed * self.plate_even +
+                    knock * self.plate_knock[i]
+                let blow = level * p.plate * share * exp(dull * over)
+                self.plate[i].strike(way * (0.5 + 0.5 * abs(pick)) * blow)
+            }
+            self.plate_ref = max(p.level * p.plate, 1e-6)
+            self.ringing = modes
+        }
     }
 
     /// Stops what rings, over a few milliseconds: a hand on a cymbal, or a closed hi-hat on an
@@ -236,23 +937,37 @@ impl Drummer {
         for i in 0..2 {
             self.hits[i].fade_fall = min(self.hits[i].fade_fall, decay(CHOKED))
         }
+        if self.ringing > 0 && !self.stopped {
+            for i in 0..self.plate.len() {
+                self.plate[i].tune(self.plate_hz[i], CHOKED)
+            }
+            self.stopped = true
+        }
     }
 
     /// Whether nothing of it sounds.
     @audio
     pub fn silent(self) -> bool {
-        !self.hits[0].on && !self.hits[1].on
+        !self.hits[0].on && !self.hits[1].on && self.ringing == 0 && !self.skin_live
     }
 
     /// Adds its sound to samples `from` to `to` of `left` and `right`.
     @audio
     pub fn sound(mut self, left: mut [f32], right: mut [f32], from: u32, to: u32) {
+        self.since = min(self.since + (to - from), 1 << 30)
         if self.silent() {
             return
         }
         let p = self.patch
         let hissing = p.noise > 0.0 || p.metal > 0.0
+        let wired = p.wires > 0.0
         let shell = max(p.tone + p.second, 1e-6)
+        // How much each third of an octave of a plate bends it, beside the third the stick's
+        // knock is in (the second): the first's, and what each one up is of the one under.
+        // What all a drum's wires lying on its head take of the head's swing a sample.
+        let rested = 1.0 - decay(WIRE_REST)
+        let bend_first = exp2(CASCADE_FALLS / 3.0)
+        let bend_step = exp2(-CASCADE_FALLS / 3.0)
         for n in from..to {
             // The noise and the metal, before any hit shapes them.
             var source = 0.0
@@ -288,8 +1003,8 @@ impl Drummer {
                     let above = 1.0 + hit.sweep
                     tones = hit.tone * sin(TAU * hit.phase) + hit.second * sin(TAU * hit.phase2)
                     out = clamp(tones / (hit.level * shell), -1.0, 1.0)
-                    hit.phase = fract(hit.phase + p.tone_hz * above / RATE)
-                    hit.phase2 = fract(hit.phase2 + p.second_hz * above / RATE)
+                    hit.phase = fract(hit.phase + p.tone_hz * hit.tuned * above / RATE)
+                    hit.phase2 = fract(hit.phase2 + p.second_hz * hit.tuned * above / RATE)
                     hit.tone *= hit.tone_fall
                     hit.second *= hit.second_fall
                     hit.sweep *= hit.sweep_fall
@@ -331,8 +1046,271 @@ impl Drummer {
                 }
                 self.hits[h] = hit
             }
+            // The drum: its modes ringing, the blow coming in over the stick's contact (a half
+            // sine whose samples sum to 1), the head's pitch settling; and the wires.
+            if self.skin_live {
+                let heads = 6 + HEAD_MORE
+                if self.skin_in == 0 {
+                    self.skin_in = 16
+                    if self.stretched > 0.0 {
+                        if self.stretched < 0.3 {
+                            self.stretched = 0.0
+                        }
+                        let up = exp2(self.stretched / 1200.0)
+                        for i in 0..heads {
+                            self.skin[i].tune(self.skin_hz[i] * up, self.skin_t60[i])
+                        }
+                        self.stretched *= self.stretch_keeps
+                    }
+                }
+                self.skin_in -= 1
+                var push = 0.0
+                if self.contact_left > 0 {
+                    let through = (f32(self.contact - self.contact_left) + 0.5) / f32(self.contact)
+                    push = sin(PI * through) * PI / (2.0 * f32(self.contact))
+                    self.contact_left -= 1
+                }
+                // (What moves the wires is the head's main mode and its second: a mode that
+                // both moved them and was rung by their slaps would feed itself.)
+                var head = 0.0
+                var rest = 0.0
+                for i in 0..self.skin.len() {
+                    if push != 0.0 {
+                        self.skin[i].strike(push * self.skin_blow[i])
+                    }
+                    let out = self.skin[i].next()
+                    if i < 2 {
+                        head += out
+                    } else if i >= heads && i + 1 < heads + SHELL {
+                        // (The drum's long-ringing modes move the wires a little too, and
+                        // sound whole.)
+                        head += WIRE_LONG * out
+                        rest += (1.0 - WIRE_LONG) * out
+                    } else {
+                        rest += out
+                    }
+                }
+                y += head + rest
+                if wired {
+                    // The wires: each strand pulled toward the head by its spring, carried by
+                    // the head while it lies on it, thrown off when the head swings back
+                    // faster than it follows, and slapping the head when it is caught again,
+                    // then bouncing off it with some of the speed it landed with until it
+                    // lands too slowly to. A slap rings the snare-side head's modes and the
+                    // drum's low ones but its main one, each mode its own share of it (a
+                    // strand lands along its length, never the same way twice), and the
+                    // head gives the strand its speed: the buzz is the drum ringing, and the
+                    // head pays for it.
+                    let at = head / self.skin_ref
+                    let moving = at - self.head_was
+                    self.head_was = at
+                    var took = 0.0
+                    var resting = 0.0
+                    for w in 0..WIRES {
+                        let along = f32(w) / f32(WIRES - 1)
+                        let pull = WIRE_PULL * (0.6 + 0.8 * along)
+                        let hold = p.wires_hold * (0.7 + 0.6 * along)
+                        var v = self.wire_v[w]
+                        v += -pull * (self.wire[w] + hold) - WIRE_DRAG * v
+                        var place = self.wire[w] + v
+                        if place <= at {
+                            let slap = moving - v
+                            let lands = self.apart[w] && slap > 0.0
+                            if lands {
+                                took += (1.0 + WIRE_BOUNCE) * slap
+                                let kick = self.skin_ref *
+                                    p.wires *
+                                    SLAP_GAIN *
+                                    pow(slap, SLAP_CURVE)
+                                // (The head's third and fourth modes, and the last of the
+                                // drum's other modes, which is that head's own.)
+                                self.skin[2].strike(SLAP_LOWS[0] * kick * self.noise.next())
+                                self.skin[3].strike(SLAP_LOWS[1] * kick * self.noise.next())
+                                let own = heads + SHELL - 1
+                                self.skin[own].strike(SLAP_LOWS[2] * kick * self.noise.next())
+                                for k in 0..SNARE_MODES {
+                                    let share = self.slap_share[k] * self.noise.next()
+                                    self.skin[heads + SHELL + k].strike(kick * share)
+                                }
+                            }
+                            place = at
+                            if lands && slap > WIRE_STILL {
+                                v = moving + WIRE_BOUNCE * slap
+                            } else {
+                                v = moving
+                                self.apart[w] = false
+                                resting += 1.0
+                            }
+                        } else {
+                            self.apart[w] = true
+                        }
+                        self.wire[w] = place
+                        self.wire_v[w] = v
+                    }
+                    // (A change in a mode's speed is a strike of that over the sine of its
+                    // turn a sample.) And the strands lying on the head damp it.
+                    // No more than half of the head's speed in a sample.
+                    let slower = min(
+                        WIRE_LOAD / f32(WIRES) * took,
+                        0.5 * abs(moving),
+                    ) *
+                        self.skin_ref
+                    let keeps = 1.0 - rested * resting / f32(WIRES)
+                    for i in 0..6 {
+                        if took > 0.0 && i < 2 {
+                            self.skin[i].strike(-WIRE_SHARES[i] * slower * self.skin_slow[i])
+                        }
+                        self.skin[i].lose(keeps)
+                    }
+                }
+            }
+            // The plate: its modes ringing, each at a strength that may wander, each trading
+            // with the next if the blow has set them to. The modes are also taken a third of
+            // an octave at a time, and each third is pushed by the square of the plate's
+            // bending under it: energy leaves the stick's knock and the low modes for the
+            // modes above, fast while they are large and slowly after, as the anechoic
+            // crash's 500 Hz octave gives way to its 2, 4 and 8 kHz ones.
+            if self.ringing > 0 {
+                if self.wander_in == 0 {
+                    self.wander_in = 256
+                    if p.restless > 0.0 {
+                        for i in 0..self.ringing {
+                            let was = self.plate_drift[i]
+                            let now = 0.97 * was + 0.4 * p.restless * self.noise.next()
+                            self.plate_drift[i] = now
+                            self.plate_now[i] = exp(clamp(now, -2.3, 1.2))
+                        }
+                    }
+                }
+                self.wander_in -= 1
+                // The crowd: how far the modes are set trading rises with how loud the plate
+                // is and falls away of itself; every 16 samples each mode trades with the next
+                // (the pairs taken from the first mode and from the second by turns), so no
+                // energy is made or lost by it but each mode is a band of noise, not a tone,
+                // and what one part of the plate has spreads to the rest. (Each mode giving
+                // up a share and getting as much back in pushes sized by its third's energy
+                // lost the plate's top 27 dB in half a second: pushes sized by what they feed
+                // keep it only on average, and what holds on average drains away.)
+                if p.crowd > 0.0 {
+                    if self.trade_in == 0 {
+                        self.trade_in = 16
+                        var all = 0.0
+                        for b in 0..20 {
+                            all += self.third_has[b]
+                        }
+                        let loud = all / (self.plate_ref * self.plate_ref)
+                        let more = min(CROWD_RATE * 16.0 / RATE * sqrt(loud), 1.0)
+                        let less = 16.0 / (CROWD_STAYS * RATE)
+                        self.crowd += (1.0 - self.crowd) * more - self.crowd * less
+                        let wide = sqrt(p.crowd * self.crowd)
+                        // (A ping's two modes and a tick's stand apart: they don't trade.)
+                        let last = min(self.ringing, self.trade_high)
+                        var i = self.trade_low + self.trade_from
+                        while i + 1 < last {
+                            var mine = self.plate[i]
+                            let turn = wide * self.plate_turn[i] * self.noise.next()
+                            self.plate[i + 1] = mine.trade(self.plate[i + 1], turn)
+                            self.plate[i] = mine
+                            i += 2
+                        }
+                        self.trade_from = 1 - self.trade_from
+                    }
+                    self.trade_in -= 1
+                }
+                // What each third is pushed by, and what the modes under it lose for it. The
+                // bending under a third is all that sounded, a sample ago, two thirds or more
+                // below it, each third counted the less the higher it is; the push is the
+                // square of that, its size and sign drawn anew each sample (the square alone
+                // is a few steady lines, and a line that falls on a mode pumps that one mode
+                // without end: one partial at 6.35 kHz came to carry most of a crash). A mode
+                // pushed at random gains the push's square in energy (its swing squared), a
+                // third of the largest push's on average, so a third gains that times the
+                // squares of its modes' shares: that much comes off what bends it, each third
+                // under it losing by its part in the bending, and no third is passed more
+                // than a 750th of that in one sample.
+                var drives = [0.0; 20]
+                var keep = [1.0; 20]
+                if p.wash > 0.0 {
+                    var bends = [0.0; 20]
+                    var asked = [0.0; 20]
+                    var bend = bend_first
+                    var bent = 0.0
+                    var had = 0.0
+                    for b in 2..self.top_third + 1 {
+                        bends[b - 2] = bend
+                        bent += bend * self.thirds[b - 2]
+                        had += bend * bend * self.third_has[b - 2]
+                        bend *= bend_step
+                        let takes = self.third_takes[b]
+                        if takes <= 0.0 || had <= 1e-12 {
+                            continue
+                        }
+                        let held = clamp(bent, -1.5, 1.5)
+                        var push = p.wash * CASCADE * self.plate_ref * held * held
+                        if push * push * takes > 0.004 * had {
+                            push = sqrt(0.004 * had / takes)
+                        }
+                        drives[b] = push * self.noise.next()
+                        asked[b] = push * push * takes / (3.0 * had)
+                    }
+                    var owed = 0.0
+                    var b = self.top_third
+                    while b >= 2 {
+                        owed += asked[b]
+                        keep[b - 2] = 1.0 - 0.5 * bends[b - 2] * bends[b - 2] * owed
+                        b -= 1
+                    }
+                }
+                var thirds = [0.0; 20]
+                var has = [0.0; 20]
+                var plate = 0.0
+                for i in 0..self.ringing {
+                    let b = self.plate_third[i]
+                    let drive = drives[b]
+                    if drive != 0.0 {
+                        // (Each mode takes it as the plate's shape gives it its level.)
+                        self.plate[i].strike(drive * self.plate_washed[i] * self.plate_level[i])
+                    }
+                    if keep[b] < 1.0 {
+                        self.plate[i].lose(keep[b])
+                    }
+                    let rung = self.plate[i].next()
+                    has[b] += 2.0 * rung * rung
+                    let out = rung * self.plate_now[i]
+                    plate += out
+                    thirds[b] += out / self.plate_ref
+                }
+                if p.wash > 0.0 || p.crowd > 0.0 {
+                    self.thirds = thirds
+                    for b in 0..20 {
+                        self.third_has[b] += 0.02 * (has[b] - self.third_has[b])
+                    }
+                }
+                y += plate
+            }
             left[n] += y
             right[n] += y
+        }
+        // A head that has died away, its wires still, is over.
+        if self.skin_live && self.contact_left == 0 {
+            var rings = 0.0
+            for i in 0..self.skin.len() {
+                rings += self.skin[i].level()
+            }
+            if rings < 1e-5 {
+                self.skin_live = false
+                self.wire = [0.0; 6]
+                self.wire_v = [0.0; 6]
+                self.head_was = 0.0
+                self.apart = [false; 6]
+            }
+        }
+        // The plate's modes that have died away (the highest die first) are left out.
+        while self.ringing > 0 && self.plate[self.ringing - 1].level() < 1e-6 {
+            self.ringing -= 1
+        }
+        if self.ringing == 0 {
+            self.crowd = 0.0
         }
     }
 }
@@ -379,6 +1357,8 @@ pub const SNARE: Drum = Drum {
     range_db: 22.0,
     soft_hz: 3500.0,
     ring_touch: 0.25,
+    tension: 25.0,
+    hands: 1.0,
 }
 
 /// A clap: noise round 1.1 kHz, three bursts 8 to 13 ms apart, each under the last, and a tail.
@@ -414,6 +1394,104 @@ pub const HAT: Drum = Drum {
 
 /// An open hi-hat: the closed one, ringing on. A closed hit chokes it.
 pub const OPEN_HAT: Drum = Drum { noise_t60: 0.55, ring_touch: 0.0, ..HAT }
+
+/// A snare drum, fitted to one recorded close and dry (Virtuosity Drums' snare microphone:
+/// docs/citations.md): a head whose main mode is 226 Hz, struck near its centre, its higher
+/// modes, a snare-side head and wires on it, all one drum. The stick's crack is the head's
+/// own modes; the buzz is the wires' slaps ringing the snare-side head, 18 dB under the tone
+/// at first and as loud as it from 30 ms on; and the head pays for the buzz (its 250 Hz
+/// octave falls 30 dB in 60 ms, as that drum's does with its wires on; 130 ms with them off).
+/// Hard, each octave from 250 Hz to 8 kHz is within 6 dB of that drum's through its first
+/// 300 ms. Softer, its buzz is 5 to 7 dB over that drum's in its first 100 ms, and its tail
+/// is gone sooner (50 dB down in 0.2 s, where that drum's takes 0.4 s). Where `SNARE` is a
+/// drum machine's circuit, this is a drum: its hits are each their own.
+pub const SNARE_DRUM: Drum = Drum {
+    head: 1.0,
+    head_hz: 226.0,
+    head_t60: 0.30,
+    spot: 0.12,
+    spot_sway: 0.08,
+    stretch: 35.0,
+    stretch_time: 0.04,
+    contact_ms: 0.5,
+    shell: 1.0,
+    wires: 1.0,
+    wires_hold: 0.005,
+    range_db: 24.0,
+    level: 0.65,
+}
+
+/// A crash cymbal: every mode of the plate up to 20 kHz struck at once, with the stick's
+/// tick on top (modes round 9 kHz, gone in a few tenths of a second), so it is loudest at
+/// the stick and its top dies first; the stick's knock in the plate's own modes round 410 Hz,
+/// whose energy the plate's bending passes up to the modes round 4 kHz over the next tenth
+/// of a second (a small bloom, 1 to 2 dB in that octave); and the modes trading, so it is a
+/// wash of noise with partials in it, a soft one a little less so. Its modes ring as the
+/// 18-inch crash's it follows do (9.5 s at 1 kHz and under, 3 s at 8 kHz, 1 s at 16 kHz),
+/// every one 13.7 dB a second faster: 3 s at 1 kHz, under 2 s at 8 kHz, under 1 s at 16 kHz.
+/// (Struck hard on its shoulder that crash's knock is 13 dB over its 4 kHz octave at the
+/// stick and its octaves over 2 kHz bloom 9 dB, a tenth of a second after; struck less hard,
+/// or on its bow, they are loudest at the stick, as this one's are. With most of the blow
+/// held back for the bloom, this one's top swelled 20 dB over a quarter of a second, and was
+/// heard as a crash played backwards. Its first 5 ms are spread as that crash's are when
+/// struck less hard: 6, 13, 7, 6 and 7 dB under the whole from 250 Hz to 16 kHz by octaves
+/// and pairs of them, against 8, 13, 7, 3 and 10.)
+pub const CRASH: Drum = Drum {
+    plate: 1.0,
+    plate_high: 20000.0,
+    plate_hz: 4000.0,
+    plate_under: 8.0,
+    plate_over: 10.0,
+    plate_t60: 9.5,
+    plate_damp: 0.55,
+    plate_fade: 13.7,
+    wash: 1.0,
+    crowd: 1.0,
+    knock: 1.3,
+    knock_hz: 410.0,
+    knock_touch: 20.0,
+    tick: 1.0,
+    tick_hz: 9000.0,
+    tick_t60: 0.3,
+    range_db: 20.0,
+    level: 0.28,
+}
+
+/// A ride cymbal: the stick's tick (modes round 14.5 kHz, gone in a tenth of a second), a
+/// note at 2.5 kHz, a low body in the plate's own modes from 280 to 1120 Hz, most round
+/// 560 Hz, and a plate loudest at 8 kHz, quieter in between, its modes trading a little. Its
+/// modes ring as the 21-inch ride's it follows do (12 s at 1 kHz and under, 2 s at 8 kHz),
+/// every one 10 dB a second faster: 4 s and 1.5 s. Beside its 4 to 8 kHz octaves its 500 Hz
+/// octave is 4 dB under at 0.1 s, 3 dB over at 0.5 s and 15 dB over at 1.5 s, where that
+/// ride's is 5 to 7 under, 0 to 3 over and 13 to 15 over; and its 10 to 20 kHz is 4 dB over
+/// in its first 20 ms and 10 dB under at 0.1 s, where that ride's is 7 to 8 over and 8 to 10
+/// under. (The tick is 8 dB stronger beside the plate than it was, and the level lower to
+/// leave it room: a hard stroke peaks just under full scale.)
+pub const RIDE: Drum = Drum {
+    plate: 0.5,
+    plate_low: 340.0,
+    plate_high: 16000.0,
+    plate_hz: 8000.0,
+    plate_under: 5.0,
+    plate_over: 12.0,
+    plate_t60: 12.0,
+    plate_damp: 0.86,
+    plate_fade: 10.0,
+    ping: 0.25,
+    ping_hz: 2500.0,
+    ping_t60: 1.6,
+    restless: 0.15,
+    crowd: 0.1,
+    knock: 0.5,
+    knock_hz: 560.0,
+    knock_wide: 1.0,
+    tick: 20.0,
+    tick_hz: 14500.0,
+    tick_t60: 0.12,
+    click: 0.15,
+    range_db: 18.0,
+    level: 0.065,
+}
 
 /// A rim shot: a short knock at 430 and 1100 Hz with the stick's click.
 pub const RIM: Drum = Drum {
@@ -497,4 +1575,346 @@ fn a_snares_wires_rattle_with_its_skin() {
         abs(a.y - b.y) > 0.02 * b.y,
         f"the rattle changed the snare's highs by {abs(a.y - b.y) / b.y}",
     )
+}
+
+/// A cymbal is a plate of modes: it rings for seconds, its top dies before its bottom, and a
+/// hand stops it. A second and a half after a crash it still sounds, with a smaller share of
+/// highs than it had in its first third of a second.
+@test
+fn a_cymbal_rings_on_its_top_dies_first_and_a_hand_stops_it() {
+    var crash = drummer(CRASH)
+    crash.hit(1.0)
+    let _ = rendered(mut crash, seconds: 0.1)
+    let early = rendered(mut crash, seconds: 0.2)
+    let _ = rendered(mut crash, seconds: 1.2)
+    let late = rendered(mut crash, seconds: 0.2)
+    assert(late.x > 1e-4 && !crash.silent(), "a crash died within a second and a half")
+    assert(
+        late.y / late.x < 0.9 * early.y / early.x,
+        f"a crash's highs: {early.y / early.x} of it early, {late.y / late.x} late",
+    )
+    crash.choke()
+    let _ = rendered(mut crash, seconds: 0.3)
+    assert(crash.silent(), "a choked crash rang on")
+}
+
+/// A crash is loudest at the stick: every mode is struck at once and what blooms after is
+/// small, so 40 ms a tenth of a second in have no more than a quarter over the first 40 ms'
+/// energy, or highs, and 40 ms half a second in under half. (With most of the blow held back
+/// for the bloom its top swelled 20 dB over a quarter of a second, and it was heard as a crash
+/// played backwards.) And a ride is the stick's tick first and then far softer.
+@test
+fn a_crash_is_loudest_at_the_stick_and_a_ride_ticks() {
+    var crash = drummer(CRASH)
+    crash.hit(1.0)
+    let first = rendered(mut crash, seconds: 0.04)
+    let _ = rendered(mut crash, seconds: 0.06)
+    let bloom = rendered(mut crash, seconds: 0.04)
+    let _ = rendered(mut crash, seconds: 0.36)
+    let later = rendered(mut crash, seconds: 0.04)
+    assert(
+        bloom.x < 1.25 * first.x && bloom.y < 1.25 * first.y,
+        f"a crash's energy and highs: {first} at the stick, {bloom} a tenth of a second in",
+    )
+    assert(later.x < 0.5 * first.x, f"a crash: {first.x} at the stick, {later.x} at 0.5 s")
+    var ride = drummer(RIDE)
+    ride.hit(1.0)
+    let tick = rendered(mut ride, seconds: 0.02).x
+    let _ = rendered(mut ride, seconds: 0.08)
+    let rings = rendered(mut ride, seconds: 0.02).x
+    assert(
+        tick > 5.0 * rings && rings > 0.0,
+        f"a ride's energy: {tick} at the stick, {rings} later",
+    )
+}
+
+/// A plate's low body is several of its own modes, and they ring no longer than its middle:
+/// the crash's knock is shared by five modes or more (their squares summing to 1), and the
+/// ride's modes at 340 Hz and at 1 kHz both ring 4 s (12 s, every mode 10 dB a second faster),
+/// its 8 kHz ones 1.5 s. (As one tone of its own the crash's knock stood 42 dB over the
+/// middle of its octave, and the ride's low modes rang seven to eleven seconds over a top
+/// gone in one: the two were heard as part bell and part gong.)
+@test
+fn a_plates_low_body_is_several_of_its_modes_and_rings_no_longer_than_its_middle() {
+    let crash = drummer(CRASH)
+    var sharing = 0
+    var squares = 0.0
+    for i in 0..crash.plate_knock.len() {
+        let share = crash.plate_knock[i]
+        squares += share * share
+        if share > 0.1 {
+            sharing += 1
+        }
+    }
+    assert(sharing >= 5 && abs(squares - 1.0) < 1e-4, f"{sharing} modes share the knock")
+    let low = plate_ring(RIDE, 340.0)
+    let mid = plate_ring(RIDE, 1000.0)
+    let top = plate_ring(RIDE, 8000.0)
+    assert(low == mid && abs(mid - 4.0) < 0.05, f"the ride rings {low} s at 340 Hz, {mid} at 1 kHz")
+    assert(abs(top - 1.5) < 0.05, f"the ride rings {top} s at 8 kHz")
+}
+
+/// Over 1 kHz the gaps between a plate's modes are of every size: of the crash's, more than a
+/// tenth are under a quarter of the usual gap and more than a twentieth over twice it. (Each
+/// near its place, no two lay close enough to beat slowly, and each third of an octave of
+/// the plate fell like one tone with an envelope: its level moved 0.3 dB from one twentieth
+/// of a second to the next where the anechoic crash's moves 0.6 to 1.0.)
+@test
+fn a_plates_modes_over_1_khz_lie_at_gaps_of_every_size() {
+    let crash = drummer(CRASH)
+    var close = 0
+    var far = 0
+    var all = 0
+    for i in crash.trade_low..crash.trade_high - 1 {
+        let hz = crash.plate_hz[i]
+        if hz < 1000.0 {
+            continue
+        }
+        let gap = (crash.plate_hz[i + 1] - hz) / max(PLATE_GAP, hz / PLATE_SHARE)
+        all += 1
+        if gap < 0.25 {
+            close += 1
+        }
+        if gap > 2.0 {
+            far += 1
+        }
+    }
+    assert(all > 100, f"the crash has {all} gaps over 1 kHz")
+    assert(
+        10 * close > all && 20 * far > all,
+        f"of {all} gaps, {close} are under a quarter of the usual and {far} over twice it",
+    )
+}
+
+/// A hard crash's modes trade, and trading makes no energy and loses none: from 0.3 s to 0.8 s
+/// the crash has what the same crash has with its modes left alone, to within a quarter, in
+/// its highs too. (Modes that gave up a share and were pushed back as much on average lost
+/// the top 27 dB in half a second.) And they do trade: the two are not one sound.
+@test
+fn a_crashs_modes_trade_without_making_or_losing_energy() {
+    var trading = drummer(CRASH, seed: 5)
+    trading.hit(1.0)
+    var alone = drummer(Drum { crowd: 0.0, ..CRASH }, seed: 5)
+    alone.hit(1.0)
+    let _ = rendered(mut trading, seconds: 0.3)
+    let _ = rendered(mut alone, seconds: 0.3)
+    let a = rendered(mut trading, seconds: 0.5)
+    let b = rendered(mut alone, seconds: 0.5)
+    assert(a.x > 0.8 * b.x && a.x < 1.25 * b.x, f"trading, a crash has {a.x}; alone, {b.x}")
+    assert(a.y > 0.8 * b.y && a.y < 1.25 * b.y, f"trading, its highs are {a.y}; alone, {b.y}")
+    assert(a.x != b.x, "a hard crash's modes did not trade")
+}
+
+/// How many times `seconds` of `d` cross zero going up.
+fn crossings(d: mut Drummer, seconds: f32) -> u32 {
+    var n = 0
+    var last = 0.0
+    var l = [0.0; 128]
+    var r = [0.0; 128]
+    for _ in 0..u32(seconds * RATE) / 128 {
+        for i in 0..128 {
+            l[i] = 0.0
+            r[i] = 0.0
+        }
+        d.sound(mut l, mut r, from: 0, to: 128)
+        for i in 0..128 {
+            if last <= 0.0 && l[i] > 0.0 {
+                n += 1
+            }
+            last = l[i]
+        }
+    }
+    n
+}
+
+/// A skin's tone alone, ringing two seconds, a semitone lower for the softest blow.
+const SKIN: Drum = Drum { tone_hz: 200.0, tone: 1.0, tone_t60: 2.0, tension: 100.0 }
+
+/// A hard blow stretches the skin, so it sounds higher than a soft one; and a skin struck again
+/// while it rings goes on from where it is. (Each hit of a roll used to start the same wave
+/// from the same place: the first 12 ms of consecutive hits were 0.98 alike, and are 0.29
+/// now.) Struck a second time a quarter of a turn into its wave, the skin is not at its start:
+/// its first sample after the blow is far from 0.
+@test
+fn a_hard_blow_is_higher_and_a_roll_goes_on_from_where_the_skin_is() {
+    var hard = drummer(SKIN)
+    hard.hit(1.0)
+    var soft = drummer(SKIN)
+    soft.hit(0.0)
+    let (h, s) = (crossings(mut hard, seconds: 1.0), crossings(mut soft, seconds: 1.0))
+    assert(h >= 198 && h <= 202, f"the hardest blow sounds at {h} Hz")
+    assert(s >= 187 && s <= 191, f"the softest blow sounds at {s} Hz, a semitone under 200")
+    // 61 samples is a quarter of a turn at 200 Hz (a little more).
+    var again = drummer(SKIN)
+    again.hit(1.0)
+    var l = [0.0; 128]
+    var r = [0.0; 128]
+    again.sound(mut l, mut r, from: 0, to: 61)
+    again.hit(1.0)
+    again.sound(mut l, mut r, from: 61, to: 62)
+    assert(abs(l[61]) > 0.5, f"struck again a quarter of a turn in, the next sample is {l[61]}")
+}
+
+/// A knock a few hundredths of a second long, a roll's hits as unlike as they get.
+const KNOCK: Drum = Drum { tone_hz: 300.0, tone: 1.0, tone_t60: 0.03, hands: 1.0 }
+
+/// The energies of four hits of `d`: three 60 ms apart (a roll), and one a third of a second
+/// after them (a hit by itself).
+fn rolled(d: mut Drummer) -> [f32; 4] {
+    var out = [0.0; 4]
+    for k in 0..3 {
+        d.hit(1.0)
+        out[k] = rendered(mut d, seconds: 0.06).x
+    }
+    let _ = rendered(mut d, seconds: 0.3)
+    d.hit(1.0)
+    out[3] = rendered(mut d, seconds: 0.06).x
+    out
+}
+
+/// In a roll each hit is its own: the second and third of three hits 60 ms apart differ from
+/// the first and from each other (each within 1.5 dB of it), by seeded draws, so the same
+/// drummer plays the same roll again. A hit by itself takes no draw: it is the first again.
+@test
+fn a_rolls_hits_are_each_their_own_and_a_hit_alone_is_as_it_was() {
+    var d = drummer(KNOCK, seed: 4)
+    let a = rolled(mut d)
+    for k in 1..3 {
+        let off = abs(4.3429448 * log(a[k] / a[0]))
+        assert(off > 0.02 && off < 3.0, f"hit {k} of the roll is {off} dB from the first")
+    }
+    assert(abs(a[1] - a[2]) > 0.002 * a[0], "the roll's second and third hits are the same")
+    assert(abs(a[3] - a[0]) < 0.001 * a[0], f"a hit alone: {a[3] / a[0]} of the first")
+    var again = drummer(KNOCK, seed: 4)
+    let b = rolled(mut again)
+    assert(a[1] == b[1] && a[2] == b[2], "the same drummer played another roll")
+}
+
+/// The energy of the next `seconds` of `d`'s sample-to-sample differences: its highs.
+fn highs(d: mut Drummer, seconds: f32) -> f32 {
+    rendered(mut d, seconds).y
+}
+
+/// A snare drum's buzz is its wires answering its head: with wires its first tenth of a second
+/// has over twice the highs it has without them (most of the stick's crack is the head's own:
+/// a recorded drum's 4 kHz octave is 7 dB up with its wires on from 10 to 30 ms); held so
+/// hard against the head that it never throws them (a hold of a hundred times the hardest
+/// blow's swing), they are still, and add next to nothing; and 0.3 s on there is no buzz
+/// left, where a steady band of noise would still be dying. And the head pays for the buzz:
+/// from 0.1 to 0.3 s the drum has under half the energy with its wires on that it has with
+/// them off (a recorded drum's 250 Hz octave falls 30 dB in 60 ms with its wires on and
+/// 130 ms with them off).
+@test
+fn a_drums_wires_buzz_while_its_head_throws_them_and_load_it() {
+    var with = drummer(SNARE_DRUM, seed: 2)
+    with.hit(1.0)
+    var without = drummer(Drum { wires: 0.0, ..SNARE_DRUM }, seed: 2)
+    without.hit(1.0)
+    var held = drummer(Drum { wires_hold: 100.0, ..SNARE_DRUM }, seed: 2)
+    held.hit(1.0)
+    let (a, b, c) = (
+        highs(mut with, seconds: 0.1),
+        highs(mut without, seconds: 0.1),
+        highs(mut held, seconds: 0.1),
+    )
+    assert(a > 2.5 * b, f"its highs with wires are {a / b} times those without")
+    assert(c < 0.5 * a, f"held hard, the wires give {c / a} of the highs they give free")
+    let on = rendered(mut with, seconds: 0.2)
+    let off = rendered(mut without, seconds: 0.2).x
+    assert(on.x < 0.5 * off, f"from 0.1 to 0.3 s: {on.x} with its wires on, {off} with them off")
+    let late = highs(mut with, seconds: 0.1)
+    assert(late < 0.001 * a, f"0.3 s on, its highs are {late / a} of its first tenth's")
+}
+
+/// The energy a narrow listener at `hz` (two modes in a row, each 20 Hz wide) picks out of the
+/// next `seconds` of `d`.
+fn heard_at(d: mut Drummer, seconds: f32, hz: f32) -> f32 {
+    var ear = Mode {}
+    ear.tune(hz, 0.11)
+    var second = Mode {}
+    second.tune(hz, 0.11)
+    var e = 0.0
+    var l = [0.0; 128]
+    var r = [0.0; 128]
+    for _ in 0..u32(seconds * RATE) / 128 {
+        for i in 0..128 {
+            l[i] = 0.0
+            r[i] = 0.0
+        }
+        d.sound(mut l, mut r, from: 0, to: 128)
+        for i in 0..128 {
+            ear.strike(l[i])
+            second.strike(0.01 * ear.next())
+            let y = second.next()
+            e += y * y
+        }
+    }
+    e
+}
+
+/// A snare drum's partials stand in its buzz. Between its 838 and 1190 Hz partials (at 4.4
+/// times its head's main mode, where the only modes it has are the snare-side head's) a
+/// narrow listener hears, from 30 to 150 ms, over a thirtieth of what it hears at the 838 Hz
+/// one: a sixth as the drum is, 8 dB under. (With no buzz under 1.8 kHz it heard a 450th,
+/// 27 dB under: those partials rang bare, 20 to 27 dB over the middle of their thirds of an
+/// octave where a recorded drum's stand 9 to 15, and the drum was heard as a tin can.)
+@test
+fn a_snare_drums_partials_stand_in_its_buzz() {
+    var a = drummer(SNARE_DRUM, seed: 2)
+    a.hit(1.0)
+    var b = drummer(SNARE_DRUM, seed: 2)
+    b.hit(1.0)
+    let _ = rendered(mut a, seconds: 0.03)
+    let _ = rendered(mut b, seconds: 0.03)
+    let partial = heard_at(mut a, seconds: 0.12, hz: SHELL_RATIOS[0] * SNARE_DRUM.head_hz)
+    let between = heard_at(mut b, seconds: 0.12, hz: 4.4 * SNARE_DRUM.head_hz)
+    assert(between > 0.03 * partial, f"between its partials: {between / partial} of the partial")
+}
+
+/// A snare drum's wires never keep themselves going: after a hard blow, after a soft one and
+/// after a roll of eight, the drum is silent within a second and a half. (Slaps that rang the
+/// modes that move the wires fed themselves: the buzz grew for half a second after one blow.)
+@test
+fn a_snare_drum_falls_silent_after_a_blow_and_after_a_roll() {
+    var d = drummer(SNARE_DRUM, seed: 6)
+    d.hit(1.0)
+    let _ = rendered(mut d, seconds: 1.5)
+    assert(d.silent(), "the drum rang on a second and a half after a hard blow")
+    d.hit(0.2)
+    let _ = rendered(mut d, seconds: 1.5)
+    assert(d.silent(), "the drum rang on a second and a half after a soft blow")
+    for _ in 0..8 {
+        d.hit(0.8)
+        let _ = rendered(mut d, seconds: 0.06)
+    }
+    let _ = rendered(mut d, seconds: 1.5)
+    assert(d.silent(), "the drum rang on a second and a half after a roll")
+}
+
+/// A blow at the centre rings the head's first and fourth modes alone (the two with no line
+/// across the head); halfway out it rings the second fully. And no two blows of a drum are the
+/// same, a lone one included: each lands at a place and a weight of its own, where the drum
+/// machine's lone hits are one hit.
+@test
+fn a_blow_rings_the_head_by_where_it_lands_and_no_two_blows_are_one() {
+    let centre = spot_rings(0.0)
+    assert(abs(centre[0] - 1.0) < 1e-5 && abs(centre[3] - 1.0) < 1e-5)
+    assert(abs(centre[1]) + abs(centre[2]) + abs(centre[4]) + abs(centre[5]) < 1e-5)
+    let half = spot_rings(0.5)
+    assert(
+        half[1] > 0.99 && half[0] < 0.75,
+        f"halfway out: {half[0]} of the first, {half[1]} of the second",
+    )
+    var drum = drummer(SNARE_DRUM, seed: 3)
+    drum.hit(1.0)
+    let one = rendered(mut drum, seconds: 0.5).x
+    drum.hit(1.0)
+    let two = rendered(mut drum, seconds: 0.5).x
+    assert(abs(one - two) > 0.002 * one, f"two lone blows of a drum: {two / one}")
+    var machine = drummer(Drum { noise: 0.0, click: 0.0, ..SNARE }, seed: 3)
+    machine.hit(1.0)
+    let first = rendered(mut machine, seconds: 0.5).x
+    machine.hit(1.0)
+    let second = rendered(mut machine, seconds: 0.5).x
+    assert(abs(first - second) < 1e-6 * first, f"two lone hits of the machine: {second / first}")
 }

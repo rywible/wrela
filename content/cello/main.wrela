@@ -1,24 +1,32 @@
 // The cello's player, for the audio tool (`wrela tool audio -- content/cello wav <out.wav>`):
 // take 0 is the opening four bars of the Prelude of J. S. Bach's first suite for cello (BWV
 // 1007) and the first note of the fifth, held: each half bar's first three notes under one bow,
-// the rest a bow each. Its timing is a cellist's: each note starts when it did in a recording
-// of the passage (`played`), and is as loud as it was there (`practice`). Take 13 is a scale of
-// held notes, a second and a bow each: a check that the cello sounds the note it is asked for.
-// Both are heard in the same room.
+// the rest a bow each. It is played by engine::perform's rules, which are any piece's: a pulse,
+// the note that starts each half bar held a little, a slur's later notes eased, higher notes
+// a little louder, the last bar slowing. (It was first played with each note timed and
+// weighted as in a recording of the passage; an ear set the two side by side and found little
+// between them, the rules' if anything the better, so the copied timings are gone. The rules'
+// strengths here are what the recording showed: a half bar every 1.63 s, its first note a
+// tenth longer than the rest, a note on a beat some 5 dB over the one after it.) Take 13 is a
+// scale of held notes, a second and a bow each: a check that the cello sounds the note it is
+// asked for. Both are heard in the same room.
 
-use bodies::BOWED
-use engine::room::Room
+use engine::bowed::{Bowed, Bowing, CELLO, bowed}
+use engine::perform::{Mark, Taste, bars, perform}
+use engine::room::{Room, room}
 use engine::score::{NO_SLUR, Score, meter, score}
 use engine::tone::key_hz
-use played::STARTS
-use practice::TRIM
 use std::audio::{SAMPLE_RATE, play}
 use std::collections::Vec
 use std::io::print
-use strings::{Bowed, Bowing, bowed, hall}
 
-/// How loud the passage is (dB): each note's bow is this and what practice found for it.
-const LEVEL: f32 = -22.0
+/// How loud the passage is (dB): a note the rules give a velocity of mf (0.54) is this, each
+/// tenth more 2.4 dB. It is some 5 dB over the level the cello's body is voiced at, so the
+/// passage is played forte, and has a forte's brightness.
+const LEVEL: f32 = -20.8
+
+/// The seconds before the first note.
+const LEADS: f64 = 0.76
 
 /// How long the last note is held (seconds), the slurred parts it is bowed in, and how far
 /// under its first part its last is (dB): it is level for two fifths of its length and fades
@@ -71,15 +79,28 @@ fn bowings(which: u32) -> Vec<Bowing> {
         }
         return out
     }
-    // Each note starts when the recording's cellist started it (the passage begins as far
-    // into the take as it does into the recording), and lasts until the next: a metronome's
-    // sixteenths, even with a rule for lingering on the bass note, were heard as robotic. A
-    // note under the same slur as the one before shares its bow.
+    // When and how loud are the rules'. A note under the same slur as the one before shares
+    // its bow.
     let s = prelude()
+    let ruled = perform(
+        s,
+        Taste {
+            tempo: 73.6,
+            pulse: 0.3,
+            agogic: 0.1,
+            slur_ease: 0.15,
+            high_loud: 0.15,
+            jitter_time: 0.006,
+            jitter_velocity: 0.03,
+        },
+        [Mark::Drag { over: bars(first: 4, last: 4), to: 0.8 }],
+    )
     var last = NO_SLUR
     for k in 0..s.notes.len() {
         let n = s.notes[k]
-        let from = f64(STARTS[k])
+        // (A score of one voice is played in its written order.)
+        let from = LEADS + ruled.notes[k].onset
+        let db = LEVEL + 24.0 * (ruled.notes[k].velocity - 0.54)
         let fresh = n.slur == NO_SLUR || n.slur != last
         last = n.slur
         if k + 1 == s.notes.len() {
@@ -91,7 +112,7 @@ fn bowings(which: u32) -> Vec<Bowing> {
                         from: samples(from + HELD * f64(part) / f64(PARTS)),
                         to: samples(from + HELD * f64(part + 1) / f64(PARTS)),
                         hz: key_hz(f32(n.key)),
-                        db: LEVEL + TRIM[k] - FADES * max(along - 0.4, 0.0) / 0.6,
+                        db: db - FADES * max(along - 0.4, 0.0) / 0.6,
                         fresh: fresh && part == 0,
                     },
                 )
@@ -101,9 +122,9 @@ fn bowings(which: u32) -> Vec<Bowing> {
         out.push(
             Bowing {
                 from: samples(from),
-                to: samples(f64(STARTS[k + 1])),
+                to: samples(LEADS + ruled.notes[k + 1].onset),
                 hz: key_hz(f32(n.key)),
-                db: LEVEL + TRIM[k],
+                db,
                 fresh,
             },
         )
@@ -133,7 +154,7 @@ struct Player {
 }
 
 fn player(which: u32) -> Player {
-    Player { cello: bowed(bowings(which), BOWED), room: hall() }
+    Player { cello: bowed(bowings(which), CELLO), room: room(time: 1.7, highs: 0.3, size: 1.8) }
 }
 
 @audio
@@ -198,7 +219,7 @@ pub fn describe(p: Piece) {
 @test
 fn the_passage_keeps_one_slip_a_period() {
     let notes = bowings(0)
-    var c = bowed(bowings(0), BOWED)
+    var c = bowed(bowings(0), CELLO)
     // (The player's trying of the instrument slipped too: only the passage's are counted.)
     let (tried, tried_second) = (c.slips, c.second_slips)
     var quantum = [0.0; 128]

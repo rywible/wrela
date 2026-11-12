@@ -1,0 +1,887 @@
+// Winds: a column of air in a tube, kept sounding by a valve that the player's breath works.
+//
+// The tube is a delay line: a wave of pressure goes down it, and from its open end part comes
+// back and part is let out, which is the sound (McIntyre, Schumacher and Woodhouse, "On the
+// oscillations of musical instruments", JASA 74(5), 1983; Smith, "Efficient simulation of the
+// reed-bore and bow-string mechanisms", ICMC 1986). What is under the open end's corner comes
+// back (a low-pass); what is over it gets out (the rest). The valve here is:
+// - a reed (a clarinet): a flap the pressure across it closes. The air through it goes as the
+//   gap that is left times the root of that pressure (Bernoulli's flow through a slit that
+//   narrows: Wilson and Beavers, "Operating modes of the clarinet", JASA 56(2), 1974; in this
+//   form, with pressures as shares of the one that shuts the reed, Dalmont, Gilbert, Kergomard
+//   and Ollivier, "An analytical prediction of the oscillation and extinction thresholds of a
+//   clarinet", JASA 118(5), 2005), so a soft breath gives a small, nearly pure tone and a
+//   strong one a square wave. (A reed as a straight line that stops at "shut", the STK
+//   Clarinet's table, had no soft notes: the moment it sounded at all it was at full
+//   brightness, 5 dB under its loudest.)
+// A cylinder closed at the reed sounds its odd harmonics, and its round trip is half the
+// note's period, coming back upside down.
+//
+// There is no brass here yet. Lips were tried as a valve the breath opens (a mass on a spring,
+// shut at rest, with a collision where they meet): they shut for part of each cycle, but driven
+// hard they sounded 150 to 350 cents over the tube's own note (so the note's harmonics missed
+// the tube's resonances), and where they sat on it they were near a sine. Lips the breath
+// closes sat on the tube's note, but their harmonics fell from the first; a cup and throat
+// between lips and tube, as one resonator, changed neither. (A trumpet whose lips' flow was
+// given, a puff a cycle through a low-pass, matched a recording's harmonics to 2 dB and was
+// heard as a synthesizer.) Untried: a lip that moves two ways (Adachi and Sato, "Trumpet sound
+// simulation using a two-dimensional lip vibration model", JASA 99(2), 1996); a mouthpiece and
+// bore as measured shapes, whose resonances line up as a real trumpet's do; and a loud wave's
+// steepening together with lips that sound themselves. And when a wind has a vibrato, it is
+// asked for note by note and it wanders: one at a fixed depth and rate, coming in on every
+// note held a third of a second, was heard as a machine's.
+//
+// A player blows it (`Blown` notes):
+// - a tongued note starts anew: the tongue stops the air a moment before it, and the breath
+//   comes up again; a slurred one only changes the tube's length (the fingers);
+// - the breath sets how loud and, with it, how bright: the player knows how loud each note
+//   comes out at each breath (having tried every third key at ten breaths), and blows what the
+//   level asked needs; a level under the softest the instrument sounds is that breath, turned
+//   down;
+// - the player knows each note's tuning too: the tube's length for every third key was tried
+//   and corrected until the note it sounds is the note meant.
+// What comes out of the open end then goes through the instrument's voice: 23 band levels a
+// third of an octave apart, set (by at most 10 dB a band) so its notes have the harmonics of
+// anechoic recordings of the instrument (docs/citations.md).
+
+use perform::Performance
+use score::{NO_SLUR, Score}
+use std::audio::SAMPLE_RATE
+use std::collections::Vec
+use std::math::{PI, TAU}
+use tone::{Band, Noise, Svf, band, gain_of, key_hz, seeded}
+
+/// The audio thread's rate.
+const RATE: f32 = f32(SAMPLE_RATE)
+
+/// The air column's memory (samples, a power of two): more than the longest tube's round trip.
+const SPAN: u32 = 2048
+
+// ---- the voice --------------------------------------------------------------------------------
+
+/// The voice's bands, the lowest's frequency (Hz), and how sharp each band's filter is (a third
+/// of an octave wide).
+pub const BANDS: u32 = 23
+const LOWEST: f32 = 62.5
+const BROAD: f32 = 4.3
+
+/// Band `j`'s frequency (Hz).
+pub fn band_hz(j: u32) -> f32 {
+    LOWEST * exp2(f32(j) / 3.0)
+}
+
+/// What a band filter centred at `centre` makes of a sine at `hz`: its real and imaginary parts.
+fn answer(centre: f32, hz: f32) -> vec2 {
+    let w = tan(PI * hz / RATE) / tan(PI * centre / RATE)
+    let k = 1.0 / BROAD
+    // j w k / (1 - w² + j w k)
+    let (dr, di) = (1.0 - w * w, w * k)
+    let den = dr * dr + di * di
+    vec2(w * k * di / den, w * k * dr / den)
+}
+
+/// A voice: band filters side by side, their outputs summed.
+struct Voice {
+    gains: [f32; 23],
+    bands: [Band; 23],
+    state: [Svf; 23],
+}
+
+/// A voice whose response at each band's centre is `db`. The filters overlap, so each one's
+/// gain is found by trying: 40 times, each is moved by what its band is off.
+fn voice(db: [f32; 23]) -> Voice {
+    var gains = [0.0; 23]
+    var bands = [Band {}; 23]
+    for j in 0..BANDS {
+        gains[j] = gain_of(db[j])
+        bands[j] = band(hz: band_hz(j), q: BROAD)
+    }
+    for _ in 0..40 {
+        var got = [0.0; 23]
+        for i in 0..BANDS {
+            var sum = vec2(0.0)
+            for j in 0..BANDS {
+                sum += gains[j] * answer(band_hz(j), band_hz(i))
+            }
+            got[i] = length(sum)
+        }
+        for i in 0..BANDS {
+            gains[i] *= clamp(gain_of(db[i]) / max(got[i], 1e-9), 0.25, 4.0)
+        }
+    }
+    Voice { gains, bands, state: [Svf {}; 23] }
+}
+
+impl Voice {
+    /// Stills it.
+    fn still(mut self) {
+        self.state = [Svf {}; 23]
+    }
+
+    /// `x` through the voice.
+    @audio
+    fn pass(mut self, x: f32) -> f32 {
+        var y = 0.0
+        for j in 0..BANDS {
+            y += self.gains[j] * self.state[j].pass(self.bands[j], x)
+        }
+        y
+    }
+}
+
+// ---- an instrument ----------------------------------------------------------------------------
+
+/// What a wind instrument is.
+pub struct Pipe: Copy {
+    /// The lowest and highest keys it plays (MIDI's numbering, as it sounds).
+    pub low: u32,
+    pub high: u32,
+    /// The frequency (Hz) over which its open end lets a wave out instead of sending it back,
+    /// and the share of what is under that which comes back. The corner is never under
+    /// `clears` times the note: a tube short enough for a high note still sends that note back
+    /// (it wouldn't sound otherwise), as the upper fingerings of a real instrument see to.
+    pub lets_out: f32,
+    pub returns: f32,
+    pub clears: f32 = 1.6,
+    /// How sharp that corner is (its Q). A soft one (0.5) sends a low note's third harmonic
+    /// back a tenth less than its first, which is what keeps a reed's low notes from breaking
+    /// to the twelfth above when they are blown hard (with 0.7, three of the clarinet's low
+    /// notes did, at the recording's ff).
+    pub corner_q: f32 = 0.5,
+    /// A reed: how wide it stands open (the flow through it, in the tube's own units, for a
+    /// given pressure across it). The breath is a share of the pressure that shuts it.
+    pub reed: f32 = 0.35,
+    /// The breath's hiss: the share of the breath that is noise.
+    pub hiss: f32 = 0.0,
+    /// The softest and the loudest breath it is blown with.
+    pub softest: f32,
+    pub loudest: f32,
+    /// The seconds a breath takes to come up at a tongued note, and to fall when the note is
+    /// left (each a time constant).
+    pub speaks: f32 = 0.05,
+    pub stops: f32 = 0.02,
+    /// Its voice's band levels (dB), and the level of the whole (dB).
+    pub voice: [f32; 23] = [0.0; 23],
+    pub gain: f32 = 0.0,
+}
+
+/// A note for the breath: when it starts and ends (samples), its pitch (Hz), how loud (dB of
+/// full scale), and whether it is tongued (else it is slurred from the note before).
+pub struct Blown: Copy {
+    pub from: u32,
+    pub to: u32,
+    pub hz: f32,
+    pub db: f32,
+    pub tongued: bool,
+}
+
+/// What the player tries as the instrument is learned: every `STRIDE`th key of its range (what
+/// is between them is taken as between them: a tube has no note unlike its neighbours), each
+/// at `BREATHS` breaths, closer together near the softest, where a little more breath is a lot
+/// more sound; and the samples of each trying: to settle, and then measured.
+const STRIDE: u32 = 3
+const BREATHS: u32 = 10
+const SETTLES: u32 = 3600
+const MEASURED: u32 = 2400
+/// The tongue: the samples before a tongued note that it stops the air (12 ms: the note before
+/// ends there), the samples before a note out of silence that the breath starts to come up
+/// behind it (60 ms), and the share of the way the air's gate goes each sample as the tongue
+/// comes on or off (most of the way in 2 ms). Behind the tongue the breath is at the softest
+/// that sounds the note, so the note speaks at its time; from there it comes up to the note's
+/// own over `speaks`, and the sound with it. (With the breath falling to nothing and rising
+/// again at each tongued note, a note spoke when its breath crossed what the reed needs, up to
+/// a tenth of a second late; with the whole breath up behind the tongue, a note was at nine
+/// tenths of its level 8 ms after a tenth, a click of a start, where the recordings' notes
+/// take 70 ms and over.)
+const TONGUES: u32 = 576
+const LEADS: u32 = 2880
+const GATES: f32 = 0.02
+/// The share of the way the gate goes each sample as the tongue lets go (most of the way in 6
+/// ms), and the share of the way the tube's length goes to a slurred note's each sample (the
+/// fingers take some 4 ms). Let go as fast as it stops, and with the length changed at once,
+/// the click detector found 1.8 clicks a note over the clarinet's scale, at its notes' starts
+/// and slurs, where the recording's has 0.7.
+const FREES: f32 = 0.006
+const FINGERS: f32 = 0.005
+/// The softest sound that counts as the instrument sounding, as the player learns it.
+const SOUNDS: f32 = 0.0005
+/// A soft note is started a little over its breath: by `STARTS` of the tried breaths over the
+/// softest that sounds, held until the note is heard at half the level asked, then easing down
+/// to its own breath in `EASES` seconds. A reed blown from silence at the softest breath that
+/// can keep it sounding never starts: of the recording's 46 soft notes, 14 were silent so.
+const STARTS: u32 = 3
+const EASES: f32 = 0.03
+
+/// The notes of voice `voice` in `p`, a performance of `score`, as a player blows them: each
+/// from its onset to its release, as loud as its velocity says (a velocity of a half is `level`
+/// dB, each tenth more 2.4 dB), tongued unless it is under the same slur as the note before.
+pub fn blown(score: Score, p: Performance, voice: u32, level: f32 = -22.0) -> Vec<Blown> {
+    var out: Vec<Blown> = Vec::new()
+    var last = NO_SLUR
+    for n in p.notes {
+        if n.voice != voice {
+            continue
+        }
+        let slur = score.notes[n.note].slur
+        out.push(
+            Blown {
+                from: u32(max(n.onset, 0.0) * f64(SAMPLE_RATE) + 0.5),
+                to: u32(max(n.release, 0.0) * f64(SAMPLE_RATE) + 0.5),
+                hz: key_hz(f32(n.key)),
+                db: level + 24.0 * (n.velocity - 0.5),
+                tongued: slur == NO_SLUR || slur != last,
+            },
+        )
+        last = slur
+    }
+    out
+}
+
+/// A wind instrument and its player: what the audio thread owns.
+pub struct Wind {
+    pipe: Pipe,
+    notes: Vec<Blown>,
+    next: u32,
+    sample: u32,
+    /// The air column: the wave sent down the tube, by when it was sent, and the sample being
+    /// written.
+    line: Vec<f32>,
+    at: u32,
+    /// The open end: its low-pass (what is under its corner comes back) and that filter's
+    /// state.
+    open: Svf,
+    corner: Band,
+    /// What was last read from the tube.
+    last: f32,
+    noise: Noise,
+    voice: Voice,
+    /// What the player knows, for every `STRIDE`th key from the lowest: how far the tube's
+    /// length that sounds it in tune is from `about` (samples), and at each of `BREATHS`
+    /// breaths how loud it comes out and how sharp (the pitch it sounds over the pitch meant: a
+    /// reed blown harder sounds a little flatter, and the player sets the tube for the breath).
+    lengths: Vec<f32>,
+    known: Vec<f32>,
+    sharp: Vec<f32>,
+    /// The note being blown: whether there is one, when it ends, and the tube's length for it.
+    blowing: bool,
+    ends: u32,
+    length: f32,
+    /// The tube's length now: on its way to `length` through a slur.
+    fingered: f32,
+    /// The breath now and the breath wanted; whether the tongue is on; and the level the sound
+    /// is turned to now, and is wanted at (for a note softer than the softest breath sounds).
+    breath: f32,
+    want: f32,
+    gate: f32,
+    push: f32,
+    /// The level asked of the note being blown (an amplitude), and the sound's level as the
+    /// player hears it (its mean square over some 10 ms).
+    aim: f32,
+    heard: f32,
+    tongue: bool,
+    turned: f32,
+    turn: f32,
+}
+
+/// A wind instrument to play `notes` (by their starts). The player learns the instrument here,
+/// so call it on the program's thread.
+pub fn wind(pipe: Pipe, notes: take Vec<Blown>) -> Wind {
+    assert(
+        pipe.high >= pipe.low && pipe.high - pipe.low < 64,
+        "an instrument's range is under 64 keys",
+    )
+    for i in 1..notes.len() {
+        assert(notes[i].from >= notes[i - 1].from, "a wind's notes are in the order they start")
+    }
+    let keys = (pipe.high - pipe.low) / STRIDE + 2
+    var w = Wind {
+        pipe,
+        notes,
+        next: 0,
+        sample: 0,
+        line: Vec::filled(SPAN, value: 0.0),
+        at: 0,
+        open: Svf {},
+        corner: Band {},
+        last: 0.0,
+        noise: seeded(1870),
+        voice: voice(pipe.voice),
+        lengths: Vec::filled(keys, value: 0.0),
+        known: Vec::filled(keys * BREATHS, value: 0.0),
+        sharp: Vec::filled(keys * BREATHS, value: 1.0),
+        blowing: false,
+        ends: 0,
+        length: 100.0,
+        fingered: 100.0,
+        breath: 0.0,
+        want: 0.0,
+        gate: 1.0,
+        push: 0.0,
+        aim: 0.0,
+        heard: 0.0,
+        tongue: false,
+        turned: 1.0,
+        turn: 1.0,
+    }
+    w.learn()
+    w
+}
+
+/// The frequency (Hz) of key `key` (MIDI's numbering).
+@audio
+fn hz_of(key: f32) -> f32 {
+    440.0 * exp2((key - 69.0) / 12.0)
+}
+
+impl Wind {
+    /// How long the notes last (seconds).
+    pub fn seconds(self) -> f32 {
+        var last = 0
+        for n in self.notes {
+            last = max(last, n.to)
+        }
+        f32(last) / RATE
+    }
+
+    /// Whether nothing is sounding and nothing is left to play.
+    @audio
+    pub fn silent(self) -> bool {
+        self.next >= self.notes.len() && !self.blowing && self.breath < 0.0001
+    }
+
+    /// The wave sent `back` samples ago (at least 1.5), between samples by a cubic through the
+    /// four nearest.
+    @audio
+    fn read(self, back: f32) -> f32 {
+        let whole = u32(back)
+        let u = back - f32(whole)
+        let i = self.at + SPAN - whole
+        let a = self.line[(i + 1) & (SPAN - 1)]
+        let b = self.line[i & (SPAN - 1)]
+        let c = self.line[(i - 1) & (SPAN - 1)]
+        let d = self.line[(i - 2) & (SPAN - 1)]
+        let near = (u + 1.0) * (u - 1.0) * (u - 2.0) / 2.0 * b - u * (u - 1.0) * (u - 2.0) / 6.0 * a
+        let far = (u + 1.0) * u * (u - 1.0) / 6.0 * d - (u + 1.0) * u * (u - 2.0) / 2.0 * c
+        near + far
+    }
+
+    /// The open end's corner (Hz) for a note at `hz`.
+    @audio
+    fn corner_for(self, hz: f32) -> f32 {
+        min(max(self.pipe.lets_out, self.pipe.clears * hz), 0.4 * RATE)
+    }
+
+    /// The tube's length (samples of round trip) that would sound `hz` if nothing else in the
+    /// loop took time: half a period (a cylinder closed at the reed), less the open end's own
+    /// delay at that pitch. Where the player starts from; `learn` corrects it.
+    @audio
+    fn about(self, hz: f32) -> f32 {
+        let w = tan(PI * hz / RATE) / tan(PI * self.corner_for(hz) / RATE)
+        let took = atan2(w / self.pipe.corner_q, 1.0 - w * w) / (TAU * hz / RATE)
+        let trip = 0.5 * RATE / hz
+        clamp(trip - took - 1.0, 2.0, f32(SPAN - 4))
+    }
+
+    /// Where `hz` is among the keys the player knows: the one at or under it, and how far
+    /// toward the next (0 to 1).
+    @audio
+    fn among(self, hz: f32) -> (u32, f32) {
+        let key = 69.0 + 12.0 * log2(hz / 440.0)
+        let most = f32((self.pipe.high - self.pipe.low) / STRIDE)
+        let at = clamp((key - f32(self.pipe.low)) / f32(STRIDE), 0.0, most + 0.999)
+        let i = u32(at)
+        (i, at - f32(i))
+    }
+
+    /// The tube's length for `hz` blown with `breath`, as the player knows it.
+    @audio
+    fn length_for(self, hz: f32, breath: f32) -> f32 {
+        let (i, u) = self.among(hz)
+        let off = self.lengths[i] + u * (self.lengths[i + 1] - self.lengths[i])
+        // How sharp the note is at this breath: between the breaths tried either side of it.
+        let span = max(self.pipe.loudest - self.pipe.softest, 1e-6)
+        let along = sqrt(clamp((breath - self.pipe.softest) / span, 0.0, 1.0)) * f32(BREATHS - 1)
+        let j = min(u32(along), BREATHS - 2)
+        let v = along - f32(j)
+        let at = i * BREATHS + j
+        let low = self.sharp[at] + u * (self.sharp[at + BREATHS] - self.sharp[at])
+        let high = self.sharp[at + 1] + u * (self.sharp[at + BREATHS + 1] - self.sharp[at + 1])
+        let trip = 0.5 * RATE / hz
+        clamp(self.about(hz) + off + trip * (low + v * (high - low) - 1.0), 2.0, f32(SPAN - 4))
+    }
+
+    /// The breath `j` of the `BREATHS` the player tries.
+    @audio
+    fn breath_at(self, j: u32) -> f32 {
+        let along = f32(j) / f32(BREATHS - 1)
+        self.pipe.softest + (self.pipe.loudest - self.pipe.softest) * along * along
+    }
+
+    /// How loud `hz` comes out at breath `j`, as the player knows it.
+    @audio
+    fn loud(self, i: u32, u: f32, j: u32) -> f32 {
+        let a = self.known[i * BREATHS + j]
+        let b = self.known[(i + 1) * BREATHS + j]
+        a + u * (b - a)
+    }
+
+    /// The softest breath that sounds a note at `hz`, and the breath a soft note is started
+    /// with: `STARTS` of the tried breaths over that.
+    @audio
+    fn starting(self, hz: f32) -> (f32, f32) {
+        let (i, u) = self.among(hz)
+        var first = BREATHS - 1
+        for j in 0..BREATHS {
+            if self.loud(i, u, j) > SOUNDS {
+                first = j
+                break
+            }
+        }
+        (self.breath_at(first), self.breath_at(min(first + STARTS, BREATHS - 1)))
+    }
+
+    /// The breath that sounds `hz` at `db`, and what to turn the sound by if that breath is
+    /// the softest or the loudest the instrument has and the level is beyond it.
+    @audio
+    fn breath_for(self, hz: f32, db: f32) -> (f32, f32) {
+        let (i, u) = self.among(hz)
+        let need = gain_of(db - self.pipe.gain)
+        // The softest breath at which the note sounds, and louder ones in order.
+        var first = BREATHS - 1
+        for j in 0..BREATHS {
+            if self.loud(i, u, j) > SOUNDS {
+                first = j
+                break
+            }
+        }
+        let softest = self.loud(i, u, first)
+        if need <= softest || first == BREATHS - 1 {
+            return (self.breath_at(first), clamp(need / max(softest, 1e-6), 0.03, 2.0))
+        }
+        for j in first..BREATHS - 1 {
+            let a = self.loud(i, u, j)
+            let b = self.loud(i, u, j + 1)
+            if need <= b && b > a {
+                let along = log(need / a) / log(b / a)
+                return (
+                    self.breath_at(j) + along * (self.breath_at(j + 1) - self.breath_at(j)),
+                    1.0,
+                )
+            }
+        }
+        // Louder than any breath gives: the breath that is loudest (not always the strongest:
+        // a reed blown too hard is held shut longer), turned up.
+        var best = first
+        for j in first..BREATHS {
+            if self.loud(i, u, j) > self.loud(i, u, best) {
+                best = j
+            }
+        }
+        (self.breath_at(best), clamp(need / max(self.loud(i, u, best), 1e-6), 0.03, 2.0))
+    }
+
+    /// One sample: the tube `length` samples of round trip long, blown with `breath`, the
+    /// tongue letting `gate` of the air by (1: all of it). What the open end lets out, before
+    /// the voice.
+    @audio
+    fn step(mut self, length: f32, breath: f32, gate: f32) -> f32 {
+        // What was sent down the tube a round trip ago.
+        let sent = self.read(max(length, 2.0))
+        self.last = sent
+        // The open end: what is under its corner comes back, the rest gets out.
+        let under = self.open.low(self.corner, sent)
+        let out = sent - under
+        let hiss = 1.0 + self.pipe.hiss * self.noise.next()
+        // A cylinder's open end sends the wave back upside down. The reed: the pressure
+        // across it is the mouth's less the tube's, and the tube's is what comes back and
+        // what the flow adds, so the flow is found with that pressure (its root, `y`, by
+        // Newton's steps from where no flow would put it). Past the pressure that shuts
+        // the reed nothing flows; with the tube's pressure over the mouth's it runs back.
+        let back = -self.pipe.returns * under
+        let reed = self.pipe.reed
+        let c = breath * hiss - 2.0 * back
+        var flow = 0.0
+        if c > 0.0 && c < 1.0 {
+            var y = sqrt(c)
+            for _ in 0..3 {
+                let g = y * y + reed * y * (1.0 - y * y) - c
+                y = clamp(y - g / (2.0 * y + reed * (1.0 - 3.0 * y * y)), 0.0, 1.0)
+            }
+            flow = gate * reed * (1.0 - y * y) * y
+        } else if c <= 0.0 {
+            var y = sqrt(-c)
+            for _ in 0..3 {
+                let g = y * y + reed * y * (1.0 + y * y) + c
+                y = max(y - g / (2.0 * y + reed * (1.0 + 3.0 * y * y)), 0.0)
+            }
+            flow = -reed * (1.0 + y * y) * y
+        }
+        let into = back + flow
+        self.at = (self.at + 1) & (SPAN - 1)
+        self.line[self.at] = into
+        out
+    }
+
+    /// Stills the air.
+    fn still(mut self) {
+        for i in 0..SPAN {
+            self.line[i] = 0.0
+        }
+        self.open = Svf {}
+        self.last = 0.0
+    }
+
+    /// Sets the instrument for a note at `hz`: the open end's corner.
+    @audio
+    fn purse(mut self, hz: f32) {
+        self.corner = band(hz: self.corner_for(hz), q: self.pipe.corner_q)
+    }
+
+    /// Blows `count` samples at `breath` into a tube `length` long, and gives the sound's
+    /// level through the voice (RMS) and its pitch (Hz, from the tube's wave's upward
+    /// crossings of nothing; 0 if it didn't sound).
+    fn tried(mut self, length: f32, hz: f32, breath: f32, count: u32) -> (f32, f32) {
+        var squares = 0.0
+        // The tube's wave, low-passed at the note so its fundamental leads, for the crossings.
+        let smooth = band(hz, q: 0.7)
+        var smoothed = Svf {}
+        var was = 0.0
+        var first = -1.0
+        var last = -1.0
+        var crossings = 0
+        for n in 0..count {
+            let raw = self.step(length, breath, gate: 1.0)
+            let y = self.voice.pass(raw)
+            squares += y * y
+            let now = smoothed.low(smooth, self.last)
+            // (The smoothing starts from nothing: its first quarter isn't read.)
+            if 4 * n > count && was <= 0.0 && now > 0.0 {
+                let when = f32(n) - now / (now - was)
+                if first < 0.0 {
+                    first = when
+                }
+                last = when
+                crossings += 1
+            }
+            was = now
+        }
+        let level = sqrt(squares / f32(count))
+        let pitch = if crossings > 2 && last > first {
+            f32(crossings - 1) * RATE / (last - first)
+        } else {
+            0.0
+        }
+        (level, pitch)
+    }
+
+    /// The player learns the instrument: for every `STRIDE`th key, the tube's length that
+    /// sounds it in tune (tried at a middling breath and corrected, three times), then how
+    /// loud and how sharp it comes out at each breath.
+    fn learn(mut self) {
+        let keys = (self.pipe.high - self.pipe.low) / STRIDE + 2
+        for i in 0..keys {
+            let hz = hz_of(f32(self.pipe.low + STRIDE * i))
+            let about = self.about(hz)
+            var length = about
+            self.purse(hz)
+            self.still()
+            let strong = self.breath_at(BREATHS - 4)
+            let _ = self.tried(length, hz, strong, 2 * SETTLES)
+            for _ in 0..3 {
+                let (_, pitch) = self.tried(length, hz, strong, 2 * MEASURED)
+                // A pitch more than a fourth out is another note (the wrong register): the
+                // length isn't moved by that.
+                if pitch > 0.75 * hz && pitch < 1.33 * hz {
+                    length = clamp(
+                        length + 0.5 * RATE / hz - 0.5 * RATE / pitch,
+                        2.0,
+                        f32(SPAN - 4),
+                    )
+                }
+            }
+            self.lengths[i] = length - about
+            // How loud and how sharp at each breath: from the middling breath the tuning was
+            // found at up to the loudest, then from it down to the softest, the air never
+            // stopped within a run. A breath at which the note cracks (it sounds more than a
+            // quarter tone from its pitch: another of the tube's notes) is one the player
+            // doesn't use: it is kept as not sounding.
+            let middle = BREATHS - 4
+            for run in 0..2 {
+                if run == 1 {
+                    self.still()
+                    let _ = self.tried(length, hz, strong, 2 * SETTLES)
+                }
+                let count = if run == 0 { BREATHS - middle } else { middle }
+                for step in 0..count {
+                    let j = if run == 0 { middle + step } else { middle - 1 - step }
+                    let _ = self.tried(length, hz, self.breath_at(j), SETTLES)
+                    let (level, pitch) = self.tried(length, hz, self.breath_at(j), MEASURED)
+                    let true_note = pitch > 0.97 * hz && pitch < 1.03 * hz
+                    self.known[i * BREATHS + j] = if true_note { level } else { 0.0 }
+                    self.sharp[i * BREATHS + j] = if true_note && level > SOUNDS {
+                        pitch / hz
+                    } else { 1.0 }
+                }
+            }
+        }
+        // Nothing of the trying is left in the air or the voice.
+        self.still()
+        self.voice.still()
+    }
+
+    /// The next sample.
+    @audio
+    fn one(mut self) -> f32 {
+        let level = gain_of(self.pipe.gain)
+        let t = self.sample
+        // The next note. If it is tongued, or comes out of silence, the tongue stops the
+        // air before it: the note before ends, and the breath for the new one comes up
+        // behind the tongue.
+        if self.next < self.notes.len() {
+            let note = self.notes[self.next]
+            if note.tongued && self.blowing && !self.tongue && t + TONGUES >= note.from {
+                self.tongue = true
+                self.push = 0.0
+                self.want = self.starting(note.hz).0
+            }
+            if !self.blowing && t + LEADS >= note.from {
+                self.tongue = true
+                self.gate = 0.0
+                self.blowing = true
+                self.ends = note.from
+                self.push = 0.0
+                self.want = self.starting(note.hz).0
+            }
+            if t >= note.from {
+                let (breath, turn) = self.breath_for(note.hz, note.db)
+                self.want = breath
+                self.turn = turn
+                self.aim = gain_of(note.db)
+                if self.tongue {
+                    self.push = max(self.starting(note.hz).1 - breath, 0.0)
+                    self.turned = turn
+                }
+                self.ends = note.to
+                self.length = self.length_for(note.hz, breath)
+                if self.tongue {
+                    self.fingered = self.length
+                }
+                self.purse(note.hz)
+                self.blowing = true
+                self.tongue = false
+                self.next += 1
+            }
+        }
+        // A note's end with none straight after: the breath falls away.
+        if self.blowing && !self.tongue && t >= self.ends {
+            let more = self.next < self.notes.len() && self.notes[self.next].from < t + 3840
+            if !more {
+                self.want = 0.0
+                if self.breath < 0.001 {
+                    self.blowing = false
+                }
+            }
+        }
+        // The breath goes toward what the note wants (and, at a soft note's start, the
+        // push over it, which eases away once the note is heard); the tongue's gate
+        // toward shut or open.
+        let want = if self.want > 0.0 { self.want + self.push } else { 0.0 }
+        if self.heard > 0.25 * self.aim * self.aim {
+            self.push -= self.push / (EASES * RATE)
+        }
+        if want > self.breath {
+            self.breath += (want - self.breath) / (self.pipe.speaks * RATE)
+        } else {
+            self.breath += (want - self.breath) / (self.pipe.stops * RATE)
+        }
+        if self.tongue {
+            self.gate -= GATES * self.gate
+        } else {
+            self.gate += FREES * (1.0 - self.gate)
+        }
+        self.fingered += FINGERS * (self.length - self.fingered)
+        self.turned += 0.002 * (self.turn - self.turned)
+        let raw = self.step(self.fingered, self.breath, self.gate)
+        let y = level * self.turned * self.voice.pass(raw)
+        self.heard += 0.002 * (y * y - self.heard)
+        self.sample += 1
+        y
+    }
+
+    /// The next samples, into `out`.
+    @audio
+    pub fn play(mut self, out: mut [f32]) {
+        for n in 0..out.len() {
+            out[n] = self.one()
+        }
+    }
+
+    /// Adds its next samples to samples `from` to `to` of `left` and `right`, the same to both.
+    /// Its notes' times count from its first sample, so it is sounded from a piece's start
+    /// without a gap.
+    @audio
+    pub fn sound(mut self, left: mut [f32], right: mut [f32], from: u32, to: u32) {
+        for n in from..to {
+            let y = self.one()
+            left[n] += y
+            right[n] += y
+        }
+    }
+}
+
+// ---- the instruments ----------------------------------------------------------------------------
+
+/// A clarinet in B flat, as it sounds: D3 to B6.
+pub const CLARINET: Pipe = Pipe {
+    low: 50,
+    high: 95,
+    lets_out: 1500.0,
+    returns: 0.95,
+    clears: 2.0,
+    reed: 0.6,
+    softest: 0.36,
+    loudest: 0.6,
+    hiss: 0.01,
+    voice: [
+        0.0, 0.0, 0.0, 0.3, 0.7, 0.6, -0.7, -3.3, -4.0, -1.8, -0.3, -0.8, -2.6, -4.4, -6.0, -6.8,
+        -4.8, -1.7, -1.2, -4.5, -7.9, -7.5, -5.4,
+    ],
+    gain: -4.0,
+}
+
+// The tests render on the program's thread, as the audio thread would.
+
+/// `count` samples of `w`, a quantum at a time.
+fn rendered(w: mut Wind, count: u32) -> Vec<f32> {
+    var out: Vec<f32> = Vec::with_capacity(count)
+    var quantum = [0.0; 128]
+    while out.len() < count {
+        w.play(mut quantum)
+        for i in 0..128 {
+            out.push(quantum[i])
+        }
+    }
+    out
+}
+
+/// The pitch (Hz) of the `width` samples of `x` from `at`, sought within 4% of `near`: the lag
+/// at which it repeats best, between samples by a parabola; and how well it repeats there.
+fn pitch_of(x: [f32], at: u32, width: u32, near: f32) -> (f32, f32) {
+    let lo = u32(RATE / (1.04 * near))
+    let hi = u32(RATE / (0.96 * near)) + 1
+    var best = lo
+    var best_score = -2.0
+    var scores: Vec<f32> = Vec::new()
+    for lag in lo - 1..hi + 2 {
+        var both = 0.0
+        var a = 0.0
+        var b = 0.0
+        for i in at..at + width {
+            both += x[i] * x[i + lag]
+            a += x[i] * x[i]
+            b += x[i + lag] * x[i + lag]
+        }
+        let score = both / sqrt(max(a * b, 1e-30))
+        scores.push(score)
+        if lag >= lo && lag <= hi && score > best_score {
+            best_score = score
+            best = lag
+        }
+    }
+    let k = best - (lo - 1)
+    let (before, here, after) = (scores[k - 1], scores[k], scores[k + 1])
+    let bend = before - 2.0 * here + after
+    let shift = if bend < -1e-9 { 0.5 * (before - after) / bend } else { 0.0 }
+    (RATE / (f32(best) + clamp(shift, -0.5, 0.5)), best_score)
+}
+
+/// The level (dB) of the `width` samples of `x` from `at`, and how bright they are: the level
+/// of the sound's change from sample to sample beside the sound's (dB).
+fn level_of(x: [f32], at: u32, width: u32) -> (f32, f32) {
+    var squares = 0.0
+    var changes = 0.0
+    for i in at..at + width {
+        squares += x[i] * x[i]
+        changes += (x[i] - x[i - 1]) * (x[i] - x[i - 1])
+    }
+    (4.3429448 * log(squares / f32(width) + 1e-20), 4.3429448 * log(changes / max(squares, 1e-20)))
+}
+
+/// A wind's player has learned the tube's length for every note: notes across the clarinet's
+/// range (every fifth key, D3 to A6), at a middling level, each sound their pitch within 6
+/// cents, repeat at their own period (a reed's low note blown wrong breaks to the twelfth
+/// above, which doesn't), and come out within 2 dB of the level asked.
+@test
+fn a_clarinet_sounds_the_notes_it_is_asked_in_tune() {
+    var notes: Vec<Blown> = Vec::new()
+    var keys: Vec<u32> = Vec::new()
+    var key = CLARINET.low
+    while key <= CLARINET.high {
+        let at = 19200 * keys.len()
+        notes.push(
+            Blown {
+                from: at + 2880,
+                to: at + 16800,
+                hz: hz_of(f32(key)),
+                db: -22.0,
+                tongued: true,
+            },
+        )
+        keys.push(key)
+        key += 5
+    }
+    var w = wind(CLARINET, take notes)
+    let x = rendered(mut w, 19200 * keys.len())
+    for i in 0..keys.len() {
+        let hz = hz_of(f32(keys[i]))
+        let (pitch, repeats) = pitch_of(x, 19200 * i + 8000, width: 4800, near: hz)
+        let cents = 1200.0 * log2(pitch / hz)
+        assert(abs(cents) < 6.0, f"key {keys[i]} is {cents} cents out")
+        assert(repeats > 0.95, f"key {keys[i]} repeats {repeats} at its period")
+        let (level, _) = level_of(x, 19200 * i + 8000, width: 4800)
+        assert(abs(level + 22.0) < 2.0, f"key {keys[i]} asked at -22 dB comes out at {level} dB")
+    }
+}
+
+/// The breath is the level and the tone: a clarinet's G4 asked 16 dB louder comes out 10 dB
+/// louder and over (12 as this is written: the softest breaths are the hardest to hold, and a
+/// very soft note comes out a few dB over what was asked), and brighter, by 4 dB and over (5.6) in
+/// how much it changes from sample to sample beside its level (the recordings' soft notes are
+/// all but pure tones; their loud ones have a third harmonic as strong as the first). And the
+/// tongue articulates: before a tongued note the sound dips 10 dB and over; into a slurred
+/// one it doesn't dip 6.
+@test
+fn a_clarinet_is_brighter_louder_and_tongues_its_notes() {
+    let notes = Vec::from(
+        [
+            Blown { from: 2880, to: 21600, hz: 392.0, db: -38.0, tongued: true },
+            Blown { from: 24000, to: 43200, hz: 392.0, db: -22.0, tongued: true },
+            Blown { from: 48000, to: 62400, hz: 440.0, db: -22.0, tongued: true },
+            Blown { from: 62400, to: 76800, hz: 493.88, db: -22.0, tongued: true },
+            Blown { from: 76800, to: 91200, hz: 523.25, db: -22.0, tongued: false },
+        ],
+    )
+    var w = wind(CLARINET, take notes)
+    let x = rendered(mut w, 96000)
+    let (soft, soft_bright) = level_of(x, 9600, width: 9600)
+    let (loud, loud_bright) = level_of(x, 31200, width: 9600)
+    assert(loud - soft > 10.0, f"asked 16 dB apart, the notes are {loud - soft} dB apart")
+    assert(
+        loud_bright > soft_bright + 4.0,
+        f"the loud note is {loud_bright - soft_bright} dB brighter",
+    )
+    // The least 5 ms of the 40 ms round each change, beside the note before it.
+    let dip = |at: u32| -> f32 {
+        let (before, _) = level_of(x, at - 7200, width: 4800)
+        var least = 0.0
+        for k in 0..8 {
+            let (now, _) = level_of(x, at - 960 + 240 * k, width: 240)
+            least = min(least, now - before)
+        }
+        -least
+    }
+    let tongued = dip(62400)
+    let slurred = dip(76800)
+    assert(tongued > 10.0, f"a tongued note dipped the sound {tongued} dB")
+    assert(slurred < 6.0, f"a slurred note dipped the sound {slurred} dB")
+}

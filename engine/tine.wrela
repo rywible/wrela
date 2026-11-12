@@ -9,7 +9,9 @@
 // - the tine's own overtone, a bar's second mode, at 6.27 times the note (Fletcher and Rossing,
 //   The Physics of Musical Instruments, 2nd ed., 1998, ch. 2: a clamped-free bar's modes are at
 //   1, 6.27, 17.55...): a bell over the first third of a second, much louder for a hard blow;
-// - the hammer: a harder blow swings the tine further, and its overtone further still;
+// - the hammer: a harder blow swings the tine further, and its overtone further still. Its tip
+//   is on the tine a millisecond or two (less at the top of the keyboard, and less for a hard
+//   blow), and the tine's swing comes up over that time, so a note starts without a step;
 // - the pickup: a magnet's pole beside the tine. The field through its coil is strongest when
 //   the tine is on the pole's axis and falls off either side, a bump; the tine rests a little
 //   off the axis. A soft note swings on the bump's slope and comes out nearly as it is, with
@@ -19,7 +21,8 @@
 //   chord don't bend each other;
 // - the damper: a felt that stops the tine when the key comes up, unless the sustain pedal
 //   holds the dampers off;
-// - the key's knock: the hammer and the key bottoming, a thud under the note.
+// - the key's knock: the hammer and the key bottoming, a thud under the note, lower for the long
+//   tines at the bottom and higher for the short ones at the top.
 // Then the amplifier takes the highs, and its tremolo sways the sound from side to side.
 //
 // No note is measured from a recording yet: the pole's place and the field's width, the knock
@@ -30,7 +33,7 @@
 // samples.
 
 use std::audio::SAMPLE_RATE
-use std::math::TAU
+use std::math::{PI, TAU}
 use tone::{Mode, key_hz, one_pole, scatter}
 
 /// The audio thread's rate.
@@ -58,13 +61,24 @@ pub struct Tine: Copy {
     /// faster the overtone grows with it.
     pub hammer: f32 = 1.3,
     pub bell_touch: f32 = 1.0,
+    /// How long the hammer's tip is on the tine (ms) at E1 and at E7, for the softest blow;
+    /// between, evenly by the octave; and how much shorter the hardest blow's contact is (0.4:
+    /// six tenths as long). The tine's swing comes up over this time. The times are a piano
+    /// hammer's on its string (about 4 ms in the bass to under 1 ms at the top, shorter for a
+    /// harder blow: Fletcher and Rossing, ch. 12), halved for a small hard tip: no Rhodes was
+    /// measured.
+    pub contact_low: f32 = 2.0,
+    pub contact_high: f32 = 0.8,
+    pub contact_touch: f32 = 0.4,
     /// The pickup: how far from the tine's rest the pole's axis is, and how wide the field's
     /// bump is, both in the hardest blow's swing. A blow that swings the tine past `pole` barks.
     pub pole: f32 = 0.42,
     pub field: f32 = 0.5,
     /// Seconds a note takes to fall 60 dB once its damper is on it.
     pub damped: f32 = 0.11,
-    /// The key's knock: its level beside the hardest blow's note.
+    /// The key's knock: its level beside the hardest blow's note. It is a thud and a tap, at
+    /// 110 and 380 Hz for middle C, a third of the key's interval lower or higher for another
+    /// key.
     pub knock: f32 = 0.07,
     /// The amplifier: the corner above which it takes the highs (Hz), and its tremolo's rate
     /// (Hz) and depth (0: none; 1: each side falls silent in turn).
@@ -85,6 +99,17 @@ struct Voice: Copy {
     note: Mode = Mode {},
     bar: Mode = Mode {},
     bell: Mode = Mode {},
+    /// What the blow now landing adds to each of them, while the hammer is on the tine: it
+    /// comes in over `contact` samples, of which `contact_left` are to come, and then joins
+    /// them.
+    struck_note: Mode = Mode {},
+    struck_bar: Mode = Mode {},
+    struck_bell: Mode = Mode {},
+    contact: u32 = 0,
+    contact_left: u32 = 0,
+    /// Its key's knock: a thud and a tap.
+    thud: Mode = Mode {},
+    tap: Mode = Mode {},
     /// The field through its pickup at the last sample, and the note's period over 2π in
     /// samples: what makes a rate of change of the field as loud as the swing was.
     field: f32 = 0.0,
@@ -99,8 +124,6 @@ pub struct Tines {
     presses: u32,
     /// Whether the sustain pedal holds the dampers off.
     pedal: bool,
-    /// The key's knock: two short modes.
-    knock: [Mode; 2],
     /// The amplifier's two poles, and the tremolo's phase.
     top: f32,
     held1: f32,
@@ -114,16 +137,11 @@ pub fn tines(patch: Tine) -> Tines {
         patch.pole >= 0.1 * patch.field && patch.field > 0.0,
         "the pole is at least a tenth of the field's width from the tine's rest",
     )
-    var knock = [Mode {}; 2]
-    // A thud at 110 Hz and a tap at 380 Hz, gone in a few hundredths of a second.
-    knock[0].tune(hz: 110.0, t60: 0.06)
-    knock[1].tune(hz: 380.0, t60: 0.03)
     Tines {
         patch,
         voices: [Voice {}; 16],
         presses: 0,
         pedal: false,
-        knock,
         top: one_pole(patch.top_hz),
         held1: 0.0,
         held2: 0.0,
@@ -185,7 +203,20 @@ impl Tines {
             voice.note.still()
             voice.bar.still()
             voice.bell.still()
+            voice.struck_note.still()
+            voice.struck_bar.still()
+            voice.struck_bell.still()
+            voice.contact_left = 0
+            voice.thud.still()
+            voice.tap.still()
             voice.field = 0.0
+        }
+        // A blow landing on a blow still landing (the same key twice within a millisecond or
+        // two): the first is taken as landed.
+        if voice.contact_left > 0 {
+            voice.note.join(voice.struck_note)
+            voice.bar.join(voice.struck_bar)
+            voice.bell.join(voice.struck_bell)
         }
         voice.on = true
         voice.key = key
@@ -199,18 +230,39 @@ impl Tines {
         // The tone bar: each key's a little off its note, its own way.
         let off = p.beat * (2.0 * scatter(u32(key), b: 0, c: 21) - 1.0)
         voice.bar.tune(hz + off, 1.2 * ring)
+        // What this blow adds rings beside what the tine is doing, tuned as it is, and comes
+        // in while the hammer is on the tine: a blow that set the tine swinging at once made
+        // the pickup's first sample a step (what the coil gives is how fast the field changes),
+        // a click at the start of every note.
+        voice.struck_note = voice.note
+        voice.struck_bar = voice.bar
+        voice.struck_note.still()
+        voice.struck_bar.still()
+        voice.struck_bell.still()
         let swing = pow(v, p.hammer)
-        voice.note.strike((1.0 - p.bar) * swing)
-        voice.bar.strike(p.bar * swing)
+        voice.struck_note.strike((1.0 - p.bar) * swing)
+        voice.struck_bar.strike(p.bar * swing)
         // The overtone, where it's under 14 kHz.
         let bell_hz = hz * p.bell_ratio
         if bell_hz < 14000.0 {
             voice.bell.tune(bell_hz, p.bell_t60)
-            voice.bell.strike(p.bell * swing * pow(v, p.bell_touch))
+            voice.struck_bell = voice.bell
+            voice.struck_bell.still()
+            voice.struck_bell.strike(p.bell * swing * pow(v, p.bell_touch))
         }
+        let along = clamp((key - 28.0) / 72.0, 0.0, 1.0)
+        let ms = p.contact_low *
+            pow(p.contact_high / p.contact_low, along) *
+            (1.0 - p.contact_touch * v)
+        voice.contact = max(u32(ms * 0.001 * RATE), 1)
+        voice.contact_left = voice.contact
+        // The knock: a thud and a tap, gone in a few hundredths of a second, each key's own.
+        let knocks = exp2((key - 60.0) / 36.0)
+        voice.thud.tune(hz: 110.0 * knocks, t60: 0.06)
+        voice.tap.tune(hz: 380.0 * knocks, t60: 0.03)
+        voice.thud.strike(p.knock * v)
+        voice.tap.strike(0.6 * p.knock * v)
         self.voices[at] = voice
-        self.knock[0].strike(p.knock * v)
-        self.knock[1].strike(0.6 * p.knock * v)
     }
 
     /// Lands voice `i`'s damper.
@@ -260,7 +312,7 @@ impl Tines {
                 return false
             }
         }
-        abs(self.held1) + abs(self.held2) + self.knock[0].level() + self.knock[1].level() < 1e-6
+        abs(self.held1) + abs(self.held2) < 1e-6
     }
 
     /// Adds its sound to samples `from` to `to` of `left` and `right`.
@@ -272,19 +324,34 @@ impl Tines {
         let p = self.patch
         let turn = p.tremolo_hz / RATE
         for n in from..to {
-            var sum = self.knock[0].next() + self.knock[1].next()
+            var sum = 0.0
             for i in 0..VOICES {
                 if !self.voices[i].on {
                     continue
                 }
-                // The tine's motion (with its bar's and its overtone's), the field it makes
-                // through its pickup, and how fast that changes.
-                let x = self.voices[i].note.next() +
-                    self.voices[i].bar.next() +
-                    self.voices[i].bell.next()
+                var voice = self.voices[i]
+                // The tine's motion (with its bar's and its overtone's), and what the blow
+                // now landing adds, as much of it as has come in.
+                var x = voice.note.next() + voice.bar.next() + voice.bell.next()
+                if voice.contact_left > 0 {
+                    let done = f32(voice.contact - voice.contact_left + 1) / f32(voice.contact)
+                    let landed = 0.5 - 0.5 * cos(PI * done)
+                    x += landed *
+                        (voice.struck_note.next() +
+                            voice.struck_bar.next() +
+                            voice.struck_bell.next())
+                    voice.contact_left -= 1
+                    if voice.contact_left == 0 {
+                        voice.note.join(voice.struck_note)
+                        voice.bar.join(voice.struck_bar)
+                        voice.bell.join(voice.struck_bell)
+                    }
+                }
+                // The field the tine makes through its pickup, and how fast that changes.
                 let field = flux(x, p.pole, p.field)
-                sum += (field - self.voices[i].field) * self.voices[i].per
-                self.voices[i].field = field
+                sum += (field - voice.field) * voice.per + voice.thud.next() + voice.tap.next()
+                voice.field = field
+                self.voices[i] = voice
             }
             // The amplifier's top, two poles.
             self.held1 += self.top * (sum - self.held1)
@@ -298,7 +365,8 @@ impl Tines {
         // A tine under -100 dB is still.
         for i in 0..VOICES {
             let v = self.voices[i]
-            if v.on && v.note.level() + v.bar.level() + v.bell.level() < 1e-5 {
+            let rings = v.note.level() + v.bar.level() + v.bell.level() + v.thud.level()
+            if v.on && v.contact_left == 0 && rings < 1e-5 {
                 self.voices[i].on = false
             }
         }
@@ -387,4 +455,34 @@ fn a_damper_stops_a_tine_and_the_pedal_holds_it_off() {
     t.hold_pedal(0.0)
     let _ = rendered(mut t, seconds: 0.4)
     assert(t.silent(), "a note rang on after the pedal came up")
+}
+
+/// How far a hard A3 has come in its first six samples (an eighth of a millisecond), beside
+/// its largest sample in its first 20 ms.
+fn first_step(patch: Tine) -> f32 {
+    var t = tines(Tine { tremolo: 0.0, knock: 0.0, ..patch })
+    t.press(57.0, velocity: 1.0)
+    let x = rendered(mut t, seconds: 0.02)
+    var step = 0.0
+    for i in 0..6 {
+        step = max(step, abs(x[i]))
+    }
+    var peak = 0.0
+    for i in 0..x.len() {
+        peak = max(peak, abs(x[i]))
+    }
+    step / peak
+}
+
+/// The hammer's contact is what keeps a note's start from being a click. What the coil gives
+/// is how fast the field changes, so a tine set swinging in an instant starts with a step:
+/// with a hammer that lands at once (a contact of 0.02 ms, one sample) the note's largest
+/// sample is among its first six, as every note began before the contact was modelled; with
+/// the contact the sound has reached under a tenth of its peak by then (0.087).
+@test
+fn a_note_starts_over_the_hammers_contact_not_with_a_step() {
+    let landed = first_step(SUITCASE)
+    let instant = first_step(Tine { contact_low: 0.02, contact_high: 0.02, ..SUITCASE })
+    assert(landed < 0.15, f"with the contact, the first six samples reach {landed} of the peak")
+    assert(instant > 0.8, f"landing at once, the first six samples reach {instant} of the peak")
 }
