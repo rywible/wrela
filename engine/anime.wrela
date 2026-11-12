@@ -354,9 +354,11 @@ pub fn smeared(palette: [mat4; 64], rig: Rig, smears: [Smear; 4]) -> [mat4; 64] 
         let c2 = vec3(0.0, 0.0, 1.0) + u * (k * u.z)
         let shift = s.from - (c0 * s.from.x + c1 * s.from.y + c2 * s.from.z)
         let stretch = mat4(vec4(c0, 0.0), vec4(c1, 0.0), vec4(c2, 0.0), vec4(shift, 1.0))
-        for b in 0..rig.bones.len() {
-            if descends(rig, b, root) {
-                out[b] = stretch * out[b]
+        // (Each slot of the palette that moves with a bone under it: its twist steps too.)
+        for slot in 0..63 {
+            let b = humanoid::slot_bone(rig, slot)
+            if b != NONE && descends(rig, b, root) {
+                out[slot] = stretch * out[slot]
             }
         }
     }

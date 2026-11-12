@@ -23,13 +23,6 @@ const PI: f32 = 3.14159265
 /// off straight up.
 pub const ELBOW_LEAN: f32 = 33.5
 
-/// The most an upper arm is twisted about its own length to keep its elbow's hinge (degrees,
-/// from its rest): what a skin with no bones along the arm to spread a twist takes before it
-/// wrings at the shoulder. (Twisted 72 degrees for a cross's contact and 110 for its load,
-/// the body's arm drew flat and thin; Ryan's look, 2026-11-12.) A pose that needs more keeps
-/// what's left as a bend off the hinge, which `engine::arms` reads: turn its elbow to mend it.
-pub const TWIST_MOST: f32 = 40.0
-
 /// How a body comes into a key from the one before: evenly (`LINEAR`), easing out of the last
 /// and into this (`SMOOTH`), gathering speed all the way and stopped dead by it (`SNAP`: a
 /// strike into its contact), setting off fast and settling into it (`SETTLE`), or held at the
@@ -164,7 +157,6 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
     // (The bones in arrays, not `Vec`s: a solve's derivation follows an array alone, so a
     // pose keeps its derivative by the key's numbers: `humanoid::Frames`.)
     let rw = rig.rest_frames()
-    let rests = rig.rests()
     let parents = rig.parents()
     var w = rw
     let nb = rig.bones.len()
@@ -215,6 +207,12 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
             let l2 = length(rw[h].t - rw[l].t)
             let (e, t) = elbow_at(w[u].t, k.fists[i], l1, l2, k.elbows[i])
             turn_under(parents, nb, mut w, u, arc(w[l].t - w[u].t, e - w[u].t))
+            // The forearm's turn as the plain reach leaves it (the upper arm aimed at the elbow,
+            // the forearm at the wrist), before the upper arm is twisted: the hand faces as the
+            // key wrote it, and the twist below doesn't carry down to it.
+            var plain = w
+            turn_under(parents, nb, mut plain, l, arc(plain[h].t - plain[l].t, t - plain[l].t))
+            let written = plain[l].q
             // The upper arm turned about its own length till the elbow bends about its hinge:
             // the reach above puts the elbow where it's asked, by the shortest turn, which
             // leaves the upper arm's twist to chance and the elbow bent across its hinge (an
@@ -229,32 +227,18 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
             let flat = has - along * dot(has, along)
             if length(bend) > 1.0e-5 && length(flat) > 1.0e-4 {
                 let (want, now) = (normalize(bend), normalize(flat))
+                // Whole: what a body is drawn with spreads an upper arm's twist along it (a
+                // charted arm's `engine::chart::Chain::spread`, a skin's twist steps,
+                // `humanoid::SPREAD`), so the shoulder doesn't take it all and wring.
                 let twist = atan2(dot(cross(now, want), along), dot(now, want))
-                // No further than a skin takes. A body's skin wrings where a bone is twisted
-                // about its own length against the bone it hangs from (all of an upper
-                // arm's twist lands on the shoulder, there being no bones to spread it
-                // along the arm), so the twist the arm ends up with, from its rest, is held
-                // within `TWIST_MOST`: the hinge is kept as far as that allows.
-                let own = normalize(rests[l].t)
-                let rel = rests[u].q.inverse().mul(w[parents[u]].q.inverse().mul(w[u].q))
-                let v = if rel.v.w < 0.0 { -rel.v } else { rel.v }
-                let has_twist = 2.0 * atan2(dot(v.xyz, own), v.w)
-                var whole = has_twist + twist
-                if whole > PI {
-                    whole -= 2.0 * PI
-                } else if whole < -PI {
-                    whole += 2.0 * PI
-                }
-                let most = TWIST_MOST * DEG
-                turn_under(
-                    parents,
-                    nb,
-                    mut w,
-                    u,
-                    about(along, clamp(whole, -most, most) - has_twist),
-                )
+                turn_under(parents, nb, mut w, u, about(along, twist))
             }
             turn_under(parents, nb, mut w, l, arc(w[h].t - w[l].t, t - w[l].t))
+            // The forearm turned back about its own length to the plain reach's turn (both aim
+            // it at the wrist, so only its roll differs): what the upper arm's twist would have
+            // turned the hand by is the forearm's own roll, as a person's forearm turns along its
+            // length from elbow to wrist, and the elbow still bends about its hinge.
+            turn_under(parents, nb, mut w, l, written.mul(w[l].q.inverse()))
             turn_under(parents, nb, mut w, l, about(normalize(t - e), k.rolls[i] * DEG))
         }
     }

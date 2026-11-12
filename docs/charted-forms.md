@@ -15,7 +15,7 @@ The code is `engine/chart.wrela` (the form and how it's posed and drawn), `studi
 
 ## Authoring a part
 
-1. **Write its chain** in `content/figure/chains.wrela`: its joints at rest, from the root's end to the tip, and `up` (angle 0). A chain can also be made from a body's rig where the tool runs (`studio/forms/second.wrela`'s `arm_chain_of`). Start the path a few centimetres inside the part it hangs from, as a first joint that part's bone carries, so the root stays under what covers it. Set `spread` below 1 for a bone whose skin turns with it near its joint (an upper arm, a thigh: about a third).
+1. **Write its chain** in `content/figure/chains.wrela`: its joints at rest, from the root's end to the tip, and `up` (angle 0). A chain can also be made from a body's rig where the tool runs (`studio/forms/second.wrela`'s `arm_chain_of`). Start the path a few centimetres inside the part it hangs from, as a first joint that part's bone carries, so the root stays under what covers it. Set `spread` below 1 for a bone whose skin turns with it near its joint (a thigh: about a third). Leave an upper arm's at 1: it is twisted to keep its elbow's hinge, as much as 110 degrees in a strike, and reached within a third of its length that much twist wrings the shoulder and draws the arm flat.
 2. **Write its spec** in `studio/forms/main.wrela` (`Spec`): the file and constant its numbers go to, three lines saying what it is (`about`), the chain, the `span` of the path its reference covers, how far from the path the reference is read (`most`), and how far its root is tucked (`tuck`). List where the reference is before you choose them:
 
 ```bash
