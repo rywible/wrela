@@ -1,0 +1,564 @@
+// A giant shore crab drawn along its charts: an enemy the size of a table, with no mesh, no
+// reference and no skin weights anywhere. Each of its parts is a radius written as a rule of
+// its place (`chart::of`: how far along its chain, the angle round it) about a chain of joints:
+// a carapace, two eyes on stalks, two heavy claws (an arm, a hand with its fixed finger, and a
+// moving finger each) and eight walking legs. A sideways scuttle poses its bones; each frame
+// every part is laid where its bones are (`Part::posed`) and drawn from its vertices' numbers.
+//
+// The crab faces +z; its left is +x, and it scuttles toward +x. y is up, the ground is y = 0.
+
+use engine::chart
+use engine::chart::{Chain, Grids, JOINTS, Part, Radial, WHOLE, chain}
+use engine::view::{Camera, NEAREST, first_camera}
+use std::gpu::{
+    ClipPosition, Cull, DepthTexture, FragCoord, Rgba8, Texture, VertexIndex, begin_pass_with_depth,
+    begin_screen_pass, depth_texture, draw, texture,
+}
+use std::math::{PI, TAU}
+use std::transform::identity
+
+const W: u32 = 640
+const H: u32 = 480
+
+/// Where it's seen from: 0 from the side, 1 from the front, 2 from three-quarters above.
+pub const VIEW: u32 = 0
+
+/// 1: the scuttle plays with time; 0: held still at its start.
+pub const PLAY: u32 = 1
+
+/// A part's form: 10 control values along its chain, 5 harmonics round (a carapace's section
+/// is an oval near four times as long as it is high under its rim).
+type Form = Radial<10, 11>
+
+/// The crab's parts: its carapace, its eyes (left, right), its claws (left then right: an arm,
+/// a hand, a moving finger), then its legs (left front to back, then right front to back).
+pub const PARTS: u32 = 17
+const EYES: u32 = 1
+const CLAWS: u32 = 3
+const LEGS: u32 = 9
+
+/// Its bones: its body; for each claw (left, right) an upper arm, a forearm, a hand and a moving
+/// finger; for each leg an upper and a lower; for each eye its stalk.
+const BODY: u32 = 0
+const CLAW_BONES: u32 = 1
+const LEG_BONES: u32 = 9
+const EYE_BONES: u32 = 25
+
+/// How fast it scuttles: beats a second.
+const BEAT: f32 = 1.2
+
+/// The radius at `theta` (from up, toward the left) of a section made of four quarter ellipses:
+/// `top` and `under` high above and below its path, `ahead` and `behind` long to either side
+/// (angle a quarter turn on, toward the left, is `behind`).
+fn quarters(theta: f32, top: f32, under: f32, ahead: f32, behind: f32) -> f32 {
+    let c = cos(theta)
+    let s = sin(theta)
+    let b = if c > 0.0 { top } else { under }
+    let a = if s > 0.0 { behind } else { ahead }
+    1.0 / sqrt((c / b) * (c / b) + (s / a) * (s / a))
+}
+
+/// The carapace, about a line across the body from its right side to its left (angle 0 is up,
+/// a quarter turn on is back): domed over, flatter under, broad at the front and narrowing
+/// behind, lower toward its sides.
+fn carapace_rule(f: f32, theta: f32) -> f32 {
+    let e = (2.0 * f - 1.0) * (2.0 * f - 1.0)
+    quarters(
+        theta,
+        top: 0.14 - 0.08 * e,
+        under: 0.07 - 0.02 * e,
+        ahead: 0.27 - 0.05 * e,
+        behind: 0.25 - 0.12 * e,
+    )
+}
+
+/// An eye: a thin stalk swelling to a ball at its end.
+fn eye_rule(f: f32, _theta: f32) -> f32 {
+    0.013 + 0.024 * smoothstep(0.5, 0.8, f)
+}
+
+/// A claw's arm: its upper length thick and a little higher than wide, its wrist narrower.
+fn arm_rule(f: f32, theta: f32) -> f32 {
+    let r = mix(0.05, 0.04, smoothstep(0.3, 0.8, f))
+    quarters(theta, top: r * 1.1, under: r * 1.1, ahead: r * 0.85, behind: r * 0.85)
+}
+
+/// A claw's hand: a heavy palm, higher than thick and fuller over its path than under it, and
+/// past its knuckle (two thirds along) the fixed finger narrowing to a point.
+fn hand_rule(f: f32, theta: f32) -> f32 {
+    let palm = 1.0 - smoothstep(0.58, 0.72, f)
+    let finger = mix(0.03, 0.01, smoothstep(0.65, 1.0, f))
+    let swell = 1.0 + 0.12 * exp(-(f - 0.35) * (f - 0.35) / 0.03)
+    let top = mix(finger, 0.095 * swell, palm)
+    let under = mix(finger, 0.06 * swell, palm)
+    let thick = mix(finger * 0.8, 0.06 * swell, palm)
+    quarters(theta, top, under, ahead: thick, behind: thick)
+}
+
+/// A claw's moving finger: narrowing to its point.
+fn finger_rule(f: f32, theta: f32) -> f32 {
+    let r = mix(0.03, 0.008, f)
+    quarters(theta, top: r, under: r, ahead: r * 0.8, behind: r * 0.8)
+}
+
+/// A walking leg, about a line out under the carapace, up to its knee (near halfway) and down
+/// past its ankle (seven tenths) to its point (angle 0 is square to the leg's plane): a round
+/// base under the shell's rim, thick enough to meet the next leg's so no daylight shows between
+/// them under the shell; a broad flat upper length, a narrower one below the knee, and a claw
+/// narrowing from the ankle to a point.
+fn leg_rule(f: f32, theta: f32) -> f32 {
+    let upper = 1.0 - smoothstep(0.36, 0.5, f)
+    let wide = mix(0.038, 0.064, upper) * (1.0 - 0.8 * smoothstep(0.7, 1.0, f))
+    let c = cos(theta)
+    let s = sin(theta)
+    let base = 1.0 - smoothstep(0.1, 0.24, f)
+    let thin = wide * mix(mix(0.6, 0.45, upper), 0.85, base)
+    1.0 / sqrt((c / thin) * (c / thin) + (s / wide) * (s / wide))
+}
+
+@fuel(2 ** 38)
+const CARAPACE_FORM: Form = chart::of(carapace_rule)
+@fuel(2 ** 38)
+const EYE_FORM: Form = chart::of(eye_rule)
+@fuel(2 ** 38)
+const ARM_FORM: Form = chart::of(arm_rule)
+@fuel(2 ** 38)
+const HAND_FORM: Form = chart::of(hand_rule)
+@fuel(2 ** 38)
+const FINGER_FORM: Form = chart::of(finger_rule)
+@fuel(2 ** 38)
+const LEG_FORM: Form = chart::of(leg_rule)
+
+/// `p` mirrored to the crab's other side.
+fn mirror(p: vec3) -> vec3 {
+    vec3(-p.x, p.y, p.z)
+}
+
+/// `p` on side `side` (0 left, 1 right) of a point written for the left.
+fn sided(p: vec3, side: u32) -> vec3 {
+    if side == 0 { p } else { mirror(p) }
+}
+
+/// The left claw's joints at rest: its shoulder (inside the carapace), its elbow, its wrist,
+/// the way its hand points, its knuckle and its fixed finger's point.
+const SHOULDER: vec3 = vec3(0.2, 0.24, 0.16)
+const ELBOW: vec3 = vec3(0.4, 0.28, 0.33)
+const WRIST: vec3 = vec3(0.34, 0.32, 0.48)
+
+fn hand_way() -> vec3 {
+    normalize(vec3(-0.6, 0.0, 0.8))
+}
+
+fn knuckle() -> vec3 {
+    WRIST + hand_way() * 0.26
+}
+
+fn finger_tip() -> vec3 {
+    knuckle() + normalize(hand_way() + vec3(0.0, -0.2, 0.0)) * 0.14
+}
+
+/// The left moving finger's root (inside the palm, over the knuckle), its middle and its point.
+fn finger_joints() -> [vec3; 3] {
+    let k = knuckle()
+    [
+        k - hand_way() * 0.05 + vec3(0.0, 0.055, 0.0),
+        k + hand_way() * 0.07 + vec3(0.0, 0.07, 0.0),
+        finger_tip() + vec3(0.0, 0.035, 0.0),
+    ]
+}
+
+/// The way leg `k` (0 front to 3 back) of the left side reaches out, along the ground.
+fn leg_way(k: u32) -> vec3 {
+    let az = 0.62 - 0.42 * f32(k)
+    vec3(cos(az), 0.0, sin(az))
+}
+
+/// Leg `k` of side `side`'s joints at rest: its root inside the body, its base out under the
+/// carapace's rim, its knee up and out, its ankle, its point on the ground.
+fn leg_joints(side: u32, k: u32) -> [vec3; 5] {
+    let u = leg_way(k)
+    let root = vec3(0.22, 0.2, 0.13 - 0.1 * f32(k))
+    let base = root + u * 0.16 + vec3(0.0, 0.02, 0.0)
+    let knee = base + u * 0.18 + vec3(0.0, 0.22, 0.0)
+    let ankle = knee + u * 0.2 + vec3(0.0, -0.17, 0.0)
+    let tip = ankle + u * 0.15 + vec3(0.0, -ankle.y, 0.0)
+    [sided(root, side), sided(base, side), sided(knee, side), sided(ankle, side), sided(tip, side)]
+}
+
+/// The left eye's stalk: its root inside the carapace's front and its top.
+const EYE_ROOT: vec3 = vec3(0.085, 0.32, 0.21)
+const EYE_TOP: vec3 = vec3(0.11, 0.5, 0.33)
+
+/// A part on `c` whose bones are `bones` (as many as it has), hanging from `root`, folding at
+/// joint `fold` (0: at none), closing over `caps` of its path at its start and its end.
+fn part<const B: u32>(
+    c: Chain,
+    bones: [u32; B],
+    root: u32,
+    form: Form,
+    fold: u32,
+    caps: vec2,
+) -> Part<10, 11> {
+    var all = [0; JOINTS]
+    for i in 0..B {
+        all[i] = bones[i]
+    }
+    Part {
+        chain: c,
+        bones: all,
+        root,
+        form,
+        changes: [chart::unchanged(); JOINTS],
+        band: WHOLE,
+        sunk: vec2(0.0, 0.1),
+        folds: [fold, 0],
+        caps,
+    }
+}
+
+/// The crab's parts.
+fn crab() -> [Part<10, 11>; PARTS] {
+    let up = vec3(y: 1.0)
+    let shell = chain(
+        [vec3(-0.43, 0.28, 0.0), vec3(0.0, 0.28, 0.0), vec3(0.43, 0.28, 0.0)],
+        up,
+        round: 0.0,
+    )
+    var out = [part(shell, [BODY, BODY], BODY, CARAPACE_FORM, 0, vec2(0.14, 0.14)); PARTS]
+    for side in 0..2 {
+        let eye = chain([sided(EYE_ROOT, side), sided(EYE_TOP, side)], vec3(x: 1.0))
+        out[EYES + side] = part(eye, [EYE_BONES + side], BODY, EYE_FORM, 0, vec2(0.0, 0.3))
+        let b = CLAW_BONES + 4 * side
+        let arm = chain(
+            [sided(SHOULDER, side), sided(ELBOW, side), sided(WRIST, side)],
+            up,
+            after: 0.03,
+            round: 0.06,
+        )
+        out[CLAWS + 3 * side] = part(arm, [b, b + 1], BODY, ARM_FORM, 0, vec2(0.0, 0.0))
+        let hand = chain(
+            [
+                sided(WRIST - hand_way() * 0.04, side),
+                sided(knuckle(), side),
+                sided(finger_tip(), side),
+            ],
+            up,
+            round: 0.04,
+        )
+        out[CLAWS + 3 * side + 1] = part(
+            hand,
+            [b + 2, b + 2],
+            b + 1,
+            HAND_FORM,
+            0,
+            vec2(0.15, 0.08),
+        )
+        let fj = finger_joints()
+        let finger = chain(
+            [sided(fj[0], side), sided(fj[1], side), sided(fj[2], side)],
+            up,
+            round: 0.03,
+        )
+        out[CLAWS + 3 * side + 2] = part(
+            finger,
+            [b + 3, b + 3],
+            b + 2,
+            FINGER_FORM,
+            0,
+            vec2(0.15, 0.12),
+        )
+        for k in 0..4 {
+            let j = leg_joints(side, k)
+            // (Angle 0 square to the leg's plane, so its flat faces look ahead and behind.)
+            let across = normalize(cross(j[4] - j[0], vec3(y: 1.0)))
+            let leg = chain(j, across, round: 0.04)
+            let lb = LEG_BONES + 2 * (4 * side + k)
+            out[LEGS + 4 * side + k] = part(
+                leg,
+                [lb, lb, lb + 1, lb + 1],
+                BODY,
+                LEG_FORM,
+                2,
+                vec2(0.0, 0.04),
+            )
+        }
+    }
+    out
+}
+
+/// A turn of `angle` about the axis through `at` along unit `axis`.
+fn turn_about(axis: vec3, angle: f32, at: vec3) -> mat4 {
+    let c = cos(angle)
+    let s = sin(angle)
+    let k = axis
+    let x = vec3(1.0, 0.0, 0.0) * c + cross(k, vec3(1.0, 0.0, 0.0)) * s + k * (k.x * (1.0 - c))
+    let y = vec3(0.0, 1.0, 0.0) * c + cross(k, vec3(0.0, 1.0, 0.0)) * s + k * (k.y * (1.0 - c))
+    let z = vec3(0.0, 0.0, 1.0) * c + cross(k, vec3(0.0, 0.0, 1.0)) * s + k * (k.z * (1.0 - c))
+    let moved = at - (x * at.x + y * at.y + z * at.z)
+    mat4(vec4(x, 0.0), vec4(y, 0.0), vec4(z, 0.0), vec4(moved, 1.0))
+}
+
+/// A move by `by`.
+fn moved_by(by: vec3) -> mat4 {
+    mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(by, 1.0),
+    )
+}
+
+/// The mirror in the plane x = 0.
+fn mirrored() -> mat4 {
+    mat4(
+        vec4(-1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    )
+}
+
+/// `p` as matrix `m` carries it.
+fn carried(m: mat4, p: vec3) -> vec3 {
+    (m * vec4(p, 1.0)).xyz
+}
+
+/// The angle from `a` to `b` about unit `n` (both square to it), right-handed.
+fn signed(a: vec3, b: vec3, n: vec3) -> f32 {
+    atan2(dot(cross(a, b), n), dot(a, b))
+}
+
+/// A leg's upper and lower bones that put its point at `target`, its knee kept above the line
+/// from its root to its point: a turn about the upright through its root to face the target, a
+/// swing in its plane to point at it, its knee opened or closed to reach it (`j`: its joints at
+/// rest; its ankle goes with its lower bone).
+fn reach(j: [vec3; 5], target: vec3) -> (mat4, mat4) {
+    let root = j[0]
+    let knee = j[2]
+    let tip = j[4]
+    let upright = vec3(y: 1.0)
+    let flat0 = vec3(tip.x - root.x, 0.0, tip.z - root.z)
+    let flat = vec3(target.x - root.x, 0.0, target.z - root.z)
+    let face = turn_about(upright, signed(flat0, flat, upright), root)
+    let tip1 = carried(face, tip)
+    let n = normalize(cross(tip1 - root, upright))
+    let swung = turn_about(n, signed(tip1 - root, target - root, n), root) * face
+    let l1 = length(knee - root)
+    let l2 = length(tip - knee)
+    let d0 = length(tip - root)
+    let d = length(target - root)
+    let a0 = acos(clamp((l1 * l1 + d0 * d0 - l2 * l2) / (2.0 * l1 * d0), -1.0, 1.0))
+    let a = acos(clamp((l1 * l1 + d * d - l2 * l2) / (2.0 * l1 * d), -1.0, 1.0))
+    let way = sign(signed(carried(swung, tip) - root, carried(swung, knee) - root, n))
+    let upper = turn_about(n, way * (a - a0), root) * swung
+    let k = carried(upper, knee)
+    let lower = turn_about(n, signed(carried(upper, tip) - k, target - k, n), k) * upper
+    (upper, lower)
+}
+
+/// The left claw's bones in a pose `beat` (radians) into the scuttle, as the body has them:
+/// held forward, swaying a little, its moving finger snapping open and shut.
+fn claw_pose(beat: f32) -> [mat4; 4] {
+    let upright = vec3(y: 1.0)
+    let lift_axis = normalize(cross(ELBOW - SHOULDER, upright))
+    let upper = turn_about(upright, 0.04 * sin(beat), SHOULDER) *
+        turn_about(lift_axis, 0.08 * sin(2.0 * beat + 0.6), SHOULDER)
+    let fore = upper * turn_about(upright, 0.05 * sin(beat + 1.0), ELBOW)
+    let hinge = normalize(cross(hand_way(), upright))
+    let open = 0.18 + 0.22 * (0.5 + 0.5 * sin(1.5 * beat))
+    let finger = fore * turn_about(hinge, open, finger_joints()[0])
+    [upper, fore, fore, finger]
+}
+
+/// The crab's bones at `time` (s) of a sideways scuttle toward its left: its legs step in two
+/// alternating fours (left 1 and 3 with right 2 and 4), each point planted and pushed back
+/// along the ground, then lifted and carried ahead; its body bobs with each step and rocks
+/// across; its claws sway and snap; its eyes nod.
+fn scuttle(time: f32) -> [mat4; 64] {
+    var m = [identity(); 64]
+    let beat = TAU * BEAT * time
+    let shift = vec3(0.025 * sin(beat), 0.012 * cos(2.0 * beat), 0.0)
+    let body = moved_by(shift) * turn_about(vec3(z: 1.0), 0.03 * sin(beat), vec3(0.0, 0.28, 0.0))
+    m[BODY] = body
+    let left = claw_pose(beat)
+    let right = claw_pose(beat + 0.9)
+    let flip = mirrored()
+    for i in 0..4 {
+        m[CLAW_BONES + i] = body * left[i]
+        m[CLAW_BONES + 4 + i] = body * flip * right[i] * flip
+    }
+    for side in 0..2 {
+        let nod = turn_about(
+            vec3(x: 1.0),
+            0.12 * sin(2.0 * beat + f32(side)),
+            sided(EYE_ROOT, side),
+        )
+        m[EYE_BONES + side] = body * nod
+        for k in 0..4 {
+            let j = leg_joints(side, k)
+            let group = (k + side) % 2
+            let phase = beat / TAU + 0.5 * f32(group)
+            let u = phase - floor(phase)
+            let stride = 0.14
+            var dx = 0.0
+            var dy = 0.0
+            if u < 0.5 {
+                dx = stride * (0.5 - 2.0 * u)
+            } else {
+                let w = 2.0 * (u - 0.5)
+                dx = stride * (smoothstep(0.0, 1.0, w) - 0.5)
+                dy = 0.08 * sin(PI * w)
+            }
+            // (The point where the ground has it, brought back into the body's own frame: the
+            // body's move and rock undone.)
+            let world = j[4] + vec3(dx, dy, 0.0)
+            let unrocked = carried(
+                turn_about(vec3(z: 1.0), -0.03 * sin(beat), vec3(0.0, 0.28, 0.0)),
+                world - shift,
+            )
+            let (upper, lower) = reach(j, unrocked)
+            let lb = LEG_BONES + 2 * (4 * side + k)
+            m[lb] = body * upper
+            m[lb + 1] = body * lower
+        }
+    }
+    m
+}
+
+pub struct State {
+    grids: Grids,
+    colour: Texture<Rgba8>,
+    depth: DepthTexture,
+}
+
+pub fn init() -> State {
+    State {
+        grids: chart::grids(),
+        colour: texture(width: W, height: H),
+        depth: depth_texture(width: W, height: H),
+    }
+}
+
+/// The camera for `VIEW`.
+fn eye() -> Camera {
+    let at = vec3(0.0, 0.2, 0.12)
+    // (From six metres or so through a long lens, so the near legs don't loom.)
+    let from = if VIEW == 0 {
+        vec3(5.6, 2.1, 0.25)
+    } else if VIEW == 1 {
+        vec3(0.0, 1.25, 5.7)
+    } else {
+        vec3(3.35, 3.7, 3.9)
+    }
+    first_camera(from, at, 0.34, width: W, height: H).unjittered()
+}
+
+/// A part's pixel (its vertex is the engine's, `chart::vertex`): its colour, darkening past
+/// `dark` of the way along it (a claw's fingers, a leg's point, an eye), lit from above and one
+/// side in three flat steps by the side's normal.
+@fragment
+pub fn crab_pixel(v: chart::Vertex, tint: vec3, dark: f32) -> vec4 {
+    let lit = dot(normalize(v.normal), normalize(vec3(0.4, 0.8, 0.45)))
+    let step = if lit > 0.45 { 1.0 } else if lit > 0.0 { 0.72 } else { 0.45 }
+    // (A crab is pale under its shell and its legs.)
+    let under = smoothstep(-0.25, -0.6, normalize(v.normal).y)
+    let pale = mix(tint, vec3(0.9, 0.78, 0.6), 0.6 * under)
+    let colour = mix(pale, vec3(0.13, 0.09, 0.08), smoothstep(dark, dark + 0.06, v.place.x))
+    vec4(colour * step, 1.0)
+}
+
+/// The screen's corner of a triangle over all of it.
+@vertex
+pub fn over_screen(vertex: VertexIndex) -> ClipPosition {
+    let x = f32(vertex.index % 2) * 4.0 - 1.0
+    let y = f32(vertex.index / 2) * 4.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.5, 1.0) }
+}
+
+/// The picture's texel at a pixel.
+@fragment
+pub fn shown(pixel: FragCoord, picture: Texture<Rgba8>) -> vec4 {
+    picture.load(min(u32(pixel.position.x), W - 1), min(u32(pixel.position.y), H - 1))
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let cam = eye()
+    let bones = scuttle(if PLAY == 1 { time } else { 0.0 })
+    let parts = crab()
+    let p = begin_pass_with_depth(
+        mut s.colour,
+        mut s.depth,
+        clear: vec4(0.86, 0.85, 0.8, 1.0),
+        clear_depth: 0.0,
+    )
+    for k in 0..PARTS {
+        let limb = parts[k].posed(bones)
+        let level = limb.level(cam.eye, f32(H), cam.tan_half)
+        let span = chart::level_span(level)
+        // (A shell red over the carapace, a deeper red on the claws, an orange on the legs; the
+        // fingers', the legs' and the eyes' ends dark.)
+        let tint = if k == 0 {
+            vec3(0.7, 0.3, 0.17)
+        } else if k < CLAWS {
+            vec3(0.62, 0.4, 0.25)
+        } else if k < LEGS {
+            vec3(0.58, 0.16, 0.1)
+        } else {
+            vec3(0.8, 0.5, 0.26)
+        }
+        let dark = if k == 0 {
+            2.0
+        } else if k < CLAWS {
+            0.55
+        } else if k < LEGS {
+            if (k - CLAWS) % 3 == 0 { 2.0 } else { 0.72 }
+        } else {
+            0.84
+        }
+        draw(
+            p,
+            chart::vertex.bind(
+                rest: parts[k].rest(),
+                form: limb,
+                band: parts[k].band,
+                under: parts[k].sunk,
+                level: level,
+                seen: cam,
+            ),
+            crab_pixel.bind(tint: tint, dark: dark),
+            indices: s.grids.indices,
+            first_index: span.x,
+            index_count: span.y,
+            cull: Cull::Back,
+            depth: NEAREST,
+        )
+    }
+    p.end()
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(screen, over_screen, shown.bind(picture: s.colour), vertices: 3)
+    screen.present()
+}
+
+@test
+fn a_scuttling_crabs_legs_reach_their_points() {
+    // Through a whole beat of the scuttle, each walking leg's path ends where its lower bone
+    // carries its point, keeps its length within a centimetre, and its point is never under the
+    // ground.
+    let parts = crab()
+    for step in 0..16 {
+        let bones = scuttle(f32(step) / (16.0 * BEAT))
+        for side in 0..2 {
+            for k in 0..4 {
+                let n = 4 * side + k
+                let limb = parts[LEGS + n].posed(bones)
+                let lower = bones[LEG_BONES + 2 * n + 1]
+                let point = carried(lower, leg_joints(side, k)[4])
+                let last = limb.path.at[limb.path.vertices - 1]
+                assert(length(last - point) < 0.00001, "a leg's path ends at its point")
+                let rest = parts[LEGS + n].rest().path.length()
+                assert(abs(limb.path.length() - rest) < 0.01, f"{limb.path.length()} {rest}")
+                assert(point.y > -0.001, f"a leg's point is above the ground: {point.y}")
+            }
+        }
+    }
+}

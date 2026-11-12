@@ -8,16 +8,17 @@
 // (This file is written by a script from the measured pieces; the shapes, the paint and the
 // skeleton are its template's.)
 
-use engine::creature::{Bone, Creature, Skeleton, creature, hard, smooth, split}
+use engine::chart
+use engine::chart::{Band, Grown, JOINTS, Limb, Part, Radial}
+use std::math::TAU
+use engine::creature::{Creature, Skeleton, creature, hard, smooth}
 use engine::character::Shaded
 use shapes::{
-    digits, palm, thumb,
     HEAD_JOINT, HEAD_SCALE, boot_foot, boot_paint, boot_shaft, ellip, fox, fox_paint, hair, tails,
     unscaled,
 }
 use std::derive::{Box3, Interval}
 use std::field::{Blend, Bound, Surface, cuboid, oval, round_cone}
-use std::quat::Quat
 
 /// What a point of him is made of: its colour (linear), how rough and how metallic.
 pub struct Cloth: Copy + GpuData + Blend {
@@ -61,8 +62,18 @@ pub fn skeleton() -> Skeleton {
     let spine3 = s.joint("spine 3", spine2, vec3(0.0, 1.311, 0.007))
     let neck = s.joint("neck", spine3, vec3(0.0, 1.52, -0.041))
     s.joint("head", neck, HEAD_JOINT)
-    let (clav, _) = s.joint_pair("collarbone left", "collarbone right", spine3, vec3(0.031, 1.495, 0.033))
-    let (upper, _) = s.joint_pair("upper arm left", "upper arm right", clav, vec3(0.212, 1.455, -0.065))
+    let (clav, _) = s.joint_pair(
+        "collarbone left",
+        "collarbone right",
+        spine3,
+        vec3(0.031, 1.495, 0.033),
+    )
+    let (upper, _) = s.joint_pair(
+        "upper arm left",
+        "upper arm right",
+        clav,
+        vec3(0.212, 1.455, -0.065),
+    )
     let (fore, _) = s.joint_pair("forearm left", "forearm right", upper, vec3(0.463, 1.455, -0.073))
     let (hand, _) = s.joint_pair("hand left", "hand right", fore, vec3(0.706, 1.455, -0.065))
     s.joint_pair("fingers left", "fingers right", hand, vec3(0.822, 1.451, -0.05))
@@ -71,12 +82,17 @@ pub fn skeleton() -> Skeleton {
     let (calf, _) = s.joint_pair("calf left", "calf right", thigh, vec3(0.114, 0.542, -0.036))
     let (foot, _) = s.joint_pair("foot left", "foot right", calf, vec3(0.114, 0.086, -0.088))
     s.joint_pair("ball left", "ball right", foot, vec3(0.114, 0.015, 0.055))
-    // Each finger's three joints, as the reference's rig has them (its skin's weights,
-    // `skinning`, are on them): bones 26 on, a pair a joint, finger by finger.
+    // Each finger's three joints, as the reference's rig has them: bones 26 on, a pair a
+    // joint, finger by finger.
     for f in 0..5 {
         var parent = hand
         for k in 0..3 {
-            let (b, _) = s.joint_pair(FINGER_NAMES[f * 3 + k], FINGER_NAMES_RIGHT[f * 3 + k], parent, FINGER_JOINTS[f * 4 + k])
+            let (b, _) = s.joint_pair(
+                FINGER_NAMES[f * 3 + k],
+                FINGER_NAMES_RIGHT[f * 3 + k],
+                parent,
+                FINGER_JOINTS[f * 4 + k],
+            )
             parent = b
         }
     }
@@ -88,23 +104,62 @@ pub const FINGERS: u32 = 5
 
 /// Each finger's joints at rest (his left hand's): its three, and its tip.
 pub const FINGER_JOINTS: [vec3; 20] = [
-    vec3(0.8239, 1.4483, -0.0248), vec3(0.8565, 1.4471, -0.0252), vec3(0.8844, 1.4460, -0.0256), vec3(0.9085, 1.4451, -0.0260),
-    vec3(0.8219, 1.4508, -0.0503), vec3(0.8594, 1.4494, -0.0512), vec3(0.8895, 1.4482, -0.0518), vec3(0.9200, 1.4471, -0.0525),
-    vec3(0.8159, 1.4507, -0.0778), vec3(0.8519, 1.4494, -0.0776), vec3(0.8801, 1.4483, -0.0773), vec3(0.9092, 1.4472, -0.0772),
-    vec3(0.8050, 1.4495, -0.1000), vec3(0.8366, 1.4483, -0.1010), vec3(0.8640, 1.4472, -0.1019), vec3(0.8855, 1.4464, -0.1026),
-    vec3(0.7403, 1.4280, -0.0243), vec3(0.7714, 1.4088, -0.0093), vec3(0.7993, 1.3916, 0.0042), vec3(0.8265, 1.3748, 0.0173),
+    vec3(0.8239, 1.4483, -0.0248),
+    vec3(0.8565, 1.4471, -0.0252),
+    vec3(0.8844, 1.4460, -0.0256),
+    vec3(0.9085, 1.4451, -0.0260),
+    vec3(0.8219, 1.4508, -0.0503),
+    vec3(0.8594, 1.4494, -0.0512),
+    vec3(0.8895, 1.4482, -0.0518),
+    vec3(0.9200, 1.4471, -0.0525),
+    vec3(0.8159, 1.4507, -0.0778),
+    vec3(0.8519, 1.4494, -0.0776),
+    vec3(0.8801, 1.4483, -0.0773),
+    vec3(0.9092, 1.4472, -0.0772),
+    vec3(0.8050, 1.4495, -0.1000),
+    vec3(0.8366, 1.4483, -0.1010),
+    vec3(0.8640, 1.4472, -0.1019),
+    vec3(0.8855, 1.4464, -0.1026),
+    vec3(0.7403, 1.4280, -0.0243),
+    vec3(0.7714, 1.4088, -0.0093),
+    vec3(0.7993, 1.3916, 0.0042),
+    vec3(0.8265, 1.3748, 0.0173),
 ]
 
 const FINGER_NAMES = [
-    "index 1 left", "index 2 left", "index 3 left", "middle 1 left", "middle 2 left", "middle 3 left",
-    "ring 1 left", "ring 2 left", "ring 3 left", "little 1 left", "little 2 left", "little 3 left",
-    "thumb 1 left", "thumb 2 left", "thumb 3 left",
+    "index 1 left",
+    "index 2 left",
+    "index 3 left",
+    "middle 1 left",
+    "middle 2 left",
+    "middle 3 left",
+    "ring 1 left",
+    "ring 2 left",
+    "ring 3 left",
+    "little 1 left",
+    "little 2 left",
+    "little 3 left",
+    "thumb 1 left",
+    "thumb 2 left",
+    "thumb 3 left",
 ]
 
 const FINGER_NAMES_RIGHT = [
-    "index 1 right", "index 2 right", "index 3 right", "middle 1 right", "middle 2 right", "middle 3 right",
-    "ring 1 right", "ring 2 right", "ring 3 right", "little 1 right", "little 2 right", "little 3 right",
-    "thumb 1 right", "thumb 2 right", "thumb 3 right",
+    "index 1 right",
+    "index 2 right",
+    "index 3 right",
+    "middle 1 right",
+    "middle 2 right",
+    "middle 3 right",
+    "ring 1 right",
+    "ring 2 right",
+    "ring 3 right",
+    "little 1 right",
+    "little 2 right",
+    "little 3 right",
+    "thumb 1 right",
+    "thumb 2 right",
+    "thumb 3 right",
 ]
 
 /// The body's paint at `p` (rest space), his clothes by region as the locked outfit has them.
@@ -136,8 +191,12 @@ pub fn body_paint(p: vec3) -> Cloth {
     if p.y < 0.97 {
         return CHARCOAL
     }
-    // The jacket: open down the front, the opening swinging to his right as it goes down, its
-    // edges gold; inside it, a charcoal top.
+    jacket_front(p)
+}
+
+/// His jacket's cloth at a point of it at rest: black, open down the front, the opening
+/// swinging to his right as it goes down, its edges gold; inside it, a charcoal top.
+fn jacket_front(p: vec3) -> Cloth {
     if p.z > 0.0 && p.y < 1.52 {
         let t = clamp((1.50 - p.y) / 0.50, 0.0, 1.0)
         let e = abs(p.x + 0.05 * t) - (0.040 + 0.070 * sqrt(t))
@@ -150,6 +209,467 @@ pub fn body_paint(p: vec3) -> Cloth {
         }
     }
     BLACK
+}
+
+/// His left arm at rest: the figure's arm and what his is over it (`arm_left_form`), about
+/// the figure's arm's chain (`figure::chains::arm_left`).
+pub const ARM_LEFT: figure::limbs::Form = figure::arm::ARM.plus(arm_left_form::ARM_LEFT_OVER)
+
+/// His right arm at rest, in his jacket's sleeve and his gauntlet: the figure's arm mirrored
+/// and what his is over it (`arm_right_form`), about `figure::chains::arm_right`.
+pub const ARM_RIGHT: figure::limbs::Form = figure::arm::ARM
+    .mirrored()
+    .plus(arm_right_form::ARM_RIGHT_OVER)
+
+/// His left leg at rest, in his trousers: the figure's leg and what his is over it
+/// (`leg_form`), about `figure::chains::leg_left`. His right is its mirror image.
+pub const LEG_LEFT: figure::limbs::Form = figure::leg::LEG.plus(leg_form::LEG_OVER)
+
+/// How many of his parts are drawn along their charts as limbs are, how many of those are his
+/// arms' (the first of them), and how many are drawn as his trunk is (a larger form).
+pub const CHARTS: u32 = 23
+pub const ARM_CHARTS: u32 = 4
+pub const WIDE_CHARTS: u32 = 2
+
+/// Where the wrap round his left forearm starts, and the gauntlet over his right, as fractions
+/// of an arm's path's length; and how far each stands off the arm under it (m).
+pub const WRAP_FROM: f32 = 0.75
+pub const GAUNTLET_FROM: f32 = 0.634
+pub const WRAP_OVER: f32 = 0.0015
+
+/// Where the wrap and the gauntlet end, as a fraction of an arm's path's length: well inside
+/// his palm's own end of each. An arm's path is shorter where his elbow is bent (it cuts the
+/// corner), so a fraction of it falls nearer his elbow then: at 0.86 the wrap stopped short of
+/// his palm in his guard, and the sky showed between them as a pale crescent in his wristband.
+pub const WRAP_TO: f32 = 0.91
+pub const GAUNTLET_OVER: f32 = 0.0035
+
+/// His charted limbs. His left arm, bare, and his right, in his jacket's sleeve, each drawn to
+/// inside the wrap or the gauntlet at his wrist, where his hand takes over, its root under his
+/// jacket. The wrap round his left forearm and the gauntlet over his right: each a layer over
+/// its arm's own form, a little off it, on the arm's chain and bones, so it goes where the arm
+/// goes and its edge is a real step. His legs, in his trousers, each drawn to inside his boot,
+/// its root 6 cm under his trousers' seat (further under than his trunk is, `TRUNK_UNDER`:
+/// the root keeps its whole width inside his hip, and nearer than his trunk it showed as a
+/// patch at his belt). His neck, its root under his collar. And his head, under
+/// his mask and his hair, to his crown: one rigid form on his head's bone, closed under his
+/// chin.
+pub fn charts() -> [Part<16, 13>; CHARTS] {
+    let left = figure::limbs::arm(
+        ARM_LEFT,
+        0,
+        [6, 8, 10],
+        to: 0.84,
+        under: vec2(0.04, 0.24),
+    )
+    let right = figure::limbs::arm(
+        ARM_RIGHT,
+        1,
+        [7, 9, 11],
+        to: 0.84,
+        under: vec2(0.07, 0.34),
+    )
+    let over = |arm: Part<16, 13>, from: f32, by: f32| Part {
+        form: arm.form.plus(chart::round(by)),
+        band: Band { f: vec2(from, WRAP_TO), theta: arm.band.theta },
+        sunk: vec2(0.0, 0.1),
+        ..arm,
+    }
+    // (A piece of his jacket about a line `bones` carry: its form `over` off its fitted face.)
+    let worn = |line: chart::Chain, bones: [u32; 2], form: Radial<16, 13>, band: vec2, over: f32| Part {
+        chain: line,
+        bones: [bones[0], bones[1], 0, 0, 0, 0, 0, 0],
+        root: bones[0],
+        form: form.plus(chart::round(over)),
+        changes: [chart::unchanged(); JOINTS],
+        band: Band { f: band, theta: vec2(0.0, TAU) },
+        sunk: vec2(0.0, 0.1),
+    }
+    [
+        left,
+        right,
+        over(left, WRAP_FROM, WRAP_OVER),
+        over(right, GAUNTLET_FROM, GAUNTLET_OVER),
+        figure::limbs::leg(LEG_LEFT, 0, [0, 18, 20], to: 0.78, under: 0.06),
+        figure::limbs::leg(LEG_LEFT.mirrored(), 1, [0, 19, 21], to: 0.78, under: 0.06),
+        Part {
+            chain: figure::chains::neck(),
+            bones: [3, 4, 5, 0, 0, 0, 0, 0],
+            root: 3,
+            form: neck_form::NECK,
+            changes: [chart::unchanged(); JOINTS],
+            band: Band { f: vec2(0.0, 0.9), theta: vec2(0.0, TAU) },
+            sunk: vec2(0.03, 0.3),
+        },
+        Part {
+            chain: figure::chains::head(),
+            bones: [5, 0, 0, 0, 0, 0, 0, 0],
+            root: 5,
+            form: head_form::HEAD,
+            changes: [chart::unchanged(); JOINTS],
+            band: Band { f: vec2(0.0, 0.93), theta: vec2(0.0, TAU) },
+            sunk: vec2(0.0, 0.1),
+            caps: vec2(HEAD_CAP, 0.0),
+        },
+        // His jacket's collar: one rigid form on a line his chest carries. Its shoulders: each
+        // on his collarbone and his upper arm, so it goes where his arm goes.
+        worn(figure::chains::collar(), [3, 3], collar_form::COLLAR, vec2(0.09, 0.87), 0.0),
+        worn(
+            figure::chains::yoke_left(),
+            [6, 8],
+            yoke_left_form::YOKE_LEFT,
+            vec2(0.07, 0.5),
+            YOKE_OVER,
+        ),
+        worn(
+            figure::chains::yoke_right(),
+            [7, 9],
+            yoke_right_form::YOKE_RIGHT,
+            vec2(0.07, 0.5),
+            YOKE_OVER,
+        ),
+        hand_piece(0, 0),
+        hand_piece(0, 1),
+        hand_piece(0, 2),
+        hand_piece(0, 3),
+        hand_piece(0, 4),
+        hand_piece(0, 5),
+        hand_piece(1, 0),
+        hand_piece(1, 1),
+        hand_piece(1, 2),
+        hand_piece(1, 3),
+        hand_piece(1, 4),
+        hand_piece(1, 5),
+    ]
+}
+
+/// His hands' pieces among his charted parts: his left's six (his four fingers from his index,
+/// his thumb, his palm), then his right's.
+pub const HAND_LEFT: u32 = 11
+pub const HAND_PIECES: u32 = 6
+
+/// How much of a finger's path its tip closes over (`Part::caps`): from where the forms tool
+/// stops reading it (`studio/forms`' `hand_spec`).
+pub const TIP_CAP: f32 = 0.12
+
+/// How much of a finger's path its root closes over, inside his palm.
+pub const ROOT_CAP: f32 = 0.1
+
+/// How much of his palm's path its end closes over, up to his knuckles' line.
+pub const PALM_CAP: f32 = 0.1
+
+/// The first of his hand's pieces on `side` among his charted parts (`HAND_PIECES` of them).
+pub fn hand_first(side: u32) -> u32 {
+    HAND_LEFT + side * HAND_PIECES
+}
+
+/// How far under his palm a finger's root is drawn (m), and under his arm's end his palm's.
+pub const FINGER_UNDER: f32 = 0.004
+
+/// Piece `i` of his hand on `side` (0 left, 1 right; `HAND_PIECES`' order) as a charted part.
+/// A finger: on its own line (`hands::finger_left`), its bones his hand and the finger's three
+/// joints' (bones 26 on, a pair a joint), its tip closed, its root under his palm. His palm:
+/// on his forearm and his hand, bending at his wrist, closed at his knuckles, its root under
+/// his arm's end.
+fn hand_piece(side: u32, i: u32) -> Part<16, 13> {
+    let left = side == 0
+    let forms = if left {
+        [
+            index_left_form::INDEX_LEFT,
+            middle_left_form::MIDDLE_LEFT,
+            ring_left_form::RING_LEFT,
+            little_left_form::LITTLE_LEFT,
+            thumb_left_form::THUMB_LEFT,
+            palm_left_form::PALM_LEFT,
+        ]
+    } else {
+        [
+            index_right_form::INDEX_RIGHT,
+            middle_right_form::MIDDLE_RIGHT,
+            ring_right_form::RING_RIGHT,
+            little_right_form::LITTLE_RIGHT,
+            thumb_right_form::THUMB_RIGHT,
+            palm_right_form::PALM_RIGHT,
+        ]
+    }
+    let hand = 12 + side
+    if i == 5 {
+        return Part {
+            chain: if left { hands::palm_left() } else { hands::palm_right() },
+            bones: [10 + side, hand, 0, 0, 0, 0, 0, 0],
+            root: 10 + side,
+            form: forms[5],
+            changes: [chart::unchanged(); JOINTS],
+            band: Band { f: vec2(0.0, 1.0), theta: vec2(0.0, TAU) },
+            // (Its root under his arm's end and what's over it there.)
+            sunk: vec2(0.006, 0.12),
+            caps: vec2(0.0, PALM_CAP),
+        }
+    }
+    let first = 26 + 6 * i + side
+    Part {
+        chain: if left { hands::finger_left(i) } else { hands::finger_right(i) },
+        bones: [hand, first, first + 2, first + 4, 0, 0, 0, 0],
+        root: hand,
+        form: forms[i],
+        changes: [chart::unchanged(); JOINTS],
+        band: Band { f: vec2(0.0, 1.0), theta: vec2(0.0, TAU) },
+        // (His fingers' roots aren't drawn under his palm: their knuckles stand on the back
+        // of his hand. His thumb's is, by 2 mm as far as its first joint: there it lies on
+        // his palm's own surface, and level with it the two met in a ragged line. Each root
+        // closes inside his palm: open, the ball of his thumb showed its cut rim.)
+        sunk: if i == 4 { vec2(0.002, 0.5) } else { vec2(0.0, 0.25) },
+        caps: vec2(ROOT_CAP, TIP_CAP),
+    }
+}
+
+/// The charted part that part `part` grows from or lies on (`chart::vertex_onto`), among
+/// `charts` and then `wide_charts`: a thumb's is its hand's palm, and his jacket's collar and
+/// its shoulders lie on its body. `CHARTS + WIDE_CHARTS` for a part that grows from none. (A
+/// finger stands on its knuckle as it is: the crease there is the line a fist's knuckles are
+/// drawn with, and filleted, a fist at a blow read as "a blunt lump".)
+pub fn grows_from(part: u32) -> u32 {
+    if of_jacket(part) && part != JACKET_BODY {
+        return JACKET_BODY
+    }
+    if !of_hand(part) || (part - HAND_LEFT) % HAND_PIECES != 4 {
+        return CHARTS + WIDE_CHARTS
+    }
+    HAND_LEFT + ((part - HAND_LEFT) / HAND_PIECES) * HAND_PIECES + 5
+}
+
+/// How part `part` grows from what it grows from, or lies on what it lies on
+/// (`chart::vertex_onto`). His thumb's root, which no reference was read for, rises from the
+/// heel of his hand at the wrist, and the foot of its ball is filleted along his palm as far
+/// as the thumb's own knuckle. A piece of his jacket is laid on its body where it's within
+/// 12 mm of it and the body is there (`jacket_covers`' first cover is the body's), and lit as
+/// the body is over the same 12 mm: the pieces overlap, and each as its own sheet the one
+/// stood off the other as a plate with a shade of its own.
+pub fn grown(part: u32) -> Grown {
+    if of_jacket(part) {
+        return Grown { fillet: 0.012, reach: 9.0, laid: 0.012, cover: 0 }
+    }
+    Grown { fillet: 0.009, reach: 0.8, rooted: 0.2 }
+}
+
+/// Whether charted part `part` is a piece of his hand.
+pub fn of_hand(part: u32) -> bool {
+    part >= HAND_LEFT && part < HAND_LEFT + 2 * HAND_PIECES
+}
+
+/// His jacket's pieces among his charted parts (`charts`' order, then `wide_charts`'): its
+/// collar, its two shoulders, and its body.
+pub const COLLAR: u32 = 8
+pub const YOKE_LEFT: u32 = 9
+pub const YOKE_RIGHT: u32 = 10
+pub const JACKET_BODY: u32 = CHARTS + 1
+
+/// How far his jacket's shoulders stand off their fitted face (m): they lie over its body's
+/// top, and a little off it the step between the two is the shoulders' edge and not a crack.
+pub const YOKE_OVER: f32 = 0.0015
+
+/// How far up his head's path its form closes under his chin (of the path's length): to where
+/// the forms tool starts reading his head (`studio/forms`' `HAKURO_HEAD`).
+pub const HEAD_CAP: f32 = 0.18
+
+/// How far up his trunk's path its form closes at the fork of his legs.
+pub const FORK_CAP: f32 = 0.08
+
+/// How far up its path his trunk is drawn: to its end, inside his neck.
+pub const TRUNK_TO: f32 = 1.0
+
+/// How far before its path's end his trunk starts to close (of the path's length): from the
+/// root of his neck, where his neck's own form has taken over. Left open, its rim stood out
+/// from his throat when his head went back, and from his collar's front in his run.
+pub const NECK_CAP: f32 = 0.12
+
+/// How far under what he wears his trunk is drawn (m). Set when his jacket was a skinned mesh:
+/// the two didn't bend alike, and without this his trunk came through his jacket at his chest
+/// and his hip when he leant back from a blow. His jacket's body is now about his trunk's own
+/// line; less than this hasn't been tried.
+pub const TRUNK_UNDER: f32 = 0.04
+
+/// His charted trunk and the jacket over it, both about his spine (`figure::chains::trunk`),
+/// so the charted jacket goes where his trunk goes and can't pass through it. His trunk closes
+/// at the fork of his legs and is drawn under what's worn over it.
+pub fn wide_charts() -> [Part<24, 21>; WIDE_CHARTS] {
+    let on_spine = |form: Radial<24, 21>, band: vec2, cap: vec2, under: f32, coarser: u32| Part {
+        chain: figure::chains::trunk(),
+        bones: [0, 1, 2, 3, 0, 0, 0, 0],
+        root: 0,
+        form,
+        changes: [chart::unchanged(); JOINTS],
+        band: Band { f: band, theta: vec2(0.0, TAU) },
+        // (Under what's worn over it the whole way up, not at its root alone.)
+        sunk: vec2(under, 3.0),
+        caps: cap,
+        coarser,
+    }
+    [
+        // (His trunk is under what he wears the whole way: no outline of its own to draw
+        // finely.)
+        on_spine(
+            trunk_form::TRUNK,
+            vec2(0.0, TRUNK_TO),
+            vec2(FORK_CAP, NECK_CAP),
+            TRUNK_UNDER,
+            2,
+        ),
+        on_spine(jacket_form::JACKET, vec2(0.03, 1.0), vec2(0.0, 0.0), 0.0, 0),
+    ]
+}
+
+/// Whether charted part `part` is drawn from both its faces: his jacket's pieces, each an open
+/// sheet whose inside shows (inside his collar, from the front; under a lifted hem).
+pub fn two_faced(part: u32) -> bool {
+    of_jacket(part)
+}
+
+/// Whether charted part `part` is a piece of his jacket.
+pub fn of_jacket(part: u32) -> bool {
+    part == COLLAR || part == YOKE_LEFT || part == YOKE_RIGHT || part == JACKET_BODY
+}
+
+/// His charted parts as a pose has them: his limbs and his head (`charts`' order), and his
+/// trunk and his jacket (`wide_charts`').
+pub struct Charted: Copy {
+    pub limbs: [Limb<16, 13>; CHARTS],
+    pub wide: [Limb<24, 21>; WIDE_CHARTS],
+}
+
+/// His charted parts at rest.
+pub fn charted_at_rest() -> Charted {
+    let limbs = charts()
+    let wide = wide_charts()
+    var out = Charted { limbs: [limbs[0].rest(); CHARTS], wide: [wide[0].rest(); WIDE_CHARTS] }
+    for k in 0..CHARTS {
+        out.limbs[k] = limbs[k].rest()
+    }
+    for k in 0..WIDE_CHARTS {
+        out.wide[k] = wide[k].rest()
+    }
+    out
+}
+
+/// His charted parts as `palette` poses them (each of his bones' matrices, from him at rest to
+/// where the pose has him).
+pub fn charted_as(palette: [mat4; 64]) -> Charted {
+    let limbs = charts()
+    let wide = wide_charts()
+    var out = charted_at_rest()
+    for k in 0..CHARTS {
+        out.limbs[k] = limbs[k].posed(palette)
+    }
+    for k in 0..WIDE_CHARTS {
+        out.wide[k] = wide[k].posed(palette)
+    }
+    out
+}
+
+/// How fine the detail round a charted part's path its shading keeps (harmonics): his light's
+/// bands are read off his forms without the ripples finer than this (`Radial::softened`). More
+/// kept, and dark spots stand inside a highlight.
+pub const SHADED_DETAIL: f32 = 3.5
+
+/// What a limb-sized part's pixels read their normals from: its posed form, softened
+/// (`SHADED_DETAIL`) and kept to its first 4 harmonics of 6. What's dropped is a twentieth of
+/// what it was before softening or less, and a pixel pays for every term.
+pub fn shaded(form: Radial<16, 13>) -> Radial<16, 9> {
+    form.softened(SHADED_DETAIL).kept()
+}
+
+/// What a piece of his hand's pixels read their normals from: its form as it is. A palm is a
+/// flat section, which is its even harmonics to the last: softened as a limb is, the back of
+/// his open hand was lit as a tube's and read as "a flat, unshaded paddle". And a thumb's ball
+/// that rises from his palm (`grown`) is lit there as the palm's side is made, so the palm's
+/// own pixels read the same side.
+pub fn shaded_hand(form: Radial<16, 13>) -> Radial<16, 13> {
+    form
+}
+
+/// What his trunk's and his jacket's pixels read their normals from: the posed form softened,
+/// kept to its first 5 harmonics of 10.
+pub fn shaded_wide(form: Radial<24, 21>) -> Radial<24, 11> {
+    form.softened(SHADED_DETAIL).kept()
+}
+
+/// His paint on charted part `part` (`charts`' order, then `wide_charts`'): his arms and what's
+/// over them each one cloth, the others by where the place is on him at rest (`rest`), as his
+/// outfit's regions are written.
+pub fn chart_paint(part: u32, rest: vec3) -> Cloth {
+    if part == 0 {
+        return SKIN
+    }
+    if part == 1 {
+        return BLACK
+    }
+    if part == 2 {
+        return CHARCOAL
+    }
+    if part == 3 {
+        return LEATHER
+    }
+    if part == JACKET_BODY {
+        return jacket_paint(rest)
+    }
+    // (His collar and his jacket's shoulders are its black all over: by where they are on
+    // him at rest a shoulder's rim, out over his arm, took his arm's paint.)
+    if of_jacket(part) {
+        return BLACK
+    }
+    body_paint(rest)
+}
+
+/// His jacket's pieces' covers in GPU memory (`jacket_cover`: where each is on its chart, as
+/// how far inside its edge each place is: `chart::Cover::edges`), in the order `chart_hidden`
+/// reads them.
+pub fn jacket_covers() -> std::gpu::GpuBuffer<f32> {
+    let limbs = charts()
+    let body = wide_charts()[JACKET_BODY - CHARTS]
+    // (A place round a piece's path against a place along it, by the piece's size halfway.)
+    let round = |length: f32, radius: f32| {
+        (TAU * radius / f32(chart::COVER_ROUND)) / (length / f32(chart::COVER_ALONG))
+    }
+    let of = |part: Part<16, 13>| {
+        round(part.chain.rest().length(), part.form.radius(f: 0.5, theta: 0.0))
+    }
+    chart::uploaded(
+        [
+            jacket_cover::JACKET_COVER,
+            jacket_cover::COLLAR_COVER,
+            jacket_cover::YOKE_LEFT_COVER,
+            jacket_cover::YOKE_RIGHT_COVER,
+        ],
+        [
+            round(body.chain.rest().length(), body.form.radius(f: 0.5, theta: 0.0)),
+            of(limbs[COLLAR]),
+            of(limbs[YOKE_LEFT]),
+            of(limbs[YOKE_RIGHT]),
+        ],
+    )
+}
+
+/// Whether charted part `part` isn't at `place` on its chart (how far along, the angle
+/// round), by its cover's edges in `covers` (`jacket_covers`): his jacket's pieces, which
+/// aren't at its open front, its armholes or where another piece takes over. A program draws
+/// nothing of a part there.
+pub fn chart_hidden(part: u32, covers: [f32], place: vec3) -> bool {
+    if !of_jacket(part) {
+        return false
+    }
+    let at = if part == JACKET_BODY { 0 } else { part - COLLAR + 1 }
+    chart::inside(covers, place.x, place.y, at: at) < 0.0
+}
+
+/// Whether charted part `part` is cut away at a place besides (where it is on him at rest):
+/// his jacket's front's edge where `body_paint` has his shirt showing, so the gold along it
+/// keeps its width.
+pub fn chart_cut(part: u32, rest: vec3) -> bool {
+    if part == JACKET_BODY && rest.z > 0.0 && rest.y < 1.52 && rest.y >= 0.97 {
+        let t = clamp((1.50 - rest.y) / 0.50, 0.0, 1.0)
+        return abs(rest.x + 0.05 * t) - (0.040 + 0.070 * sqrt(t)) < 0.0
+    }
+    false
 }
 
 /// The collar's paint: the jacket's black, standing up round his neck, open in front.
@@ -227,55 +747,6 @@ impl Surface for Hair {
 
 fn hair_paint(p: vec3) -> Cloth {
     HAIR
-}
-
-/// A piece of a hand (`piece` 0 the palm, 1 the fingers, 2 the thumb), on its bone at `at`:
-/// the left hand's shapes (`shapes::palm`, `digits`, `thumb`), mirrored for the right
-/// (`side` −1).
-pub struct HandPiece: Copy + GpuData {
-    pub at: vec3,
-    pub side: f32,
-    pub piece: u32,
-}
-
-/// His hands' size against the shapes written for them: big hands for his build.
-const HAND_SCALE: f32 = 1.15
-
-impl Surface for HandPiece {
-    fn bound(self) -> Bound {
-        let c = if self.piece == 0 {
-            vec3(0.06, -0.006, 0.01)
-        } else if self.piece == 1 { vec3(0.04, -0.005, -0.005) } else { vec3(0.035, -0.005, 0.018) }
-        Bound { centre: vec3(c.x * self.side, c.y, c.z) * HAND_SCALE, radius: 0.12 * HAND_SCALE, slope: 0.5 }
-    }
-
-    /// By its bound on the gradient from its centre's distance (`BootFoot`'s).
-    fn interval(self, over: Box3) -> Interval {
-        let r = 1.5 * 0.5 * length(over.hi - over.lo)
-        let d = self.distance(over.center())
-        Interval { lo: d - r, hi: d + r }
-    }
-
-    /// The shapes as written, made `HAND_SCALE` times as big about the wrist.
-    fn distance(self, p: vec3) -> f32 {
-        let q = p / HAND_SCALE + self.at
-        let l = vec3(q.x * self.side, q.y, q.z)
-        HAND_SCALE * (if self.piece == 0 { palm(l) } else if self.piece == 1 { digits(l) } else { thumb(l) })
-    }
-
-    /// Cones, a rounded box narrowed across by up to a fifth: about 1.25, with room.
-    fn lipschitz(self, near: f32) -> f32 {
-        1.5
-    }
-}
-
-/// His bare left hand, and his right's black glove.
-fn skin_paint(p: vec3) -> Cloth {
-    SKIN
-}
-
-fn glove_paint(p: vec3) -> Cloth {
-    LEATHER
 }
 
 /// A boot's foot, on the left foot's bone (its image on the right's).
@@ -374,7 +845,8 @@ impl Surface for Tails {
 /// where his trousers are, it carries on black, gold along its front edges.
 pub fn jacket_paint(p: vec3) -> Cloth {
     if p.y >= 0.97 {
-        return body_paint(p)
+        // (Its own cloth all over: by his body's paint, a rim out over his arm took his arm's.)
+        return jacket_front(p)
     }
     // (Its gold trim ends at his belt, as the sheet's: below, the tails' own hem is gold.)
     BLACK
@@ -405,33 +877,8 @@ fn tails_paint(p: vec3) -> Cloth {
     Cloth { albedo: LINING.albedo * shade, rough: LINING.rough, metal: LINING.metal }
 }
 
-/// His rig: his body's pieces as they were fitted to the reference, each on its bone or split
-/// between two across a joint. Never realized: his skin is sampled from the reference
-/// (`body_grid`, `arm_left_grid`, `arm_right_grid`), and this only says which bones move it
-/// (`sampled_skin::skinned`).
-pub fn rig() -> Creature<Cloth> {
-    let s = skeleton()
-    let b = |name: Text| s.find(name)
-    creature(s)
-        .join("hips", b("pelvis"), oval(vec3(0.1374, 0.1374, 0.1383)).rotate(Quat { v: vec4(0.00000, 0.00000, 0.00000, 1.00000) }).translate(vec3(0.0000, 0.9941, -0.0266)).with_at(body_paint).translate(-s.rest(b("pelvis"))), skin: split(b("pelvis"), b("spine 1"), vec3(0.000, 0.960, 0.000), vec3(0.000, 1.100, 0.000)))
-        .join("belly", b("spine 1"), oval(vec3(0.1574, 0.1787, 0.1068)).rotate(Quat { v: vec4(0.00000, 0.00000, 0.00000, 1.00000) }).translate(vec3(0.0000, 1.1355, 0.0110)).with_at(body_paint).translate(-s.rest(b("spine 1"))), seam: smooth(0.050), skin: split(b("spine 1"), b("spine 2"), vec3(0.000, 1.060, 0.000), vec3(0.000, 1.220, 0.000)))
-        .join("ribs", b("spine 2"), oval(vec3(0.1619, 0.1770, 0.1500)).rotate(Quat { v: vec4(0.00000, 0.00000, 0.00000, 1.00000) }).translate(vec3(0.0000, 1.3311, -0.0120)).with_at(body_paint).translate(-s.rest(b("spine 2"))), seam: smooth(0.050), skin: split(b("spine 2"), b("spine 3"), vec3(0.000, 1.200, 0.000), vec3(0.000, 1.360, 0.000)))
-        .join("chest left", b("spine 3"), oval(vec3(0.3175, 0.0830, 0.1034)).rotate(Quat { v: vec4(-0.30595, -0.01746, 0.11856, 0.94448) }).translate(vec3(0.1067, 1.4374, -0.0777)).with_at(body_paint).translate(-s.rest(b("spine 3"))), seam: smooth(0.050), skin: split(b("spine 3"), b("upper arm left"), vec3(0.140, 1.455, -0.065), vec3(0.250, 1.455, -0.065)))
-        .join("chest right", b("spine 3"), oval(vec3(0.3175, 0.0830, 0.1034)).rotate(Quat { v: vec4(-0.30595, 0.01746, -0.11856, 0.94448) }).translate(vec3(-0.1067, 1.4374, -0.0777)).with_at(body_paint).translate(-s.rest(b("spine 3"))), seam: smooth(0.050), skin: split(b("spine 3"), b("upper arm right"), vec3(-0.140, 1.455, -0.065), vec3(-0.250, 1.455, -0.065)))
-        .join("pec", b("spine 3"), oval(vec3(0.1378, 0.0798, 0.1620)).rotate(Quat { v: vec4(0.36704, 0.12316, -0.08427, 0.91816) }).translate(vec3(0.0706, 1.4446, -0.0057)).with_at(body_paint).translate(-s.rest(b("spine 3"))), seam: smooth(0.040), mirror: true)
-        .join("lat", b("spine 2"), oval(vec3(0.0824, 0.1343, 0.0788)).rotate(Quat { v: vec4(-0.07146, 0.23889, -0.32935, 0.91069) }).translate(vec3(0.1086, 1.3121, -0.0816)).with_at(body_paint).translate(-s.rest(b("spine 2"))), seam: smooth(0.040), mirror: true, skin: split(b("spine 2"), b("spine 3"), vec3(0.000, 1.200, 0.000), vec3(0.000, 1.380, 0.000)))
-        .join("glute", b("pelvis"), oval(vec3(0.1130, 0.3543, 0.1249)).rotate(Quat { v: vec4(0.08958, -0.00065, -0.02044, 0.99577) }).translate(vec3(0.0971, 0.6988, -0.0468)).with_at(body_paint).translate(-s.rest(b("pelvis"))), seam: smooth(0.040), mirror: true)
-        .join("neck", b("neck"), round_cone(vec3(0.0516, 1.4723, -0.0768), vec3(-0.0000, 1.7139, -0.0293), r_top: 0.0880, r_bottom: 0.0429).with_at(body_paint).translate(-s.rest(b("neck"))), seam: smooth(0.040), skin: split(b("spine 3"), b("neck"), vec3(0.000, 1.460, 0.000), vec3(0.000, 1.560, 0.000)))
-        .join("cranium", b("head"), oval(vec3(0.0808, 0.0996, 0.1112)).rotate(Quat { v: vec4(0.06730, -0.04130, -0.16363, 0.98336) }).translate(vec3(0.0002, 1.7345, -0.0045)).with_at(body_paint).translate(-s.rest(b("head"))), seam: smooth(0.030))
-        .join("jaw", b("head"), oval(vec3(0.0628, 0.0965, 0.0842)).rotate(Quat { v: vec4(-0.15377, 0.06336, -0.20921, 0.96363) }).translate(vec3(0.0068, 1.6543, 0.0157)).with_at(body_paint).translate(-s.rest(b("head"))), seam: smooth(0.030))
-        .join("thigh", b("thigh left"), oval(vec3(0.0830, 0.2892, 0.0877)).rotate(Quat { v: vec4(0.04534, 0.30884, -0.00545, 0.95002) }).translate(vec3(0.1221, 0.7258, -0.0113)).with_at(body_paint).translate(-s.rest(b("thigh left"))), seam: smooth(0.040), mirror: true)
-        .join("adductor", b("thigh left"), oval(vec3(0.1009, 0.3094, 0.1181)).rotate(Quat { v: vec4(0.06203, -0.16765, 0.04373, 0.98292) }).translate(vec3(0.0949, 0.8357, -0.0265)).with_at(body_paint).translate(-s.rest(b("thigh left"))), seam: smooth(0.030), mirror: true)
-        .join("calf", b("calf left"), oval(vec3(0.0892, 0.1836, 0.1037)).rotate(Quat { v: vec4(0.06653, -0.11183, 0.00873, 0.99146) }).translate(vec3(0.1277, 0.3882, -0.0850)).intersect(cuboid(vec3(1.0, 0.37, 1.0)).translate(vec3(0.0, 0.64, 0.0))).with_at(body_paint).translate(-s.rest(b("calf left"))), seam: smooth(0.030), mirror: true)
-        .join("shin", b("calf left"), round_cone(vec3(0.1312, 0.8252, -0.0573), vec3(0.1258, 0.1209, -0.0870), r_top: 0.0750, r_bottom: 0.0683).intersect(cuboid(vec3(1.0, 0.37, 1.0)).translate(vec3(0.0, 0.64, 0.0))).with_at(body_paint).translate(-s.rest(b("calf left"))), seam: smooth(0.030), mirror: true)
-}
-
-/// What he wears that isn't his body's own surface: the collar, the belt, the boots. (His body,
-/// dressed, is sampled: `body_grid`.)
+/// What he wears that isn't drawn along a chart: the belt, the boots. (His body, dressed, and
+/// his jacket are: `charts`, `wide_charts`.)
 pub fn hero() -> Creature<Cloth> {
     let s = skeleton()
     let b = |name: Text| s.find(name)
@@ -458,53 +905,20 @@ pub fn hero() -> Creature<Cloth> {
                 .translate(-s.rest(b("spine 1"))),
             seam: hard(),
         )
-        .join("boot", b("foot left"), BootFoot { at: vec3(0.114, 0.086, -0.088) }.with_at(foot_paint), seam: hard(), mirror: true)
-        .join("boot shaft", b("calf left"), BootShaft { at: vec3(0.114, 0.542, -0.036) }.with_at(shaft_paint), seam: smooth(0.004), mirror: true)
-}
-
-/// His hands, realized on their own finer grid (their fingers are thin): the same skeleton, so one
-/// palette poses them with the rest of him.
-pub fn hands() -> Creature<Cloth> {
-    let s = skeleton()
-    let b = |name: Text| s.find(name)
-    creature(s)
         .join(
-            "hand left",
-            b("hand left"),
-            HandPiece { at: s.rest(b("hand left")), side: 1.0, piece: 0 }.with_at(skin_paint),
-            seam: smooth(0.02),
+            "boot",
+            b("foot left"),
+            BootFoot { at: vec3(0.114, 0.086, -0.088) }.with_at(foot_paint),
+            seam: hard(),
+            mirror: true,
         )
         .join(
-            "fingers left",
-            b("fingers left"),
-            HandPiece { at: s.rest(b("fingers left")), side: 1.0, piece: 1 }.with_at(skin_paint),
-            seam: smooth(0.010),
+            "boot shaft",
+            b("calf left"),
+            BootShaft { at: vec3(0.114, 0.542, -0.036) }.with_at(shaft_paint),
+            seam: smooth(0.004),
+            mirror: true,
         )
-        .join(
-            "thumb left",
-            b("thumb left"),
-            HandPiece { at: s.rest(b("thumb left")), side: 1.0, piece: 2 }.with_at(skin_paint),
-            seam: smooth(0.010),
-        )
-        .join(
-            "hand right",
-            b("hand right"),
-            HandPiece { at: s.rest(b("hand right")), side: -1.0, piece: 0 }.with_at(glove_paint),
-            seam: smooth(0.02),
-        )
-        .join(
-            "fingers right",
-            b("fingers right"),
-            HandPiece { at: s.rest(b("fingers right")), side: -1.0, piece: 1 }.with_at(glove_paint),
-            seam: smooth(0.010),
-        )
-        .join(
-            "thumb right",
-            b("thumb right"),
-            HandPiece { at: s.rest(b("thumb right")), side: -1.0, piece: 2 }.with_at(glove_paint),
-            seam: smooth(0.010),
-        )
-        .bounded(Box3 { lo: vec3(-0.95, 1.22, -0.22), hi: vec3(0.95, 1.66, 0.12) })
 }
 
 /// His coat's tails, realized on their own finer grid (thin cloth): on his pelvis's bone.

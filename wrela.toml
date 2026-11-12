@@ -5,7 +5,7 @@
 [workspace]
 # The toolchain release the workspace runs: a `wrela` of another release runs this one instead,
 # downloading it to ~/.wrela/toolchains (`wrela toolchain` says which runs and why).
-toolchain = "0.31.2"
+toolchain = "0.32.0"
 members = [
     "console",
     "console/server",
@@ -35,6 +35,8 @@ members = [
     "studio/release",
     "studio/deploy",
     "studio/costs",
+    "studio/forms",
+    "studio/judge",
     "studio/toolkit",
     "ui",
     "ui/brand",
@@ -75,6 +77,7 @@ allow = [
     "docs/voice.md",
     "docs/lookdev.md",
     "docs/devices.md",
+    "docs/charted-forms.md",
     "content/styles/README.md",
     "studio/styles/history.log",
     "content/humanoid/assets/accad_male2_arm_shapes.bin",
@@ -121,6 +124,22 @@ write = ["ws=."]
 [tools.moves]
 package = "studio/moves"
 write = ["ws=."]
+
+# The forms tool (studio/forms): each charted form's numbers fitted to its reference (the CC0
+# body's triangles, Hakuro's sampled grids) by one solve, written into content/figure and
+# content/hakuro, with how far each is from its reference by place on its chart.
+[tools.forms]
+package = "studio/forms"
+write = ["ws=."]
+
+# The judging tool (studio/judge): two builds of a scene (another revision's, laid out by `git
+# archive` and `tar` in its out directory, or the same with constants set otherwise) rendered on
+# a fixed list of shots on the native host's GPU, each pair shuffled under a sealed key, with
+# the critics' brief; and their votes tallied. FFmpeg makes its clips, as the motion tool's.
+[tools.judge]
+package = "studio/judge"
+write = ["ws=."]
+run = ["git", "tar", "ffmpeg"]
 
 # The bench tool (studio/bench): what the engine's scenes cost on this machine, in headless
 # Chrome and natively. It reads the workspace's packages and builds each into build/bench, and

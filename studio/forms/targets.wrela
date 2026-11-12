@@ -1,0 +1,229 @@
+// What the forms are fitted to, read along rays from a form's own path: the reference body's
+// triangles, or a sampled grid's distance. A ray leaves the path at a place on the chart (how
+// far along, at what angle) in the section's plane there, and the reference's side along it is
+// that place's radius: a sample the fit takes as it is, and the place a miss is reported at.
+
+use engine::chart::{Path, Radial, Sample}
+use engine::humanoid::Humanoid
+use engine::sampled::Samples
+use std::math::TAU
+
+/// A reference a form is fitted to: its side along a ray.
+pub trait Reference {
+    /// How far the reference's side is from `from` toward unit `dir` (m): the first place
+    /// within `most` the ray meets it; negative where it meets none.
+    fn reach(self, from: vec3, dir: vec3, most: f32) -> f32
+}
+
+/// A sampled grid as a reference (`engine::sampled`): its distance, walked along the ray.
+pub struct Grid {
+    pub samples: Samples,
+}
+
+impl Reference for Grid {
+    fn reach(self, from: vec3, dir: vec3, most: f32) -> f32 {
+        var found = -1.0
+        var t = 0.0
+        var last = self.samples.distance(from)
+        while t < most {
+            // (A step no longer than the distance to the side, and half a millimetre at least.)
+            let step = clamp(abs(last) * 0.9, 0.0005, 0.004)
+            let d = self.samples.distance(from + dir * (t + step))
+            if last < 0.0 && d >= 0.0 {
+                return t + step * (-last) / max(d - last, 0.000001)
+            }
+            t += step
+            last = d
+        }
+        found
+    }
+}
+
+/// Triangles as a reference: each one's first corner and its two edges from it.
+pub struct Triangles {
+    pub a: Vec<vec3>,
+    pub ab: Vec<vec3>,
+    pub ac: Vec<vec3>,
+}
+
+impl Reference for Triangles {
+    fn reach(self, from: vec3, dir: vec3, most: f32) -> f32 {
+        var found = -1.0
+        for i in 0..self.a.len() {
+            // Möller and Trumbore's test.
+            let e1 = self.ab[i]
+            let e2 = self.ac[i]
+            let h = cross(dir, e2)
+            let det = dot(e1, h)
+            if abs(det) < 0.000000000001 {
+                continue
+            }
+            let s = from - self.a[i]
+            let u = dot(s, h) / det
+            if u < 0.0 || u > 1.0 {
+                continue
+            }
+            let q = cross(s, e1)
+            let v = dot(dir, q) / det
+            if v < 0.0 || u + v > 1.0 {
+                continue
+            }
+            let t = dot(e2, q) / det
+            if t > 0.0 && t <= most && (found < 0.0 || t < found) {
+                found = t
+            }
+        }
+        found
+    }
+}
+
+/// The triangles of `body` whose corners are all on parts `keep` allows (`engine::humanoid`'s
+/// `part_of`: 0 the trunk, 1 the head, 2 and 3 the legs, 4 and 5 the arms) and inside the box
+/// from `lo` to `hi`.
+pub fn triangles_of(body: Humanoid, keep: [bool; 6], lo: vec3, hi: vec3) -> Triangles {
+    var a: Vec<vec3> = Vec::new()
+    var ab: Vec<vec3> = Vec::new()
+    var ac: Vec<vec3> = Vec::new()
+    for t in 0..body.indices.len() / 3 {
+        let v0 = body.verts[body.indices[3 * t]]
+        let v1 = body.verts[body.indices[3 * t + 1]]
+        let v2 = body.verts[body.indices[3 * t + 2]]
+        if !(keep[min(v0.part, 5)] && keep[min(v1.part, 5)] && keep[min(v2.part, 5)]) {
+            continue
+        }
+        let least = min(v0.pos, min(v1.pos, v2.pos))
+        let most = max(v0.pos, max(v1.pos, v2.pos))
+        let before = most.x < lo.x || most.y < lo.y || most.z < lo.z
+        let past = least.x > hi.x || least.y > hi.y || least.z > hi.z
+        if before || past {
+            continue
+        }
+        a.push(v0.pos)
+        ab.push(v1.pos - v0.pos)
+        ac.push(v2.pos - v0.pos)
+    }
+    Triangles { a, ab, ac }
+}
+
+/// The reference's radius about `path` at a grid of places on its chart: `along` by `about` of
+/// them over the span from `span.x` to `span.y` of the path's length and the whole way round,
+/// each `shift` of a step on from the grid's own (0 to 1 each way: another `shift` reads the
+/// reference between the first's places). A place whose ray meets no side within `most` gives
+/// no sample.
+pub fn rays<T: Reference>(
+    t: T,
+    path: Path,
+    span: vec2,
+    along: u32,
+    about: u32,
+    shift: vec2,
+    most: f32,
+) -> Vec<Sample> {
+    var out: Vec<Sample> = Vec::new()
+    for s in every_ray(t, path, span, along, about, shift, most) {
+        if s.r > 0.0 {
+            out.push(s)
+        }
+    }
+    out
+}
+
+/// `rays`, with every place of the grid in its order (along the path, then round it): a place
+/// whose ray meets no side has a radius below 0. Two readings on the same grid pair up place
+/// by place.
+pub fn every_ray<T: Reference>(
+    t: T,
+    path: Path,
+    span: vec2,
+    along: u32,
+    about: u32,
+    shift: vec2,
+    most: f32,
+) -> Vec<Sample> {
+    var out: Vec<Sample> = Vec::new()
+    let len = path.length()
+    for i in 0..along {
+        let f = mix(span.x, span.y, (f32(i) + shift.x) / f32(along))
+        let fr = path.frame(f * len)
+        for j in 0..about {
+            let theta = TAU * (f32(j) + shift.y) / f32(about)
+            let r = t.reach(fr.at, fr.up * cos(theta) + fr.left * sin(theta), most)
+            out.push(Sample { f, theta, r })
+        }
+    }
+    out
+}
+
+/// How a form's misses are spread (mm): their root mean square, the size half are under, the
+/// size 95% are under, the worst, and how many there were.
+pub struct Spread: Copy {
+    pub rms: f32,
+    pub half: f32,
+    pub most: f32,
+    pub worst: f32,
+    pub count: u32,
+}
+
+/// The stations along a chart's span, and the sectors round it, a miss is reported by.
+pub const STATIONS: u32 = 8
+pub const SECTORS: u32 = 8
+
+/// How far a form is from samples of its reference: the spread of its misses, and their root
+/// mean square by place on the chart (`STATIONS` along its span by `SECTORS` round, mm).
+pub struct Miss: Copy {
+    pub spread: Spread,
+    pub by_place: [[f32; SECTORS]; STATIONS],
+}
+
+/// How far `form` (about a path `len` long) is from `samples` of its reference over `span` of
+/// the path: at each, the form's radius less the reference's, over how steep the form's side
+/// is there, so it's a distance across the side (mm).
+pub fn miss<const A: u32, const R: u32>(
+    form: Radial<A, R>,
+    samples: [Sample],
+    span: vec2,
+    len: f32,
+) -> Miss {
+    var sum = 0.0
+    var worst = 0.0
+    var hist = [0; 400]
+    var sums = [[0.0; SECTORS]; STATIONS]
+    var counts = [[0; SECTORS]; STATIONS]
+    for s in samples {
+        let k = form.radius_and_slopes(s.f, s.theta)
+        let along = k.y / len
+        let about = k.z / max(s.r, 0.001)
+        let e = (k.x - s.r) / sqrt(1.0 + along * along + about * about) * 1000.0
+        sum += e * e
+        worst = max(worst, abs(e))
+        hist[min(u32(abs(e) * 20.0), 399)] += 1
+        let x = saturate((s.f - span.x) / max(span.y - span.x, 0.000001))
+        let i = min(u32(x * f32(STATIONS)), STATIONS - 1)
+        let j = min(u32(fract(s.theta / TAU + 1.0) * f32(SECTORS)), SECTORS - 1)
+        sums[i][j] += e * e
+        counts[i][j] += 1
+    }
+    let n = samples.len()
+    var seen = 0
+    var half = 0.0
+    var most = 0.0
+    for k in 0..400 {
+        seen += hist[k]
+        if half == 0.0 && f32(seen) >= 0.5 * f32(n) {
+            half = 0.05 * f32(k + 1)
+        }
+        if most == 0.0 && f32(seen) >= 0.95 * f32(n) {
+            most = 0.05 * f32(k + 1)
+        }
+    }
+    var by_place = [[0.0; SECTORS]; STATIONS]
+    for i in 0..STATIONS {
+        for j in 0..SECTORS {
+            by_place[i][j] = sqrt(sums[i][j] / f32(max(counts[i][j], 1)))
+        }
+    }
+    Miss {
+        spread: Spread { rms: sqrt(sum / f32(max(n, 1))), half, most, worst, count: n },
+        by_place,
+    }
+}

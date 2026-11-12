@@ -1,0 +1,13 @@
+# The forms tool (`wrela tool forms`): each charted form's numbers fitted to its reference (the
+# CC0 body's own vertices, Hakuro's sampled grids) by one solve, written into content/figure and
+# content/hakuro, with how far each is from its reference, place by place on its chart
+# (main.wrela says how).
+[package]
+name = "forms_tool"
+
+[dependencies]
+engine = { workspace = true }
+figure = { workspace = true }
+hakuro = { workspace = true }
+humanoid = { workspace = true }
+toolkit = { workspace = true }

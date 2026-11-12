@@ -1,0 +1,419 @@
+// A sea serpent drawn along its charts: a creature that is no humanoid, with no mesh and no
+// reference. Each part is a radius written as a rule of its place (`chart::of`: how far along
+// its chain, the angle round it) about a chain of joints: a long body thick behind the head and
+// thin at the tail, a head and a lower jaw that is its own part, a low fin along the back and
+// two small fins behind the head. A wave sent down the body poses its bones; each frame every
+// part is laid where its bones are (`Part::posed`) and drawn from its vertices' numbers.
+
+use engine::chart
+use engine::chart::{Band, Chain, Grids, JOINTS, Limb, Part, Radial, WHOLE, chain}
+use engine::view::{Camera, NEAREST, first_camera}
+use std::gpu::{
+    ClipPosition, Cull, DepthTexture, FragCoord, Rgba8, Texture, VertexIndex, begin_pass_with_depth,
+    begin_screen_pass, depth_texture, draw, texture,
+}
+use std::math::{PI, TAU}
+use std::transform::identity
+
+const W: u32 = 640
+const H: u32 = 480
+
+/// Which way it is seen: 0 from the side, 1 from the front, 2 from three-quarters above.
+pub const VIEW: u32 = 0
+
+/// 1: the cycle plays with time; 0: held still at the cycle's start.
+pub const PLAY: u32 = 1
+
+/// A part's form: 10 control values along its chain, 4 harmonics round.
+type Form = Radial<10, 9>
+
+/// Its parts: the body, the head, the lower jaw, the back fin, the two small fins.
+pub const PARTS: u32 = 6
+const BODY: u32 = 0
+const HEAD: u32 = 1
+const JAW: u32 = 2
+const BACK_FIN: u32 = 3
+const FIN_L: u32 = 4
+const FIN_R: u32 = 5
+
+/// Its bones: seven along the body from the head to the tail (bone `i` runs from body joint
+/// `i` to joint `i + 1`), then the jaw and the two small fins.
+const SEGMENTS: u32 = 7
+const JAW_BONE: u32 = 7
+const FIN_L_BONE: u32 = 8
+const FIN_R_BONE: u32 = 9
+
+/// How long a body bone is (m), and where its first joint is along z (the head's end).
+const BONE: f32 = 0.4
+const NECK: f32 = 1.2
+
+/// The body's radius `f` of the way from its head to its tail (m): a neck a little narrower
+/// than the head, thickest behind it, tapering to a thin tail.
+fn body_radius(f: f32) -> f32 {
+    let s = saturate((f - 0.1) / 0.9)
+    mix(0.14, 0.215, smoothstep(0.0, 0.3, f)) * pow(1.0 - s, 0.95) + 0.014
+}
+
+/// A body a little taller than it is wide (angle 0 is its back).
+fn body_rule(f: f32, theta: f32) -> f32 {
+    let r = body_radius(f)
+    let deep = r * 1.06
+    let wide = r * 0.94
+    let c = cos(theta)
+    let s = sin(theta)
+    deep * wide / sqrt(deep * deep * s * s + wide * wide * c * c)
+}
+
+/// A head broad behind and blunt at its snout, flatter underneath where the jaw meets it.
+fn head_rule(f: f32, theta: f32) -> f32 {
+    let cheek = exp(-(f - 0.45) * (f - 0.45) / 0.05)
+    let wide = mix(0.12, 0.175, smoothstep(0.05, 0.5, f)) *
+        (1.0 - smoothstep(0.55, 1.0, f) * 0.12) +
+        0.06 * cheek
+    let deep = mix(0.12, 0.205, smoothstep(0.05, 0.55, f)) * (1.0 - smoothstep(0.55, 1.0, f) * 0.22)
+    let c = cos(theta)
+    let s = sin(theta)
+    let d = deep * (0.82 + 0.18 * c)
+    d * wide / sqrt(d * d * s * s + wide * wide * c * c)
+}
+
+/// A lower jaw: a narrow trough, deeper toward its chin.
+fn jaw_rule(f: f32, theta: f32) -> f32 {
+    let wide = mix(0.17, 0.09, smoothstep(0.2, 1.0, f))
+    let deep = mix(0.085, 0.065, f)
+    let c = cos(theta)
+    let s = sin(theta)
+    deep * wide / sqrt(deep * deep * s * s + wide * wide * c * c)
+}
+
+/// A fin along the back: a blade (angle 0 is its edge), standing tall mid-body, lower toward
+/// the tail, a hand thick.
+fn back_fin_rule(f: f32, theta: f32) -> f32 {
+    let tall = 0.115 * (1.0 - 0.6 * f)
+    let c = cos(theta)
+    0.014 + tall * c * c * c * c
+}
+
+/// A small fin: a paddle, broad at its root and narrowing to its tip (angle 0 is its leading
+/// edge's way).
+fn fin_rule(f: f32, theta: f32) -> f32 {
+    let broad = mix(0.085, 0.045, f)
+    let c = cos(theta)
+    0.012 + broad * c * c * c * c
+}
+
+@fuel(2 ** 36)
+const BODY_FORM: Form = chart::of(body_rule)
+@fuel(2 ** 36)
+const HEAD_FORM: Form = chart::of(head_rule)
+@fuel(2 ** 36)
+const JAW_FORM: Form = chart::of(jaw_rule)
+@fuel(2 ** 36)
+const BACK_FIN_FORM: Form = chart::of(back_fin_rule)
+@fuel(2 ** 36)
+const FIN_FORM: Form = chart::of(fin_rule)
+
+/// Body joint `i` at rest: the body lies straight along z from the head to the tail.
+fn joint(i: u32) -> vec3 {
+    vec3(0.0, 0.0, NECK - BONE * f32(i))
+}
+
+/// A part on `c` whose bones are `bones`, hanging from bone `root`, closed by `caps`.
+fn part(c: Chain, bones: [u32; JOINTS], root: u32, form: Form, caps: vec2) -> Part<10, 9> {
+    Part {
+        chain: c,
+        bones,
+        root,
+        form,
+        changes: [chart::unchanged(); JOINTS],
+        band: WHOLE,
+        sunk: vec2(0.0, 0.1),
+        folds: [0, 0],
+        caps,
+    }
+}
+
+/// The serpent's parts.
+fn serpent() -> [Part<10, 9>; PARTS] {
+    let back = vec3(y: 1.0)
+    var joints = [vec3(); 8]
+    var along = [0; JOINTS]
+    for i in 0..8 {
+        joints[i] = joint(i)
+    }
+    for i in 0..SEGMENTS {
+        along[i] = i
+    }
+    // (A smooth curve through its joints: no rounding at them.)
+    let body = chain(joints, back, before: 0.25, round: 0.0)
+    var out = [part(body, along, 0, BODY_FORM, vec2(0.07, 0.12)); PARTS]
+
+    // The head: a straight line its first bone carries whole, from inside its neck to its snout.
+    let skull = chain([vec3(0.0, 0.05, NECK - 0.3), vec3(0.0, 0.05, NECK + 0.64)], back)
+    out[HEAD] = part(skull, [0; JOINTS], 0, HEAD_FORM, vec2(0.1, 0.14))
+
+    // The lower jaw: its own line from its hinge to its chin, carried by its own bone.
+    let jaw = chain([vec3(0.0, -0.07, NECK - 0.12), vec3(0.0, -0.09, NECK + 0.58)], back)
+    out[JAW] = part(jaw, [JAW_BONE; JOINTS], 0, JAW_FORM, vec2(0.12, 0.2))
+
+    // The fin along the back: a line over the body from its second joint to its seventh, a
+    // little under the body's top, carried by the bones that carry those joints.
+    var crest = [vec3(); 6]
+    var carry = [0; JOINTS]
+    for k in 0..6 {
+        let at = joint(k + 1)
+        crest[k] = vec3(
+            0.0,
+            0.8 * body_radius((0.25 + BONE * f32(k + 1)) / (0.25 + BONE * 7.0)),
+            at.z,
+        )
+        carry[k] = k + 1
+    }
+    let fin = chain(crest, back, before: 0.16, after: 0.22, round: 0.0)
+    out[BACK_FIN] = part(fin, carry, 0, BACK_FIN_FORM, vec2(0.12, 0.2))
+
+    // The small fins: each from inside the body behind the head, out and back and down. Their
+    // angle 0 points along the body, so a paddle lies flat.
+    let paddle = chain(
+        [vec3(0.1, -0.08, NECK - 0.25), vec3(0.38, -0.16, NECK - 0.45)],
+        vec3(z: 1.0),
+        after: 0.02,
+    )
+    out[FIN_L] = part(paddle, [FIN_L_BONE; JOINTS], 0, FIN_FORM, vec2(0.0, 0.25))
+    out[FIN_R] = part(
+        paddle.mirrored(),
+        [FIN_R_BONE; JOINTS],
+        0,
+        FIN_FORM.mirrored(),
+        vec2(0.0, 0.25),
+    )
+    out
+}
+
+/// A turn of `angle` about the axis through `at` along unit `axis`.
+fn turn_about(axis: vec3, angle: f32, at: vec3) -> mat4 {
+    let c = cos(angle)
+    let s = sin(angle)
+    let k = axis
+    let x = vec3(1.0, 0.0, 0.0) * c + cross(k, vec3(1.0, 0.0, 0.0)) * s + k * (k.x * (1.0 - c))
+    let y = vec3(0.0, 1.0, 0.0) * c + cross(k, vec3(0.0, 1.0, 0.0)) * s + k * (k.y * (1.0 - c))
+    let z = vec3(0.0, 0.0, 1.0) * c + cross(k, vec3(0.0, 0.0, 1.0)) * s + k * (k.z * (1.0 - c))
+    let moved = at - (x * at.x + y * at.y + z * at.z)
+    mat4(vec4(x, 0.0), vec4(y, 0.0), vec4(z, 0.0), vec4(moved, 1.0))
+}
+
+/// How long a beat of its swim is (s).
+const PERIOD: f32 = 2.6
+
+/// Which way bone `i` points at `time` (s): how far it is turned up and down (x) and side to
+/// side (y), radians. A wave runs from the head to the tail with a crest every 2.4 m, growing
+/// as it goes; the side to side wave is a quarter of a wave behind the up and down one and
+/// smaller, so the body is a slow corkscrew.
+fn heading(i: u32, time: f32) -> vec2 {
+    let s = BONE * (f32(i) + 0.5)
+    let grow = 0.45 + 0.55 * s / (BONE * f32(SEGMENTS))
+    let phase = TAU * (s / 1.9 - time / PERIOD)
+    vec2(1.05 * grow * sin(phase) - 0.3 * exp(-0.8 * f32(i)), 1.0 * grow * sin(phase - 1.4))
+}
+
+/// The serpent's bones at `time` (s): each body bone turns about its first joint from the one
+/// before (so the body bends where the wave does), the jaw works and the small fins sweep.
+fn swim(time: f32) -> [mat4; 64] {
+    var m = [identity(); 64]
+    let across = vec3(x: 1.0)
+    let up = vec3(y: 1.0)
+    var before = vec2(0.0, 0.0)
+    var carried = identity()
+    for i in 0..SEGMENTS {
+        let now = heading(i, time)
+        let step = now - before
+        let bend = turn_about(up, step.y, joint(i)) * turn_about(across, step.x, joint(i))
+        carried = carried * bend
+        m[i] = carried
+        before = now
+    }
+    let beat = TAU * time / PERIOD
+    let open = 0.1 + 0.08 * sin(2.0 * beat + 0.8)
+    m[JAW_BONE] = m[0] * turn_about(across, open, vec3(0.0, -0.08, NECK - 0.02))
+    let sweep = 0.35 * sin(2.0 * beat + 2.0)
+    let root = vec3(0.1, -0.08, NECK - 0.25)
+    m[FIN_L_BONE] = m[0] * turn_about(vec3(z: 1.0), sweep, root)
+    m[FIN_R_BONE] = m[0] * turn_about(vec3(z: 1.0), -sweep, vec3(-root.x, root.y, root.z))
+    m
+}
+
+pub struct State {
+    grids: Grids,
+    colour: Texture<Rgba8>,
+    depth: DepthTexture,
+}
+
+pub fn init() -> State {
+    State {
+        grids: chart::grids(),
+        colour: texture(width: W, height: H),
+        depth: depth_texture(width: W, height: H),
+    }
+}
+
+/// The camera: from the side, from the front, or from three-quarters above, the serpent whole.
+fn eye() -> Camera {
+    if VIEW == 1 {
+        first_camera(vec3(0.0, 2.7, 4.3), vec3(0.0, 0.0, 0.0), 0.75, width: W, height: H)
+            .unjittered()
+    } else if VIEW == 2 {
+        first_camera(vec3(2.9, 3.0, 3.0), vec3(0.0, 0.0, 0.0), 0.75, width: W, height: H)
+            .unjittered()
+    } else {
+        first_camera(vec3(4.0, 0.3, 0.15), vec3(0.0, 0.0, 0.15), 0.75, width: W, height: H)
+            .unjittered()
+    }
+}
+
+/// The body's colour, and the head's.
+fn body_tint() -> vec3 {
+    vec3(0.14, 0.42, 0.4)
+}
+
+fn head_tint() -> vec3 {
+    vec3(0.3, 0.6, 0.38)
+}
+
+/// A part's pixel: its colour by its place on the chart (`chart::Vertex::place`) and where that
+/// is on the serpent at rest, lit from above and one side in three flat steps. `kind`: 0 the
+/// body (a pale belly and dark bands across its back), 1 the head (an eye each side), 2 the
+/// jaw, 3 a fin. The body's colour runs into the head's over the neck and the head's belly is
+/// the body's, so the two are not told apart by a seam.
+@fragment
+pub fn serpent_pixel(v: chart::Vertex, kind: u32, tint: vec3, pale: vec3) -> vec4 {
+    let lit = dot(normalize(v.normal), normalize(vec3(0.4, 0.8, 0.45)))
+    let step = if lit > 0.45 { 1.0 } else if lit > 0.0 { 0.72 } else { 0.5 }
+    let f = v.place.x
+    let c = cos(v.place.y)
+    // (A little belly under the sides, all of it under the middle, blended.)
+    let belly = smoothstep(-0.1, -0.6, c)
+    var colour = tint
+    if kind == 0 || kind == 1 {
+        let head = smoothstep(0.75, 1.35, v.rest.z)
+        let band = f * 15.0 - floor(f * 15.0)
+        let dark = if band < 0.28 && c > 0.1 { 0.62 } else { 1.0 }
+        let over = mix(body_tint() * mix(dark, 1.0, head), pale, belly)
+        colour = mix(over, mix(head_tint(), pale, belly), head)
+        if kind == 1 {
+            let side = min(abs(v.place.y - 1.2), abs(v.place.y - (TAU - 1.2)))
+            let d = length(vec2((f - 0.55) * 0.75, side * 0.15))
+            if d < 0.022 {
+                colour = vec3(0.04, 0.04, 0.05)
+            } else if d < 0.045 {
+                colour = vec3(0.95, 0.8, 0.25)
+            }
+        }
+    } else if kind == 2 {
+        // (A lip the head's colour along the jaw's upper edge, where it meets the head.)
+        colour = mix(tint, head_tint(), 0.7 * smoothstep(0.2, 0.7, c))
+    } else if kind == 3 {
+        colour = mix(tint, pale, smoothstep(0.0, 1.0, f) * 0.4)
+    }
+    vec4(colour * step, 1.0)
+}
+
+/// The screen's corner of a triangle over all of it.
+@vertex
+pub fn over_screen(vertex: VertexIndex) -> ClipPosition {
+    let x = f32(vertex.index % 2) * 4.0 - 1.0
+    let y = f32(vertex.index / 2) * 4.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.5, 1.0) }
+}
+
+/// The picture's texel at a pixel.
+@fragment
+pub fn shown(pixel: FragCoord, picture: Texture<Rgba8>) -> vec4 {
+    picture.load(min(u32(pixel.position.x), W - 1), min(u32(pixel.position.y), H - 1))
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let cam = eye()
+    let moment = if PLAY == 1 { time } else { 0.0 }
+    let bones = swim(moment)
+    let parts = serpent()
+    let p = begin_pass_with_depth(
+        mut s.colour,
+        mut s.depth,
+        clear: vec4(0.87, 0.89, 0.85, 1.0),
+        clear_depth: 0.0,
+    )
+    for k in 0..PARTS {
+        let limb = parts[k].posed(bones)
+        let coarse = limb.level(cam.eye, f32(H), cam.tan_half)
+        // (One level finer than its size calls for: a long body's shade bands stair-step.)
+        let level = if coarse > 0 { coarse - 1 } else { 0 }
+        let span = chart::level_span(level)
+        var kind = 3
+        var tint = vec3(0.92, 0.46, 0.2)
+        var pale = vec3(0.98, 0.8, 0.5)
+        if k == BODY {
+            kind = 0
+            tint = body_tint()
+            pale = vec3(0.8, 0.76, 0.5)
+        } else if k == HEAD {
+            kind = 1
+            tint = head_tint()
+            pale = vec3(0.8, 0.76, 0.5)
+        } else if k == JAW {
+            kind = 2
+            tint = vec3(0.8, 0.76, 0.5)
+        }
+        draw(
+            p,
+            chart::vertex.bind(
+                rest: parts[k].rest(),
+                form: limb,
+                band: parts[k].band,
+                under: parts[k].sunk,
+                level: level,
+                seen: cam,
+            ),
+            serpent_pixel.bind(kind: kind, tint: tint, pale: pale),
+            indices: s.grids.indices,
+            first_index: span.x,
+            index_count: span.y,
+            cull: Cull::Back,
+            depth: NEAREST,
+        )
+    }
+    p.end()
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(screen, over_screen, shown.bind(picture: s.colour), vertices: 3)
+    screen.present()
+}
+
+@test
+fn a_swimming_serpent_keeps_its_length_and_its_head_and_jaw_on_its_body() {
+    // Through a whole beat of the swim, the body's path keeps its length within 6 cm of its 3
+    // m (a wave sent down it bends it and does not stretch it), the head's path stays as far from
+    // the body's first joint as at rest (it runs 5 cm over it), and the jaw's starts at its hinge, which the turn that opens it
+    // leaves where the head carries it.
+    let parts = serpent()
+    let rest = parts[BODY].rest().path.length()
+    for step in 0..16 {
+        let bones = swim(PERIOD * f32(step) / 16.0)
+        let body = parts[BODY].posed(bones)
+        assert(abs(body.path.length() - rest) < 0.06, f"{body.path.length()} of {rest}")
+        // (Joint 0 as bone 0 carries it: the bone turns about it, so it's where it was.)
+        let neck = joint(0)
+        let head = parts[HEAD].posed(bones)
+        let at = head.path.place(neck)
+        let held = parts[HEAD].rest().path.place(neck).rho
+        assert(abs(at.rho - held) < 0.001, f"the head's path is {at.rho} from the neck, not {held}")
+        let on_body = body.path.place(neck)
+        // (Within 2 cm: the posed path is cut into 32 straight pieces, which cut a bend's
+        // corner.)
+        let body_held = parts[BODY].rest().path.place(neck).rho
+        assert(abs(on_body.rho - body_held) < 0.02, f"{on_body.rho}, not {body_held}")
+        let hinge = (bones[0] * vec4(vec3(0.0, -0.07, NECK - 0.12), 1.0)).xyz
+        let jaw = parts[JAW].posed(bones)
+        // (The jaw's path starts 10 cm behind the hinge, on the line the head carries, and
+        // turns about the hinge: its first point is within the jaw's swing of there.)
+        assert(length(jaw.path.at[0] - hinge) < 0.02, f"{length(jaw.path.at[0] - hinge)}")
+    }
+}

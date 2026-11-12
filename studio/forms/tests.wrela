@@ -1,0 +1,152 @@
+// The written forms against their references: each file the tool writes is what the tool would
+// write now, and is as near its reference as this says. A change to a reference, a chain or
+// the fit without writing the forms again (`wrela tool forms`) fails here.
+
+use engine::chart::Radial
+use main::{
+    Fitted, arm, hakuro_arm_left, hakuro_arm_right, hakuro_head, hakuro_jacket, hakuro_leg,
+    hakuro_trunk, leg,
+}
+
+/// The most two forms' numbers differ (m).
+fn apart<const A: u32, const R: u32>(a: Radial<A, R>, b: Radial<A, R>) -> f32 {
+    var most = max(abs(a.from - b.from), abs(a.to - b.to))
+    for i in 0..A {
+        for j in 0..R {
+            most = max(most, abs(a.coef[i][j] - b.coef[i][j]))
+        }
+    }
+    most
+}
+
+@test
+fn each_written_arm_is_its_reference_fitted() {
+    // The species' arm: the reference body's, within 1.2 mm rms and 6 mm at worst.
+    let species = arm()
+    assert(apart(species.form, figure::arm::ARM) < 0.000011, "content/figure/arm.wrela is stale")
+    let m = species.miss.spread
+    assert(m.rms < 1.2 && m.most < 2.5 && m.worst < 6.0, f"the arm misses by {m.rms} mm rms")
+    // Hakuro's arms, as the species' and what each is over it: kept where they were written,
+    // and within 1.3 mm rms of his sampled arms' radii as they were measured.
+    let left = hakuro_arm_left(species.form)
+    assert(
+        apart(left.form, hakuro::arm_left_form::ARM_LEFT_OVER) < 0.000011,
+        "content/hakuro/arm_left_form.wrela is stale",
+    )
+    let l = left.miss.spread
+    assert(l.count > 380, f"{l.count} of his left arm's radii")
+    assert(l.rms < 1.3 && l.most < 2.6 && l.worst < 6.0, f"his left arm misses by {l.rms} mm rms")
+    let right = hakuro_arm_right(species.form)
+    assert(
+        apart(right.form, hakuro::arm_right_form::ARM_RIGHT_OVER) < 0.000011,
+        "content/hakuro/arm_right_form.wrela is stale",
+    )
+    let r = right.miss.spread
+    assert(r.count > 380, f"{r.count} of his right arm's radii")
+    assert(r.rms < 1.3 && r.most < 2.6 && r.worst < 6.0, f"his right arm misses by {r.rms} mm rms")
+}
+
+@test
+fn a_characters_limb_stays_where_it_is_when_its_species_limb_changes() {
+    // The species' arm a centimetre thicker: his arm's difference from it takes that off, and
+    // his arm's own radius is what it was, at every place.
+    let was = figure::arm::ARM
+    let now = was.plus(engine::chart::round(0.01))
+    let over = hakuro::arm_left_form::ARM_LEFT_OVER
+    let kept = main::kept_over(
+        main::HAKURO_ARM_LEFT,
+        over,
+        was,
+        now,
+        measured::samples(measured::ARM_LEFT),
+    )
+    for i in 0..12 {
+        let f = 0.05 + 0.08 * f32(i)
+        let theta = 0.7 * f32(i)
+        let his = was.plus(over).radius(f, theta)
+        assert(abs(now.plus(kept.form).radius(f, theta) - his) < 0.00003, f"at {f}")
+        assert(abs(kept.form.radius(f, theta) - (over.radius(f, theta) - 0.01)) < 0.00003)
+    }
+}
+
+@test
+fn the_arms_written_joints_are_the_reference_solved() {
+    let (changes, left) = joints::arm_changes()
+    let written = [
+        figure::arm_joints::SHOULDER_BY_ANGLE,
+        figure::arm_joints::SHOULDER_BY_SQUARE,
+        figure::arm_joints::ELBOW_BY_ANGLE,
+        figure::arm_joints::ELBOW_BY_SQUARE,
+    ]
+    let now = [changes[0].by_angle, changes[0].by_square, changes[1].by_angle, changes[1].by_square]
+    for k in 0..4 {
+        assert(apart(now[k], written[k]) < 0.000011, "content/figure/arm_joints.wrela is stale")
+    }
+    assert(abs(changes[0].upto - figure::arm_joints::SHOULDER_UPTO) < 0.006)
+    assert(abs(changes[1].upto - figure::arm_joints::ELBOW_UPTO) < 0.006)
+    // Outside its bends, the changes take off some of what the posed reference differs by.
+    assert(left.y < left.x, f"the joints' changes leave {left.y} mm rms of {left.x}")
+}
+
+@test
+fn each_written_leg_is_its_reference_fitted() {
+    let species = leg()
+    assert(apart(species.form, figure::leg::LEG) < 0.000011, "content/figure/leg.wrela is stale")
+    let m = species.miss.spread
+    assert(m.rms < 1.3 && m.most < 2.6 && m.worst < 12.0, f"the leg misses by {m.rms} mm rms")
+    // Hakuro's trouser leg, kept where it is over the species' leg (its sampled reference is
+    // gone): as it's written while the species' leg is as written, and within 1.3 mm rms of
+    // the radii kept of his sampled leg; its worst is where his trousers' legs join.
+    let his = hakuro_leg(species.form)
+    assert(
+        apart(his.form, hakuro::leg_form::LEG_OVER) < 0.000011,
+        "content/hakuro/leg_form.wrela is stale",
+    )
+    let h = his.miss.spread
+    assert(h.rms < 1.3 && h.worst < 18.0 && h.count >= 190, f"his leg misses by {h.rms} mm rms")
+}
+
+@test
+fn hakuros_trunk_neck_and_head_are_where_his_sampled_body_was() {
+    // Each kept as it's written, against the radii kept of his sampled body: a change to its
+    // line or to the form's basis that moved it would show. His trunk within 1.8 mm rms; his
+    // head, under his mask and his hair, within 3; his neck within 2.
+    let t = hakuro_trunk().miss.spread
+    assert(t.rms < 1.8 && t.worst < 13.0 && t.count >= 500, f"his trunk misses by {t.rms} mm rms")
+    let head = hakuro_head().miss.spread
+    assert(head.rms < 3.0 && head.count >= 200, f"his head misses by {head.rms} mm rms")
+    let neck = main::hakuro_neck().miss.spread
+    assert(neck.rms < 2.0 && neck.count >= 80, f"his neck misses by {neck.rms} mm rms")
+}
+
+@test
+fn hakuros_jacket_is_where_his_sampled_jacket_was() {
+    // Its four forms kept as they're written, each against the radii kept of what was its own
+    // of his sampled jacket. Its body, about his spine, within 2.6 mm rms: its worst is by its
+    // shoulders' corners, square to his spine, which a chart about a spine is poorest at. Its
+    // collar, about a line behind the root of his neck, within 2.2 (it carries the top of his
+    // jacket's back too). Each shoulder, about his collarbone's line and his upper arm's,
+    // within 3.
+    let j = hakuro_jacket().miss.spread
+    assert(j.rms < 2.6 && j.count >= 340, f"his jacket misses by {j.rms} mm rms")
+    let c = main::hakuro_collar().miss.spread
+    assert(c.rms < 2.2 && c.count >= 100, f"his collar misses by {c.rms} mm rms")
+    let left = main::hakuro_yoke_left().miss.spread
+    let right = main::hakuro_yoke_right().miss.spread
+    assert(left.rms < 3.0 && right.rms < 3.0 && left.count >= 90, f"{left.rms} {right.rms}")
+}
+
+@test
+fn hakuros_hands_are_where_his_sampled_hands_were() {
+    // Each piece of each hand (four fingers, a thumb, a palm), kept as it's written: within
+    // what a finger's, a thumb's and a palm's fit were found to be of his sampled hand's radii
+    // as they were kept (0.3, 0.35 and 0.6 mm rms), so a change to a piece's line or to the
+    // form's basis that moved his hand would show.
+    for i in 0..12 {
+        let fit = main::hakuro_hand(i)
+        let spec = main::hand_spec(i)
+        let most = if i % 6 == 5 { 0.8 } else if i % 6 == 4 { 0.45 } else { 0.35 }
+        assert(fit.miss.spread.rms < most, f"{spec.name} misses by {fit.miss.spread.rms} mm rms")
+        assert(fit.miss.spread.count >= 80, f"{spec.name}: {fit.miss.spread.count} radii")
+    }
+}

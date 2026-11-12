@@ -1,0 +1,926 @@
+// The forms tool (`wrela tool forms`): charted forms' numbers, solved. Each form is a radius
+// about the line of a chain of joints (`engine::chart`), linear in its numbers, so fitting it to
+// its reference is one exact solve: no starting guess, no steps, the same answer every run. The
+// tool reads each form's reference along rays from the form's own path (`targets`), solves its
+// numbers, and writes them as a Wrela file where the game reads them (content/figure for the
+// species' body, content/hakuro for what the hero wears over it). The references stay
+// references: the game builds without them.
+//
+// ```text
+// wrela tool forms -- [form ...]
+// ```
+//
+// With no form named, it writes them all. For each it prints how far the written form is from
+// its reference where it wasn't fitted (between the fit's own places): the misses' root mean
+// square, the size half are under, the size 95% are under and the worst (mm, across the side),
+// and their root mean square by place on the chart, stations along the form's span by sectors
+// round it.
+//
+// ```text
+// wrela tool forms -- --stations <form> ...
+// ```
+//
+// Writes nothing: for each form named it lists where its reference is along its chain's whole
+// path, station by station (how many rays round the path meet it, and the least and the most
+// radius they find). A form's span, how far its reference is read and how its root is tucked
+// are chosen from that list.
+
+use engine::chart
+use engine::chart::{Chain, Radial, Sample}
+use std::math::TAU
+use figure::chains
+use humanoid::body::HERO
+use std::io::print
+use std::string::String
+use std::tool::args
+use std::tool::files
+use std::tool::files::rooted
+use targets::{Grid, Miss, Reference, SECTORS, STATIONS, miss, rays, triangles_of}
+
+pub const USAGE: Text = "usage: wrela tool forms -- [form ...] | --stations <form> ..."
+
+/// A form the tool fits: its name on the command line, its file in the workspace and its
+/// constant there, what the file says it is, the chain it's charted about, the span of the
+/// chain's path its reference covers (fractions of its length), how far from the path its
+/// reference is read (m), and how its root is tucked in (`tuck`: its radius at its path's
+/// start, as a share of its radius where its reference starts, so its root stays under what's
+/// worn over it). A form covers its whole path: past its reference's end it keeps the radius it
+/// has there.
+pub struct Spec: Copy {
+    pub name: Text,
+    pub file: Text,
+    pub constant: Text,
+    pub about: [Text; 3],
+    pub chain: Chain,
+    pub span: vec2,
+    pub most: f32,
+    pub tuck: f32,
+}
+
+/// The species' left arm: the reference body's own, bare, from where it leaves his trunk to
+/// his wrist.
+pub const ARM: Spec = Spec {
+    name: "arm",
+    file: "content/figure/arm.wrela",
+    constant: "ARM",
+    about: [
+        "The figure's left arm, bare: Quaternius's Superhero Male (CC0), read along rays from the",
+        "line through its shoulder, elbow and wrist (`chains::arm_left`) and fitted by the forms tool.",
+        "His right is its mirror image (`Radial::mirrored`).",
+    ],
+    chain: chains::arm_left(),
+    span: vec2(0.14, 1.0),
+    most: 0.14,
+    tuck: 0.5,
+}
+
+/// What Hakuro's left arm is over the species': bare, from his armhole to inside the wrap at
+/// his wrist. Fitted once to his sampled grid; kept where it is since (`hakuro_arm_left`).
+pub const HAKURO_ARM_LEFT: Spec = Spec {
+    name: "hakuro-arm-left",
+    file: "content/hakuro/arm_left_form.wrela",
+    constant: "ARM_LEFT_OVER",
+    about: [
+        "What Hakuro's left arm is over the figure's (`figure::arm::ARM`), bare to the wrap round",
+        "his forearm. Fitted once to his sampled arm (rywible/wrela#430 holds it); the forms tool",
+        "keeps his arm where it is when the figure's arm is fitted again (studio/forms/measured).",
+    ],
+    chain: chains::arm_left(),
+    span: vec2(0.14, 0.84),
+    most: 0.14,
+    tuck: 0.5,
+}
+
+/// What Hakuro's right arm is over the species': his jacket's sleeve and the gauntlet over
+/// his forearm. Fitted once to his sampled grid; kept where it is since (`hakuro_arm_right`).
+pub const HAKURO_ARM_RIGHT: Spec = Spec {
+    name: "hakuro-arm-right",
+    file: "content/hakuro/arm_right_form.wrela",
+    constant: "ARM_RIGHT_OVER",
+    about: [
+        "What Hakuro's right arm is over the figure's (`figure::arm::ARM`, mirrored): his jacket's",
+        "sleeve and his gauntlet. Fitted once to his sampled arm (rywible/wrela#430 holds it); the",
+        "forms tool keeps his arm where it is when the figure's arm is fitted again.",
+    ],
+    chain: chains::arm_left().mirrored(),
+    span: vec2(0.14, 0.84),
+    most: 0.14,
+    tuck: 0.5,
+}
+
+/// The species' left leg: the reference body's own, bare, from where it leaves his trunk to
+/// his ankle. Its root keeps its whole width up to its path's start inside his hip (`tuck` 1):
+/// narrowed there, a hip folded deep (a crouch, a roll) swung the narrowed stretch into sight
+/// and the thigh thinned where it left his trunk. A creature draws the root under its trunk
+/// (`Part::sunk`).
+pub const LEG: Spec = Spec {
+    name: "leg",
+    file: "content/figure/leg.wrela",
+    constant: "LEG",
+    about: [
+        "The figure's left leg, bare: Quaternius's Superhero Male (CC0), read along rays from the",
+        "line through its hip, knee and ankle (`chains::leg_left`) and fitted by the forms tool.",
+        "His right is its mirror image (`Radial::mirrored`).",
+    ],
+    chain: chains::leg_left(),
+    span: vec2(0.17, 1.0),
+    most: 0.16,
+    tuck: 1.0,
+}
+
+/// What Hakuro's left leg is over the species': his trousers, as his sampled body has them,
+/// from his hip to inside his boot, less the species' leg.
+pub const HAKURO_LEG: Spec = Spec {
+    name: "hakuro-leg",
+    file: "content/hakuro/leg_form.wrela",
+    constant: "LEG_OVER",
+    about: [
+        "What Hakuro's left leg is over the figure's (`figure::leg::LEG`): his loose trousers, less",
+        "the figure's leg, about the line through his hip, knee and ankle. Fitted by the forms tool to",
+        "his sampled body, which is gone, and kept where it is. His right is its mirror image.",
+    ],
+    chain: chains::leg_left(),
+    span: vec2(0.2, 0.78),
+    most: 0.16,
+    tuck: 0.6,
+}
+
+/// Hakuro's trunk as he's dressed: his shirt and his trousers' seat, as his sampled body has
+/// them, from the fork of his legs to his neck.
+pub const HAKURO_TRUNK: Spec = Spec {
+    name: "hakuro-trunk",
+    file: "content/hakuro/trunk_form.wrela",
+    constant: "TRUNK",
+    about: [
+        "Hakuro's trunk as he's dressed, from the fork of his legs to his neck, about the line of",
+        "his spine (`figure::chains::trunk`): fitted by the forms tool to his sampled body, which is",
+        "gone, and kept as it is.",
+    ],
+    chain: chains::trunk(),
+    span: vec2(0.03, 1.0),
+    most: 0.32,
+    tuck: 0.7,
+}
+
+/// Hakuro's jacket's body: its outer face as its sampled shell has it, from its hem to under
+/// its shoulders (which lie square to his spine's line, and are charted about their own with
+/// its collar: `HAKURO_YOKE_LEFT`, `HAKURO_COLLAR`), run on smoothly across its open front and
+/// its armholes (which its cover cuts).
+pub const HAKURO_JACKET: Spec = Spec {
+    name: "hakuro-jacket",
+    file: "content/hakuro/jacket_form.wrela",
+    constant: "JACKET",
+    about: [
+        "Hakuro's jacket's body, its outer face from its hem to under its shoulders, about the line",
+        "of his spine: fitted by the forms tool to his sampled jacket, which is gone, and kept as it",
+        "is. It runs on across the jacket's open front and its armholes, which its cover cuts.",
+    ],
+    chain: chains::trunk(),
+    span: vec2(0.03, 0.92),
+    most: 0.34,
+    tuck: 1.0,
+}
+
+/// Hakuro's head under his mask and his hair: his sampled body's, from under his chin to his
+/// crown, about a line his head carries whole.
+pub const HAKURO_HEAD: Spec = Spec {
+    name: "hakuro-head",
+    file: "content/hakuro/head_form.wrela",
+    constant: "HEAD",
+    about: [
+        "Hakuro's head, under his mask and his hair, about a line straight up through his head",
+        "(`figure::chains::head`): fitted by the forms tool to his sampled body, which is gone, and",
+        "kept as it is. It closes under his chin (`hakuro::charts`).",
+    ],
+    chain: chains::head(),
+    span: vec2(0.18, 0.93),
+    most: 0.135,
+    tuck: 1.0,
+}
+
+/// Hakuro's neck: his sampled body's, from inside his collar to under his jaw. His jaw is past
+/// how far the reference is read (`most`), so the neck runs on smoothly behind it.
+pub const HAKURO_NECK: Spec = Spec {
+    name: "hakuro-neck",
+    file: "content/hakuro/neck_form.wrela",
+    constant: "NECK",
+    about: [
+        "Hakuro's neck, about the line through his neck's and his head's joints",
+        "(`figure::chains::neck`), read no further out than his throat: fitted by the forms tool to",
+        "his sampled body, which is gone, and kept as it is.",
+    ],
+    chain: chains::neck(),
+    span: vec2(0.3, 0.8),
+    most: 0.095,
+    tuck: 0.9,
+}
+
+/// Hakuro's jacket's collar: its outer face, standing round his neck, about a line straight up
+/// behind the root of his neck.
+pub const HAKURO_COLLAR: Spec = Spec {
+    name: "hakuro-collar",
+    file: "content/hakuro/collar_form.wrela",
+    constant: "COLLAR",
+    about: [
+        "Hakuro's jacket's collar, its outer face and the top of his jacket's back under it, about a",
+        "line straight up behind the root of his neck (`figure::chains::collar`): fitted by the forms",
+        "tool to his sampled jacket, which is gone, and kept as it is. It runs on across its openings.",
+    ],
+    chain: chains::collar(),
+    span: vec2(0.10, 0.855),
+    most: 0.17,
+    tuck: 1.0,
+}
+
+/// Hakuro's jacket's left shoulder: its outer face over his shoulder, and down a little way
+/// in front and behind, about his collarbone's line.
+pub const HAKURO_YOKE_LEFT: Spec = Spec {
+    name: "hakuro-yoke-left",
+    file: "content/hakuro/yoke_left_form.wrela",
+    constant: "YOKE_LEFT",
+    about: [
+        "Hakuro's jacket's left shoulder, its outer face, about the line along his collarbone and his",
+        "upper arm (`figure::chains::yoke_left`): fitted by the forms tool to his sampled jacket, which",
+        "is gone, and kept as it is. It runs on under his arm.",
+    ],
+    chain: chains::yoke_left(),
+    span: vec2(0.08, 0.47),
+    most: 0.17,
+    tuck: 1.0,
+}
+
+/// His jacket's right shoulder, as his left.
+pub const HAKURO_YOKE_RIGHT: Spec = Spec {
+    name: "hakuro-yoke-right",
+    file: "content/hakuro/yoke_right_form.wrela",
+    constant: "YOKE_RIGHT",
+    about: [
+        "Hakuro's jacket's right shoulder, its outer face, about the line along his collarbone and his",
+        "upper arm (`figure::chains::yoke_right`): fitted by the forms tool to his sampled jacket, which",
+        "is gone, and kept as it is. It runs on under his arm.",
+    ],
+    chain: chains::yoke_right(),
+    span: vec2(0.08, 0.47),
+    most: 0.17,
+    tuck: 1.0,
+}
+
+/// The pieces of a hand: its four fingers from the index, its thumb, its palm.
+pub const HAND_PIECES: u32 = 6
+
+const HAND_NAMES: [Text; 12] = [
+    "hakuro-index-left",
+    "hakuro-middle-left",
+    "hakuro-ring-left",
+    "hakuro-little-left",
+    "hakuro-thumb-left",
+    "hakuro-palm-left",
+    "hakuro-index-right",
+    "hakuro-middle-right",
+    "hakuro-ring-right",
+    "hakuro-little-right",
+    "hakuro-thumb-right",
+    "hakuro-palm-right",
+]
+const HAND_FILES: [Text; 12] = [
+    "content/hakuro/index_left_form.wrela",
+    "content/hakuro/middle_left_form.wrela",
+    "content/hakuro/ring_left_form.wrela",
+    "content/hakuro/little_left_form.wrela",
+    "content/hakuro/thumb_left_form.wrela",
+    "content/hakuro/palm_left_form.wrela",
+    "content/hakuro/index_right_form.wrela",
+    "content/hakuro/middle_right_form.wrela",
+    "content/hakuro/ring_right_form.wrela",
+    "content/hakuro/little_right_form.wrela",
+    "content/hakuro/thumb_right_form.wrela",
+    "content/hakuro/palm_right_form.wrela",
+]
+const HAND_CONSTANTS: [Text; 12] = [
+    "INDEX_LEFT",
+    "MIDDLE_LEFT",
+    "RING_LEFT",
+    "LITTLE_LEFT",
+    "THUMB_LEFT",
+    "PALM_LEFT",
+    "INDEX_RIGHT",
+    "MIDDLE_RIGHT",
+    "RING_RIGHT",
+    "LITTLE_RIGHT",
+    "THUMB_RIGHT",
+    "PALM_RIGHT",
+]
+
+/// Piece `i` of Hakuro's hands (his left's six in `HAND_PIECES`' order, then his right's): his
+/// left hand bare and his right in its glove. A finger from where it leaves his palm to where
+/// its tip starts to round (a part closes it from there: `Part::caps`); his thumb from its
+/// root at his wrist, so the ball of his thumb is the thumb's and moves with it; his palm from
+/// up his forearm, through his wrist, to his knuckles. Each was fitted to his sampled hand,
+/// which is gone: a finger read no further out than the gap to the finger beside it, his palm
+/// no further than its own edge, short of the ball of his thumb, and his thumb only on the
+/// sides that face away from his hand (read all round, its form took his palm's and his
+/// index's surfaces for its own). The forms are kept as they are (`hakuro_hand`).
+pub fn hand_spec(i: u32) -> Spec {
+    let piece = i % HAND_PIECES
+    let left = i < HAND_PIECES
+    let palm = piece == 5
+    Spec {
+        name: HAND_NAMES[i],
+        file: HAND_FILES[i],
+        constant: HAND_CONSTANTS[i],
+        about: [
+            "A piece of one of Hakuro's hands (his left bare, his right gloved), about the piece's own",
+            "line (`hakuro::hands`): fitted by the forms tool to his sampled hand, which is gone, and",
+            "kept as it is. `studio/forms/measured.wrela` holds radii of that hand to measure it by.",
+        ],
+        chain: if palm {
+            if left { hakuro::hands::palm_left() } else { hakuro::hands::palm_right() }
+        } else if left {
+            hakuro::hands::finger_left(piece)
+        } else {
+            hakuro::hands::finger_right(piece)
+        },
+        span: measured::HAND_SPANS[i],
+        most: if palm { 0.048 } else if piece == 4 { 0.022 } else { 0.016 },
+        tuck: 1.0,
+    }
+}
+
+/// Piece `i` of Hakuro's hands as it's written.
+fn hand_written(i: u32) -> Radial<16, 13> {
+    [
+        hakuro::index_left_form::INDEX_LEFT,
+        hakuro::middle_left_form::MIDDLE_LEFT,
+        hakuro::ring_left_form::RING_LEFT,
+        hakuro::little_left_form::LITTLE_LEFT,
+        hakuro::thumb_left_form::THUMB_LEFT,
+        hakuro::palm_left_form::PALM_LEFT,
+        hakuro::index_right_form::INDEX_RIGHT,
+        hakuro::middle_right_form::MIDDLE_RIGHT,
+        hakuro::ring_right_form::RING_RIGHT,
+        hakuro::little_right_form::LITTLE_RIGHT,
+        hakuro::thumb_right_form::THUMB_RIGHT,
+        hakuro::palm_right_form::PALM_RIGHT,
+    ][i]
+}
+
+/// Piece `i` of Hakuro's hands (`hand_spec`): its form as written, kept where it is, and how
+/// far it is from his sampled hand's radii as they were (`measured::HANDS`).
+pub fn hakuro_hand(i: u32) -> Fitted<16, 13> {
+    let s = hand_spec(i)
+    let form = hand_written(i)
+    Fitted {
+        form,
+        miss: miss(form, measured::hand_samples(i), s.span, s.chain.rest().length()),
+        rays: 0,
+    }
+}
+
+/// A form fitted: its numbers as written, how far it is from its reference where it wasn't
+/// fitted, and how many rays it was fitted to.
+pub struct Fitted<const A: u32, const R: u32>: Copy {
+    pub form: Radial<A, R>,
+    pub miss: Miss,
+    pub rays: u32,
+}
+
+/// What's fitted of `s` over `base`: the reference `t` read at four places a control value
+/// along by four a term round over its span, less `base` there. A place whose ray meets no
+/// side of the reference (an opening in a garment, where a limb is joined to something else)
+/// is given what the places either side of it round its station have, so the form runs on
+/// smoothly across it. The root's radius narrows evenly from where the reference starts to
+/// `tuck` of it at the path's start (or, over a base that isn't nothing, the difference is
+/// held: the base is tucked already); and past the reference's end the form keeps what it is
+/// at its end. Solved, rounded as it's written, and measured with `base` added back, between
+/// the fit's places.
+pub fn fitted_over<const A: u32, const R: u32, T: Reference>(
+    t: T,
+    s: Spec,
+    base: Radial<A, R>,
+    based: bool,
+) -> Fitted<A, R> {
+    let path = s.chain.rest()
+    let along = 4 * A
+    let about = 4 * R
+    let every = targets::every_ray(t, path, s.span, along, about, vec2(0.0, 0.0), s.most)
+    var seen: Vec<Sample> = Vec::new()
+    var read = 0
+    // The first and the last station's rows, as they're fitted: the root and the tail run on
+    // from them.
+    var first: Vec<Sample> = Vec::new()
+    var last: Vec<Sample> = Vec::new()
+    for i in 0..along {
+        var row: Vec<Sample> = Vec::new()
+        var met = 0
+        for j in 0..about {
+            let k = every[i * about + j]
+            if k.r > 0.0 {
+                met += 1
+            }
+            row.push(Sample { r: k.r - base.radius(k.f, k.theta), ..k })
+        }
+        if met == 0 {
+            continue
+        }
+        read += met
+        for j in 0..about {
+            if every[i * about + j].r > 0.0 {
+                continue
+            }
+            // The nearest places round the station, before and after, whose rays met a side.
+            var before = 1
+            while every[i * about + (j + about - before) % about].r <= 0.0 {
+                before += 1
+            }
+            var after = 1
+            while every[i * about + (j + after) % about].r <= 0.0 {
+                after += 1
+            }
+            let a = every[i * about + (j + about - before) % about]
+            let b = every[i * about + (j + after) % about]
+            let x = f32(before) / f32(before + after)
+            row[j].r = mix(a.r - base.radius(a.f, a.theta), b.r - base.radius(b.f, b.theta), x)
+        }
+        if first.is_empty() {
+            first = row.clone()
+        }
+        last = row.clone()
+        for k in row {
+            seen.push(k)
+        }
+    }
+    // The root, before the reference starts.
+    let steps = max(u32(f32(along) * s.span.x / max(s.span.y - s.span.x, 0.001)), 2)
+    for i in 0..steps {
+        let f = s.span.x * f32(i) / f32(steps)
+        for k in first {
+            let r = if based { k.r } else { k.r * mix(s.tuck, 1.0, smoothstep(0.0, s.span.x, f)) }
+            seen.push(Sample { f, theta: k.theta, r })
+        }
+    }
+    // Past the reference's end.
+    if s.span.y < 0.999 {
+        let more = max(u32(f32(along) * (1.0 - s.span.y) / max(s.span.y - s.span.x, 0.001)), 2)
+        for i in 0..more {
+            let f = s.span.y + (1.0 - s.span.y) * f32(i + 1) / f32(more)
+            for k in last {
+                seen.push(Sample { f, theta: k.theta, r: k.r })
+            }
+        }
+    }
+    let form: Radial<A, R> = chart::rounded(chart::fit(seen))
+    let unseen = rays(t, path, s.span, along, about, vec2(0.5, 0.5), s.most)
+    Fitted { form, miss: miss(base.plus(form), unseen, s.span, path.length()), rays: read }
+}
+
+/// `s`'s form fitted to reference `t`, over nothing.
+pub fn fitted<const A: u32, const R: u32, T: Reference>(t: T, s: Spec) -> Fitted<A, R> {
+    fitted_over(t, s, chart::round(0.0), false)
+}
+
+/// The reference body's left arm's triangles (its shoulder, arm and hand).
+pub fn body_arm_left() -> targets::Triangles {
+    triangles_of(
+        HERO.clone(),
+        [false, false, false, false, true, false],
+        vec3(0.1, 1.2, -0.3),
+        vec3(0.8, 1.7, 0.2),
+    )
+}
+
+/// The species' arm, fitted.
+pub fn arm() -> Fitted<16, 13> {
+    fitted(body_arm_left(), ARM)
+}
+
+/// A character's limb kept where it is over a species' limb fitted again: what it's written as
+/// over the species' limb as written (`over`, `was`), over the species' limb as it is now
+/// (`now`). Forms about one path add, so no reference is read: the character's limb is the
+/// same radius at every place, and only what it's a difference from has changed. Measured
+/// against what its reference was found to be (`measured`, over `span` of the path).
+pub fn kept_over<const A: u32, const R: u32>(
+    s: Spec,
+    over: Radial<A, R>,
+    was: Radial<A, R>,
+    now: Radial<A, R>,
+    measured: [Sample],
+) -> Fitted<A, R> {
+    let form: Radial<A, R> = chart::rounded(over.plus(was).plus(now, by: -1.0))
+    let whole = now.plus(form)
+    Fitted {
+        form,
+        miss: miss(whole, measured, s.span, s.chain.rest().length()),
+        rays: 0,
+    }
+}
+
+/// What Hakuro's left arm is over the species' arm `base`: his arm as written, kept where it
+/// is, and how far it is from his sampled arm's radii (`measured::ARM_LEFT`).
+pub fn hakuro_arm_left(base: Radial<16, 13>) -> Fitted<16, 13> {
+    kept_over(
+        HAKURO_ARM_LEFT,
+        hakuro::arm_left_form::ARM_LEFT_OVER,
+        figure::arm::ARM,
+        base,
+        measured::samples(measured::ARM_LEFT),
+    )
+}
+
+/// What Hakuro's right arm is over the species' arm `base` (the left's: mirrored here), kept
+/// where it is, and how far it is from his sampled arm's radii (`measured::ARM_RIGHT`).
+pub fn hakuro_arm_right(base: Radial<16, 13>) -> Fitted<16, 13> {
+    kept_over(
+        HAKURO_ARM_RIGHT,
+        hakuro::arm_right_form::ARM_RIGHT_OVER,
+        figure::arm::ARM.mirrored(),
+        base.mirrored(),
+        measured::samples(measured::ARM_RIGHT),
+    )
+}
+
+/// The species' leg, fitted to the reference body's left leg's triangles.
+pub fn leg() -> Fitted<16, 13> {
+    fitted(
+        triangles_of(
+            HERO.clone(),
+            [false, false, true, false, false, false],
+            vec3(-9.0),
+            vec3(9.0),
+        ),
+        LEG,
+    )
+}
+
+/// A form kept as it's written: how far it is from what its reference was found to be
+/// (`measured`: radii of the reference, kept when the reference went).
+fn kept<const A: u32, const R: u32>(
+    s: Spec,
+    form: Radial<A, R>,
+    measured: Vec<Sample>,
+) -> Fitted<A, R> {
+    Fitted { form, miss: miss(form, measured, s.span, s.chain.rest().length()), rays: 0 }
+}
+
+/// What Hakuro's left leg is over the species' leg `base`: his leg as written, kept where it
+/// is, and how far it is from his sampled leg's radii (`measured::LEG`).
+pub fn hakuro_leg(base: Radial<16, 13>) -> Fitted<16, 13> {
+    kept_over(
+        HAKURO_LEG,
+        hakuro::leg_form::LEG_OVER,
+        figure::leg::LEG,
+        base,
+        measured::samples_of(measured::LEG, 16, 13, HAKURO_LEG.span),
+    )
+}
+
+/// Hakuro's trunk, kept as written.
+pub fn hakuro_trunk() -> Fitted<24, 21> {
+    kept(
+        HAKURO_TRUNK,
+        hakuro::trunk_form::TRUNK,
+        measured::samples_of(measured::TRUNK, 24, 21, HAKURO_TRUNK.span),
+    )
+}
+
+/// Hakuro's jacket's body, kept as written.
+pub fn hakuro_jacket() -> Fitted<24, 21> {
+    kept(
+        HAKURO_JACKET,
+        hakuro::jacket_form::JACKET,
+        measured::samples_of(measured::JACKET, 24, 21, HAKURO_JACKET.span),
+    )
+}
+
+/// Hakuro's head, kept as written.
+pub fn hakuro_head() -> Fitted<16, 13> {
+    kept(
+        HAKURO_HEAD,
+        hakuro::head_form::HEAD,
+        measured::samples_of(measured::HEAD, 16, 13, HAKURO_HEAD.span),
+    )
+}
+
+/// Hakuro's collar, kept as written.
+pub fn hakuro_collar() -> Fitted<16, 13> {
+    kept(
+        HAKURO_COLLAR,
+        hakuro::collar_form::COLLAR,
+        measured::samples_of(measured::COLLAR, 16, 13, HAKURO_COLLAR.span),
+    )
+}
+
+/// Hakuro's jacket's left shoulder, kept as written.
+pub fn hakuro_yoke_left() -> Fitted<16, 13> {
+    kept(
+        HAKURO_YOKE_LEFT,
+        hakuro::yoke_left_form::YOKE_LEFT,
+        measured::samples_of(measured::YOKE_LEFT, 16, 13, HAKURO_YOKE_LEFT.span),
+    )
+}
+
+/// Hakuro's jacket's right shoulder, kept as written.
+pub fn hakuro_yoke_right() -> Fitted<16, 13> {
+    kept(
+        HAKURO_YOKE_RIGHT,
+        hakuro::yoke_right_form::YOKE_RIGHT,
+        measured::samples_of(measured::YOKE_RIGHT, 16, 13, HAKURO_YOKE_RIGHT.span),
+    )
+}
+
+/// Hakuro's neck, kept as written.
+pub fn hakuro_neck() -> Fitted<16, 13> {
+    kept(
+        HAKURO_NECK,
+        hakuro::neck_form::NECK,
+        measured::samples_of(measured::NECK, 16, 13, HAKURO_NECK.span),
+    )
+}
+
+/// What's said of a fitted form: its misses' spread, and their size by place.
+fn said<const A: u32, const R: u32>(s: Spec, f: Fitted<A, R>) -> String {
+    let m = f.miss.spread
+    var out = String::new()
+    out.push_str(
+        if f.rays > 0 {
+            f"{s.name}: {s.file}, {f.form.numbers()} numbers from {f.rays} rays; {m.count} more between them miss by {m.rms:.2} mm rms, half under {m.half:.2}, 95% under {m.most:.2}, worst {m.worst:.1}\n"
+        } else {
+            f"{s.name}: {s.file}, {f.form.numbers()} numbers kept where they were; {m.count} radii of its reference as it was miss by {m.rms:.2} mm rms, half under {m.half:.2}, 95% under {m.most:.2}, worst {m.worst:.1}\n"
+        },
+    )
+    out.push_str(
+        "  by place (mm rms): a row a station from the span's start to its end, a column a sector round from angle 0\n",
+    )
+    for i in 0..STATIONS {
+        out.push_str("   ")
+        for j in 0..SECTORS {
+            out.push_str(f" {f.miss.by_place[i][j]:.2}")
+        }
+        out.push_str("\n")
+    }
+    out
+}
+
+/// The source of form `s`'s file.
+pub fn file_of<const A: u32, const R: u32>(s: Spec, form: Radial<A, R>) -> String {
+    var out = String::new()
+    out.push_str(
+        "// Written by the forms tool (`wrela tool forms`, studio/forms): don't edit it by hand, change\n",
+    )
+    out.push_str(
+        "// the tool or what it fits and write it again. A charted form's radius (engine::chart): a row\n",
+    )
+    out.push_str(
+        "// a control value along its path, each a Fourier series round it (m).\n\n",
+    )
+    out.push_str("use engine::chart::Radial\n\n")
+    var doc: Vec<String> = Vec::new()
+    for line in s.about {
+        doc.push(line.to_string())
+    }
+    out.push_str(chart::source(form, s.constant.to_string().as_str(), doc).as_str())
+    out
+}
+
+/// Form `s` written: what to print of it, or why it failed.
+fn written<const A: u32, const R: u32>(s: Spec, f: Fitted<A, R>) -> Result<String, String> {
+    let Some(path) = rooted("ws", s.file.to_string().as_str()) else {
+        return Err(f"no path for {s.file}")
+    }
+    if files::write(path.as_str(), file_of(s, f.form).as_bytes()).wait().is_err() {
+        return Err(f"couldn't write {path}")
+    }
+    Ok(said(s, f))
+}
+
+/// A limb's joints' changes written: `name` on the command line, into `file`, its two
+/// joints' constants named after `joints` (as "SHOULDER", "ELBOW"), solved for `limb`. What to
+/// print of them, or why it failed.
+fn joints_written(
+    name: Text,
+    file: Text,
+    joints: [Text; 2],
+    limb: posed::Limb,
+) -> Result<String, String> {
+    let Some(path) = rooted("ws", file.to_string().as_str()) else {
+        return Err(f"no path for {file}")
+    }
+    let (changes, left) = joints::changes_of(limb)
+    var out = String::new()
+    out.push_str(
+        "// Written by the forms tool (`wrela tool forms`, studio/forms): don't edit it by hand, change\n",
+    )
+    out.push_str(
+        "// the tool or what it fits and write it again. How a limb's form changes where its two joints\n",
+    )
+    out.push_str(
+        "// bend (engine::chart::Change): each a form times the bend's angle and a form times its\n",
+    )
+    out.push_str(
+        "// square, written for a bend toward angle 0. Solved against the reference body (Quaternius's\n",
+    )
+    out.push_str(
+        "// Superhero Male, CC0) posed by its own skin weights, over poses of captured motion\n",
+    )
+    out.push_str("// (studio/forms/joints.wrela).\n\n")
+    out.push_str("use engine::chart::Radial\n\n")
+    for j in 0..2 {
+        out.push_str(
+            f"/// The deepest the joint bent among the poses its change was solved over (radians).\npub const {joints[j]}_UPTO: f32 = {changes[j].upto:.2}\n\n",
+        )
+    }
+    for k in 0..4 {
+        let form = if k % 2 == 0 { changes[k / 2].by_angle } else { changes[k / 2].by_square }
+        let by = if k % 2 == 0 { "ANGLE" } else { "SQUARE" }
+        let what = if k % 2 == 0 { "a radian" } else { "a radian squared" }
+        var doc: Vec<String> = Vec::new()
+        doc.push(f"The joint's change, {what} of its bend (m).")
+        out.push_str(chart::source(form, f"{joints[k / 2]}_BY_{by}".as_str(), doc).as_str())
+        if k < 3 {
+            out.push_str("\n")
+        }
+    }
+    if files::write(path.as_str(), out.as_bytes()).wait().is_err() {
+        return Err(f"couldn't write {path}")
+    }
+    Ok(
+        f"{name}: {file}, its two joints' changes; outside its bends the posed reference is {left.x:.1} mm rms from itself at rest, {left.y:.1} with the changes taken off\n",
+    )
+}
+
+/// Whether the command line asks for the form named `name` (every form, if it names none).
+fn chosen(wanted: [String], name: Text) -> bool {
+    if wanted.is_empty() {
+        return true
+    }
+    for w in wanted {
+        if w.as_str() == name {
+            return true
+        }
+    }
+    false
+}
+
+/// Where a form's reference is, listed: 24 stations along its chain's whole path, each with
+/// where the path is there, how many of 32 rays round it meet the reference, and the least and
+/// the most radius they find (mm). What a span, a `most` and a `tuck` are chosen from.
+fn stations<T: Reference>(t: T, s: Spec) -> String {
+    let path = s.chain.rest()
+    var out = String::new()
+    out.push_str(
+        f"{s.name}: its path is {path.length():.3} m; a station: how far along, where the path is (m), rays of 32 that meet its reference within {s.most} m, the least and the most radius (mm)\n",
+    )
+    for i in 0..24 {
+        let f = (f32(i) + 0.5) / 24.0
+        let at = path.frame(f * path.length()).at
+        let met = rays(t, path, vec2(f, f + 0.0001), 1, 32, vec2(0.0, 0.0), s.most)
+        var least = 9.0
+        var most = 0.0
+        for k in met {
+            least = min(least, k.r)
+            most = max(most, k.r)
+        }
+        if met.is_empty() {
+            least = 0.0
+        }
+        out.push_str(
+            f"  {f:.3}  at {at.x:.3} {at.y:.3} {at.z:.3}  {met.len()} rays  {least * 1000.0:.0} to {most * 1000.0:.0}\n",
+        )
+    }
+    // Every third station's section: the radius each of 16 rays round it finds (mm; 0 where a
+    // ray meets nothing), from angle 0.
+    out.push_str("  sections, 16 rays round from angle 0 (mm):\n")
+    for i in 0..8 {
+        let f = (f32(3 * i) + 1.5) / 24.0
+        let every = targets::every_ray(t, path, vec2(f, f + 0.0001), 1, 16, vec2(0.0, 0.0), s.most)
+        var line = String::from(f"  {f:.3} ")
+        for k in every {
+            line.push_str(f" {max(k.r, 0.0) * 1000.0:.0}".as_str())
+        }
+        line.push_str("\n")
+        out.push_str(line.as_str())
+    }
+    out
+}
+
+/// The stations of the form named `name` (`stations`), or nothing if no form has the name.
+fn stations_of(name: str) -> Option<String> {
+    let body = |part: u32| {
+        var keep = [false; 6]
+        keep[part] = true
+        triangles_of(HERO.clone(), keep, vec3(-9.0), vec3(9.0))
+    }
+    if name == ARM.name {
+        return Some(stations(body(4), ARM))
+    }
+    if name == LEG.name {
+        return Some(stations(body(2), LEG))
+    }
+    None
+}
+
+pub fn tool() -> u32 {
+    let wanted = args()
+    if wanted.len() >= 1 && wanted[0].as_str() == "--stations" {
+        if wanted.len() < 2 {
+            print(USAGE)
+            return 2
+        }
+        for i in 1..wanted.len() {
+            match stations_of(wanted[i].as_str()) {
+                Some(text) => print(text),
+                None => {
+                    print(f"forms: no form is named {wanted[i]}")
+                    return 2
+                },
+            }
+        }
+        return 0
+    }
+    var done = 0
+    var results: Vec<Result<String, String>> = Vec::new()
+    // (What's fitted over the species' arm is fitted over it as this run has it, so one run
+    // writes them all the same whatever was written before.)
+    let arms = chosen(wanted, HAKURO_ARM_LEFT.name) || chosen(wanted, HAKURO_ARM_RIGHT.name)
+    if chosen(wanted, ARM.name) || arms {
+        let species = arm()
+        if chosen(wanted, ARM.name) {
+            results.push(written(ARM, species))
+        }
+        if chosen(wanted, HAKURO_ARM_LEFT.name) {
+            results.push(written(HAKURO_ARM_LEFT, hakuro_arm_left(species.form)))
+        }
+        if chosen(wanted, HAKURO_ARM_RIGHT.name) {
+            results.push(written(HAKURO_ARM_RIGHT, hakuro_arm_right(species.form)))
+        }
+    }
+    if chosen(wanted, "arm-joints") {
+        results.push(
+            joints_written(
+                "arm-joints",
+                "content/figure/arm_joints.wrela",
+                ["SHOULDER", "ELBOW"],
+                posed::ARM_LEFT,
+            ),
+        )
+    }
+    if chosen(wanted, HAKURO_TRUNK.name) {
+        results.push(written(HAKURO_TRUNK, hakuro_trunk()))
+    }
+    if chosen(wanted, HAKURO_JACKET.name) {
+        results.push(written(HAKURO_JACKET, hakuro_jacket()))
+    }
+    if chosen(wanted, HAKURO_COLLAR.name) {
+        results.push(written(HAKURO_COLLAR, hakuro_collar()))
+    }
+    if chosen(wanted, HAKURO_YOKE_LEFT.name) {
+        results.push(written(HAKURO_YOKE_LEFT, hakuro_yoke_left()))
+    }
+    if chosen(wanted, HAKURO_YOKE_RIGHT.name) {
+        results.push(written(HAKURO_YOKE_RIGHT, hakuro_yoke_right()))
+    }
+    for i in 0..2 * HAND_PIECES {
+        if chosen(wanted, hand_spec(i).name) {
+            results.push(written(hand_spec(i), hakuro_hand(i)))
+        }
+    }
+    if chosen(wanted, HAKURO_NECK.name) {
+        results.push(written(HAKURO_NECK, hakuro_neck()))
+    }
+    if chosen(wanted, HAKURO_HEAD.name) {
+        results.push(written(HAKURO_HEAD, hakuro_head()))
+    }
+    if chosen(wanted, LEG.name) || chosen(wanted, HAKURO_LEG.name) {
+        let species_leg = leg()
+        if chosen(wanted, LEG.name) {
+            results.push(written(LEG, species_leg))
+        }
+        if chosen(wanted, HAKURO_LEG.name) {
+            results.push(written(HAKURO_LEG, hakuro_leg(species_leg.form)))
+        }
+    }
+    if chosen(wanted, "leg-joints") {
+        results.push(
+            joints_written(
+                "leg-joints",
+                "content/figure/leg_joints.wrela",
+                ["HIP", "KNEE"],
+                posed::LEG_LEFT,
+            ),
+        )
+    }
+    for r in results {
+        match r {
+            Ok(text) => print(text),
+            Err(e) => {
+                print(f"forms: {e}")
+                return 1
+            },
+        }
+        done += 1
+    }
+    if done == 0 {
+        print(USAGE)
+        return 2
+    }
+    0
+}

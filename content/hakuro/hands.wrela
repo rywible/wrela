@@ -1,0 +1,63 @@
+// Hakuro's hands' charts: the lines his palm and each finger are charted about, at rest (a
+// T-pose, his palms down, m). The joints are the reference rig's (`hakuro::FINGER_JOINTS`).
+
+use engine::chart::{Chain, chain}
+use hakuro::FINGER_JOINTS
+
+/// How far inside his hand a finger's path starts, before its first joint (m): a point his
+/// hand carries, so the finger's root stays inside his palm while the finger curls.
+pub const FINGER_ROOT: f32 = 0.02
+
+/// How far inside his hand his thumb's path starts (m): back at his wrist, so the ball of his
+/// thumb runs into his wrist under his palm's own surface. Started 2 cm back as a finger's,
+/// its root came out of his palm at a line across his hand.
+pub const THUMB_ROOT: f32 = 0.04
+
+/// How far past its last joint's end a finger's path runs (m): to the end of its tip.
+pub const FINGER_TIP: f32 = 0.008
+
+/// His left hand's finger `f` (0 his index, 1 his middle, 2 his ring, 3 his little finger, 4
+/// his thumb): from inside his palm through its three joints to its tip. Its bones are his
+/// hand and the finger's three. Angle 0 is the back of his hand, a quarter turn toward his
+/// little finger. Its path cuts the corner of a curled joint, rounded over 8 mm (a finger's
+/// bones are 2 to 4 cm long).
+pub fn finger_left(f: u32) -> Chain {
+    let a = FINGER_JOINTS[f * 4]
+    let b = FINGER_JOINTS[f * 4 + 1]
+    let c = FINGER_JOINTS[f * 4 + 2]
+    let d = FINGER_JOINTS[f * 4 + 3]
+    chain(
+        [a - normalize(b - a) * (if f == 4 { THUMB_ROOT } else { FINGER_ROOT }), a, b, c, d],
+        vec3(y: 1.0),
+        after: FINGER_TIP,
+        round: 0.008,
+        cut: 1.0,
+    )
+}
+
+/// His right hand's finger `f`: his left's, mirrored.
+pub fn finger_right(f: u32) -> Chain {
+    finger_left(f).mirrored()
+}
+
+/// His left palm: from 9 cm up his forearm from his wrist (inside his wrap, where his arm's
+/// own form ends: that form was read no further, and held a forearm's thickness to his wrist),
+/// through his wrist to just past his knuckles, down the middle of his hand. Its bones are his forearm and his hand: it bends at
+/// his wrist with them, so no gap opens between his arm's end and his hand. It ends at
+/// his knuckles' line and closes over its last 2 cm (`hakuro::PALM_CAP`), so the back of his
+/// hand slopes down into the roots of his fingers: run on past his knuckles it swallowed the
+/// roots of his curled fingers, and his open hand was a blob with one finger. Angle 0 is the
+/// back of his hand, a quarter turn toward his little finger.
+pub fn palm_left() -> Chain {
+    chain(
+        [vec3(0.612, 1.455, -0.069), vec3(0.706, 1.455, -0.065), vec3(0.828, 1.449, -0.062)],
+        vec3(y: 1.0),
+        round: 0.015,
+        cut: 1.0,
+    )
+}
+
+/// His right palm: his left's, mirrored.
+pub fn palm_right() -> Chain {
+    palm_left().mirrored()
+}

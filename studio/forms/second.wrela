@@ -1,0 +1,111 @@
+// A second body from proportions and outlines alone. A character with no mesh of its own is the
+// species' numbers plus a difference; what an author can give of it without a mesh is its
+// joints (its proportions) and how wide it is seen from the front and from the side, station by
+// station: four radii a station. Here that is tried where the answer is known: the mannequin
+// (a second CC0 body, held back) gives its joints and those four radii, a difference of a few
+// numbers is solved from them, and the result is measured against the mannequin's own surface.
+
+use engine::chart
+use engine::chart::{Chain, Radial, Sample, chain}
+use engine::humanoid::Humanoid
+use humanoid::body::MANNEQUIN
+use std::io::print
+use std::math::TAU
+use targets::{Triangles, miss, rays, triangles_of}
+
+/// The left arm's chain of body `b`, as `figure::chains::arm_left` is the reference body's:
+/// from 7 cm inside its shoulder along its upper arm's line, through its shoulder and elbow to
+/// its wrist.
+pub fn arm_chain_of(b: Humanoid) -> Chain {
+    let world = b.rig.rest_world()
+    let shoulder = world[b.rig.find("leftUpperArm")].t
+    let elbow = world[b.rig.find("leftLowerArm")].t
+    let wrist = world[b.rig.find("leftHand")].t
+    chain(
+        [shoulder - normalize(elbow - shoulder) * 0.07, shoulder, elbow, wrist],
+        vec3(y: 1.0),
+        spread: [1.0, 0.33, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    )
+}
+
+/// How far a body's side reaches from its chain's path toward each of four ways (up, the
+/// left, down, the right: what its outlines from the front and from above show), at `stations`
+/// places along `span`: its outline, as an author would trace it.
+pub fn outline(t: Triangles, c: Chain, span: vec2, stations: u32) -> Vec<Sample> {
+    var out: Vec<Sample> = Vec::new()
+    let path = c.rest()
+    for i in 0..stations {
+        let f = mix(span.x, span.y, (f32(i) + 0.5) / f32(stations))
+        // The section there, read finely, and its reach toward each way.
+        let section = rays(t, path, vec2(f, f + 0.0001), 1, 96, vec2(0.0, 0.0), 0.16)
+        for way in 0..4 {
+            let toward = 0.25 * TAU * f32(way)
+            var reach = 0.0
+            for s in section {
+                reach = max(reach, s.r * cos(s.theta - toward))
+            }
+            out.push(Sample { f, theta: toward, r: reach })
+        }
+    }
+    out
+}
+
+/// A form's reach toward `toward` at `f` of the way along: the most its section reaches that
+/// way.
+fn reach_of<const A: u32, const R: u32>(form: Radial<A, R>, f: f32, toward: f32) -> f32 {
+    var reach = 0.0
+    for j in 0..96 {
+        let theta = TAU * f32(j) / 96.0
+        reach = max(reach, form.radius(f, theta) * cos(theta - toward))
+    }
+    reach
+}
+
+/// What a body is over `template`, from its outline alone: a difference of 8 control values
+/// along by a cosine and a sine of each of 2 harmonics round, nearest (by least squares) to
+/// what makes the template reach as the outline does toward each of its four ways.
+pub fn from_outline(template: Radial<16, 13>, outline: [Sample]) -> Radial<8, 5> {
+    var asked: Vec<Sample> = Vec::new()
+    for o in outline {
+        let has = reach_of(template, o.f, o.theta)
+        // (The template's radius that way, scaled as its reach must be.)
+        let r = template.radius(o.f, o.theta)
+        asked.push(Sample { f: o.f, theta: o.theta, r: r * (o.r / max(has, 0.001) - 1.0) })
+    }
+    chart::fit(asked, smooth: 0.001)
+}
+
+@test
+fn a_second_bodys_arm_from_its_outline() {
+    let body = MANNEQUIN.clone()
+    let c = arm_chain_of(body.clone())
+    let path = c.rest()
+    let arm = triangles_of(body, [false, false, false, false, true, false], vec3(-9.0), vec3(9.0))
+    let span = vec2(0.16, 1.0)
+    let template = figure::arm::ARM
+    // What the template alone is from the second body, on the second body's own joints.
+    let held = rays(arm, path, span, 64, 52, vec2(0.5, 0.5), 0.16)
+    let bare = miss(template, held, span, path.length()).spread
+    // With its outline: 24 stations by 4 ways.
+    let traced = outline(arm, c, span, 24)
+    let over: Radial<8, 5> = from_outline(template, traced)
+    let authored = template.plus(over.resized())
+    let with = miss(authored, held, span, path.length()).spread
+    // And what a full fit to its surface reaches, for scale.
+    let seen = rays(arm, path, span, 64, 52, vec2(0.0, 0.0), 0.16)
+    let fitted: Radial<16, 13> = chart::fit(seen)
+    let best = miss(fitted, held, span, path.length()).spread
+    print(
+        f"the mannequin's arm ({path.length():.3} m path; the reference body's is {figure::chains::arm_left().rest().length():.3} m), {held.len()} rays it was never fitted to:",
+    )
+    print(
+        f"  the species' arm on its joints, nothing else: {bare.rms:.2} mm rms, 95% under {bare.most:.2}, worst {bare.worst:.1}",
+    )
+    print(
+        f"  with its outline (96 radii, a difference of 40 numbers): {with.rms:.2} mm rms, 95% under {with.most:.2}, worst {with.worst:.1}",
+    )
+    print(
+        f"  fitted to its surface (208 numbers), for scale: {best.rms:.2} mm rms, 95% under {best.most:.2}, worst {best.worst:.1}",
+    )
+    assert(with.rms < 0.7 * bare.rms, "an outline brings the species' arm nearer a second body")
+}

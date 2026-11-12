@@ -443,7 +443,11 @@ pub fn tails(p: vec3) -> (f32, f32) {
     // (Drawn well in above the hem: the jacket narrows to his waist above it, and the tails' top
     // standing proud of it read as a belt.)
     let tuck = clamp((JACKET_HEM + 0.035 - p.y) / 0.04, 0.0, 1.0)
-    let rr = girth(inside) - 0.083 + 0.06 * tuck * tuck * (3.0 - 2.0 * tuck) + FLARE * max(JACKET_HEM - p.y, 0.0) + fold * clamp((JACKET_HEM - p.y) / 0.06, 0.0, 1.0)
+    let rr = girth(inside) -
+        0.083 +
+        0.06 * tuck * tuck * (3.0 - 2.0 * tuck) +
+        FLARE * max(JACKET_HEM - p.y, 0.0) +
+        fold * clamp((JACKET_HEM - p.y) / 0.06, 0.0, 1.0)
     var d = abs(r - rr) - 0.009
     // Its front edges: the distance round to the nearer (negative between them).
     d = max(d, max(TAILS_FROM - deg, deg - TAILS_TO) * 0.0174532925 * r)
@@ -452,50 +456,4 @@ pub fn tails(p: vec3) -> (f32, f32) {
     let vent = max(abs(deg - 180.0) * 0.0174532925 * r - VENT_HALF, p.y - VENT_TOP)
     d = max(d, -vent)
     (d, r - rr)
-}
-
-/// A box of half-extents `b` round `c`, its edges rounded by `r`.
-fn round_box(p: vec3, c: vec3, b: vec3, r: f32) -> f32 {
-    let q = abs(p - c) - b + vec3(r)
-    length(max(q, vec3(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - r
-}
-
-/// The left hand's palm (in the body's rest space, the hand out along +x, palm down, the thumb's
-/// side +z): a rounded slab, broader at the knuckles than the wrist.
-pub fn palm(p: vec3) -> f32 {
-    let taper = clamp((p.x - 0.712) / 0.10, 0.0, 1.0)
-    let q = vec3(p.x, p.y, -0.055 + (p.z + 0.055) / (0.82 + 0.18 * taper))
-    smin(
-        round_box(q, vec3(0.765, 1.449, -0.055), vec3(0.050, 0.013, 0.036), r: 0.011),
-        // The heel of the thumb.
-        ellip(p, vec3(0.742, 1.441, -0.025), vec3(0.030, 0.016, 0.018)),
-        0.012,
-    )
-}
-
-/// The left hand's four fingers from their knuckles, each in two joints with the rest's slight
-/// curl, little to index (−z to +z).
-pub fn digits(p: vec3) -> f32 {
-    var d = 1.0e3
-    for i in 0..4 {
-        let f = f32(i)
-        let long = mix(0.80, 1.0, min(f, 2.0) * 0.5) * (if i == 3 { 0.96 } else { 1.0 })
-        let r = mix(0.0082, 0.0098, min(f, 2.0) * 0.5)
-        let k = vec3(0.814, 1.452, -0.083 + f * 0.0185)
-        let m = k + vec3(0.046 * long, -0.004, 0.002 * (f - 1.5))
-        let t = m + vec3(0.034 * long, -0.013 * long, 0.001 * (f - 1.5))
-        d = min(
-            d,
-            min(cone(p, k, m, ra: r, rb: r * 0.95), cone(p, m, t, ra: r * 0.95, rb: r * 0.82)),
-        )
-    }
-    d
-}
-
-/// The left hand's thumb, out from its heel toward the index, in two joints.
-pub fn thumb(p: vec3) -> f32 {
-    let a = vec3(0.742, 1.436, -0.018)
-    let b = vec3(0.778, 1.428, 0.006)
-    let c = vec3(0.806, 1.422, 0.012)
-    min(cone(p, a, b, ra: 0.0125, rb: 0.0105), cone(p, b, c, ra: 0.0105, rb: 0.0088))
 }

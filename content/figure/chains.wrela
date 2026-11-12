@@ -1,0 +1,129 @@
+// The figure's chains: the lines of joints its forms are charted about, at rest (a T-pose, +x
+// his left, m). The joints are the reference body's own, as its rig has them.
+
+use engine::chart::{Chain, chain}
+
+/// His left arm: from 7 cm inside his shoulder (a point his collarbone carries, so the arm's
+/// root stays under what he wears there while the arm swings), through his shoulder and elbow
+/// to his wrist. Its bones are his collarbone, his upper arm and his forearm. Angle 0 is up, a
+/// quarter turn his back. His upper arm's turn about its length is reached a third of the way
+/// to his elbow (past his shoulder's cap, his arm's muscles turn with the bone); his forearm's
+/// is spread from elbow to wrist. Its path cuts the corner of a bent joint: read about that
+/// path, the reference body posed is nearer itself at rest than about a path through the joint
+/// (studio/forms/joints.wrela measures it).
+pub fn arm_left() -> Chain {
+    chain(
+        [
+            vec3(0.142, 1.455, -0.0628),
+            vec3(0.212, 1.455, -0.065),
+            vec3(0.463, 1.455, -0.073),
+            vec3(0.706, 1.455, -0.065),
+        ],
+        vec3(y: 1.0),
+        spread: [1.0, 0.33, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        cut: 1.0,
+    )
+}
+
+/// His right arm: his left's, mirrored.
+pub fn arm_right() -> Chain {
+    arm_left().mirrored()
+}
+
+/// His left leg: from 8 cm above his hip (a point his pelvis carries, so the leg's root stays
+/// inside his trunk while the leg swings), through his hip and knee to his ankle. Its bones are
+/// his pelvis, his thigh and his calf. Angle 0 is his front, a quarter turn his left. His
+/// thigh's turn about its length is reached a third of the way to his knee.
+pub fn leg_left() -> Chain {
+    chain(
+        [
+            vec3(0.114, 1.051, -0.036),
+            vec3(0.114, 0.971, -0.036),
+            vec3(0.114, 0.542, -0.036),
+            vec3(0.114, 0.086, -0.088),
+        ],
+        vec3(z: 1.0),
+        spread: [1.0, 0.33, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        cut: 1.0,
+    )
+}
+
+/// His right leg: his left's, mirrored.
+pub fn leg_right() -> Chain {
+    leg_left().mirrored()
+}
+
+/// His trunk: from 12 cm under his pelvis' joint (the fork of his legs), up his spine's joints
+/// to 7 cm past the root of his neck (where a collar stands). Its bones are his pelvis and his spine's three. Angle 0 is his
+/// front, a quarter turn his right. Its path is a smooth curve through his spine's joints: a
+/// spine's bends are spread along it.
+pub fn trunk() -> Chain {
+    chain(
+        [
+            vec3(0.0, 0.949, -0.043),
+            vec3(0.0, 1.072, -0.007),
+            vec3(0.0, 1.178, 0.004),
+            vec3(0.0, 1.311, 0.007),
+            vec3(0.0, 1.52, -0.041),
+        ],
+        vec3(z: 1.0),
+        before: 0.12,
+        after: 0.07,
+        round: 0.0,
+    )
+}
+
+/// His neck: from 6 cm under the root of his neck (a point his chest carries), through his
+/// neck's joint and his head's to 6 cm up inside his skull (a point his head carries, so the
+/// neck's top turns with his head). Its bones are his chest (spine 3), his neck and his head.
+/// Angle 0 is his front, a quarter turn his right.
+pub fn neck() -> Chain {
+    chain(
+        [
+            vec3(0.0, 1.46, -0.045),
+            vec3(0.0, 1.52, -0.041),
+            vec3(0.0, 1.6, -0.017),
+            vec3(0.0, 1.66, -0.012),
+        ],
+        vec3(z: 1.0),
+        round: 0.025,
+    )
+}
+
+/// His head: a line his head's bone carries whole, straight up from under his chin to his
+/// crown. A head is one rigid form: charted about his neck's joints, his jaw (which hangs
+/// below his head's joint) stayed with his neck when his head went back, and stood out from
+/// his throat as a spike. Angle 0 is his front, a quarter turn his right.
+pub fn head() -> Chain {
+    chain([vec3(0.0, 1.55, 0.0), vec3(0.0, 1.82, 0.0)], vec3(z: 1.0))
+}
+
+/// The line a standing collar is charted about: straight up behind the root of his neck, from
+/// well under his collar's foot to over its top. His chest carries it whole: a collar stands
+/// on what's worn over his chest, and doesn't turn with his head. Angle 0 is his front, a
+/// quarter turn his right. It starts 7 cm under the collar's foot so the collar's form can
+/// carry the top of the back it stands on: about a spine's line that strip's form had
+/// nothing past it to be fitted to, and stood a centimetre and more off the garment.
+pub fn collar() -> Chain {
+    chain([vec3(0.0, 1.46, -0.06), vec3(0.0, 1.67, -0.06)], vec3(z: 1.0))
+}
+
+/// The line a garment's left shoulder is charted about: along his collarbone from beside his
+/// neck to his shoulder's joint, and on down his upper arm to his elbow. A shoulder's top runs
+/// along it (about his spine that top is square to the path, which a chart is poor at), and
+/// what's worn over a shoulder goes with the arm: its bones are his collarbone and his upper
+/// arm, and the path bends at his shoulder as his arm's does. Angle 0 is up, a quarter turn
+/// his back. His upper arm's turn about its length is spread to his elbow, so the little of
+/// the path a shoulder covers takes little of it.
+pub fn yoke_left() -> Chain {
+    chain(
+        [vec3(0.09, 1.455, -0.065), vec3(0.212, 1.455, -0.065), vec3(0.463, 1.455, -0.073)],
+        vec3(y: 1.0),
+        cut: 1.0,
+    )
+}
+
+/// His right shoulder's: his left's, mirrored.
+pub fn yoke_right() -> Chain {
+    yoke_left().mirrored()
+}
