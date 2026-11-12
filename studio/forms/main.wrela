@@ -27,6 +27,7 @@
 
 use engine::chart
 use engine::chart::{Chain, Radial, Sample}
+use std::math::TAU
 use figure::chains
 use humanoid::body::HERO
 use std::io::print
@@ -134,9 +135,9 @@ pub const HAKURO_LEG: Spec = Spec {
     file: "content/hakuro/leg_form.wrela",
     constant: "LEG_OVER",
     about: [
-        "What Hakuro's left leg is over the figure's (`figure::leg::LEG`): his loose trousers, as",
-        "his sampled body has them (`body_grid`), less the figure's leg, read along rays from the",
-        "line through his hip, knee and ankle. His right is its mirror image.",
+        "What Hakuro's left leg is over the figure's (`figure::leg::LEG`): his loose trousers, less",
+        "the figure's leg, about the line through his hip, knee and ankle. Fitted by the forms tool to",
+        "his sampled body, which is gone, and kept where it is. His right is its mirror image.",
     ],
     chain: chains::leg_left(),
     span: vec2(0.2, 0.78),
@@ -151,9 +152,9 @@ pub const HAKURO_TRUNK: Spec = Spec {
     file: "content/hakuro/trunk_form.wrela",
     constant: "TRUNK",
     about: [
-        "Hakuro's trunk as he's dressed, from the fork of his legs to his neck: his sampled body's",
-        "surface (`body_grid`), read along rays from the line of his spine",
-        "(`figure::chains::trunk`) and fitted by the forms tool.",
+        "Hakuro's trunk as he's dressed, from the fork of his legs to his neck, about the line of",
+        "his spine (`figure::chains::trunk`): fitted by the forms tool to his sampled body, which is",
+        "gone, and kept as it is.",
     ],
     chain: chains::trunk(),
     span: vec2(0.03, 1.0),
@@ -170,9 +171,9 @@ pub const HAKURO_JACKET: Spec = Spec {
     file: "content/hakuro/jacket_form.wrela",
     constant: "JACKET",
     about: [
-        "Hakuro's jacket's body, its outer face from its hem to under its shoulders: his sampled",
-        "jacket's (`jacket_grid`), read along rays from the line of his spine and fitted by the",
-        "forms tool. It runs on across the jacket's open front and its armholes, which its cover cuts.",
+        "Hakuro's jacket's body, its outer face from its hem to under its shoulders, about the line",
+        "of his spine: fitted by the forms tool to his sampled jacket, which is gone, and kept as it",
+        "is. It runs on across the jacket's open front and its armholes, which its cover cuts.",
     ],
     chain: chains::trunk(),
     span: vec2(0.03, 0.92),
@@ -187,9 +188,9 @@ pub const HAKURO_HEAD: Spec = Spec {
     file: "content/hakuro/head_form.wrela",
     constant: "HEAD",
     about: [
-        "Hakuro's head, under his mask and his hair: his sampled body's surface (`body_grid`), read",
-        "along rays from a line straight up through his head (`figure::chains::head`) and fitted",
-        "by the forms tool. It closes under his chin (`hakuro::charts`).",
+        "Hakuro's head, under his mask and his hair, about a line straight up through his head",
+        "(`figure::chains::head`): fitted by the forms tool to his sampled body, which is gone, and",
+        "kept as it is. It closes under his chin (`hakuro::charts`).",
     ],
     chain: chains::head(),
     span: vec2(0.18, 0.93),
@@ -204,9 +205,9 @@ pub const HAKURO_NECK: Spec = Spec {
     file: "content/hakuro/neck_form.wrela",
     constant: "NECK",
     about: [
-        "Hakuro's neck: his sampled body's surface (`body_grid`), read along rays from the line",
-        "through his neck's and his head's joints (`figure::chains::neck`), no further out than",
-        "his throat, and fitted by the forms tool.",
+        "Hakuro's neck, about the line through his neck's and his head's joints",
+        "(`figure::chains::neck`), read no further out than his throat: fitted by the forms tool to",
+        "his sampled body, which is gone, and kept as it is.",
     ],
     chain: chains::neck(),
     span: vec2(0.3, 0.8),
@@ -221,12 +222,12 @@ pub const HAKURO_COLLAR: Spec = Spec {
     file: "content/hakuro/collar_form.wrela",
     constant: "COLLAR",
     about: [
-        "Hakuro's jacket's collar, its outer face: his sampled jacket's (`jacket_grid`), read along",
-        "rays from a line straight up behind the root of his neck (`figure::chains::collar`) and",
-        "fitted by the forms tool. It runs on across the collar's openings.",
+        "Hakuro's jacket's collar, its outer face and the top of his jacket's back under it, about a",
+        "line straight up behind the root of his neck (`figure::chains::collar`): fitted by the forms",
+        "tool to his sampled jacket, which is gone, and kept as it is. It runs on across its openings.",
     ],
     chain: chains::collar(),
-    span: vec2(0.23, 0.82),
+    span: vec2(0.10, 0.855),
     most: 0.17,
     tuck: 1.0,
 }
@@ -238,9 +239,9 @@ pub const HAKURO_YOKE_LEFT: Spec = Spec {
     file: "content/hakuro/yoke_left_form.wrela",
     constant: "YOKE_LEFT",
     about: [
-        "Hakuro's jacket's left shoulder, its outer face: his sampled jacket's (`jacket_grid`),",
-        "read along rays from the line along his collarbone and his upper arm",
-        "(`figure::chains::yoke_left`) and fitted by the forms tool. It runs on under his arm.",
+        "Hakuro's jacket's left shoulder, its outer face, about the line along his collarbone and his",
+        "upper arm (`figure::chains::yoke_left`): fitted by the forms tool to his sampled jacket, which",
+        "is gone, and kept as it is. It runs on under his arm.",
     ],
     chain: chains::yoke_left(),
     span: vec2(0.08, 0.47),
@@ -254,9 +255,9 @@ pub const HAKURO_YOKE_RIGHT: Spec = Spec {
     file: "content/hakuro/yoke_right_form.wrela",
     constant: "YOKE_RIGHT",
     about: [
-        "Hakuro's jacket's right shoulder, its outer face: his sampled jacket's (`jacket_grid`),",
-        "read along rays from the line along his collarbone and his upper arm",
-        "(`figure::chains::yoke_right`) and fitted by the forms tool. It runs on under his arm.",
+        "Hakuro's jacket's right shoulder, its outer face, about the line along his collarbone and his",
+        "upper arm (`figure::chains::yoke_right`): fitted by the forms tool to his sampled jacket, which",
+        "is gone, and kept as it is. It runs on under his arm.",
     ],
     chain: chains::yoke_right(),
     span: vec2(0.08, 0.47),
@@ -550,39 +551,89 @@ pub fn leg() -> Fitted<16, 13> {
     )
 }
 
-/// What Hakuro's left leg is over the species' leg `base`, fitted.
+/// A form kept as it's written: how far it is from what its reference was found to be
+/// (`measured`: radii of the reference, kept when the reference went).
+fn kept<const A: u32, const R: u32>(
+    s: Spec,
+    form: Radial<A, R>,
+    measured: Vec<Sample>,
+) -> Fitted<A, R> {
+    Fitted { form, miss: miss(form, measured, s.span, s.chain.rest().length()), rays: 0 }
+}
+
+/// What Hakuro's left leg is over the species' leg `base`: his leg as written, kept where it
+/// is, and how far it is from his sampled leg's radii (`measured::LEG`).
 pub fn hakuro_leg(base: Radial<16, 13>) -> Fitted<16, 13> {
-    fitted_over(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_LEG, base, true)
+    kept_over(
+        HAKURO_LEG,
+        hakuro::leg_form::LEG_OVER,
+        figure::leg::LEG,
+        base,
+        measured::samples_of(measured::LEG, 16, 13, HAKURO_LEG.span),
+    )
 }
 
-/// Hakuro's trunk, fitted.
+/// Hakuro's trunk, kept as written.
 pub fn hakuro_trunk() -> Fitted<24, 21> {
-    fitted(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_TRUNK)
+    kept(
+        HAKURO_TRUNK,
+        hakuro::trunk_form::TRUNK,
+        measured::samples_of(measured::TRUNK, 24, 21, HAKURO_TRUNK.span),
+    )
 }
 
-/// Hakuro's jacket, fitted.
+/// Hakuro's jacket's body, kept as written.
 pub fn hakuro_jacket() -> Fitted<24, 21> {
-    fitted(Grid { samples: hakuro::jacket_grid::samples(0) }, HAKURO_JACKET)
+    kept(
+        HAKURO_JACKET,
+        hakuro::jacket_form::JACKET,
+        measured::samples_of(measured::JACKET, 24, 21, HAKURO_JACKET.span),
+    )
 }
 
-/// Hakuro's head, fitted.
+/// Hakuro's head, kept as written.
 pub fn hakuro_head() -> Fitted<16, 13> {
-    fitted(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_HEAD)
+    kept(
+        HAKURO_HEAD,
+        hakuro::head_form::HEAD,
+        measured::samples_of(measured::HEAD, 16, 13, HAKURO_HEAD.span),
+    )
 }
 
-/// Hakuro's collar, fitted.
+/// Hakuro's collar, kept as written.
 pub fn hakuro_collar() -> Fitted<16, 13> {
-    fitted(Grid { samples: hakuro::jacket_grid::samples(0) }, HAKURO_COLLAR)
+    kept(
+        HAKURO_COLLAR,
+        hakuro::collar_form::COLLAR,
+        measured::samples_of(measured::COLLAR, 16, 13, HAKURO_COLLAR.span),
+    )
 }
 
-/// Hakuro's jacket's shoulder `s` (`HAKURO_YOKE_LEFT` or `_RIGHT`), fitted.
-pub fn hakuro_yoke(s: Spec) -> Fitted<16, 13> {
-    fitted(Grid { samples: hakuro::jacket_grid::samples(0) }, s)
+/// Hakuro's jacket's left shoulder, kept as written.
+pub fn hakuro_yoke_left() -> Fitted<16, 13> {
+    kept(
+        HAKURO_YOKE_LEFT,
+        hakuro::yoke_left_form::YOKE_LEFT,
+        measured::samples_of(measured::YOKE_LEFT, 16, 13, HAKURO_YOKE_LEFT.span),
+    )
 }
 
-/// Hakuro's neck, fitted.
+/// Hakuro's jacket's right shoulder, kept as written.
+pub fn hakuro_yoke_right() -> Fitted<16, 13> {
+    kept(
+        HAKURO_YOKE_RIGHT,
+        hakuro::yoke_right_form::YOKE_RIGHT,
+        measured::samples_of(measured::YOKE_RIGHT, 16, 13, HAKURO_YOKE_RIGHT.span),
+    )
+}
+
+/// Hakuro's neck, kept as written.
 pub fn hakuro_neck() -> Fitted<16, 13> {
-    fitted(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_NECK)
+    kept(
+        HAKURO_NECK,
+        hakuro::neck_form::NECK,
+        measured::samples_of(measured::NECK, 16, 13, HAKURO_NECK.span),
+    )
 }
 
 /// What's said of a fitted form: its misses' spread, and their size by place.
@@ -696,163 +747,6 @@ fn joints_written(
     )
 }
 
-/// The height his jacket's body stops at (m, at rest): the underside of its shoulders. Under
-/// it the jacket is its body's (about his spine); over it, its collar's and its shoulders'.
-pub const JACKET_BODY_TOP: f32 = 1.535
-
-/// The height his collar's form starts from: a little under the body's top, so it lies over
-/// it with no gap. And the height his shoulders' forms start from: under his armholes' tops.
-/// About his spine the jacket's sides are 12 mm rms out over its top 10 cm (its shoulders'
-/// corners, their caps over his arms, his armholes' rims: too sharp for a section's Fourier
-/// series), so its shoulders' forms take its sides from here up.
-pub const COLLAR_FOOT: f32 = 1.53
-pub const YOKE_FOOT: f32 = 1.42
-
-/// How far from his middle his shoulders start (m): just inside his collar's wall.
-pub const YOKE_INSIDE: f32 = 0.118
-
-/// How far round from straight up a shoulder's form is the jacket's (radians): over the top
-/// and down in front and behind; under that it's his armhole or the inside of the jacket.
-pub const YOKE_ROUND: f32 = 2.0
-
-/// Which piece of his jacket a point of it at rest belongs to, for piece `piece` (0 its body,
-/// 1 its collar, 2 its shoulders), `theta` round that piece's path.
-pub fn jacket_piece(piece: u32, p: vec3, theta: f32) -> bool {
-    if piece == 0 {
-        // (Its body: under its shoulders' tops, and at its sides only as far up as a
-        // centimetre past where its shoulders' forms start.)
-        return p.y < JACKET_BODY_TOP && (abs(p.x) < YOKE_INSIDE + 0.01 || p.y < YOKE_FOOT + 0.01)
-    }
-    if piece == 1 {
-        return p.y >= COLLAR_FOOT
-    }
-    p.y >= YOKE_FOOT && abs(p.x) >= YOKE_INSIDE && abs(chart::wrapped(theta)) <= YOKE_ROUND
-}
-
-/// Where piece `piece` of Hakuro's jacket (`jacket_piece`) is on the chart of spec `s`: a mark
-/// a place, set where a ray from its path meets his sampled jacket at a point that's the
-/// piece's. And how many places are set.
-pub fn jacket_marks(s: Spec, piece: u32) -> (Vec<bool>, u32) {
-    let path = s.chain.rest()
-    let len = path.length()
-    let every = targets::every_ray(
-        Grid { samples: hakuro::jacket_grid::samples(0) },
-        path,
-        vec2(0.0, 1.0),
-        chart::COVER_ALONG,
-        chart::COVER_ROUND,
-        vec2(0.5, 0.5),
-        s.most,
-    )
-    var marks: Vec<bool> = Vec::new()
-    var met = 0
-    for k in every {
-        var here = false
-        if k.r > 0.0 {
-            let fr = path.frame(k.f * len)
-            let p = fr.at + (fr.up * cos(k.theta) + fr.left * sin(k.theta)) * k.r
-            here = jacket_piece(piece, p, k.theta)
-        }
-        marks.push(here)
-    }
-    // (A ray grazing a rim meets it at one place and misses at the next, and a mark a ray
-    // leaves a toothed edge: each place takes what most of the places round it have, twice.)
-    marks = evened(evened(marks))
-    for m in marks {
-        if m {
-            met += 1
-        }
-    }
-    (marks, met)
-}
-
-/// A cover's marks with each place given what most of the places within 2 along and 5 round
-/// it have: an edge without teeth, and no specks.
-pub fn evened(marks: Vec<bool>) -> Vec<bool> {
-    let along = chart::COVER_ALONG
-    let round = chart::COVER_ROUND
-    var out: Vec<bool> = Vec::new()
-    for i in 0..along {
-        for j in 0..round {
-            var set = 0
-            var all = 0
-            for di in 0..5 {
-                if i + di < 2 || i + di >= along + 2 {
-                    continue
-                }
-                for dj in 0..11 {
-                    all += 1
-                    if marks[(i + di - 2) * round + (j + dj + round - 5) % round] {
-                        set += 1
-                    }
-                }
-            }
-            out.push(2 * set > all)
-        }
-    }
-    out
-}
-
-/// Where Hakuro's jacket's pieces are on their charts, written
-/// (content/hakuro/jacket_cover.wrela): its body's, its collar's and each shoulder's cover.
-/// What to print of them, or why it failed.
-fn jacket_cover_written() -> Result<String, String> {
-    let file = "content/hakuro/jacket_cover.wrela"
-    let Some(path) = rooted("ws", file) else {
-        return Err(f"no path for {file}")
-    }
-    var out = String::new()
-    out.push_str(
-        "// Written by the forms tool (`wrela tool forms`, studio/forms): don't edit it by hand, change\n",
-    )
-    out.push_str(
-        "// the tool or what it fits and write it again. Where a garment is on its charts\n",
-    )
-    out.push_str("// (engine::chart::Cover): a bit a place, set where it is.\n\n")
-    out.push_str("use engine::chart::Cover\n")
-    var said = String::from("hakuro-jacket-cover: content/hakuro/jacket_cover.wrela;")
-    let pieces = [
-        (
-            HAKURO_JACKET,
-            0,
-            "JACKET_COVER",
-            "its body, about his spine (`figure::chains::trunk`): from its hem to under its shoulders, but for its open front and its armholes",
-        ),
-        (
-            HAKURO_COLLAR,
-            1,
-            "COLLAR_COVER",
-            "its collar, about the line behind the root of his neck (`figure::chains::collar`): but for the gaps either side of its front piece",
-        ),
-        (
-            HAKURO_YOKE_LEFT,
-            2,
-            "YOKE_LEFT_COVER",
-            "its left shoulder, about his collarbone's line (`figure::chains::yoke_left`): over the top and a little way down in front and behind",
-        ),
-        (
-            HAKURO_YOKE_RIGHT,
-            2,
-            "YOKE_RIGHT_COVER",
-            "its right shoulder, about his collarbone's line (`figure::chains::yoke_right`): over the top and a little way down in front and behind",
-        ),
-    ]
-    for piece in pieces {
-        let (marks, met) = jacket_marks(piece.0, piece.1)
-        var doc: Vec<String> = Vec::new()
-        doc.push(f"Where Hakuro's jacket is on the chart of {piece.3},")
-        doc.push("as his sampled jacket has it (`jacket_grid`).".to_string())
-        out.push_str("\n")
-        out.push_str(chart::cover_source(chart::cover_of(marks), piece.2, doc).as_str())
-        said.push_str(f" {piece.2} {met} of {marks.len()} places;")
-    }
-    if files::write(path.as_str(), out.as_bytes()).wait().is_err() {
-        return Err(f"couldn't write {path}")
-    }
-    said.push_str("\n")
-    Ok(said)
-}
-
 /// Whether the command line asks for the form named `name` (every form, if it names none).
 fn chosen(wanted: [String], name: Text) -> bool {
     if wanted.is_empty() {
@@ -921,30 +815,6 @@ fn stations_of(name: str) -> Option<String> {
     if name == LEG.name {
         return Some(stations(body(2), LEG))
     }
-    if name == HAKURO_LEG.name {
-        return Some(stations(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_LEG))
-    }
-    if name == HAKURO_TRUNK.name {
-        return Some(stations(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_TRUNK))
-    }
-    if name == HAKURO_JACKET.name {
-        return Some(stations(Grid { samples: hakuro::jacket_grid::samples(0) }, HAKURO_JACKET))
-    }
-    if name == HAKURO_HEAD.name {
-        return Some(stations(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_HEAD))
-    }
-    if name == HAKURO_NECK.name {
-        return Some(stations(Grid { samples: hakuro::body_grid::samples(0) }, HAKURO_NECK))
-    }
-    if name == HAKURO_COLLAR.name {
-        return Some(stations(Grid { samples: hakuro::jacket_grid::samples(0) }, HAKURO_COLLAR))
-    }
-    if name == HAKURO_YOKE_LEFT.name {
-        return Some(stations(Grid { samples: hakuro::jacket_grid::samples(0) }, HAKURO_YOKE_LEFT))
-    }
-    if name == HAKURO_YOKE_RIGHT.name {
-        return Some(stations(Grid { samples: hakuro::jacket_grid::samples(0) }, HAKURO_YOKE_RIGHT))
-    }
     None
 }
 
@@ -999,17 +869,14 @@ pub fn tool() -> u32 {
     if chosen(wanted, HAKURO_JACKET.name) {
         results.push(written(HAKURO_JACKET, hakuro_jacket()))
     }
-    if chosen(wanted, "hakuro-jacket-cover") {
-        results.push(jacket_cover_written())
-    }
     if chosen(wanted, HAKURO_COLLAR.name) {
         results.push(written(HAKURO_COLLAR, hakuro_collar()))
     }
     if chosen(wanted, HAKURO_YOKE_LEFT.name) {
-        results.push(written(HAKURO_YOKE_LEFT, hakuro_yoke(HAKURO_YOKE_LEFT)))
+        results.push(written(HAKURO_YOKE_LEFT, hakuro_yoke_left()))
     }
     if chosen(wanted, HAKURO_YOKE_RIGHT.name) {
-        results.push(written(HAKURO_YOKE_RIGHT, hakuro_yoke(HAKURO_YOKE_RIGHT)))
+        results.push(written(HAKURO_YOKE_RIGHT, hakuro_yoke_right()))
     }
     for i in 0..2 * HAND_PIECES {
         if chosen(wanted, hand_spec(i).name) {

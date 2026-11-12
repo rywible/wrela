@@ -2,11 +2,11 @@
 // realized once as the engine realizes a character, posed as the sheet poses him (his weight on
 // his right leg, his left hand on his hip) and drawn five times round, front to back.
 
-use arms::{Drape, drape_room, draped, follow_legs, jacket}
+use arms::{Drape, drape_room, draped, follow_legs}
 use hakuro::{
     CHARTS, Charted, Cloth, WIDE_CHARTS, body_paint, chart_cut, chart_hidden, chart_paint,
-    charted_as, charted_at_rest, charted_now, charts, coat, head, hero, jacket_paint, sampled_now,
-    shaded, shaded_wide, skeleton, wide_charts,
+    charted_as, charted_at_rest, charts, coat, head, hero, jacket_paint, shaded, shaded_wide,
+    skeleton, wide_charts,
 }
 use engine::chart
 use engine::chart::{Grids, Grown, Limb, Part, Radial}
@@ -197,12 +197,12 @@ const HIP_CURL = [
 const TURNS = [0.0, -0.7853982, -1.5707963, 3.1415927, 1.5707963]
 
 pub struct State {
-    meshes: [Mesh; 4],
+    meshes: [Mesh; 3],
     /// Each view's charted parts as its pose has them (`hakuro::Charted`), the grids charted
     /// forms are drawn on, and where his jacket is on its chart.
     charted: [Charted; 5],
     grids: Grids,
-    cover: GpuBuffer<u32>,
+    cover: GpuBuffer<f32>,
     colours: [GpuBuffer<Unorm8x4>; 3],
     palettes: GpuBuffer<mat4>,
     drape: Drape,
@@ -241,7 +241,7 @@ pub fn init() -> State {
     tallies.push(read(head_mesh.tally.items()))
     tallies.push(read(coat_mesh.tally.items()))
     State {
-        meshes: [body, head_mesh, coat_mesh, jacket()],
+        meshes: [body, head_mesh, coat_mesh],
         charted,
         grids: chart::grids(),
         cover: hakuro::jacket_covers(),
@@ -359,96 +359,84 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             cull: Cull::Back,
         )
     }
-    // (His jacket, sampled from the reference: no fields to read, so its own normals and his
-    // body's paint at its place at rest.)
-    if sampled_now() {
-        for k in 0..5 {
-            draw(
-                pass,
-                fielded.bind(
-                    verts: s.meshes[3].verts.items(),
-                    palettes: s.palettes.items(),
-                    first: k * MAX_BONES,
-                    view: v,
-                ),
-                painted_pixel.bind(
-                    view: v,
-                    lights: LIGHTS,
-                    shadow: s.shadow,
-                    shadow_sampler: s.smp,
-                ),
-                indices: s.meshes[3].quads.items(),
-                indirect: s.meshes[3].draw.items(),
-                cull: Cull::Back,
-            )
-        }
-    }
-    // What of him is drawn along its chart (`hakuro::charted_now`): no mesh, each form made again
+    // What of him is drawn along its chart: no mesh, each form made again
     // where his bones are.
     let limbs = charts()
     let wide = wide_charts()
     let rest = charted_at_rest()
     for k in 0..5 {
         for a in 0..CHARTS {
-            if charted_now(a) {
-                let c = s.charted[k].limbs[a]
-                let onto = hakuro::grows_from(a)
-                if onto < CHARTS {
-                    chart_drawn_onto(
-                        pass,
-                        s,
-                        limbs[a],
-                        rest.limbs[a],
-                        c,
-                        hakuro::shaded_hand(c.form),
-                        v,
-                        height,
-                        a,
-                        s.charted[k].limbs[onto],
-                        hakuro::grown(a),
-                    )
-                } else if hakuro::of_hand(a) {
-                    chart_drawn(
-                        pass,
-                        s,
-                        limbs[a],
-                        rest.limbs[a],
-                        c,
-                        hakuro::shaded_hand(c.form),
-                        v,
-                        height,
-                        a,
-                    )
-                } else {
-                    chart_drawn(
-                        pass,
-                        s,
-                        limbs[a],
-                        rest.limbs[a],
-                        c,
-                        hakuro::shaded(c.form),
-                        v,
-                        height,
-                        a,
-                    )
-                }
-            }
-        }
-        for a in 0..WIDE_CHARTS {
-            if charted_now(CHARTS + a) {
-                let c = s.charted[k].wide[a]
+            let c = s.charted[k].limbs[a]
+            let onto = hakuro::grows_from(a)
+            if onto < CHARTS {
+                chart_drawn_onto(
+                    pass,
+                    s,
+                    limbs[a],
+                    rest.limbs[a],
+                    c,
+                    hakuro::shaded_hand(c.form),
+                    v,
+                    height,
+                    a,
+                    s.charted[k].limbs[onto],
+                    hakuro::shaded_hand(s.charted[k].limbs[onto].form),
+                    hakuro::grown(a),
+                )
+            } else if onto < CHARTS + WIDE_CHARTS {
+                chart_drawn_onto(
+                    pass,
+                    s,
+                    limbs[a],
+                    rest.limbs[a],
+                    c,
+                    hakuro::shaded(c.form),
+                    v,
+                    height,
+                    a,
+                    s.charted[k].wide[onto - CHARTS],
+                    hakuro::shaded_wide(s.charted[k].wide[onto - CHARTS].form),
+                    hakuro::grown(a),
+                )
+            } else if hakuro::of_hand(a) {
                 chart_drawn(
                     pass,
                     s,
-                    wide[a],
-                    rest.wide[a],
+                    limbs[a],
+                    rest.limbs[a],
                     c,
-                    shaded_wide(c.form),
+                    hakuro::shaded_hand(c.form),
                     v,
                     height,
-                    CHARTS + a,
+                    a,
+                )
+            } else {
+                chart_drawn(
+                    pass,
+                    s,
+                    limbs[a],
+                    rest.limbs[a],
+                    c,
+                    hakuro::shaded(c.form),
+                    v,
+                    height,
+                    a,
                 )
             }
+        }
+        for a in 0..WIDE_CHARTS {
+            let c = s.charted[k].wide[a]
+            chart_drawn(
+                pass,
+                s,
+                wide[a],
+                rest.wide[a],
+                c,
+                shaded_wide(c.form),
+                v,
+                height,
+                CHARTS + a,
+            )
         }
     }
     pass.present()
@@ -525,9 +513,10 @@ fn chart_drawn<P: RenderPass, const A: u32, const R: u32, const S: u32>(
     }
 }
 
-/// `chart_drawn`, for a part that grows from another (`onto`, as the pose has it): its side
-/// rising from it and filleted where the two meet (`how`; `chart::vertex_onto`).
-fn chart_drawn_onto<P: RenderPass, const A: u32, const R: u32, const S: u32, const B: u32, const Q: u32>(
+/// `chart_drawn`, for a part that grows from another or lies on it (`onto`, as the pose has
+/// it, and what its pixels read their normals from, `light`): rising from it, laid on it and
+/// filleted where the two meet (`how`; `chart::vertex_onto`).
+fn chart_drawn_onto<P: RenderPass, const A: u32, const R: u32, const S: u32, const B: u32, const Q: u32, const T: u32>(
     pass: P,
     s: State,
     part: Part<A, R>,
@@ -538,37 +527,73 @@ fn chart_drawn_onto<P: RenderPass, const A: u32, const R: u32, const S: u32, con
     height: u32,
     index: u32,
     onto: Limb<B, Q>,
+    light: Radial<B, T>,
     how: Grown,
 ) {
     let level = form.level(v.eye, f32(height), tan(0.5 * FOV))
     let span = chart::level_span(level)
-    draw(
-        pass,
-        chart::vertex_onto.bind(
-            rest: rest,
-            form: form,
-            band: part.band,
-            under: part.sunk,
-            level: level,
-            seen: v,
-            onto: onto,
-            how: how,
-        ),
-        charted_pixel.bind(
-            shade: shade,
-            length: form.path.length(),
-            cover: s.cover.items(),
-            view: v,
-            lights: LIGHTS,
-            shadow: s.shadow,
-            shadow_sampler: s.smp,
-            part: index,
-        ),
-        indices: s.grids.indices,
-        first_index: span.x,
-        index_count: span.y,
-        cull: Cull::Back,
-    )
+    // (Which faces are drawn is part of a draw's pipeline, so each way is written out.)
+    if hakuro::two_faced(index) {
+        draw(
+            pass,
+            chart::vertex_onto.bind(
+                rest: rest,
+                form: form,
+                band: part.band,
+                under: part.sunk,
+                level: level,
+                seen: v,
+                onto: onto,
+                light: light,
+                how: how,
+                covers: s.cover.items(),
+            ),
+            charted_pixel.bind(
+                shade: shade,
+                length: form.path.length(),
+                cover: s.cover.items(),
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.smp,
+                part: index,
+            ),
+            indices: s.grids.indices,
+            first_index: span.x,
+            index_count: span.y,
+            cull: Cull::None,
+        )
+    } else {
+        draw(
+            pass,
+            chart::vertex_onto.bind(
+                rest: rest,
+                form: form,
+                band: part.band,
+                under: part.sunk,
+                level: level,
+                seen: v,
+                onto: onto,
+                light: light,
+                how: how,
+                covers: s.cover.items(),
+            ),
+            charted_pixel.bind(
+                shade: shade,
+                length: form.path.length(),
+                cover: s.cover.items(),
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.smp,
+                part: index,
+            ),
+            indices: s.grids.indices,
+            first_index: span.x,
+            index_count: span.y,
+            cull: Cull::Back,
+        )
+    }
 }
 
 /// The camera's field of view, top to bottom (radians).
@@ -667,27 +692,6 @@ pub fn fielded_pixel<F: Parts<Cloth>>(
     vec4(lights.light(c.albedo, c.rough, n, v.world, view, lit), 1.0)
 }
 
-/// A pixel of his sampled jacket, a mesh with no fields behind it, in plain light: its own
-/// normal, and his jacket's paint where it is on him at rest (it carries on down over his
-/// trousers: `jacket_paint`).
-@fragment
-pub fn painted_pixel(
-    v: Fielded,
-    view: View,
-    lights: Lights,
-    shadow: DepthTexture,
-    shadow_sampler: ComparisonSampler,
-) -> vec4 {
-    let c = jacket_paint(v.rest)
-    var n = normalize(v.normal)
-    let d = normalize(v.world - view.eye)
-    if dot(n, d) > 0.0 {
-        n = normalize(n - d * (dot(n, d) + 0.05))
-    }
-    let lit = lights.shadow(view, v.world, n, shadow, shadow_sampler)
-    vec4(lights.light(c.albedo, c.rough, n, v.world, view, lit), 1.0)
-}
-
 /// A pixel of a part drawn along its chart (`hakuro::charts`, `hakuro::wide_charts`), in plain
 /// light: its normal read from the form at the pixel's own place
 /// (`chart::Vertex::normal_from`), and the part's paint. Nothing where the part isn't (`cover`:
@@ -697,7 +701,7 @@ pub fn charted_pixel<const A: u32, const R: u32>(
     v: chart::Vertex,
     shade: Radial<A, R>,
     length: f32,
-    cover: [u32],
+    cover: [f32],
     view: View,
     lights: Lights,
     shadow: DepthTexture,

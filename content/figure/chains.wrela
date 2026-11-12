@@ -99,11 +99,13 @@ pub fn head() -> Chain {
 }
 
 /// The line a standing collar is charted about: straight up behind the root of his neck, from
-/// under his collar's foot to over its top. His chest carries it whole: a collar stands on
-/// what's worn over his chest, and doesn't turn with his head. Angle 0 is his front, a quarter
-/// turn his right.
+/// well under his collar's foot to over its top. His chest carries it whole: a collar stands
+/// on what's worn over his chest, and doesn't turn with his head. Angle 0 is his front, a
+/// quarter turn his right. It starts 7 cm under the collar's foot so the collar's form can
+/// carry the top of the back it stands on: about a spine's line that strip's form had
+/// nothing past it to be fitted to, and stood a centimetre and more off the garment.
 pub fn collar() -> Chain {
-    chain([vec3(0.0, 1.5, -0.06), vec3(0.0, 1.67, -0.06)], vec3(z: 1.0))
+    chain([vec3(0.0, 1.46, -0.06), vec3(0.0, 1.67, -0.06)], vec3(z: 1.0))
 }
 
 /// The line a garment's left shoulder is charted about: along his collarbone from beside his
