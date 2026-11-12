@@ -4,9 +4,9 @@
 
 use arms::{Drape, drape_room, draped, follow_legs, hand, jacket}
 use hakuro::{
-    CHARTS, COVERED, Charted, Cloth, WIDE_CHARTS, body_paint, chart_cut, chart_paint, charted_as,
-    charted_at_rest, charted_now, charts, coat, hands, head, hero, jacket_paint, sampled_now,
-    shaded, shaded_wide, skeleton, wide_charts,
+    CHARTS, Charted, Cloth, WIDE_CHARTS, body_paint, chart_cut, chart_hidden, chart_paint,
+    charted_as, charted_at_rest, charted_now, charts, coat, hands, head, hero, jacket_paint,
+    sampled_now, shaded, shaded_wide, skeleton, wide_charts,
 }
 use engine::chart
 use engine::chart::{Grids, Limb, Part, Radial}
@@ -252,7 +252,7 @@ pub fn init() -> State {
         meshes: [body, head_mesh, coat_mesh, hands_mesh, jacket(), hand(0), hand(1)],
         charted,
         grids: chart::grids(),
-        cover: jacket_cover::JACKET_COVER.upload(),
+        cover: hakuro::jacket_covers(),
         colours: [c0, c1, c2, c3],
         palettes,
         drape: drape_room(5),
@@ -443,31 +443,60 @@ fn chart_drawn<P: RenderPass, const A: u32, const R: u32, const S: u32>(
 ) {
     let level = form.level(v.eye, f32(height), tan(0.5 * FOV))
     let span = chart::level_span(level)
-    draw(
-        pass,
-        chart::vertex.bind(
-            rest: rest,
-            form: form,
-            band: part.band,
-            under: part.sunk,
-            level: level,
-            seen: v,
-        ),
-        charted_pixel.bind(
-            shade: shade,
-            length: form.path.length(),
-            cover: s.cover.items(),
-            view: v,
-            lights: LIGHTS,
-            shadow: s.shadow,
-            shadow_sampler: s.smp,
-            part: index,
-        ),
-        indices: s.grids.indices,
-        first_index: span.x,
-        index_count: span.y,
-        cull: Cull::Back,
-    )
+    // (Which faces are drawn is part of a draw's pipeline, so each way is written out.)
+    if hakuro::two_faced(index) {
+        draw(
+            pass,
+            chart::vertex.bind(
+                rest: rest,
+                form: form,
+                band: part.band,
+                under: part.sunk,
+                level: level,
+                seen: v,
+            ),
+            charted_pixel.bind(
+                shade: shade,
+                length: form.path.length(),
+                cover: s.cover.items(),
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.smp,
+                part: index,
+            ),
+            indices: s.grids.indices,
+            first_index: span.x,
+            index_count: span.y,
+            cull: Cull::None,
+        )
+    } else {
+        draw(
+            pass,
+            chart::vertex.bind(
+                rest: rest,
+                form: form,
+                band: part.band,
+                under: part.sunk,
+                level: level,
+                seen: v,
+            ),
+            charted_pixel.bind(
+                shade: shade,
+                length: form.path.length(),
+                cover: s.cover.items(),
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.smp,
+                part: index,
+            ),
+            indices: s.grids.indices,
+            first_index: span.x,
+            index_count: span.y,
+            cull: Cull::Back,
+        )
+    }
 }
 
 /// The camera's field of view, top to bottom (radians).
@@ -604,7 +633,7 @@ pub fn charted_pixel<const A: u32, const R: u32>(
     shadow_sampler: ComparisonSampler,
     part: u32,
 ) -> vec4 {
-    if part == COVERED && chart::covered(cover, v.place.x, v.place.y) < 0.5 {
+    if chart_hidden(part, cover, v.place) {
         discard()
     }
     if chart_cut(part, v.rest) {

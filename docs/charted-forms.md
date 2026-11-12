@@ -22,7 +22,7 @@ The code is `engine/chart.wrela` (the form and how it's posed and drawn), `studi
 wrela tool forms -- --stations <name>
 ```
 
-It prints, station by station along the whole path, where the path is, how many rays round it meet the reference and the least and most radius they find. Start the span where every ray meets it.
+It prints, station by station along the whole path, where the path is, how many rays round it meet the reference and the least and most radius they find; then every third station's section, the radius each of 16 rays round it finds. Start the span where every ray meets it. Where the sections make no sense (nothing found to the sides of a collar), the path is in the wrong place: slice the reference and look before you fit.
 3. **Give it a reference** (`studio/forms/targets.wrela`): `triangles_of` for a body's own triangles by part, or `Grid` for a sampled grid. The tool reads the reference along rays from the form's own path.
 4. **Add its fit** beside the others in `main.wrela` (`fitted`, or `fitted_over` a base for a character's difference) and its line in `tool()`.
 5. **Run the tool** and read what it prints:
@@ -63,7 +63,10 @@ A pixel reads its normal from the chart itself (`chart::normal_at`): its place o
 - **A tight garment** is a difference over the body's form on the same chain (`fitted_over`). One with an edge of its own (a wrap round a forearm, a gauntlet) is a second part on the arm's chain and bones, its form the arm's plus a little, drawn over its own band. Stiff leather stands 3.5 mm off, and the ink draws its edge as one line. Wound cloth sits 1.5 mm off, under what the ink takes for an edge: at 2.5 mm the ink broke its edge into dashes, and at 3.5 mm it read as a boxy cuff.
 - **A loose garment about the same bones** is its own form on the body's chain (the jacket on the trunk's), so it goes where the body goes.
 - **A body under a garment that isn't charted with it** is drawn under the garment the whole way (`Part::sunk` reaching past its end), closed at both ends, and on a coarser grid (`Part::coarser`): it shows no outline of its own. Hakuro's trunk under his sampled jacket is drawn 4 cm under and two levels coarser. Without the first, the trunk came through the jacket at the chest and the hip when he leant back; the second took 0.4 ms off the paint pass.
-- **Openings** are a `chart::Cover`: a bit a place, set where the garment is, written by the tool from where rays met the reference. The pixel is discarded where `covered` is under a half.
+- **A structured garment is a form for each run of its surface.** Hakuro's jacket is a boxy vest: about his spine, the radius jumps 14 cm across his shoulders' flat tops, and one form missed his collar by 19 mm. As four it fits: its body about his spine up to under its shoulders (2.2 mm rms; its sides over its top 10 cm are left to its shoulders, where the body is 12 mm out), its collar about a line straight up behind his neck (1.1 mm), and each shoulder about a line along his collarbone and on down his upper arm (0.2 to 1.8 mm over what it draws).
+- **What's worn over a shoulder rides the arm.** Charted about a line his chest carries, the jacket's shoulders stood out as flat plates while his arms hung. Their line bends at his shoulder's joint, as his arm's does, with his upper arm's turn spread to his elbow so the shoulder takes little of it.
+- **Openings** are a `chart::Cover`: a bit a place, set where the garment is, written by the tool from where rays met the reference. The pixel is discarded where `covered` is under a half. A garment of several forms has a cover a form, held one after another (`chart::uploaded`, `covered`'s `at`), each cut where the next piece takes over, and the pieces overlap a little so no gap opens between them. The tool evens each cover's marks (`evened`): a ray grazing a rim meets it at one place and misses at the next, and marks as rays leave them drew a toothed edge with skin showing through.
+- **An open sheet is drawn from both faces** (a collar's inside shows from the front). Which faces a draw keeps is fixed when a program is built, so a program writes both draws and chooses between them.
 - **Paint** is by place on the chart, or by where the place is on the creature at rest.
 
 ## When a species' limb changes
@@ -72,7 +75,13 @@ A character's limb is the species' plus a difference, so fitting the species' li
 
 ## Judging a change
 
-`wrela tool judge -- build/judge/<name> --against <revision>` renders the workspace and another revision on a list of shots and writes each critic a directory of pairs, marked A and B, with a brief; `--tally` reads their answers through the sealed key. Use a panel of ten or more: five critics gave the same pictures 30 of 30 and then 20 of 30. Each shot is shown each way round to half the panel, because critics lean toward a letter. Read what critics say of each side as well as how they vote: the descriptions repeat from panel to panel when the votes don't.
+`wrela tool judge -- build/judge/<name> --against <revision>` renders the workspace and another revision on a list of shots and writes each critic a directory of pairs, marked A and B, with a brief; `--tally` reads their answers through the sealed key. Each shot is shown each way round to half the panel, because critics lean toward a letter. Read what critics say of each side as well as how they vote: the descriptions repeat from panel to panel when the votes don't.
+
+A round is run in stages, to keep its cost down:
+
+- **Four critics first**, on the shots where the change can show (`--critics 4 --only <shot> ...`). A clear result ends the round: the jacket's was 6 votes to 25. Four more only when the first four are close, and a result still close is reported as close: five critics once gave the same pictures 30 of 30 and then 20 of 30.
+- **Critics on a small agent.** A critic needs to read a brief and its pictures and nothing else. On an agent with four tools one used 42 thousand tokens for eleven pictures; on a general-purpose agent, 92 thousand. The pictures are about a quarter of that.
+- **Which model.** Over four rounds Opus critics leaned the way Fable critics did every time, at three quarters of the tokens, though they answer "no difference" about half the time. Sonnet critics were at or under a coin in two of the four. Haiku critics leaned the right way on a round whose answer was known (17 to 12, where Fable gave 27 to 15) but named parts that were the same in both pictures.
 
 ## What a chart is poor at
 
@@ -80,6 +89,7 @@ A character's limb is the species' plus a difference, so fitting the species' li
 - Anything not star-shaped about its path: fingers held together, an ear. Those stay implicit fields.
 - A pose far past what the joints' changes were solved over: the changes hold there, and nothing says the held shape is right.
 - Where a charted limb leaves a garment that isn't charted with it. The limb's root is drawn under the garment (`Part::sunk`), and from behind a raised arm the garment's armhole stands off the arm as a thin line.
+- A stiff garment's edges. Hakuro's jacket as four forms was judged against his sampled jacket and took 6 votes to 25, so his jacket stays sampled (`hakuro::JACKET_CHARTED` is off). What critics marked, and what each needs: ragged edges at its shoulders and collar, worst close to the camera, where a cover's marks are 2 to 4 mm apart and the ink draws along them (an edge written as a curve on the chart, not as marks); blotches on its upper back where its shoulders lie 1.5 mm over its body (pieces that meet at a line, not overlap); a gold crescent under an armhole, the lining's paint on an inside face (the inside painted as the outside's cloth); and no thickness at a rim, which a sampled shell has (a second sheet inside the first).
 
 ## Numbers so far
 
@@ -92,6 +102,8 @@ A character's limb is the species' plus a difference, so fitting the species' li
 | Hakuro's trunk | 24 by 21 | 1.47 mm; 10.5 mm |
 | Hakuro's neck | 16 by 13 | 1.64 mm; 6.7 mm |
 | Hakuro's head, under his mask and hair | 16 by 13 | 2.53 mm; 17.4 mm |
-| Hakuro's jacket | 24 by 21 | 2.25 mm; 19.3 mm |
+| Hakuro's jacket's body, to under its shoulders | 24 by 21 | 2.22 mm; 63 mm (at its sides near its top, which its shoulders draw) |
+| Hakuro's jacket's collar | 16 by 13 | 1.14 mm; 9.9 mm |
+| Hakuro's jacket's shoulders, each (over all its rays meet) | 16 by 13 | 2.67 mm; 18.0 mm |
 
 Each is measured on rays between the fit's own places, on toolchain 0.32.0. `wrela tool forms` writes every one in about ten seconds.

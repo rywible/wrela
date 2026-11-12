@@ -18,7 +18,7 @@
 
 use cycle
 use std::collections::Vec
-use std::gpu::{ClipPosition, GpuBuffer, VertexIndex, buffer_of}
+use std::gpu::{ClipPosition, GpuBuffer, VertexIndex, buffer, buffer_of, write}
 use std::math::{PI, TAU}
 use std::string::String
 use view::Camera
@@ -1103,16 +1103,18 @@ impl Cover {
     }
 }
 
-/// Whether a cover whose words are `words` has its form at place (`i` along, `j` round, counted
-/// round the whole turn).
-fn mark(words: [u32], i: u32, j: u32) -> f32 {
+/// Whether the cover whose words start at `first` of `words` has its form at place (`i`
+/// along, `j` round, counted round the whole turn).
+fn mark(words: [u32], first: u32, i: u32, j: u32) -> f32 {
     let k = min(i, COVER_ALONG - 1) * COVER_ROUND + j % COVER_ROUND
-    f32((words[k / 32] >> (k % 32)) & 1)
+    f32((words[first + k / 32] >> (k % 32)) & 1)
 }
 
 /// How much of a form is at `f` of the way along and angle `theta`, by its cover's words: 1
-/// well inside it, 0 well inside an opening, and a half at an opening's edge.
-pub fn covered(words: [u32], f: f32, theta: f32) -> f32 {
+/// well inside it, 0 well inside an opening, and a half at an opening's edge. Where `words`
+/// holds several covers one after another (`uploaded`), `at` says which.
+pub fn covered(words: [u32], f: f32, theta: f32, at: u32 = 0) -> f32 {
+    let first = at * COVER_WORDS
     let x = clamp(f * f32(COVER_ALONG) - 0.5, 0.0, f32(COVER_ALONG - 1))
     let y = fract(theta / TAU + 1.0) * f32(COVER_ROUND) - 0.5 + f32(COVER_ROUND)
     let i = u32(x)
@@ -1120,10 +1122,20 @@ pub fn covered(words: [u32], f: f32, theta: f32) -> f32 {
     let fx = x - f32(i)
     let fy = y - f32(j)
     mix(
-        mix(mark(words, i, j), mark(words, i + 1, j), fx),
-        mix(mark(words, i, j + 1), mark(words, i + 1, j + 1), fx),
+        mix(mark(words, first, i, j), mark(words, first, i + 1, j), fx),
+        mix(mark(words, first, i, j + 1), mark(words, first, i + 1, j + 1), fx),
         fy,
     )
+}
+
+/// Several covers' words in GPU memory, one after another, for a pixel to read one of
+/// (`covered`'s `at`): a garment of several forms has a cover a form.
+pub fn uploaded<const N: u32>(covers: [Cover; N]) -> GpuBuffer<u32> {
+    var out: GpuBuffer<u32> = buffer(N * COVER_WORDS)
+    for k in 0..N {
+        write(mut out, k * COVER_WORDS, covers[k].words)
+    }
+    out
 }
 
 /// A cover from marks: `marks[i * COVER_ROUND + j]` says whether the form is at place `i`
@@ -2005,6 +2017,29 @@ fn a_cover_says_where_a_form_is() {
     let edge = TAU * 26.0 / f32(COVER_ROUND)
     assert(abs(c.covered(0.5, edge) - 0.5) < 0.01, f"{c.covered(0.5, edge)}")
     assert(abs(c.covered(0.5, -edge) - 0.5) < 0.01, f"{c.covered(0.5, -edge)}")
+}
+
+@test
+fn one_of_several_covers_held_together_is_read_by_its_place_among_them() {
+    // Two covers' words one after the other, as `uploaded` holds them: the first with its form
+    // nowhere, the second with its form everywhere. Each reads as itself.
+    var none: Vec<bool> = Vec::new()
+    var all: Vec<bool> = Vec::new()
+    for _ in 0..COVER_ALONG * COVER_ROUND {
+        none.push(false)
+        all.push(true)
+    }
+    let a = cover_of(none)
+    let b = cover_of(all)
+    var words: Vec<u32> = Vec::new()
+    for w in a.words {
+        words.push(w)
+    }
+    for w in b.words {
+        words.push(w)
+    }
+    assert(covered(words, f: 0.4, theta: 1.0) == 0.0)
+    assert(covered(words, f: 0.4, theta: 1.0, at: 1) == 1.0)
 }
 
 @test

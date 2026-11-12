@@ -11,9 +11,9 @@
 
 use hakuro::arms::{Drape, drape_room, draped, follow_legs, hand, jacket}
 use hakuro::hakuro::{
-    CHARTS, COVERED, Charted, Cloth, FINGER_JOINTS, WIDE_CHARTS, body_paint, chart_cut, chart_paint,
-    charted_as, charted_at_rest, charted_now, charts, coat, head, hero, jacket_paint, sampled_now,
-    shaded, shaded_wide, wide_charts,
+    CHARTS, Charted, Cloth, FINGER_JOINTS, WIDE_CHARTS, body_paint, chart_cut, chart_hidden,
+    chart_paint, charted_as, charted_at_rest, charted_now, charts, coat, head, hero, jacket_paint,
+    sampled_now, shaded, shaded_wide, wide_charts,
 }
 use engine::chart
 use engine::chart::{Grids, Limb, Part, Radial}
@@ -113,7 +113,7 @@ pub fn aboard() -> Aboard {
         sampled: [jacket(), hand(0), hand(1)],
         charted: charted_at_rest(),
         grids: chart::grids(),
-        cover: hakuro::jacket_cover::JACKET_COVER.upload(),
+        cover: hakuro::hakuro::jacket_covers(),
         palette: buffer(2 * MAX_BONES),
         skies: buffer(SKIES),
         lagged: [mat4(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0)); 64],
@@ -713,7 +713,7 @@ pub fn charted_pixel<const A: u32, const R: u32>(
     part: u32,
     pixel: FragCoord,
 ) -> Targets3<vec4, vec4, vec4> {
-    if part == COVERED && chart::covered(cover, v.place.x, v.place.y) < 0.5 {
+    if chart_hidden(part, cover, v.place) {
         discard()
     }
     if chart_cut(part, v.rest) {
@@ -1072,38 +1072,74 @@ fn chart_drawn<P: RenderPass, const A: u32, const R: u32, const S: u32>(
 ) {
     let level = form.level(shot.eye, f32(height * FINER), 1.0 / shot.focal)
     let span = chart::level_span(level)
-    draw(
-        p,
-        chart::vertex.bind(
-            rest: rest,
-            form: form,
-            band: part.band,
-            under: part.sunk,
-            level: level,
-            seen: shot,
-        ),
-        charted_pixel.bind(
-            shade: shade,
-            along: form.path.length(),
-            cover: cover.items(),
-            shot: shot,
-            light: hv.light,
-            clouds: hv.clouds,
-            view: hv.tables.view,
-            aerial: hv.tables.aerial,
-            dome: hv.sky.dome,
-            cloud: hv.sky.shadow,
-            smp: hv.linear,
-            skies: skies.items(),
-            once: once.items(),
-            painted: marks,
-            part: index,
-        ),
-        indices: grids.indices,
-        first_index: span.x,
-        index_count: span.y,
-        cull: Cull::Front,
-    )
+    // (Which faces are drawn is part of a draw's pipeline, so each way is written out.)
+    if hakuro::hakuro::two_faced(index) {
+        draw(
+            p,
+            chart::vertex.bind(
+                rest: rest,
+                form: form,
+                band: part.band,
+                under: part.sunk,
+                level: level,
+                seen: shot,
+            ),
+            charted_pixel.bind(
+                shade: shade,
+                along: form.path.length(),
+                cover: cover.items(),
+                shot: shot,
+                light: hv.light,
+                clouds: hv.clouds,
+                view: hv.tables.view,
+                aerial: hv.tables.aerial,
+                dome: hv.sky.dome,
+                cloud: hv.sky.shadow,
+                smp: hv.linear,
+                skies: skies.items(),
+                once: once.items(),
+                painted: marks,
+                part: index,
+            ),
+            indices: grids.indices,
+            first_index: span.x,
+            index_count: span.y,
+            cull: Cull::None,
+        )
+    } else {
+        draw(
+            p,
+            chart::vertex.bind(
+                rest: rest,
+                form: form,
+                band: part.band,
+                under: part.sunk,
+                level: level,
+                seen: shot,
+            ),
+            charted_pixel.bind(
+                shade: shade,
+                along: form.path.length(),
+                cover: cover.items(),
+                shot: shot,
+                light: hv.light,
+                clouds: hv.clouds,
+                view: hv.tables.view,
+                aerial: hv.tables.aerial,
+                dome: hv.sky.dome,
+                cloud: hv.sky.shadow,
+                smp: hv.linear,
+                skies: skies.items(),
+                once: once.items(),
+                painted: marks,
+                part: index,
+            ),
+            indices: grids.indices,
+            first_index: span.x,
+            index_count: span.y,
+            cull: Cull::Front,
+        )
+    }
 }
 
 impl Aboard {
