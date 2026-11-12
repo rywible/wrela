@@ -96,6 +96,10 @@ fn moved(time: f32) -> [mat4; 64] {
     fists_off_mask(hands_off_hips(wrists_eased(m)))
 }
 
+/// 1 for the air he goes through to push his coat back as he walks and runs; 0 for still
+/// cloth that only hangs and swings (`--set WIND=0`).
+pub const WIND: f32 = 1.0
+
 /// 1 to carry him as he carries himself (`hakuro::BEARING`); 0 to see a move as it was
 /// captured (`--set CARRIED=0`).
 pub const CARRIED: f32 = 1.0
@@ -293,7 +297,10 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             write(mut s.palettes, v * MAX_BONES + LAGGED, b)
         }
     }
-    s.drape.work(s.palettes, 5, MAX_BONES, LAGGED, time - s.last)
+    // (His walk and his run are played in place: the air he'd be going through is told to
+    // his coat, so its tails stream as they would.)
+    let going = if MOVE == 4 { 1.4 } else if MOVE == 5 { 4.0 } else { 0.0 }
+    s.drape.work(s.palettes, 5, MAX_BONES, LAGGED, time - s.last, going: going * WIND)
     s.last = time
     for i in 0..s.tallies.len() {
         if let Some(Ok(v)) = s.tallies[i].poll() {
