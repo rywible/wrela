@@ -63,6 +63,9 @@ pub const SHOW: u32 = 0
 /// Who fights in the exchange and the lab (`SHOW=28`, `29`) and who a game plays (`SHOW=11`):
 /// 1 Hakuro (`fighter`), in a fight against his double; 0 the bare body (`--set HAKURO=0`).
 pub const HAKURO: u32 = 1
+/// `SHOW=12`'s body: the bare body (0), or with `--set CHARTED=1` Hakuro, his arms and hands his
+/// charted forms (`engine::chart`), alone: to see how a strike's turns land on a charted arm.
+pub const CHARTED: u32 = 0
 pub const RAW: u32 = 0
 
 /// `--set CODE=1` plays the moves as they're written in Wrela (content/moves, fitted from their
@@ -241,7 +244,7 @@ pub fn init() -> State {
         indices: buffer_of(HERO.indices),
         palette: buffer_of([identity(); 64]),
         palette2: buffer_of([identity(); 64]),
-        fighters: fighters(if SHOW == 11 { 1 } else { 2 }),
+        fighters: fighters(if SHOW == 11 || (CHARTED == 1 && SHOW == 12) { 1 } else { 2 }),
         cloth_at: 0.0,
         colour: texture(width: 640, height: 360),
         marks: texture(width: 640, height: 360),
@@ -900,6 +903,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         shot.pair_b = shot.pair_a
         s.fighters.step(dt, going: manner::air_at(s.mover.speed, time))
     }
+    // Hakuro alone in `SHOW=12`'s place (`CHARTED`).
+    let alone = CHARTED == 1 && SHOW == 12
+    if alone {
+        s.fighters.pose(0, hakuro_palette(bones))
+        s.fighters.step(dt)
+    }
     if fight {
         // (Their cloth moves on the bodies' clock: held through the hit-stop with them.)
         let played = if SHOW == 28 { exchange::played_at(time, exchange::TUNED) } else { time }
@@ -922,7 +931,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         vertices: 6,
         depth: engine::view::NEAREST,
     )
-    if fight || hero {
+    if fight || hero || alone {
         s.fighters.draw(p, shot)
     } else {
         draw(
