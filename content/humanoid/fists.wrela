@@ -205,6 +205,55 @@ fn step_move(by: vec3) -> Move {
     m
 }
 
+/// A body struck reeling (a stand-in, hand-keyed, until reactions are made from the blow that
+/// lands: the combat animation plan's piece 7): from the guard, its head and trunk rocked back
+/// and its fists drawn in, its rear foot a short step back to catch it, then home in its guard
+/// where it caught itself.
+pub fn reel_keys() -> Vec<Key> {
+    let back = vec3(0.0, 0.0, -0.12)
+    var out: Vec<Key> = Vec::new()
+    out.push(guard())
+    // Rocked back: the trunk thrown back past upright, the head with it, the hips behind.
+    var k = guard()
+    k.at = 0.08
+    k.ease = SNAP
+    k.hips = guard().hips + vec3(0.0, -0.01, -0.05)
+    k.trunk = vec3(-16.0, -2.0, 0.0)
+    k.look = vec3(0.0, 2.4, 2.0)
+    k.fists = [vec3(0.12, 1.47, 0.20), vec3(-0.12, 1.45, 0.08)]
+    k.lifts[1] = 0.04
+    k.feet[1] = guard().feet[1] + vec4(back.x * 0.5, back.z * 0.5, 0.0, 0.0)
+    out.push(k)
+    // Caught on the rear foot, a step back, sunk.
+    k = keys::shifted(guard(), back * 0.7)
+    k.at = 0.22
+    k.ease = SETTLE
+    k.hips.y = -0.10
+    k.trunk = vec3(-4.0, -4.0, 0.0)
+    k.feet[0] = guard().feet[0] + vec4(back.x * 0.4, back.z * 0.4, 0.0, 0.0)
+    k.feet[1] = guard().feet[1] + vec4(back.x, back.z, 0.0, 0.0)
+    out.push(k)
+    // Home in its guard, where it caught itself.
+    k = keys::shifted(guard(), back)
+    k.at = 0.5
+    k.ease = SMOOTH
+    out.push(k)
+    out
+}
+
+/// The reel as a move: its keys at 60 a second about its root, which carries the body back.
+@fuel(2 ** 40)
+pub const REEL: Move = reel_move()
+
+fn reel_move() -> Move {
+    let keys = reel_keys()
+    let c = keys::keyed(HERO.rig, keys, fps: 60.0, fist: 2.0)
+    let n = c.frames
+    var m = in_place(c)
+    m.root = keys::travels(keys, fps: 60.0, frames: n)
+    m
+}
+
 /// The footwork: a step in toward the foe, a step back out, and a step to either side.
 pub const STEP: f32 = 0.32
 @fuel(2 ** 40)
