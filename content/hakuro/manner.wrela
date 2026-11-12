@@ -1,0 +1,209 @@
+// Hakuro's manner: how he stands when nothing asks him to move, how he carries himself over
+// whatever move he makes, and how he runs. His moves are captures of other people (content/moves);
+// this is what makes them his.
+
+use engine::bearing::Bearing
+use engine::cleanup
+use engine::cycle::Cycle
+use engine::humanoid::{Clip, Rig}
+use engine::pose
+use engine::pose::Turn
+use moves::run::RUN
+use clear::{fists_off_mask, hands_off_hips, wrists_eased}
+use fingers::{FIST_CURL, HIP_CURL, RELAXED_CURL, between, curled_each}
+use reference_rig::HAKURO_BONE
+use std::transform::translate
+
+/// How fast he walks and how fast he runs (m/s): the walk's own pace, and a sprint.
+pub const WALKS: f32 = 1.4
+pub const SPRINTS: f32 = 5.2
+
+/// How fast the run he's made from goes (m/s): ACCAD's Male 2's.
+const RAN: f32 = 4.0
+
+/// His run: the captured run's stride at a sprint's cadence (each loop that much shorter, its
+/// feet meeting the ground as fast as it goes under them), carried as `bearing_at` carries him
+/// at that speed.
+pub fn sprint() -> Cycle {
+    Cycle { period: RUN.period * RAN / SPRINTS, ..RUN.clone() }
+}
+
+/// How he carries himself over whatever move he's making (`engine::bearing`): his chin down,
+/// so his mask looks out from under its brow; his head held steady over his stride, most of
+/// the way level and facing where he's going; his chest up.
+pub const BEARING: Bearing = Bearing { chin: 0.14, steady: 0.75, chest: 0.07 }
+
+/// How far he leans into going (radians): none standing, a little at a walk, and at a sprint
+/// far over, the lean spread up his spine (`SPRINT_LEAN`) and his hips tipped with it
+/// (`SPRINT_TIP`), low over his feet (`SPRINT_LOW`, m).
+pub const WALK_LEAN: f32 = 0.03
+pub const SPRINT_LEAN: f32 = 0.34
+pub const SPRINT_TIP: f32 = 0.22
+pub const SPRINT_LOW: f32 = 0.05
+
+/// How much of his arms' swing he gives up at a sprint to trail them behind him, and where
+/// they trail: back from his trunk's line and out from his sides (radians).
+pub const SPRINT_TRAIL: f32 = 0.88
+pub const SPRINT_SWEPT: vec2 = vec2(0.68, 0.22)
+
+/// His bearing going `speed` (m/s): none standing still (his stand is his own already), then
+/// `BEARING`, leant into it; past a walk, more and more a sprint's, his hips tipped and low
+/// and his arms trailing.
+pub fn bearing_at(speed: f32) -> Bearing {
+    let fast = smoothstep(WALKS, SPRINTS, speed)
+    Bearing {
+        lean: mix(WALK_LEAN, SPRINT_LEAN, fast) * smoothstep(0.0, WALKS, speed),
+        tip: SPRINT_TIP * fast,
+        low: SPRINT_LOW * fast,
+        trail: SPRINT_TRAIL * smoothstep(0.45, 0.9, fast),
+        swept: SPRINT_SWEPT,
+        ..BEARING.part(smoothstep(0.0, 0.8, speed)),
+    }
+}
+
+/// The air his coat's tails and his hair are in (m/s, from ahead of him) going `speed` at
+/// `time` (s): what he goes through, and standing a light air that swells and ebbs, so his
+/// coat stirs while he's still.
+pub fn air_at(speed: f32, time: f32) -> f32 {
+    let breeze = 1.5 + 0.7 * sin(0.9 * time) + 0.35 * sin(2.3 * time + 1.0)
+    max(speed, breeze)
+}
+
+/// His palette from the reference rig's (`engine::humanoid::palette`; its joints are his):
+/// each of its bones' matrix to his, and his hands as he holds them. The captures hold no
+/// fingers of his: his are curled loosely, his left's round over his hip as far as he's
+/// standing as he stands (`standing`, 0 to 1), both closed as far as he's fighting (`fists`).
+/// His wrists are eased, his hands kept out of his hips (his left let rest there, standing)
+/// and off his mask.
+pub fn palette_of(rig_m: [mat4; 64], standing: f32, fists: f32) -> [mat4; 64] {
+    let m = on_rig(rig_m)
+    let left = between(between(RELAXED_CURL, HIP_CURL, standing), FIST_CURL, fists)
+    let right = between(RELAXED_CURL, FIST_CURL, fists)
+    let curled = curled_each(m, left, right)
+    fists_off_mask(hands_off_hips(wrists_eased(curled), vec2(1.0 - saturate(standing), 1.0)))
+}
+
+/// Each of the reference rig's bones' matrix as his own bone's.
+pub fn on_rig(rig_m: [mat4; 64]) -> [mat4; 64] {
+    var m = [translate(vec3(0.0)); 64]
+    for b in 0..52 {
+        m[HAKURO_BONE[b]] = rig_m[b]
+    }
+    // His old single finger and thumb bones (14 to 17), unused by his skin, with his hands.
+    for side in 0..2 {
+        m[14 + side] = m[12 + side]
+        m[16 + side] = m[12 + side]
+    }
+    m
+}
+
+/// How he stands: the pose his look was locked in (hero-masks v17's sheet), his weight on his
+/// right leg and his left hand on his hip, breathing twice a loop, his weight and his look
+/// shifting once. Each turn is of a bone and what hangs from it about one of his own axes
+/// (+x his left, +y up, +z ahead), in order (`engine::pose`).
+pub const STAND: [Turn; 26] = [
+    Turn { bone: "hips", axis: vec3(0.0, 0.0, 1.0), by: 3.0, wave: 0.5 },
+    Turn { bone: "hips", axis: vec3(0.0, 1.0, 0.0), by: -6.0, wave: 0.8, at: 0.3 },
+    Turn { bone: "spine", axis: vec3(0.0, 0.0, 1.0), by: -4.0, wave: -0.5 },
+    Turn { bone: "chest", axis: vec3(0.0, 0.0, 1.0), by: -2.0 },
+    // (A breath in lifts his chest and his shoulders; his head stays where it looks.)
+    Turn { bone: "chest", axis: vec3(1.0, 0.0, 0.0), by: 0.0, wave: -0.9, times: 2.0 },
+    Turn { bone: "upperChest", axis: vec3(1.0, 0.0, 0.0), by: -3.0, wave: -1.7, times: 2.0 },
+    Turn { bone: "leftUpperLeg", axis: vec3(0.0, 0.0, 1.0), by: 6.0 },
+    Turn { bone: "rightUpperLeg", axis: vec3(0.0, 0.0, 1.0), by: -2.0 },
+    Turn { bone: "leftUpperLeg", axis: vec3(1.0, 0.0, 0.0), by: -6.0 },
+    Turn { bone: "leftLowerLeg", axis: vec3(1.0, 0.0, 0.0), by: 10.0 },
+    Turn { bone: "leftFoot", axis: vec3(0.0, 1.0, 0.0), by: 12.0 },
+    Turn { bone: "rightFoot", axis: vec3(0.0, 1.0, 0.0), by: -8.0 },
+    Turn { bone: "leftShoulder", axis: vec3(0.0, 0.0, 1.0), by: -6.0, wave: 1.2, times: 2.0 },
+    Turn { bone: "rightShoulder", axis: vec3(0.0, 0.0, 1.0), by: 4.0, wave: -1.2, times: 2.0 },
+    Turn { bone: "leftUpperArm", axis: vec3(0.0, 0.0, 1.0), by: -53.0 },
+    Turn { bone: "rightUpperArm", axis: vec3(0.0, 0.0, 1.0), by: 78.0 },
+    Turn { bone: "leftUpperArm", axis: vec3(0.0, 1.0, 0.0), by: 4.0 },
+    Turn { bone: "rightUpperArm", axis: vec3(1.0, 0.0, 0.0), by: 4.0, wave: 1.0, at: 0.6 },
+    Turn { bone: "leftLowerArm", axis: vec3(0.0, 0.0, 1.0), by: -58.0 },
+    Turn { bone: "leftLowerArm", axis: vec3(0.0, 1.0, 0.0), by: 12.0 },
+    Turn { bone: "leftHand", axis: vec3(0.0, 0.0, 1.0), by: -32.0 },
+    Turn { bone: "rightLowerArm", axis: vec3(1.0, 0.0, 0.0), by: -14.0 },
+    Turn { bone: "neck", axis: vec3(1.0, 0.0, 0.0), by: 6.0, wave: 1.3, times: 2.0 },
+    Turn { bone: "head", axis: vec3(1.0, 0.0, 0.0), by: 10.0, wave: 1.3, times: 2.0 },
+    Turn { bone: "head", axis: vec3(0.0, 1.0, 0.0), by: -10.0, wave: 5.0, at: 0.15 },
+    Turn { bone: "head", axis: vec3(0.0, 0.0, 1.0), by: 4.0 },
+]
+
+/// How long his stand's loop lasts (s), and how many frames a second it's keyed at (it moves
+/// slowly: a breath is four seconds).
+pub const STAND_FOR: f32 = 8.0
+pub const STAND_KEYED: f32 = 10.0
+
+/// His stand as a clip on `rig`, its feet set on the floor and held there
+/// (`engine::cleanup`'s keyed moves' cleanup).
+pub fn stand(rig: Rig) -> Clip {
+    cleanup::cleaned(
+        pose::held(rig.clone(), STAND, length: STAND_FOR, fps: STAND_KEYED),
+        rig,
+        cleanup::KEYED,
+    )
+}
+
+@test
+fn his_stand_keeps_both_feet_where_they_stand_on_the_floor() {
+    let rig = reference_rig::reference_rig()
+    let clip = stand(rig.clone())
+    assert(clip.looped && abs(clip.length() - STAND_FOR) < 1.0e-3)
+    let rest = rig.rest_world()
+    let feet = [rig.find("leftFoot"), rig.find("rightFoot")]
+    var first = [vec3(0.0); 2]
+    var most = [0.0; 2]
+    var chest_low = 10.0
+    var chest_high = -10.0
+    for f in 0..clip.frames {
+        let w = engine::stride::worlds(rig.clone(), clip.clone(), f)
+        for i in 0..2 {
+            let at = w[feet[i]].t
+            if f == 0 {
+                first[i] = at
+            }
+            most[i] = max(most[i], length(at - first[i]))
+            // (At its height at rest over the floor, or a little over it: his left heel is
+            // just raised.)
+            assert(
+                abs(at.y - rest[feet[i]].t.y) < 0.02,
+                f"foot {i} is {at.y - rest[feet[i]].t.y} off the floor",
+            )
+        }
+        let chest = w[rig.find("upperChest")].q.rotate(vec3(0.0, 1.0, 0.0))
+        chest_low = min(chest_low, chest.z)
+        chest_high = max(chest_high, chest.z)
+    }
+    // (Each ankle stays within half a centimetre of where it stood, through his breath and
+    // his weight's shift: they move 4 mm and 1.5 mm.)
+    assert(most[0] < 0.005 && most[1] < 0.005, f"his feet move {most[0]} and {most[1]}")
+    // And he breathes: his chest's line rocks a few degrees through the loop.
+    assert(
+        chest_high - chest_low > 0.03 && chest_high - chest_low < 0.12,
+        f"{chest_high - chest_low}",
+    )
+}
+
+@test
+fn he_stands_as_he_stands_and_sprints_leant_low_with_his_arms_trailing() {
+    // Standing still, no bearing is laid on his stand.
+    let still = bearing_at(0.0)
+    assert(still.chin == 0.0 && still.steady == 0.0 && still.lean == 0.0 && still.trail == 0.0)
+    // At a walk he's his own, his arms the walk's.
+    let walking = bearing_at(WALKS)
+    assert(abs(walking.chin - BEARING.chin) < 1.0e-6 && walking.trail == 0.0 && walking.tip == 0.0)
+    // At a sprint he's leant, his hips tipped and low, his arms given up to trail.
+    let fast = bearing_at(SPRINTS)
+    assert(abs(fast.lean - SPRINT_LEAN) < 1.0e-6 && abs(fast.tip - SPRINT_TIP) < 1.0e-6)
+    assert(abs(fast.low - SPRINT_LOW) < 1.0e-6 && abs(fast.trail - SPRINT_TRAIL) < 1.0e-6)
+    // And his sprint covers the run's stride in less time: as fast as he's said to sprint.
+    let run = RUN.clip(reference_rig::reference_rig(), 30.0)
+    let quick = sprint().clip(reference_rig::reference_rig(), 30.0)
+    assert(length(quick.travel - run.travel) < 1.0e-5)
+    assert(
+        abs(length(quick.travel) / quick.length() - SPRINTS) < 0.15,
+        f"{length(quick.travel) / quick.length()} m/s",
+    )
+}

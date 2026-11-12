@@ -3,7 +3,7 @@
 // his arms, his hands, his legs, his trunk, his neck, his head and his jacket are drawn along
 // their charts (`hakuro::charts`, `hakuro::wide_charts`).
 
-use shapes::{TAILS_AXIS, TAILS_FROM, TAILS_TO, hem, tails}
+use shapes::{TAILS_AXIS, TAILS_FROM, TAILS_TO, front_edge, hem, tails}
 use engine::realize::{Mesh, SkinVertex, Tally}
 use std::collections::Vec
 use std::gpu::{GlobalId, GpuBuffer, GpuSpan, Slots, Unorm8x4, buffer, dispatch, write}
@@ -55,6 +55,52 @@ fn tails_skinned(rest: vec3, palettes: [mat4], first: u32) -> vec3 {
     (m * vec4(rest, 1.0)).xyz
 }
 
+/// His thighs' joints at rest: what a thigh turns about.
+const THIGH_JOINT: vec3 = vec3(0.114, 0.971, -0.036)
+
+/// `rest` turned by `share` of what `thigh` (a thigh's matrix) turns from `hips` (his hips'),
+/// about that thigh's joint (`joint`, at rest), in his hips' own space.
+fn part_turned(rest: vec3, hips: mat4, thigh: mat4, joint: vec3, share: f32) -> vec3 {
+    if share <= 0.0 {
+        return rest
+    }
+    // The thigh's turn from his hips, as an axis and an angle.
+    // (His hips' turn undone: each of the thigh's axes along his hips' own.)
+    let (h0, h1, h2) = (hips[0].xyz, hips[1].xyz, hips[2].xyz)
+    let across = |c: vec3| vec3(dot(h0, c), dot(h1, c), dot(h2, c))
+    let r = mat3(across(thigh[0].xyz), across(thigh[1].xyz), across(thigh[2].xyz))
+    let lean = vec3(r[1][2] - r[2][1], r[2][0] - r[0][2], r[0][1] - r[1][0])
+    let s = 0.5 * length(lean)
+    if s < 1.0e-5 {
+        return rest
+    }
+    let angle = atan2(s, 0.5 * (r[0][0] + r[1][1] + r[2][2] - 1.0)) * share
+    let k = lean / (2.0 * s)
+    let d = rest - joint
+    joint + d * cos(angle) + cross(k, d) * sin(angle) + k * dot(k, d) * (1.0 - cos(angle))
+}
+
+/// Where the cloth's shape has a point of the tails (`rest`) as `palettes` (from `first`)
+/// pose him: carried by his hips, and turned about each thigh's joint by that thigh's share
+/// (`tails_weights`) of its turn. (`tails_skinned` puts it a share of the way to where the
+/// thigh would carry it, which is nearer the joint: with a thigh lifted square to his hips a
+/// sixth nearer. The cloth, as long as ever, had to gather to lie on that shape, and its
+/// front edge ruffled at every high step.)
+fn tails_carried(rest: vec3, palettes: [mat4], first: u32) -> vec3 {
+    let (_, bits) = tails_weights(rest)
+    let w = Unorm8x4 { bits }.decode()
+    let hips = palettes[first]
+    let left = part_turned(rest, hips, palettes[first + 18], THIGH_JOINT, w.y)
+    let right = part_turned(
+        rest,
+        hips,
+        palettes[first + 19],
+        vec3(-THIGH_JOINT.x, THIGH_JOINT.y, THIGH_JOINT.z),
+        w.z,
+    )
+    (hips * vec4(left + right - rest, 1.0)).xyz
+}
+
 /// How much of the cloth's own shape it keeps each frame: drawn this far toward where his hips
 /// carry it at rest (its A-line and pleats), the rest left to its weight, its swing and his legs.
 const SHAPE: f32 = 0.15
@@ -68,13 +114,13 @@ const RELAXES: u32 = 16
 /// is, as cloth hangs. (Carried stiffly, a tilt of his hips stood the tails' hem out like a shelf
 /// when he leaned out over the skiff's rail.)
 fn hung(rest: vec3, top: vec3, palettes: [mat4], first: u32, going: f32) -> vec3 {
-    let at = tails_skinned(rest, palettes, first)
+    let at = tails_carried(rest, palettes, first)
     let w = 0.85 * smoothstep(0.0, 0.45, top.y - rest.y)
     if w <= 0.0 {
         return at
     }
-    let anchor = tails_skinned(top, palettes, first)
-    let below = tails_skinned(top - vec3(0.0, 0.3, 0.0), palettes, first)
+    let anchor = tails_carried(top, palettes, first)
+    let below = tails_carried(top - vec3(0.0, 0.3, 0.0), palettes, first)
     let down = normalize(below - anchor)
     // (Plumb, in the air he's going through: going `going` m/s the way his hips face, the
     // cloth hangs back from straight down by the air's push, which grows as his speed squared.
@@ -105,6 +151,26 @@ const STREAM: f32 = 0.029
 fn pinned(rest: vec3) -> f32 {
     let u = clamp((rest.y - 0.85) / 0.065, 0.0, 1.0)
     u * u * (3.0 - 2.0 * u)
+}
+
+/// How much a node is the seam itself (1 along the tails' top edge, none from 2.5 cm under
+/// it): his jacket's hem carried on, which goes where the jacket does.
+fn sewn(rest: vec3) -> f32 {
+    smoothstep(0.9, 0.925, rest.y)
+}
+
+/// How much of a node is cloth (1 within the tails' front edges, none from 8° past one): the
+/// grid runs on in front of the edges where they're cut back (`shapes::front_edge`), and its
+/// nodes there are no cloth. Kept off a thigh that lifted through them, they stood away from
+/// the cloth beside them, column by column, and the edge between was drawn in steps.
+fn woven(rest: vec3) -> f32 {
+    let rel = rest - TAILS_AXIS
+    var deg = atan2(rel.x, rel.z) * 57.2957795
+    if deg < 0.0 {
+        deg += 360.0
+    }
+    let edge = front_edge(rest.y)
+    1.0 - smoothstep(0.0, 8.0, max(edge - deg, deg - (360.0 - edge)))
 }
 
 /// A node's place in `views` views' grids: its view, its column and row, its first bone.
@@ -219,12 +285,23 @@ pub fn cloth_relax(
         }
     }
     var q = p + pull / max(weight, 1.0) * 1.6
-    q = off_legs_now(q, rest, palettes, first)
-    q = off_trousers(q, palettes, first, legs, CLEAR_OF_LEG, 10.0)
+    // (Only what's cloth is kept off him: a node past the tails' front edge goes where its
+    // neighbours take it.)
+    let cloth = woven(rest)
+    q = mix(q, off_legs_now(q, rest, palettes, first), cloth)
+    q = mix(q, off_trousers(q, palettes, first, legs, CLEAR_OF_LEG, 10.0), cloth)
     q = mix(q, target, pin)
     // (Where it's held at the seam it can't hang off a leg, only be put out of one: a thigh
-    // swung out as he stands, or lifted in a stride, came through the cloth his hips hold.)
-    q = off_trousers(q, palettes, first, legs, CLEAR_PINNED, 10.0)
+    // swung out as he stands, or lifted in a stride, came through the cloth his hips hold.
+    // But not its top edge, which is his jacket's hem carried on: put out of a lifted thigh
+    // while the hem over it stayed, its front corner stood off the hem as a wing at his belt.
+    // The corner goes into the fold of his hip with the hem, and the cloth comes out over
+    // his thigh under it.)
+    q = mix(
+        q,
+        off_trousers(q, palettes, first, legs, CLEAR_PINNED, 10.0),
+        (1.0 - sewn(rest)) * cloth,
+    )
     out[id] = vec4(q, 0.0)
 }
 
@@ -918,4 +995,46 @@ fn the_tails_hang_back_in_the_air_he_runs_through() {
     // At a walk it hardly stirs.
     let walking = hung(hem, top, palette, 0, 1.4)
     assert(length(walking - standing) < 0.04)
+}
+
+@test
+fn the_tails_shape_keeps_its_length_from_a_lifted_thighs_joint() {
+    // His right thigh lifted square to his hips (a quarter turn about its joint, his knee
+    // forward): a point of the tails over that thigh, a third of a metre under its joint.
+    let same = mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    )
+    let joint = vec3(-THIGH_JOINT.x, THIGH_JOINT.y, THIGH_JOINT.z)
+    // (About +x through the joint, by -90°: down goes to ahead.)
+    let lifted = mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 0.0, -1.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, joint.y - joint.z, joint.z + joint.y, 1.0),
+    )
+    assert(length((lifted * vec4(joint, 1.0)).xyz - joint) < 1.0e-5)
+    assert(
+        length(
+            (lifted * vec4(joint - vec3(0.0, 0.3, 0.0), 1.0)).xyz - (joint + vec3(0.0, 0.0, 0.3)),
+        ) <
+            1.0e-5,
+    )
+    var palette = [same; 64]
+    palette[19] = lifted
+    let rest = vec3(-0.16, 0.64, 0.05)
+    let (_, bits) = tails_weights(rest)
+    let share = Unorm8x4 { bits }.decode().z
+    assert(share > 0.15, f"the thigh's share is {share}")
+    // Carried, it's as far from the joint as at rest, and turned that share of the quarter
+    // turn; a share of the way to where the thigh would take it is nearer the joint.
+    let far = length(rest - joint)
+    let carried = tails_carried(rest, palette, 0)
+    assert(abs(length(carried - joint) - far) < 1.0e-4, f"{length(carried - joint)} of {far}")
+    let turn = acos(dot(normalize(carried - joint), normalize(rest - joint)))
+    assert(abs(turn - share * 1.5707963) < 0.02, f"turned {turn}")
+    let skinned = tails_skinned(rest, palette, 0)
+    assert(length(skinned - joint) < far * 0.9, f"{length(skinned - joint)} of {far}")
 }

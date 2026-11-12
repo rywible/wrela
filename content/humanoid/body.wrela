@@ -319,6 +319,17 @@ pub const GAITS_CODE: Gaits = gaits_of(
     moves::stop::STOP.clip(HERO.rig.clone(), ACCAD_M2_STOP.fps),
 )
 
+/// Hakuro's gaits (content/hakuro's `manner`): his stand, the walk, and his sprint (the run's
+/// stride at a sprint's cadence), the moves written in Wrela; the same start and stop.
+@fuel(2 ** 40)
+pub const HAKURO_GAITS: Gaits = gaits_of(
+    hakuro::manner::stand(HERO.rig.clone()),
+    moves::walk::WALK.clip(HERO.rig.clone(), ACCAD_M2_WALK.fps),
+    hakuro::manner::sprint().clip(HERO.rig.clone(), ACCAD_M2_RUN.fps),
+    moves::start::START.clip(HERO.rig.clone(), ACCAD_M2_START.fps),
+    moves::stop::STOP.clip(HERO.rig.clone(), ACCAD_M2_STOP.fps),
+)
+
 /// The body's gaits from an idle, a walk and a run (each looped, in place: their footfalls
 /// marked), a start and a stop.
 fn gaits_of(idle: Clip, walk: Clip, run: Clip, start: Clip, stop: Clip) -> Gaits {

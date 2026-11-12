@@ -10,7 +10,6 @@
 
 use engine::chart
 use engine::sway
-use engine::bearing::Bearing
 use engine::chart::{Band, Grown, JOINTS, Limb, Part, Radial}
 use std::collections::Vec
 use std::math::TAU
@@ -117,22 +116,6 @@ pub fn skeleton() -> Skeleton {
     s
 }
 
-/// How he carries himself over whatever move he's making (`engine::bearing`): his chin down,
-/// so his mask looks out from under its brow; his head held steady over his stride, most of
-/// the way level and facing where he's going; his chest up.
-pub const BEARING: Bearing = Bearing { chin: 0.14, steady: 0.75, chest: 0.07 }
-
-/// How far he leans into going (radians): none standing, a little at a walk (1.4 m/s), a
-/// sprinter's lean at a run (4 m/s) and no more past it.
-pub const WALK_LEAN: f32 = 0.03
-pub const RUN_LEAN: f32 = 0.17
-
-/// His bearing going `speed` (m/s): `BEARING`, leant into it.
-pub fn bearing_at(speed: f32) -> Bearing {
-    let lean = mix(WALK_LEAN, RUN_LEAN, smoothstep(1.4, 4.0, speed)) * smoothstep(0.0, 1.4, speed)
-    Bearing { lean, ..BEARING }
-}
-
 /// His hair's bone (`skeleton`'s last).
 pub const HAIR_BONE: u32 = 56
 
@@ -151,6 +134,26 @@ pub const HAIR_SPRING: sway::Spring = sway::Spring { rate: 3.0, damping: 0.28, m
 /// given.
 pub fn hair_held(palette: [mat4; 64]) -> vec3 {
     (palette[5] * vec4(HAIR_MASS, 1.0)).xyz
+}
+
+/// How far the air he's in pushes his hair's mass back for its speed squared (m for each
+/// (m/s)²), and how far at most (m): at a sprint's 5.2 m/s, 2 cm, his spikes swept back.
+pub const HAIR_BLOWN: f32 = 0.0007
+pub const HAIR_BLOWN_MOST: f32 = 0.02
+
+/// Where his hair's mass is from where his head holds it, swaying `sway` (m: `Sway::step`'s
+/// answer) in air that meets him at `going` m/s from ahead (as `palette` poses him): its sway
+/// and the air's push back along where his hips face, together no further than his hair's
+/// spring lets it go.
+pub fn hair_blown(palette: [mat4; 64], sway: vec3, going: f32) -> vec3 {
+    let ahead = palette[0][2].xyz
+    let level = vec3(ahead.x, 0.0, ahead.z)
+    if length(level) < 0.2 {
+        return sway
+    }
+    let off = sway - normalize(level) * min(HAIR_BLOWN * going * going, HAIR_BLOWN_MOST)
+    let far = length(off)
+    if far > HAIR_SPRING.most { off * (HAIR_SPRING.most / far) } else { off }
 }
 
 /// `palette` with his hair's bone set: his head's, turned about the middle of his skull so

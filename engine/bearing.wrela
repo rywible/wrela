@@ -1,29 +1,59 @@
 // How a body carries itself: its bearing, laid over whatever pose a move gives it. A capture is
-// how one person moved that day; a character is also how it holds its head and its chest while
-// it does. A bearing changes only a body's spine, its neck and its head (its arms go with its
-// chest; its hips and its legs are the move's, so its feet stay where they were planted):
+// how one person moved that day; a character is also how it holds its head, its chest, its hips
+// and its arms while it does. A bearing never moves a foot: where a move planted one, it stays.
 //
 // - its head held steady: level, and facing where its hips face, however its trunk rocks under
 //   it, as a hunter's is on what it watches;
 // - its chin down, so it looks out from under its brow;
 // - its chest lifted, its shoulders back with it;
-// - its trunk leant the way it's going.
+// - its trunk leant the way it's going, the lean spread up its spine;
+// - its hips tipped the way it's going and lowered, its legs bent to keep their feet (a
+//   sprinter's: the trunk ahead of the feet, low over them);
+// - its arms trailed behind it: most of their swing given up, held back along its trunk.
 //
 // Its head keeps looking where the move had it look whatever its trunk is made to do: a lean
-// or a lifted chest is taken up in its neck.
+// or a lifted chest is taken up in its neck and its head, half each.
 
 use std::quat::Quat
-use humanoid::{NONE, Pose, Rig, Rigid}
+use humanoid::{NONE, Pose, Rig, Rigid, arc}
+use stride::reach
 
 /// A bearing: how far its head is tipped down from level (`chin`, radians); how much of its
 /// head's turn away from level and from where its hips face is taken out (`steady`: 0 none of
-/// it, 1 all); how far its trunk leans the way it faces, from the foot of its spine (`lean`,
-/// radians); and how far its chest is lifted, from its upper chest (`chest`, radians).
+/// it, 1 all); how far its trunk leans the way it faces, spread over its spine's bones (`lean`,
+/// radians); how far its chest is lifted, from its upper chest (`chest`, radians); how far its
+/// hips tip the way it faces (`tip`, radians) and how far they're lowered (`low`, m), its legs
+/// reaching for where their feet were; how much of its arms' own swing is given up to trail
+/// them (`trail`: 0 none, 1 all of it), and where trailing arms point (`swept`: how far back
+/// from hanging along its trunk, and how far out from its sides, radians).
 pub struct Bearing: Copy {
     pub chin: f32 = 0.0,
     pub steady: f32 = 0.0,
     pub lean: f32 = 0.0,
     pub chest: f32 = 0.0,
+    pub tip: f32 = 0.0,
+    pub low: f32 = 0.0,
+    pub trail: f32 = 0.0,
+    pub swept: vec2 = vec2(0.5, 0.2),
+}
+
+impl Bearing {
+    /// `share` of it (0 none: the move as it is; 1 all of it): each of its ways that far. For
+    /// easing a bearing in and out, as a body sets off or goes into a roll that holds its own
+    /// head.
+    pub fn part(self, share: f32) -> Bearing {
+        let k = saturate(share)
+        Bearing {
+            chin: self.chin * k,
+            steady: self.steady * k,
+            lean: self.lean * k,
+            chest: self.chest * k,
+            tip: self.tip * k,
+            low: self.low * k,
+            trail: self.trail * k,
+            swept: self.swept,
+        }
+    }
 }
 
 /// No bearing of its own: the move's pose as it is.
@@ -57,6 +87,90 @@ fn between(a: Quat, b: Quat, t: f32) -> Quat {
     Quat { v: normalize(mix(a.v, to, vec4(t))) }
 }
 
+/// `pose` with its hips turned by `tip` about the line through its legs' joints and lowered by
+/// `low` (m), each leg bent to put its ankle back where `moved` (the pose's bones in the body's
+/// space) had it, its foot turned as it was (`stride::reach`). A rig without legs on its hips
+/// only has its hips moved.
+fn settled(rig: Rig, pose: Pose, moved: [Rigid; 64], tip: Quat, low: f32) -> Pose {
+    let rest = rig.rest_world()
+    let legs = [
+        (rig.find("leftUpperLeg"), rig.find("leftLowerLeg"), rig.find("leftFoot")),
+        (rig.find("rightUpperLeg"), rig.find("rightLowerLeg"), rig.find("rightFoot")),
+    ]
+    let whole = |i: u32| -> bool {
+        let (u, l, f) = legs[i]
+        u != NONE &&
+            l != NONE &&
+            f != NONE &&
+            rig.bones[u].parent == 0 &&
+            rig.bones[l].parent == u &&
+            rig.bones[f].parent == l
+    }
+    let was = moved[0]
+    let about = if whole(0) && whole(1) { (moved[legs[0].0].t + moved[legs[1].0].t) * 0.5 } else {
+        was.t
+    }
+    let hips = Rigid {
+        q: tip.mul(was.q),
+        t: about + tip.rotate(was.t - about) - vec3(0.0, low, 0.0),
+    }
+    var out = pose
+    out.turns[0] = rig.base.q.inverse().mul(hips.q)
+    out.hips = rig.base.q.inverse().rotate(hips.t - rig.base.t)
+    for i in 0..2 {
+        if !whole(i) {
+            continue
+        }
+        let (u, l, f) = legs[i]
+        // The leg as it was, hung from where its joint is now.
+        let at = hips.t + hips.q.rotate(rig.bones[u].rest.t)
+        let by = at - moved[u].t
+        let hinge = rest[l].q.inverse().rotate(vec3(1.0, 0.0, 0.0))
+        let (qu, ql) = reach(
+            Rigid { q: moved[u].q, t: at },
+            Rigid { q: moved[l].q, t: moved[l].t + by },
+            moved[f].t + by,
+            moved[f].t,
+            hinge,
+        )
+        out.turns[u] = hips.q.inverse().mul(qu)
+        out.turns[l] = qu.inverse().mul(ql)
+        out.turns[f] = ql.inverse().mul(moved[f].q)
+    }
+    out
+}
+
+/// `pose` with its arms trailed as `how` says: each upper arm turned `how.trail` of the way
+/// to where a trailing arm points (back from hanging along the trunk `chest` carries, and out
+/// from its side), its elbow and its wrist that much of the way to straight. What's left of
+/// the move's own swing keeps them alive.
+fn trailed(rig: Rig, pose: Pose, how: Bearing, chest: u32) -> Pose {
+    let rest = rig.rest_world()
+    var out = pose
+    let w = worlds(rig, pose)
+    let trunk = w[chest].q.mul(rest[chest].q.inverse())
+    let by = saturate(how.trail)
+    let sides = [
+        (rig.find("leftUpperArm"), rig.find("leftLowerArm"), rig.find("leftHand"), 1.0),
+        (rig.find("rightUpperArm"), rig.find("rightLowerArm"), rig.find("rightHand"), -1.0),
+    ]
+    for (upper, lower, hand, side) in sides {
+        if upper == NONE || lower == NONE || rig.bones[lower].parent != upper {
+            continue
+        }
+        // Where it points, on the body at rest: down its trunk, swept back, then out.
+        let back = vec3(0.0, -cos(how.swept.x), -sin(how.swept.x))
+        let to = normalize(back * cos(how.swept.y) + vec3(side * sin(how.swept.y), 0.0, 0.0))
+        let held = trunk.mul(arc(rest[lower].t - rest[upper].t, to)).mul(rest[upper].q)
+        out.turns[upper] = w[rig.bones[upper].parent].q.inverse().mul(between(w[upper].q, held, by))
+        out.turns[lower] = between(pose.turns[lower], rig.bones[lower].rest.q, by)
+        if hand != NONE {
+            out.turns[hand] = between(pose.turns[hand], rig.bones[hand].rest.q, by)
+        }
+    }
+    out
+}
+
 /// `pose` (on `rig`) carried as `how` says. A rig with no spine, neck or head is left as it is.
 pub fn carried(rig: Rig, pose: Pose, how: Bearing) -> Pose {
     let hips = rig.find("hips")
@@ -79,26 +193,53 @@ pub fn carried(rig: Rig, pose: Pose, how: Bearing) -> Pose {
     let facing = normalize(level)
     let left = cross(vec3(0.0, 1.0, 0.0), facing)
     var out = pose
-    if how.lean != 0.0 {
-        out = turned(rig, out, spine, Quat::axis_angle(left, how.lean))
+    if how.tip != 0.0 || how.low != 0.0 {
+        out = settled(rig, out, moved, Quat::axis_angle(left, how.tip), how.low)
     }
     let chest = if rig.find("upperChest") != NONE { rig.find("upperChest") } else {
         rig.find("chest")
     }
+    if how.lean != 0.0 {
+        // (Spread over its spine's bones: one hinge at its waist folds it there.)
+        let along = [spine, rig.find("chest"), rig.find("upperChest")]
+        var bones = 0.0
+        for b in along {
+            if b != NONE {
+                bones += 1.0
+            }
+        }
+        for b in along {
+            if b != NONE {
+                out = turned(rig, out, b, Quat::axis_angle(left, how.lean / bones))
+            }
+        }
+    }
     if how.chest != 0.0 && chest != NONE {
         out = turned(rig, out, chest, Quat::axis_angle(left, -how.chest))
+    }
+    if how.trail > 0.0 && chest != NONE {
+        out = trailed(rig, out, how, chest)
     }
     let w = worlds(rig, out)
     // Its head at rest, turned to where its hips face.
     let held = Quat::axis_angle(vec3(0.0, 1.0, 0.0), atan2(facing.x, facing.z)).mul(rest[head].q)
     let steadied = between(moved[head].q, held, saturate(how.steady))
     let tipped = Quat::axis_angle(left, how.chin).mul(steadied)
-    out.turns[head] = w[rig.bones[head].parent].q.inverse().mul(tipped)
+    // Its neck takes half of what its head is turned back by from where its trunk now carries
+    // it: a head set back alone over a trunk leant far ahead juts its neck out under it.
+    let neck = rig.bones[head].parent
+    var over = w[neck].q
+    if neck != NONE && rig.find("neck") == neck {
+        let back = tipped.mul(w[head].q.inverse())
+        over = between(Quat::identity(), back, 0.5).mul(w[neck].q)
+        out.turns[neck] = w[rig.bones[neck].parent].q.inverse().mul(over)
+    }
+    out.turns[head] = over.inverse().mul(tipped)
     out
 }
 
-/// A rig for the tests: hips, three bones of spine, a neck, a head and a leg, straight up at
-/// rest, facing +z.
+/// A rig for the tests: hips, three bones of spine, a neck and a head straight up at rest,
+/// two legs straight down and two arms straight out, facing +z (its left +x).
 fn test_rig() -> Rig {
     let same = mat4(
         vec4(1.0, 0.0, 0.0, 0.0),
@@ -106,19 +247,37 @@ fn test_rig() -> Rig {
         vec4(0.0, 0.0, 1.0, 0.0),
         vec4(0.0, 0.0, 0.0, 1.0),
     )
-    let up = |by: f32| Rigid { q: Quat::identity(), t: vec3(0.0, by, 0.0) }
+    let table = [
+        ("hips", NONE, vec3(0.0, 0.12, 0.0)),
+        ("spine", 0, vec3(0.0, 0.12, 0.0)),
+        ("chest", 1, vec3(0.0, 0.12, 0.0)),
+        ("upperChest", 2, vec3(0.0, 0.12, 0.0)),
+        ("neck", 3, vec3(0.0, 0.12, 0.0)),
+        ("head", 4, vec3(0.0, 0.12, 0.0)),
+        ("leftUpperLeg", 0, vec3(0.1, -0.05, 0.0)),
+        ("leftLowerLeg", 6, vec3(0.0, -0.45, 0.0)),
+        ("leftFoot", 7, vec3(0.0, -0.45, 0.0)),
+        ("rightUpperLeg", 0, vec3(-0.1, -0.05, 0.0)),
+        ("rightLowerLeg", 9, vec3(0.0, -0.45, 0.0)),
+        ("rightFoot", 10, vec3(0.0, -0.45, 0.0)),
+        ("leftUpperArm", 3, vec3(0.2, 0.1, 0.0)),
+        ("leftLowerArm", 12, vec3(0.3, 0.0, 0.0)),
+        ("leftHand", 13, vec3(0.25, 0.0, 0.0)),
+        ("rightUpperArm", 3, vec3(-0.2, 0.1, 0.0)),
+        ("rightLowerArm", 15, vec3(-0.3, 0.0, 0.0)),
+        ("rightHand", 16, vec3(-0.25, 0.0, 0.0)),
+    ]
     var bones: Vec<humanoid::RigBone> = Vec::new()
     var of = [NONE; 55]
-    let names = ["hips", "spine", "chest", "upperChest", "neck", "head", "leftUpperLeg"]
-    for i in 0..7 {
-        let v = humanoid::bone(names[i])
-        let parent = if i == 0 { NONE } else if i == 6 { 0 } else { i - 1 }
+    for i in 0..18 {
+        let (name, parent, at) = table[i]
+        let v = humanoid::bone(name)
         of[v] = i
         bones.push(
             humanoid::RigBone {
                 vrm: v,
                 parent,
-                rest: up(if i == 6 { -0.1 } else { 0.12 }),
+                rest: Rigid { q: Quat::identity(), t: at },
                 ibm: same,
             },
         )
@@ -186,4 +345,104 @@ fn a_bearing_leaves_hips_and_legs_to_the_move() {
     assert(abs(dot(p.turns[0].v, q.turns[0].v)) > 0.999999)
     assert(abs(dot(p.turns[6].v, q.turns[6].v)) > 0.999999)
     assert(length(p.hips - q.hips) == 0.0)
+}
+
+@test
+fn hips_tipped_and_lowered_keep_their_feet() {
+    let rig = test_rig()
+    // Mid-stride: its left leg ahead and bent, its right behind.
+    var p = rocked(0.0)
+    p.turns[6] = Quat::axis_angle(vec3(1.0, 0.0, 0.0), -0.6)
+    p.turns[7] = Quat::axis_angle(vec3(1.0, 0.0, 0.0), 0.5)
+    p.turns[9] = Quat::axis_angle(vec3(1.0, 0.0, 0.0), 0.3)
+    p.turns[10] = Quat::axis_angle(vec3(1.0, 0.0, 0.0), 0.2)
+    let was = worlds(rig, p)
+    let w = worlds(rig, carried(rig, p, Bearing { tip: 0.3, low: 0.05 }))
+    for foot in [8, 11] {
+        assert(
+            length(w[foot].t - was[foot].t) < 0.001,
+            f"foot {foot} moved {w[foot].t - was[foot].t}",
+        )
+        assert(abs(dot(w[foot].q.v, was[foot].q.v)) > 0.99999, f"foot {foot} turned")
+    }
+    // Its legs' joints are 5 cm lower, and its trunk tips ahead with its hips.
+    let joints = (w[6].t + w[9].t) * 0.5 - (was[6].t + was[9].t) * 0.5
+    assert(length(joints - vec3(0.0, -0.05, 0.0)) < 0.001, f"{joints}")
+    let up = w[1].q.rotate(vec3(0.0, 1.0, 0.0))
+    assert(abs(atan2(up.z, up.y) - 0.3) < 0.001, f"{up}")
+    // Each knee still bends forward: its shin's lower end behind its knee's line.
+    for (hip, knee, foot) in [(6, 7, 8), (9, 10, 11)] {
+        let thigh = normalize(w[knee].t - w[hip].t)
+        let shin = normalize(w[foot].t - w[knee].t)
+        assert(cross(thigh, shin).x > 0.0, f"knee {knee} bends back")
+    }
+}
+
+@test
+fn a_lean_is_spread_up_a_spine() {
+    let rig = test_rig()
+    let w = worlds(rig, carried(rig, rocked(0.0), Bearing { lean: 0.6 }))
+    for (bone, share) in [(1, 0.2), (2, 0.4), (3, 0.6)] {
+        let up = w[bone].q.rotate(vec3(0.0, 1.0, 0.0))
+        assert(abs(atan2(up.z, up.y) - share) < 0.001, f"bone {bone} leans {atan2(up.z, up.y)}")
+    }
+}
+
+@test
+fn trailing_arms_point_back_along_a_trunk_and_out_from_its_sides() {
+    let rig = test_rig()
+    let how = Bearing { trail: 1.0, swept: vec2(0.5, 0.2) }
+    let w = worlds(rig, carried(rig, rocked(0.0), how))
+    for (upper, lower, hand, side) in [(12, 13, 14, 1.0), (15, 16, 17, -1.0)] {
+        let arm = normalize(w[lower].t - w[upper].t)
+        let to = vec3(side * sin(0.2), -cos(0.5) * cos(0.2), -sin(0.5) * cos(0.2))
+        assert(length(arm - to) < 0.001, f"arm {upper} points {arm}, not {to}")
+        // (Straight: its forearm along its upper arm.)
+        assert(dot(normalize(w[hand].t - w[lower].t), arm) > 0.9999)
+    }
+    // Leant, they go with its trunk (further back still); and half trailed, an arm is half the way there.
+    let leant = worlds(rig, carried(rig, rocked(0.0), Bearing { lean: 0.6, ..how }))
+    let arm = normalize(leant[13].t - leant[12].t)
+    assert(abs(atan2(-arm.z, -arm.y) - (0.5 + 0.6)) < 0.02, f"{arm}")
+    let half = worlds(rig, carried(rig, rocked(0.0), Bearing { trail: 0.5, ..how }))
+    let part = normalize(half[13].t - half[12].t)
+    assert(part.x > 0.5 && part.y < -0.5, f"{part}")
+}
+
+@test
+fn a_neck_takes_half_of_what_a_head_turns_over_a_leant_trunk() {
+    let rig = test_rig()
+    let w = worlds(rig, carried(rig, rocked(0.0), Bearing { steady: 1.0, lean: 0.6 }))
+    let head_up = w[5].q.rotate(vec3(0.0, 1.0, 0.0))
+    assert(head_up.y > 0.9999, f"its head isn't level: {head_up}")
+    let neck_up = w[4].q.rotate(vec3(0.0, 1.0, 0.0))
+    assert(
+        abs(atan2(neck_up.z, neck_up.y) - 0.3) < 0.01,
+        f"its neck leans {atan2(neck_up.z, neck_up.y)}",
+    )
+}
+
+@test
+fn part_of_a_bearing_is_each_of_its_ways_that_far() {
+    let whole = Bearing {
+        chin: 0.2,
+        steady: 0.8,
+        lean: 0.4,
+        chest: 0.1,
+        tip: 0.2,
+        low: 0.05,
+        trail: 1.0,
+    }
+    let half = whole.part(0.5)
+    assert(
+        abs(half.lean - 0.2) < 1.0e-6 &&
+            abs(half.low - 0.025) < 1.0e-6 &&
+            abs(half.trail - 0.5) < 1.0e-6,
+    )
+    let rig = test_rig()
+    let p = rocked(0.2)
+    let none = carried(rig, p, whole.part(0.0))
+    for b in 0..18 {
+        assert(abs(dot(p.turns[b].v, none.turns[b].v)) > 0.999999, f"bone {b} turned")
+    }
 }
