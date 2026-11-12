@@ -124,7 +124,7 @@ pub fn scene(name: str) -> Option<Scene> {
 }
 
 /// The lists' names.
-pub const LISTS: [Text; 4] = ["arms", "rider", "body", "hands"]
+pub const LISTS: [Text; 5] = ["arms", "rider", "body", "hands", "strike"]
 
 /// The frames from `first` to `last`, every `every`th.
 pub fn every(first: u32, last: u32, every: u32) -> Vec<u32> {
@@ -206,6 +206,27 @@ pub fn list(name: str) -> Option<Vec<Shot>> {
                         down: 2,
                         about: "the whole cross, a frame in six",
                     },
+                ],
+            ),
+        )
+    }
+    if name == "strike" {
+        // The cross's fastest drawings, one by one: going in, the contact, and held on the face.
+        let mid = Crop { x0: 380, y0: 60, x1: 1200, y1: 700 }
+        let drawing = |name: Text, frame: u32, about: Text| Shot {
+            name,
+            scene: "exchange",
+            frames: Vec::from([frame]),
+            crop: mid,
+            about,
+        }
+        return Some(
+            Vec::from(
+                [
+                    drawing("going-in", 202, "the cross going in"),
+                    drawing("contact", 203, "the contact drawing"),
+                    drawing("landed", 204, "the cross landed"),
+                    drawing("held", 206, "the cross held on the face"),
                 ],
             ),
         )

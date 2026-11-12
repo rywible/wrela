@@ -64,6 +64,15 @@ Three things are added on top, all zero at rest:
 - **A root that a deep bend swings into sight keeps its width.** A leg's root was narrowed inside the hip (`tuck` 0.6), and in a crouch or a roll the hip's fold showed the narrowed stretch: critics called the thigh thin where it left the trunk. More bulk at the seat as a named change, and less of the hip's solved change, were each tried and neither changed the picture. The leg's root now keeps its whole width (`tuck` 1) and is drawn 6 cm under the trunk, which is itself under what's worn: nearer than the trunk, the full root showed as a patch at the belt.
 - **A fold** (`chart::Fold`): inside a hinge's bend, the radius is limited to the room to the plane that halves the bend, so the limb's two lengths meet at a crease. Name the hinge in the part's `folds`.
 
+## Exaggeration, tried and taken out
+
+A named change follows a joint's angle. A drawing could also follow the move: muscles that stand at a blow, by the move's own timing. This was tried on the combat lab's cross and did not earn its place.
+
+- **What was tried.** The striker's arms tensed (a form added to each arm's: the shoulder's cap, the triceps, two forearm masses), by how fast the fist was going in and held while it was on the face. Judged against the plain cross, one constant apart (`wrela tool judge`'s `--base-set`), on the cross's fastest drawings (`--shots strike`).
+- **What critics said.** At 5 mm the change could not be found in the pictures. At 10 mm four critics gave 3 votes each way and 10 for no difference, and where they saw it they called it "a small lump in the contour" as often as a clearer elbow. A forearm thickening toward the fist frayed the arm's outline and was not put to critics.
+- **Why, as I read it.** The cross's fastest drawings are near silhouettes, and the punching arm is in a black sleeve: there is no shading inside it for a muscle to show in, only an outline, and the ink reads small outline changes as roughness. The fist drawn big and the head squashed, which the lab already does, are changes of a size the style shows.
+- **What it leaves.** `--shots strike` (the going-in, contact, landed and held drawings) for judging a strike. Critics judged stills; whether an exaggeration reads in motion is a question for a person watching at full rate.
+
 ## Shading
 
 A pixel reads its normal from the chart itself (`chart::normal_at`): its place on the chart and the section's plane come down from the vertices, and the radius's slopes there give the normal. It is as exact on a coarse grid as on a fine one, which a mesh's normals are not. Read it from the posed form with its finest harmonics damped (`Radial::softened`): a fit's ripples are a fraction of a millimetre on the silhouette, but they tilt the surface enough to fray a cel's bands of light. Where a folded hinge holds the side in, or inside a cap, use the vertex's normal (`Limb::folded`). The damped harmonics can be dropped outright (`Radial::kept`): the pixel then sums fewer terms for the same light, within a tenth of a millimetre of radius.
