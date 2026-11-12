@@ -20,18 +20,23 @@ pub const STEPS: u32 = 18
 pub fn spec<C: Checks>(c: mut C) {
     let t = cross().thrown(HERO.rig, CONTACT, STEPS)
     // The fist is on its target when the fight says it lands.
-    c.near("fist on its target, across (m)", t.at.x, TARGET.x, within: 0.005)
-    c.near("fist on its target, up (m)", t.at.y, TARGET.y, within: 0.005)
-    c.near("fist on its target, ahead (m)", t.at.z, TARGET.z, within: 0.005)
+    c.near("cross: fist on its target, across (m)", t.at.x, TARGET.x, within: 0.005)
+    c.near("cross: fist on its target, up (m)", t.at.y, TARGET.y, within: 0.005)
+    c.near("cross: fist on its target, ahead (m)", t.at.z, TARGET.z, within: 0.005)
     // Fast, as the hand-keyed cross it stands beside is (28 m/s), not as a boxer's fist is
     // (9.14 m/s: Walilko, Viano and Bir 2005): judged side by side, the cross held to a
     // boxer's speed had less snap (Ryan's look, 2026-11-12). Held under the hand-keyed one's.
-    c.at_least("fist's fastest (m/s)", t.fastest, 12.0, within: 0.5)
-    c.at_most("fist's fastest (m/s)", t.fastest, 26.0, within: 0.5)
+    c.at_least("cross: fist's fastest (m/s)", t.fastest, 12.0, within: 0.5)
+    c.at_most("cross: fist's fastest (m/s)", t.fastest, 26.0, within: 0.5)
     // Fastest as it lands, not before.
-    c.at_least("fist's speed into contact, of its fastest", t.into / t.fastest, 0.95, within: 0.02)
+    c.at_least(
+        "cross: fist's speed into contact, of its fastest",
+        t.into / t.fastest,
+        0.95,
+        within: 0.02,
+    )
     // Gathering speed all the way in: its spacing opens frame by frame, with no check in it.
-    c.at_most("fist slows on its way in (m/s)", t.slows, 0.0, within: 0.5)
+    c.at_most("cross: fist slows on its way in (m/s)", t.slows, 0.0, within: 0.5)
     // Its snap, as it's drawn. On twos (`engine::anime`) the eye gets the drawing before the
     // contact's and the contact's. In the first the hips have gone and the fist is still
     // back; the fist's whole way out is the second. (The hand-keyed cross's fist comes 76 cm
@@ -41,7 +46,7 @@ pub fn spec<C: Checks>(c: mut C) {
     let loaded = m.end(HERO.rig, m.keys[2].at + m.chain.wrist)
     let out_left = length(t.at - m.end(HERO.rig, before)) / length(t.at - loaded)
     c.at_least(
-        "fist's way out left for its contact's drawing, of the whole",
+        "cross: fist's way out left for its contact's drawing, of the whole",
         out_left,
         0.85,
         within: 0.03,
@@ -52,22 +57,27 @@ pub fn spec<C: Checks>(c: mut C) {
         m.heading(HERO.rig, CONTACT),
     )
     c.at_least(
-        "hips' turn done a drawing before the contact's, of the whole",
+        "cross: hips' turn done a drawing before the contact's, of the whole",
         (h1 - h0) / (h2 - h0),
         0.6,
         within: 0.05,
     )
     // And all but stopped by it: what's left is the drive past the contact.
-    c.at_most("fist's speed after contact, of its fastest", t.after / t.fastest, 0.34, within: 0.02)
+    c.at_most(
+        "cross: fist's speed after contact, of its fastest",
+        t.after / t.fastest,
+        0.34,
+        within: 0.02,
+    )
     // The load is held a beat before the throw sets off: two of a game's frames with the fist
     // still, which gets there later than the hips by its lag.
     let still = m.keys[2].at - (m.keys[1].at + m.chain.wrist)
-    c.at_least("the fist still before the throw (s)", still, 0.03, within: 0.005)
+    c.at_least("cross: the fist still before the throw (s)", still, 0.03, within: 0.005)
     // Home slower than it went: a recovery faster than the blow is what the eye takes for
     // the blow.
     let back = m.fastest(HERO.rig, CONTACT + 0.1, 24)
     c.at_most(
-        "fist's fastest on its way home, of the strike's",
+        "cross: fist's fastest on its way home, of the strike's",
         back / t.fastest,
         0.7,
         within: 0.05,
@@ -75,34 +85,39 @@ pub fn spec<C: Checks>(c: mut C) {
     // The body behind it: the hips turned through the strike about as far as a boxer's (70
     // degrees, `accad_fists::CROSS_TAKE`'s sheet), the chest turned on past them.
     let through = m.keys[3].hips_turn.y - m.keys[2].hips_turn.y
-    c.at_least("hips' turn through the strike (degrees)", through, 55.0, within: 2.0)
-    c.at_most("hips' turn through the strike (degrees)", through, 80.0, within: 2.0)
+    c.at_least("cross: hips' turn through the strike (degrees)", through, 55.0, within: 2.0)
+    c.at_most("cross: hips' turn through the strike (degrees)", through, 80.0, within: 2.0)
     c.at_least(
-        "chest's twist past the hips on contact (degrees)",
+        "cross: chest's twist past the hips on contact (degrees)",
         m.keys[3].trunk.y,
         18.0,
         within: 2.0,
     )
     c.at_most(
-        "chest's twist past the hips on contact (degrees)",
+        "cross: chest's twist past the hips on contact (degrees)",
         m.keys[3].trunk.y,
         35.0,
         within: 2.0,
     )
     // The contact key asks for a spot the arm reaches (past it the arm locks, and a solve
     // loses its slope).
-    c.at_most("contact key's spot, of the arm's reach", m.asked(HERO.rig, 3), 0.97, within: 0.01)
+    c.at_most(
+        "cross: contact key's spot, of the arm's reach",
+        m.asked(HERO.rig, 3),
+        0.97,
+        within: 0.01,
+    )
     // The striking elbow bends about its own hinge on contact, as real elbows do
     // (`engine::arms` flags one 40 degrees off; the test reads every frame).
     let off = m.hinge(HERO.rig, CONTACT, REAL.hinge[1])
-    c.at_most("elbow's bend off its hinge on contact (degrees)", off, 25.0, within: 5.0)
+    c.at_most("cross: elbow's bend off its hinge on contact (degrees)", off, 25.0, within: 5.0)
     // The arm not yet straight: a blow lands with some reach left to drive through.
-    c.at_most("arm's reach used on contact", t.out, 0.95, within: 0.01)
-    c.at_least("arm's reach used on contact", t.out, 0.85, within: 0.01)
+    c.at_most("cross: arm's reach used on contact", t.out, 0.95, within: 0.01)
+    c.at_least("cross: arm's reach used on contact", t.out, 0.85, within: 0.01)
     // The weight over the feet, gone toward the lead foot.
-    c.at_most("hips outside the feet (m)", t.outside, 0.0, within: 0.01)
-    c.at_least("weight toward the lead foot on contact", t.left, 0.45, within: 0.03)
-    c.at_most("weight toward the lead foot on contact", t.left, 0.65, within: 0.03)
+    c.at_most("cross: hips outside the feet (m)", t.outside, 0.0, within: 0.01)
+    c.at_least("cross: weight toward the lead foot on contact", t.left, 0.45, within: 0.03)
+    c.at_most("cross: weight toward the lead foot on contact", t.left, 0.65, within: 0.03)
     // The chain's lead, as a solve can follow it (`Written::halfway`, each part's own turn):
     // from the beat's end to the contact, the hips half way round well before the striking
     // upper arm. (Not the forearm after the upper arm: an elbow opens as a shoulder swings,
@@ -111,7 +126,7 @@ pub fn spec<C: Checks>(c: mut C) {
     let hips = m.halfway(HERO.rig, "hips", b, e)
     let upper = m.halfway(HERO.rig, "rightUpperArm", b, e)
     c.at_least(
-        "the hips' lead on the striking upper arm, half way round (s)",
+        "cross: the hips' lead on the striking upper arm, half way round (s)",
         upper - hips,
         0.035,
         within: 0.005,

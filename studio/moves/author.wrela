@@ -4,10 +4,12 @@
 // without a solve (`--read <out-dir> <strike>`): every check's value against its bound, as the
 // strike stands, and its sheet, in seconds.
 //
-// The numbers are freed by name (`wrela solve --free <file>:<name>,...`, toolchain 0.33.0): a
-// strike's `free` names them, each a `let` in its file, and a whole value is one name (`chain`
-// frees every lag and snap of a `Chain` literal). The toolchain writes a solve only if every
-// check holds where it stopped, and says which miss.
+// A strike's `free` names its numbers, each a `let` in its file. A `let` of one number is freed
+// by its line (`wrela solve --free <file>:<line>`), so a solve writes it back to the decimals it
+// was written with; a whole value is freed by its name (`chain` frees every lag and snap of a
+// `Chain` literal), which the toolchain (0.33.0) writes back with all its decimals for now.
+// The toolchain writes a solve only if every check holds where it stopped, and says which
+// miss. A strike whose every check holds already isn't solved: a round leaves it as it was.
 //
 // The sheet is read by a fresh run of this tool: this one was built with the numbers as they
 // were, and a move is a constant made when its package is built.
@@ -21,13 +23,15 @@ use std::tool::run
 use toolkit::whole::{data_bytes, joined, read_file}
 
 /// A strike a solve can move: its name on the command line (a strike of `strikes`), the
-/// workspace member its spec is in, the file there that holds its numbers, and the names of
-/// the numbers a solve frees (`,` between them).
+/// workspace member its spec is in, the file there that holds its numbers, the names of the
+/// numbers a solve frees (`,` between them), and what its checks' names start with (a package's
+/// spec holds every strike's checks).
 pub struct Solved: Copy {
     pub name: Text,
     pub member: Text,
     pub file: Text,
     pub free: Text,
+    pub checks: Text,
 }
 
 /// The solved strikes: add a line for a new one.
@@ -37,12 +41,14 @@ pub const SOLVED: [Solved; 2] = [
         member: "content/humanoid",
         file: "solved.wrela",
         free: "sets_off,drive,hips_yaw,chest_yaw,spot_x,spot_y,spot_z,elbow_out",
+        checks: "cross: ",
     },
     Solved {
         name: "hook-solved",
         member: "content/humanoid",
         file: "hook.wrela",
         free: "sets_off,hips_yaw,spot_x,spot_y,spot_z,elbow_up",
+        checks: "hook: ",
     },
 ]
 
@@ -127,17 +133,78 @@ fn text_of(path: str) -> Option<String> {
     String::from_utf8(take bytes)
 }
 
-/// The arguments of a solve of `s`'s spec, its numbers freed by name.
-fn solve_args(s: Solved) -> Vec<String> {
+/// What `--free` is given for `free` in `text`: each `let` of one number by its line, so it's
+/// written back to its own decimals; any other value (a `Chain`) by its name. `,` between them.
+pub fn freed(text: str, free: str) -> String {
+    var out = String::new()
+    for (line, name) in lines_of(text, free) {
+        if !out.is_empty() {
+            out.push_str(",")
+        }
+        if one_number(text, line) {
+            out.push_str(f"{line}".as_str())
+        } else {
+            out.push_str(name.as_str())
+        }
+    }
+    out
+}
+
+/// Whether line `line` of `text` (from 1) is a `let` of one number.
+fn one_number(text: str, line: u32) -> bool {
+    var n = 0
+    for (a, b) in text.lines() {
+        n += 1
+        if n == line {
+            let l = text.slice(a, b).trim()
+            let Some(eq) = l.find(" = ") else { return false }
+            return l.slice(eq + 3, l.len()).trim().parse_f32().is_some()
+        }
+    }
+    false
+}
+
+/// The arguments of a solve of `s`'s spec, its numbers freed as `freed` says (`text`, its file).
+fn solve_args(s: Solved, text: str) -> Vec<String> {
     Vec::from(
         [
             String::from("solve"),
             String::from(s.member),
             String::from("--spec"),
             String::from("--free"),
-            String::from(f"{s.file}:{s.free}"),
+            String::from(f"{s.file}:{freed(text, s.free)}"),
         ],
     )
+}
+
+/// Whether a read (`said`) left a check missed: a strike whose every check holds isn't solved.
+pub fn needs_solve(said: str) -> bool {
+    match held(said) {
+        Some((h, o)) => h < o,
+        None => true,
+    }
+}
+
+/// The checks of `s` in what a read said, printed: its own (named as its `checks` says), and how
+/// many of them hold, of how many.
+fn own_checks(said: str, s: Solved) -> (u32, u32) {
+    let mark = s.checks
+    var held = 0
+    var of = 0
+    for (a, b) in said.lines() {
+        let line = said.slice(a, b).trim()
+        for start in ["holds ", "misses "] {
+            if line.starts_with(start) &&
+                line.slice(start.len(), line.len()).trim().starts_with(mark) {
+                print(f"  {line}")
+                of += 1
+                if start == "holds " {
+                    held += 1
+                }
+            }
+        }
+    }
+    (held, of)
 }
 
 /// `s`'s sheet written under `dir` by a fresh run of this tool, printed with what changed on
@@ -182,27 +249,24 @@ fn sheet(s: Solved, dir: str) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// The read for `s`: each of its spec's checks as the strike stands (a solve of no steps), and
-/// its sheet under `dir`: the tool's exit code, 1 where a check misses.
+/// The read for `s`: each of its own checks as the strike stands (a solve of no steps), and its
+/// sheet under `dir`: the tool's exit code, 1 where a check misses.
 pub fn read(s: Solved, dir: str) -> Result<u32, ToolError> {
-    var given = solve_args(s)
+    let path = f"{s.member}/{s.file}"
+    let Some(text) = text_of(path.as_str()) else {
+        return Err(ToolError::new(f"can't read {path}"))
+    }
+    var given = solve_args(s, text.as_str())
     given.push(String::from("--steps"))
     given.push(String::from("0"))
-    print(f"{s.name}: its spec as it stands")
+    print(f"{s.name}: its checks as it stands")
     let (_, said) = wrela(take given)?
-    for (a, b) in said.lines() {
-        let line = said.slice(a, b).trim()
-        if line.starts_with("holds ") ||
-            line.starts_with("misses ") ||
-            line.starts_with("the spec: ") ||
-            line.starts_with("error") {
-            print(f"  {line}")
-        }
-    }
-    let Some((holds, of)) = held(said.as_str()) else {
+    let (holds, of) = own_checks(said.as_str(), s)
+    if of == 0 {
         print(said.as_str())
         return Err(ToolError::new("the spec said nothing of its checks"))
     }
+    print(f"  {holds} of its {of} checks hold")
     sheet(s, dir)?
     Ok(if holds < of { 1 } else { 0 })
 }
@@ -220,9 +284,26 @@ pub fn solve(s: Solved, dir: str) -> Result<u32, ToolError> {
             return Err(ToolError::new(f"{path} binds no `{name}` with `let`"))
         }
     }
-    var given = solve_args(s)
+    // A strike that holds already is left as it is.
+    var reading = solve_args(s, text.as_str())
+    reading.push(String::from("--steps"))
+    reading.push(String::from("0"))
+    let (_, now) = wrela(take reading)?
+    if !needs_solve(now.as_str()) {
+        print(f"{s.name}: every check holds already; nothing solved, nothing written")
+        sheet(s, dir)?
+        return Ok(0)
+    }
+    var given = solve_args(s, text.as_str())
     given.push(String::from("--write"))
     print(f"{s.name}: solving {names.len()} numbers of {path}")
+    for (line, name) in names {
+        if !one_number(text.as_str(), line) {
+            print(
+                f"  ({name} is freed by its name: its numbers come back with all their decimals for now)",
+            )
+        }
+    }
     let (status, said) = wrela(take given)?
     told(said.as_str(), s, names)
     if status != 0 {
@@ -245,6 +326,13 @@ fn the_solved_numbers_are_found_by_name() {
     assert(found[1].0 == 3 && found[1].1.as_str() == "drive")
     assert(found[2].0 == 4, "a whole value is one name")
     assert(found[3].0 == 0, "a name the file doesn't bind")
+    assert(
+        freed(text, "sets_off,drive,chain").as_str() == "2,3,chain",
+        "numbers by line, values by name",
+    )
     let said = "spec::spec: 1 -> 0\n  solved.wrela:4  0.14 -> 0.144\nthe spec: 20 of 21 hold\n  misses a check\n"
     assert(held(said) == Some((20, 21)))
+    // A strike whose every check holds isn't solved, so a round changes no file.
+    assert(needs_solve(said), "a check misses: solve")
+    assert(!needs_solve("the spec: 41 of 41 hold\n"), "all hold: leave it as it is")
 }
