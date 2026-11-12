@@ -573,6 +573,9 @@ pub fn boot_paint(p: vec3) -> (vec3, f32, f32) {
 pub const TAILS_AXIS = vec3(0.0, 0.949, -0.043)
 pub const TAILS_TOP: f32 = 0.93
 
+/// How far the tails' cloth runs on up inside the jacket, over their top (m).
+pub const TAILS_UNDER: f32 = 0.028
+
 /// Where the long jacket's hem is (rest height): the tails carry on below it.
 pub const JACKET_HEM: f32 = 0.865
 
@@ -667,12 +670,22 @@ pub fn tails(p: vec3) -> (f32, f32) {
     // round his hips that caught the light as a second belt.)
     let down = max(TAILS_TOP - p.y, 0.0)
     let eased = clamp(down / 0.30, 0.0, 1.0)
-    let rr = girth(inside) - 0.009 + FLARE * down + fold * eased * eased * (3.0 - 2.0 * eased)
+    // (Its flare eased in over 25 cm: flaring from its very top, the cloth turned up to the
+    // light at the seam, and the tails were a lighter piece than the jacket over them.)
+    let flare = FLARE * down * smoothstep(0.0, 0.25, down)
+    // (Over its top it runs on up inside the jacket, 4 mm inside the jacket's line
+    // (`TAILS_UNDER`): its top rim, where its cloth is cut off, is out of sight. Ending at
+    // the jacket's foot, the rim showed there as a thin dark line round his waist, and his
+    // coat's back was two pieces.)
+    // (From a centimetre over the jacket's foot: the cloth's mesh is 7 mm a cell, and a turn
+    // inward that started at the foot showed under it as a pale hairline.)
+    let tuck = 0.004 * smoothstep(0.0, 0.008, p.y - (TAILS_TOP + 0.007))
+    let rr = girth(inside) - 0.009 - tuck + flare + fold * eased * eased * (3.0 - 2.0 * eased)
     var d = abs(r - rr) - 0.009
     // Its front edges: the distance round to the nearer (negative between them).
     let edge = front_edge(p.y)
     d = max(d, max(edge - deg, deg - (360.0 - edge)) * 0.0174532925 * r)
-    d = max(d, max(p.y - TAILS_TOP, low - p.y))
+    d = max(d, max(p.y - (TAILS_TOP + TAILS_UNDER), low - p.y))
     // Its vent: split up the middle of the back from the hem, so each side follows its own leg.
     let vent = max(abs(deg - 180.0) * 0.0174532925 * r - VENT_HALF, p.y - VENT_TOP)
     d = max(d, -vent)
