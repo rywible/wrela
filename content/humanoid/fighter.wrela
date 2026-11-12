@@ -11,11 +11,12 @@ use hakuro::arms::{Drape, drape_room, draped, follow_legs}
 use hakuro::clear::fists_off_mask
 use hakuro::fingers::{FIST_CURL, curled}
 use hakuro::hakuro::{
-    CHARTS, Charted, Cloth, WIDE_CHARTS, body_paint, chart_cut, chart_hidden, chart_paint,
-    charted_as, charted_at_rest, charts, coat, head, hero, jacket_paint, shaded, shaded_wide,
-    wide_charts,
+    CHARTS, Charted, Cloth, WIDE_CHARTS, charted_as, charted_at_rest, charts, coat, head, hero,
+    shaded, shaded_wide, wide_charts,
 }
 use hakuro::reference_rig::HAKURO_BONE
+use engine::sway
+use engine::sway::Sway
 use engine::character::skin_matrix
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
 use engine::look::CreatureLook
@@ -59,6 +60,10 @@ pub struct Fighters {
     grids: Grids,
     /// Where his jacket is on its chart (`hakuro::jacket_cover`), for its pixels to read.
     cover: GpuBuffer<f32>,
+    /// Each fighter's hair's sway (`hakuro::with_hair`), and how long the last step was (s):
+    /// their hair moves on the clock their cloth does.
+    hair: [Sway; FIGHTERS],
+    dt: f32,
 }
 
 pub fn fighters() -> Fighters {
@@ -70,6 +75,8 @@ pub fn fighters() -> Fighters {
         drape: drape_room(FIGHTERS),
         charted: [charted_at_rest(); FIGHTERS],
         cover: hakuro::hakuro::jacket_covers(),
+        hair: [sway::still(); FIGHTERS],
+        dt: 0.0,
         grids: chart::grids(),
     }
 }
@@ -147,7 +154,15 @@ pub fn squashed(m: [mat4; 64], about: vec3, along: vec3, by: f32) -> [mat4; 64] 
 
 impl Fighters {
     /// Fighter `who`'s palette set, and his cloth's.
-    pub fn pose(mut self, who: u32, m: [mat4; 64]) {
+    pub fn pose(mut self, who: u32, bare: [mat4; 64]) {
+        let m = hakuro::hakuro::with_hair(
+            bare,
+            self.hair[who].step(
+                hakuro::hakuro::hair_held(bare),
+                self.dt,
+                hakuro::hakuro::HAIR_SPRING,
+            ),
+        )
         write(mut self.palettes, who * MAX_BONES, m)
         write(mut self.palettes, (FIGHTERS + who) * MAX_BONES, m)
         self.charted[who] = charted_as(m)
@@ -164,6 +179,7 @@ impl Fighters {
 
     /// Their coats' tails moved on `dt` seconds (0 through a hit-stop: the cloth holds with them).
     pub fn step(mut self, dt: f32) {
+        self.dt = dt
         self.drape.work(self.palettes, FIGHTERS, MAX_BONES, FIGHTERS * MAX_BONES, dt)
     }
 
@@ -687,13 +703,17 @@ pub fn charted_pixel<const A: u32, const R: u32>(
     who: u32,
     part: u32,
 ) -> Targets3<vec4, vec4, vec4> {
-    if chart_hidden(part, cover, v.place) {
+    let dressed = hakuro::hakuro::dressed(
+        part,
+        v,
+        v.normal_from(shade, length),
+        normalize(v.world - shot.cam.eye),
+        cover,
+    )
+    if dressed.hidden {
         discard()
     }
-    if chart_cut(part, v.rest) {
-        discard()
-    }
-    painted(shot, v.world, v.normal_from(shade, length), chart_paint(part, v.rest), who, 0)
+    painted(shot, v.world, dressed.normal, dressed.cloth, who, 0)
 }
 
 /// What his black cloth's lit planes are raised by (linear).

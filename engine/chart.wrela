@@ -910,8 +910,9 @@ pub const FOLDS: u32 = 2
 
 /// How far a limb's two sides of a folded hinge press into each other (m): flesh gives, so
 /// the crease lies this far in from the hinge's own line and the limb's sides aren't pinched
-/// beside it.
-pub const GIVE: f32 = 0.012
+/// beside it. (At half this, a runner's elbow bent past a right angle was a sharp notch on the
+/// inside of the bend, as a hose kinks, and read as pinched off.)
+pub const GIVE: f32 = 0.024
 
 /// A hinge a limb is folded at in a pose (an elbow, a knee): inside the bend, the limb's two
 /// lengths meet at the plane that halves it, and neither passes through the other. Where the
@@ -956,6 +957,47 @@ impl Fold {
     }
 }
 
+/// What of a form's side stays with a bone that isn't its path's, and where that bone has it
+/// (`by`: the bone's matrix, from the body at rest to where the pose has it). A form goes
+/// where its path goes, whole; a garment's piece over a joint doesn't. A jacket's shoulder
+/// rides the arm along its top, and its panels in front of the armhole and behind it lie on
+/// the chest: carried round with the arm, they stood off the chest as a flap when the arm came
+/// across. So each place on the chart has a share that stays: by the angle round the path,
+/// none within `round.y` of angle `round.x` and all of it from `round.z` off that angle; and
+/// along the path, none before `along.x` of the way and all of it from `along.y`. A place's
+/// point is that share of the way from where its path has it to where the bone has the same
+/// place of the form at rest (`sides`): a skin weight, written over a chart.
+pub struct Stay: Copy + GpuData {
+    pub by: mat4,
+    pub round: vec3,
+    pub along: vec2,
+}
+
+/// None of the side stays anywhere: the whole form goes with its path.
+pub const NO_STAY: Stay = Stay {
+    by: mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    ),
+    round: vec3(0.0, 10.0, 11.0),
+    along: vec2(-2.0, -1.0),
+}
+
+impl Stay {
+    /// Whether any of the side stays anywhere.
+    pub fn any(self) -> bool {
+        self.round.y < 3.2
+    }
+
+    /// The share of the side that stays at a place: `f` of the way along, at angle `theta`.
+    pub fn share(self, f: f32, theta: f32) -> f32 {
+        let off = abs(wrapped(theta - self.round.x))
+        smoothstep(self.round.y, self.round.z, off) * smoothstep(self.along.x, self.along.y, f)
+    }
+}
+
 /// A form about a path: its radius at each place on the path's chart, less where a folded
 /// hinge leaves it no room (`folds`).
 pub struct Limb<const A: u32, const R: u32>: Copy + GpuData {
@@ -974,6 +1016,8 @@ pub struct Limb<const A: u32, const R: u32>: Copy + GpuData {
     /// or thins it sets this: a fist drawn big at a blow, a limb drawn thin where it's
     /// stretched.
     pub swell: f32 = 1.0,
+    /// What of its side stays with a bone that isn't its path's (`Stay`): none, unless said.
+    pub stay: Stay = NO_STAY,
 }
 
 /// How much of its radius a form with `caps` keeps `f` of the way along its path: all of it
@@ -1343,6 +1387,10 @@ pub struct Part<const A: u32, const R: u32>: Copy {
     pub caps: vec2 = vec2(0.0, 0.0),
     /// How many levels coarser than its size on screen calls for it's drawn (`Limb::coarser`).
     pub coarser: u32 = 0,
+    /// The bone some of its side stays with, and what of it does (`Stay`'s `round` and `along`):
+    /// none of it, unless said.
+    pub stays_with: u32 = 0,
+    pub stays: Stay = NO_STAY,
 }
 
 /// No change at a joint.
@@ -1353,7 +1401,13 @@ pub fn unchanged<const A: u32, const R: u32>() -> Change<A, R> {
 impl<const A: u32, const R: u32> Part<A, R> {
     /// It at rest.
     pub fn rest(self) -> Limb<A, R> {
-        Limb { path: self.chain.rest(), form: self.form, caps: self.caps, coarser: self.coarser }
+        Limb {
+            path: self.chain.rest(),
+            form: self.form,
+            caps: self.caps,
+            coarser: self.coarser,
+            stay: Stay { by: NO_STAY.by, ..self.stays },
+        }
     }
 
     /// It as a pose has it (`palette`: each of the creature's bones' matrices, from the body at
@@ -1385,7 +1439,14 @@ impl<const A: u32, const R: u32> Part<A, R> {
                 }
             }
         }
-        Limb { path, form, folds, caps: self.caps, coarser: self.coarser }
+        Limb {
+            path,
+            form,
+            folds,
+            caps: self.caps,
+            coarser: self.coarser,
+            stay: Stay { by: palette[self.stays_with], ..self.stays },
+        }
     }
 
     /// How far under what covers it its side is drawn, `f` of the way along its path (m).
@@ -1702,6 +1763,43 @@ pub struct Vertex: Copy {
     pub normal: vec3,
 }
 
+/// A form's side at a place on its chart as a pose has it (`form`), and at two places beside
+/// it (a little further along, a little further round: the side's normal is across the three),
+/// with what of it stays with another bone put where that bone has it (`Stay`); where the same
+/// place is on the form at rest (`rest`); and the share that stays there. Worked out in one
+/// loop, so a shader holds a side's code once for the posed form and once for the form at rest.
+fn sides<const A: u32, const R: u32>(
+    rest: Limb<A, R>,
+    form: Limb<A, R>,
+    f: f32,
+    theta: f32,
+) -> ([vec3; 3], vec3, f32) {
+    let df = 0.002
+    let dt = 0.01
+    let f0 = min(f, 1.0 - df)
+    var stays = 0.0
+    if form.stay.any() {
+        stays = form.stay.share(f0, theta)
+    }
+    var p = [vec3(); 3]
+    var at_rest = vec3()
+    for k in 0..3 {
+        let ff = f0 + (if k == 1 { df } else { 0.0 })
+        let th = theta + (if k == 2 { dt } else { 0.0 })
+        p[k] = form.side(f: ff, theta: th)
+        if k == 0 || stays > 0.0 {
+            let r = rest.side(f: if k == 0 { f } else { ff }, theta: th)
+            if k == 0 {
+                at_rest = r
+            }
+            if stays > 0.0 {
+                p[k] = mix(p[k], carried(form.stay.by, r), vec3(form.stay.share(ff, th)))
+            }
+        }
+    }
+    (p, at_rest, stays)
+}
+
 /// A charted form's vertex: vertex `v` of `level`'s grid (`grids`, `level_span`), where its
 /// place on the chart (`band`: what of the chart is drawn) is on the form as a pose has it
 /// (`form`), with where that place is on the form at rest (`rest`). Its root is drawn under
@@ -1718,14 +1816,19 @@ pub fn vertex<const A: u32, const R: u32, S: Seen>(
     seen: S,
 ) -> Vertex {
     let at = place_of(v.index, level, band)
-    let (world, normal) = form.side_and_normal(f: at.x, theta: at.y)
+    let (p, at_rest, stays) = sides(rest, form, f: at.x, theta: at.y)
+    let world = p[0]
+    let normal = unit(cross(p[1] - p[0], p[2] - p[0]))
+    // (What of the side stays with another bone takes the side's own normal, across its points
+    // as they're put.)
+    let own = max(form.folded(f: at.x, theta: at.y), saturate(stays * 1000.0))
     let drawn = sunk(world, seen.seen_from(), sunk_by(under, at.x))
     let section = form.path.frame(saturate(at.x) * form.path.length())
     Vertex {
         clip: ClipPosition { position: seen.clip_at(drawn) },
         world,
-        rest: rest.side(f: at.x, theta: at.y),
-        place: vec3(at, form.folded(f: at.x, theta: at.y)),
+        rest: at_rest,
+        place: vec3(at, own),
         up: section.up,
         left: section.left,
         normal,
@@ -1766,6 +1869,12 @@ pub struct Grown: Copy + GpuData {
     pub rooted: f32 = 0.0,
     pub laid: f32 = 0.0,
     pub cover: u32 = COVERLESS,
+    /// How far past the edge of the other form's cover (places) its light is still that
+    /// form's, wholly: a piece that carries a surface on from where the other form stops (a
+    /// collar's foot, on up a back from where the jacket's body ends) is one surface with it,
+    /// and lit by its own form it showed as a panel set into the back. 0: its own light from
+    /// the edge on.
+    pub beyond: f32 = 0.0,
 }
 
 /// A form with no cover: it's everywhere on its chart.
@@ -1817,6 +1926,16 @@ impl Grown {
         out * up + other * (on - d - held * (max(on, 0.0) + UNDER))
     }
 
+    /// How much of its light is the other form's, wholly, at a point `within` places inside
+    /// the edge of that form's cover (negative: past the edge): all of it as far as `beyond`
+    /// places past the edge, none `THERE` places further.
+    pub fn lit_past(self, within: f32) -> f32 {
+        if self.beyond <= 0.0 {
+            return 0.0
+        }
+        saturate((within + self.beyond) / THERE)
+    }
+
     /// How much of the other side's way out a point's normal takes, `f` of the way along and
     /// `d` off that side once it's moved (m): all of it on the side, none the fillet's radius
     /// off it, and none past the fillet's reach.
@@ -1853,19 +1972,22 @@ pub fn vertex_onto<const A: u32, const R: u32, const B: u32, const Q: u32, const
     // is the moved side's. The other form's side is flat across the three: one reading of it
     // serves them.)
     let df = 0.002
-    let dt = 0.01
     let f0 = min(at.x, 1.0 - df)
-    let a = form.side(f: f0, theta: at.y)
-    let b = form.side(f: f0 + df, theta: at.y)
-    let c = form.side(f: f0, theta: at.y + dt)
+    let (p, at_rest, stays) = sides(rest, form, f: at.x, theta: at.y)
+    let a = p[0]
+    let b = p[1]
+    let c = p[2]
     let out = unit(cross(b - a, c - a))
     // Where the point is on the other form's chart, and whether that form is there.
     let reach = onto.path.length()
     let pl = onto.path.place(a)
     let along = clamp(pl.along, 0.0, reach)
     var there = 1.0
+    var past = 0.0
     if how.cover != COVERLESS {
-        there = saturate(inside(covers, along / reach, pl.theta, at: how.cover) / THERE)
+        let within = inside(covers, along / reach, pl.theta, at: how.cover)
+        there = saturate(within / THERE)
+        past = how.lit_past(within)
     }
     // (Most of a form's points are nowhere near the form it grows from or lies on: one where
     // that form isn't, or one out of reach of the hold, the laying and the fillet, is left
@@ -1875,9 +1997,9 @@ pub fn vertex_onto<const A: u32, const R: u32, const B: u32, const Q: u32, const
     var a1 = a
     var normal = out
     var leant = 0.0
-    if there > 0.0 {
+    if there > 0.0 || past > 0.0 {
         let first = onto.toward_at(a, pl)
-        if how.held(f0) > 0.0 || first.w < max(how.laid, 2.0 * how.fillet) {
+        if how.held(f0) > 0.0 || first.w < max(how.laid, 2.0 * how.fillet) || past > 0.0 {
             let nearer = a - first.xyz * first.w
             let again = onto.toward(nearer)
             let foot = nearer - again.xyz * again.w
@@ -1888,7 +2010,7 @@ pub fn vertex_onto<const A: u32, const R: u32, const B: u32, const Q: u32, const
                 how.moved(f: f0 + df, d: dot(other, b - foot), other: other, out: out, there: there)
             let c1 = c +
                 how.moved(f: f0, d: dot(other, c - foot), other: other, out: out, there: there)
-            leant = there * how.leant(f: f0, d: dot(other, a1 - foot))
+            leant = max(there * how.leant(f: f0, d: dot(other, a1 - foot)), past)
             let fr = onto.path.frame(along)
             let lit = normal_at(light, fr.up, fr.left, reach, along / reach, pl.theta)
             normal = unit(mix(unit(cross(b1 - a1, c1 - a1)), lit, vec3(leant)))
@@ -1899,7 +2021,7 @@ pub fn vertex_onto<const A: u32, const R: u32, const B: u32, const Q: u32, const
     Vertex {
         clip: ClipPosition { position: seen.clip_at(drawn) },
         world: a1,
-        rest: rest.side(f: at.x, theta: at.y),
+        rest: at_rest,
         // (Its own normal wherever it's held toward the other side or leans to it, however
         // little it's moved there: just off that side it's moved a hair, and its form's
         // slopes are still its own side's, a long way round from the side it lies along.)
@@ -1907,7 +2029,10 @@ pub fn vertex_onto<const A: u32, const R: u32, const B: u32, const Q: u32, const
             at,
             max(
                 max(form.folded(f: at.x, theta: at.y), saturate(leant * 1000.0)),
-                max(saturate(how.held(f0) * there * 1000.0), saturate(length(by) / 0.0003)),
+                max(
+                    max(saturate(how.held(f0) * there * 1000.0), saturate(length(by) / 0.0003)),
+                    saturate(stays * 1000.0),
+                ),
             ),
         ),
         up: section.up,
@@ -2034,6 +2159,18 @@ fn a_grown_forms_light_leans_to_the_side_it_meets() {
     assert(how.leant(f: 0.1, d: 0.0) == 1.0 && how.leant(f: 0.1, d: -0.002) == 1.0)
     assert(abs(how.leant(f: 0.1, d: 0.004) - 0.5) < 1.0e-5)
     assert(how.leant(f: 0.1, d: 0.008) == 0.0 && how.leant(f: 0.7, d: 0.0) == 0.0)
+}
+
+@test
+fn a_form_that_carries_a_surface_on_is_lit_as_the_form_it_carries_it_from() {
+    // A collar's foot, lit as the jacket's body 10 places past where the body's cover ends:
+    // wholly at the edge and 8 places past it, not at all 10 places past, and never if it
+    // isn't said to be.
+    let on = Grown { fillet: 0.01, reach: 1.0, cover: 0, beyond: 10.0 }
+    assert(on.lit_past(3.0) == 1.0 && on.lit_past(0.0) == 1.0 && on.lit_past(-8.0) == 1.0)
+    assert(on.lit_past(-9.0) == 0.5 && on.lit_past(-10.0) == 0.0 && on.lit_past(-30.0) == 0.0)
+    let plain = Grown { fillet: 0.01, reach: 1.0, cover: 0 }
+    assert(plain.lit_past(3.0) == 0.0 && plain.lit_past(-3.0) == 0.0)
 }
 
 @test
@@ -2416,6 +2553,46 @@ fn a_mirrored_chain_carries_a_mirrored_form() {
             assert(length(vec3(-p.x, p.y, p.z) - q) < 0.00001)
         }
     }
+}
+
+@test
+fn what_of_a_forms_side_stays_is_where_its_bone_has_it() {
+    // An arm bent a quarter turn at its elbow by bone 2, with all of its side from 1 radian
+    // off straight up staying with bone 0, which hasn't moved, and none of it within half a
+    // radian of up. Past the elbow, the side's top is where the bent path has it, and its
+    // underside is where it was at rest; between, it's part of the way.
+    let part = Part {
+        chain: arm_chain(),
+        bones: [1, 2, 0, 0, 0, 0, 0, 0],
+        root: 0,
+        form: leg_form(),
+        changes: [unchanged(); JOINTS],
+        band: WHOLE,
+        sunk: vec2(0.0, 0.1),
+        stays_with: 0,
+        stays: Stay { by: NO_STAY.by, round: vec3(0.0, 0.5, 1.0), along: vec2(-2.0, -1.0) },
+    }
+    var palette = [SAME; 64]
+    palette[2] = turn_about(vec3(0.0, 1.0, 0.0), -0.5 * PI, vec3(0.45, 1.4, 0.0))
+    let rest = part.rest()
+    let posed = part.posed(palette)
+    let (top, _, none) = sides(rest, posed, f: 0.8, theta: 0.0)
+    assert(none == 0.0 && length(top[0] - posed.side(f: 0.8, theta: 0.0)) < 0.000001)
+    let (under, at_rest, all) = sides(rest, posed, f: 0.8, theta: PI)
+    assert(all == 1.0 && length(under[0] - rest.side(f: 0.8, theta: PI)) < 0.000001)
+    assert(length(at_rest - rest.side(f: 0.8, theta: PI)) < 0.000001)
+    let (between, _, some) = sides(rest, posed, f: 0.8, theta: 0.75)
+    let way = length(between[0] - posed.side(f: 0.8, theta: 0.75)) /
+        length(rest.side(f: 0.8, theta: 0.75) - posed.side(f: 0.8, theta: 0.75))
+    assert(some > 0.4 && some < 0.6 && abs(way - some) < 0.001, f"{some} stays, {way} of the way")
+    // And only from where it's said to along the path.
+    let rim = Stay { along: vec2(0.5, 0.7), ..part.stays }
+    assert(rim.share(f: 0.4, theta: PI) == 0.0 && rim.share(f: 0.9, theta: PI) == 1.0)
+    // A form none of whose side stays is drawn as its path has it.
+    let plain = Part { stays: NO_STAY, ..part }.posed(palette)
+    assert(!plain.stay.any() && posed.stay.any())
+    let (as_posed, _, _) = sides(rest, plain, f: 0.8, theta: PI)
+    assert(length(as_posed[0] - plain.side(f: 0.8, theta: PI)) < 0.000001)
 }
 
 @test

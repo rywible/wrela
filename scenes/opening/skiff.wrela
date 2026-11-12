@@ -89,6 +89,14 @@ fn sheer_at(z: f32) -> f32 {
     }
 }
 
+/// The sheer's rise where the crate is lashed aft, at the mast's step and by the coil of rope:
+/// constants, worked out once. (Written where the hull is read, each was worked out again at
+/// every point the hull was read at, and whether the compiler folded it away depended on what
+/// else was in the shader: a change to what Hakuro wears stopped the opening building.)
+const SHEER_AFT: f32 = sheer_at(clamp(-1.55 / LONG, -1.0, 1.0))
+const SHEER_STEP: f32 = sheer_at(clamp(FOOT.z / LONG, -1.0, 1.0))
+const SHEER_COIL: f32 = sheer_at(0.35)
+
 /// How wide a pixel is (m) at `q` (the skiff's frame).
 fn footprint(s: Shot, q: vec3) -> f32 {
     length(q - s.eye_aboard) * 2.0 / (s.focal * s.resolution.y)
@@ -326,18 +334,18 @@ fn rig_parts(s: Shot, q: vec3) -> vec3 {
     if PLANING > 0.5 {
         // An old crate lashed down aft, its lid warped; a coil of rope by the mast's foot; the
         // mast's step a block of wood bound to the deck.
-        let deck_at = sheer_at(clamp(-1.55 / LONG, -1.0, 1.0)) + 0.04
+        let deck_at = SHEER_AFT + 0.04
         let crate = sd_box(q - vec3(0.06, deck_at + 0.13, -1.55), vec3(0.2, 0.13, 0.15)) - 0.008
         let lid = sd_box(q - vec3(0.06, deck_at + 0.27 + 0.01 * sin(q.x * 9.0), -1.55), vec3(0.22, 0.012, 0.17))
         wood = min(wood, min(crate, lid))
-        let step_at = sheer_at(clamp(FOOT.z / LONG, -1.0, 1.0)) + 0.03
+        let step_at = SHEER_STEP + 0.03
         wood = min(wood, sd_box(q - vec3(0.0, step_at + 0.03, FOOT.z), vec3(0.09, 0.04, 0.13)) - 0.01)
     }
     let (sail, _) = cloth(s, q)
     var rig = spars(s, q)
     if PLANING > 0.5 {
         // The coil of rope by the mast, a flattened ring.
-        let c = q - vec3(-0.28, sheer_at(0.35) + 0.07, 0.62)
+        let c = q - vec3(-0.28, SHEER_COIL + 0.07, 0.62)
         let ring = vec2(length(vec2(c.x, c.z)) - 0.13, c.y)
         rig = min(rig, length(ring * vec2(1.0, 1.5)) / 1.5 - 0.028)
     }

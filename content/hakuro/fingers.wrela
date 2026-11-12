@@ -52,10 +52,20 @@ pub fn curled(m: [mat4; 64], curl: [f32; 15]) -> [mat4; 64] {
         for j in 0..15 {
             let b = 26 + 2 * j + side
             let at = (out[b] * vec4(s.rest(Bone { index: b }), 1.0)).xyz
-            let axis = normalize((out[b] * vec4(if j >= 12 { THUMB_AXIS } else {
+            // (His right hand is his left's mirror image: a mirrored turn is about the mirrored
+            // axis the other way round. Turned the same way about the same axis, his left
+            // hand's fingers curled toward the back of his hand.)
+            let left = side == 0
+            let own = if j >= 12 {
+                if left { THUMB_AXIS } else { vec3(-THUMB_AXIS.x, THUMB_AXIS.y, THUMB_AXIS.z) }
+            } else {
                 vec3(0.0, 0.0, 1.0)
-            }, 0.0)).xyz)
-            let r = turn_about(axis, curl[j], at)
+            }
+            let axis = normalize((out[b] * vec4(own, 0.0)).xyz)
+            let way = if j >= 12 { if left { 1.0 } else { -1.0 } } else if left { -1.0 } else {
+                1.0
+            }
+            let r = turn_about(axis, way * curl[j], at)
             for k in 26..56 {
                 if below(s, k, b) {
                     out[k] = r * out[k]
@@ -80,3 +90,23 @@ pub const FIST_CURL = [
 
 /// The thumb's joints' axis at rest (his left's): across its pad, so it closes toward the palm.
 pub const THUMB_AXIS = vec3(-0.35, 0.55, 0.76)
+
+@test
+fn a_left_hands_fingers_curl_as_its_rights_do_mirrored() {
+    // His right hand is his left's mirror image, and so is how it closes: each finger's tip,
+    // his hands curled from rest, is where the other hand's is, mirrored. (Both hands' joints
+    // were turned the same way about the same axis, and his left's fingers curled toward the
+    // back of his hand.)
+    let m = curled([translate(vec3(0.0)); 64], RELAXED_CURL)
+    for f in 0..5 {
+        let tip = hakuro::FINGER_JOINTS[f * 4 + 3]
+        let last = 26 + 2 * (f * 3 + 2)
+        let left = (m[last] * vec4(tip, 1.0)).xyz
+        let right = (m[last + 1] * vec4(-tip.x, tip.y, tip.z, 1.0)).xyz
+        assert(length(left - vec3(-right.x, right.y, right.z)) < 0.0005, f"finger {f}")
+    }
+    // And toward his palm, which faces down as he stands at rest: his index's tip comes down.
+    let tip = hakuro::FINGER_JOINTS[3]
+    let curled_tip = (m[30] * vec4(tip, 1.0)).xyz
+    assert(curled_tip.y < tip.y - 0.02, f"his index's tip went from {tip.y} to {curled_tip.y}")
+}

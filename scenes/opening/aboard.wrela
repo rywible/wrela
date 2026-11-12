@@ -11,11 +11,12 @@
 
 use hakuro::arms::{Drape, drape_room, draped, follow_legs}
 use hakuro::hakuro::{
-    CHARTS, Charted, Cloth, FINGER_JOINTS, WIDE_CHARTS, body_paint, chart_cut, chart_hidden,
-    chart_paint, charted_as, charted_at_rest, charts, coat, head, hero, jacket_paint, shaded,
-    shaded_wide, wide_charts,
+    CHARTS, Charted, Cloth, FINGER_JOINTS, HAIR_SPRING, WIDE_CHARTS, charted_as, charted_at_rest,
+    charts, coat, hair_held, head, hero, shaded, shaded_wide, wide_charts, with_hair,
 }
 use engine::chart
+use engine::sway
+use engine::sway::Sway
 use engine::chart::{Grids, Grown, Limb, Part, Radial}
 use engine::creature::{Creature, MAX_BONES, PartMask, Parts}
 use engine::character::skin_matrix
@@ -72,6 +73,8 @@ pub struct Aboard {
     lagged: [mat4; 64],
     // (Where his coat's tails are draped over his legs this frame: `hakuro::arms::draped`.)
     drape: Drape,
+    // (His hair's sway: `hakuro::with_hair`.)
+    hair: Sway,
     fresh: bool,
     // (The drawing's time he was last stepped to.)
     held: f32,
@@ -114,6 +117,7 @@ pub fn aboard() -> Aboard {
         skies: buffer(SKIES),
         lagged: [mat4(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0)); 64],
         drape: drape_room(1),
+        hair: sway::still(),
         fresh: true,
         held: 0.0,
         give: vec3(0.0),
@@ -709,10 +713,14 @@ pub fn charted_pixel<const A: u32, const R: u32>(
     part: u32,
     pixel: FragCoord,
 ) -> Targets3<vec4, vec4, vec4> {
-    if chart_hidden(part, cover, v.place) {
-        discard()
-    }
-    if chart_cut(part, v.rest) {
+    let dressed = hakuro::hakuro::dressed(
+        part,
+        v,
+        v.normal_from(shade, along),
+        normalize(v.world - shot.eye),
+        cover,
+    )
+    if dressed.hidden {
         discard()
     }
     let s = shot
@@ -722,11 +730,11 @@ pub fn charted_pixel<const A: u32, const R: u32>(
         discard()
     }
     let d = normalize(v.world - s.eye)
-    var n = v.normal_from(shade, along)
+    var n = dressed.normal
     if dot(n, d) > 0.0 {
         n = normalize(n - d * (dot(n, d) + 0.05))
     }
-    let c = chart_paint(part, v.rest)
+    let c = dressed.cloth
     lit_hero(
         s,
         light,
@@ -1269,7 +1277,13 @@ impl Aboard {
         let moved = shot.held - self.held
         if self.fresh || moved != 0.0 {
             self.ride(shot, moved)
-            let now = bones(shot, self.give)
+            let bare = bones(shot, self.give)
+            // (His hair sways as the swell and the wind move his head: on the drawing's own
+            // clock, as his cloth is.)
+            let now = with_hair(
+                bare,
+                self.hair.step(hair_held(bare), if self.fresh { 0.0 } else { moved }, HAIR_SPRING),
+            )
             write(mut self.palette, 0, now)
             self.charted = charted_as(now)
             // (About a tenth of a second behind: 0.16 of the way each 60th of a second.)
