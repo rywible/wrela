@@ -42,17 +42,28 @@ const ARENA: i32 = 20 * 64
 const PLAYER_HP: i32 = 100
 const STAMINA: i32 = 100
 
-/// An attack: its stamina, its frames (windup, active, recovery), its reach and damage, and the
-/// move a light press in its recovery goes on to (its combo's next; `NO_MOVE`: none).
+/// An attack: its stamina, its frames (windup, active, recovery), its reach, its arc (`within`)
+/// and damage, and the move a light press in its recovery goes on to (its combo's next;
+/// `NO_MOVE`: none).
 pub struct Move: Copy + Eq {
     pub cost: i32,
     pub windup: u32,
     pub active: u32,
     pub recovery: u32,
     pub reach: i32,
+    pub arc: i32,
     pub damage: i32,
     pub next: u32,
 }
+
+/// Arcs (`within`), as the cosine of half their width in 1024ths: a thrust's (25 degrees either
+/// side of the facing), a straight punch's (30), a slam's or a cut's (60), a sweep's (75), and
+/// all round.
+pub const THRUST: i32 = 928
+pub const STRAIGHT: i32 = 887
+pub const CUT: i32 = 512
+pub const SWEEP: i32 = 265
+pub const ALL_ROUND: i32 = -1024
 
 /// No move: a combo's end, or a recovery that isn't an attack's (a parry's).
 pub const NO_MOVE: u32 = 4294967295
@@ -60,22 +71,68 @@ pub const NO_MOVE: u32 = 4294967295
 /// Every weapon's moves, by number (`Weapon` names its own).
 pub const MOVES: [Move; 6] = [
     // Fists: a jab, and a heavier straight.
-    Move { cost: 25, windup: 10, active: 4, recovery: 14, reach: 3 * 64, damage: 8, next: NO_MOVE },
+    Move {
+        cost: 25,
+        windup: 10,
+        active: 4,
+        recovery: 14,
+        reach: 3 * 64,
+        arc: STRAIGHT,
+        damage: 8,
+        next: NO_MOVE,
+    },
     Move {
         cost: 35,
         windup: 20,
         active: 4,
         recovery: 24,
         reach: 3 * 64,
+        arc: STRAIGHT,
         damage: 16,
         next: NO_MOVE,
     },
     // The longsword (two-handed): a three-cut combo, each cut longer and harder, and an overhead;
     // it outreaches the idol's sweep (`ATTACKS`), so footing decides who's in range.
-    Move { cost: 18, windup: 12, active: 5, recovery: 18, reach: 176, damage: 9, next: 3 },
-    Move { cost: 18, windup: 10, active: 5, recovery: 18, reach: 176, damage: 10, next: 4 },
-    Move { cost: 22, windup: 14, active: 6, recovery: 26, reach: 192, damage: 14, next: NO_MOVE },
-    Move { cost: 35, windup: 26, active: 6, recovery: 30, reach: 208, damage: 26, next: NO_MOVE },
+    Move {
+        cost: 18,
+        windup: 12,
+        active: 5,
+        recovery: 18,
+        reach: 176,
+        arc: CUT,
+        damage: 9,
+        next: 3,
+    },
+    Move {
+        cost: 18,
+        windup: 10,
+        active: 5,
+        recovery: 18,
+        reach: 176,
+        arc: CUT,
+        damage: 10,
+        next: 4,
+    },
+    Move {
+        cost: 22,
+        windup: 14,
+        active: 6,
+        recovery: 26,
+        reach: 192,
+        arc: CUT,
+        damage: 14,
+        next: NO_MOVE,
+    },
+    Move {
+        cost: 35,
+        windup: 26,
+        active: 6,
+        recovery: 30,
+        reach: 208,
+        arc: THRUST,
+        damage: 26,
+        next: NO_MOVE,
+    },
 ]
 
 /// A weapon: its light attack (the first of its combo) and its heavy one, as moves.
@@ -92,6 +149,8 @@ pub const LONGSWORD: u32 = 1
 const PARRY_COST: i32 = 10
 const PARRY_WINDOW: u32 = 8
 const PARRY_RECOVERY: u32 = 12
+/// A parry meets a blow from the half ahead of the one parrying.
+const PARRY_ARC: i32 = 0
 // A dodge: invulnerable while it lasts, moving fast.
 const DODGE_COST: i32 = 20
 const DODGE_FRAMES: u32 = 12
@@ -109,6 +168,9 @@ pub struct Attack: Copy + Eq {
     pub recovery: u32,
     pub near: i32,
     pub far: i32,
+    /// Its arc about the way the boss faces (`within`): once its windup is this near its end, the
+    /// boss turns no more (`LOCK`), and who's stepped out of its arc is missed.
+    pub arc: i32,
     pub damage: i32,
     pub parried: bool,
     pub stagger: u32,
@@ -144,6 +206,7 @@ pub const ATTACKS: [Attack; 7] = [
         recovery: 30,
         near: 0,
         far: 160,
+        arc: SWEEP,
         damage: 20,
         parried: true,
         stagger: 60,
@@ -157,6 +220,7 @@ pub const ATTACKS: [Attack; 7] = [
         recovery: 34,
         near: 96,
         far: 256,
+        arc: THRUST,
         damage: 24,
         parried: true,
         stagger: 72,
@@ -171,6 +235,7 @@ pub const ATTACKS: [Attack; 7] = [
         recovery: 70,
         near: 0,
         far: 192,
+        arc: CUT,
         damage: 40,
         parried: false,
         stagger: 0,
@@ -184,6 +249,7 @@ pub const ATTACKS: [Attack; 7] = [
         recovery: 26,
         near: 0,
         far: 80,
+        arc: ALL_ROUND,
         damage: 15,
         parried: false,
         stagger: 0,
@@ -197,6 +263,7 @@ pub const ATTACKS: [Attack; 7] = [
         recovery: 18,
         near: 0,
         far: 160,
+        arc: SWEEP,
         damage: 22,
         parried: true,
         stagger: 48,
@@ -209,6 +276,7 @@ pub const ATTACKS: [Attack; 7] = [
         recovery: 56,
         near: 0,
         far: 208,
+        arc: CUT,
         damage: 44,
         parried: false,
         stagger: 0,
@@ -221,6 +289,7 @@ pub const ATTACKS: [Attack; 7] = [
         recovery: 26,
         near: 96,
         far: 256,
+        arc: THRUST,
         damage: 26,
         parried: true,
         stagger: 60,
@@ -296,10 +365,12 @@ struct Fighter: Clone + Eq {
     dx: i32,
     dz: i32,
     dealt: u32,
+    /// The way it faces: one of the 16 directions (`DIR_X`, `DIR_Z`).
+    facing: u32,
 }
 
 impl Fighter {
-    fn new(x: i32, z: i32, hp: i32, weapon: u32) -> Fighter {
+    fn new(x: i32, z: i32, hp: i32, weapon: u32, facing: u32) -> Fighter {
         Fighter {
             x,
             z,
@@ -313,6 +384,7 @@ impl Fighter {
             dx: 0,
             dz: 0,
             dealt: 0,
+            facing,
         }
     }
 }
@@ -322,6 +394,47 @@ const DIR_X: [i32; 16] = [64, 59, 45, 24, 0, -24, -45, -59, -64, -59, -45, -24, 
 const DIR_Z: [i32; 16] = [0, 24, 45, 59, 64, 59, 45, 24, 0, -24, -45, -59, -64, -59, -45, -24]
 /// Speed at each magnitude, in units a frame.
 const SPEED: [i32; 3] = [2, 4, 6]
+
+/// The directions the party and the boss face as a fight begins: toward each other (+z, -z).
+const AHEAD: u32 = 4
+const BACK: u32 = 12
+
+/// How many frames before its windup ends the boss stops turning to its target.
+pub const LOCK: u32 = 10
+
+/// The one of the 16 directions nearest (`dx`, `dz`) (the first of equals; ahead, `AHEAD`, for
+/// none).
+pub fn direction(dx: i32, dz: i32) -> u32 {
+    if dx == 0 && dz == 0 {
+        return AHEAD
+    }
+    var best: u32 = 0
+    var most: i32 = -2147483647
+    for d in 0..16 {
+        let dot = DIR_X[d] * dx + DIR_Z[d] * dz
+        if dot > most {
+            most = dot
+            best = d
+        }
+    }
+    best
+}
+
+/// Whether (`dx`, `dz`) from a fighter facing `facing` is within `arc` of it: `arc` is the
+/// cosine of half the arc's width, in 1024ths (1024 only straight ahead, 0 the half ahead, -1024
+/// all round). In whole numbers: the angle's cosine against the arc's, both sides squared.
+pub fn within(facing: u32, dx: i32, dz: i32, arc: i32) -> bool {
+    if dx == 0 && dz == 0 {
+        return true
+    }
+    let dot = i64(DIR_X[facing % 16]) * i64(dx) + i64(DIR_Z[facing % 16]) * i64(dz)
+    let far = i64(dx) * i64(dx) + i64(dz) * i64(dz)
+    let c = i64(arc)
+    // cos = dot / (64 |d|) against arc / 1024: dot 16 against arc |d|, squared.
+    let lhs = dot * dot * 256
+    let rhs = c * c * far
+    if c >= 0 { dot >= 0 && lhs >= rhs } else { dot >= 0 || lhs <= rhs }
+}
 
 fn clamp(v: i32, lo: i32, hi: i32) -> i32 {
     if v < lo { lo } else if v > hi { hi } else { v }
@@ -373,6 +486,8 @@ pub struct Seen: Copy {
     /// The move it's making (a player's in `MOVES`, the boss's in `ATTACKS`; `NO_MOVE`: none), so
     /// a client draws which it is.
     pub move_: u32,
+    /// The way it faces: one of the 16 directions (`direction`).
+    pub facing: u32,
 }
 
 impl World {
@@ -394,13 +509,13 @@ impl World {
         var before: Vec<u32> = Vec::new()
         for i in 0..n {
             let w = if weapons[i] < WEAPONS.len() { weapons[i] } else { FISTS }
-            party.push(Fighter::new(-4 * UNIT + i32(i) * 2 * UNIT, -6 * UNIT, PLAYER_HP, w))
+            party.push(Fighter::new(-4 * UNIT + i32(i) * 2 * UNIT, -6 * UNIT, PLAYER_HP, w, AHEAD))
             before.push(0)
         }
         World {
             frame: 0,
             party,
-            boss: Fighter::new(0, 6 * UNIT, BOSSES[THE_IDOL].hp_each * i32(n), FISTS),
+            boss: Fighter::new(0, 6 * UNIT, BOSSES[THE_IDOL].hp_each * i32(n), FISTS, BACK),
             foe: THE_IDOL,
             full: BOSSES[THE_IDOL].hp_each * i32(n),
             made: 0,
@@ -480,7 +595,15 @@ impl World {
 }
 
 fn seen(f: Fighter) -> Seen {
-    Seen { x: f.x, z: f.z, hp: f.hp, stamina: f.stamina, act: f.act, move_: f.move_ }
+    Seen {
+        x: f.x,
+        z: f.z,
+        hp: f.hp,
+        stamina: f.stamina,
+        act: f.act,
+        move_: f.move_,
+        facing: f.facing,
+    }
 }
 
 /// Whether `p` is in an attack's recovery that a combo goes on from.
@@ -513,7 +636,8 @@ pub fn step(w: mut World, inputs: [u32]) {
         step_player(mut p, stick, pressed)
         if p.act == ACTIVE && !p.landed && w.boss.hp > 0 {
             let m = MOVES[p.move_]
-            if reach(p.x, p.z, w.boss.x, w.boss.z) <= m.reach {
+            let (dx, dz) = (w.boss.x - p.x, w.boss.z - p.z)
+            if reach(p.x, p.z, w.boss.x, w.boss.z) <= m.reach && within(p.facing, dx, dz, m.arc) {
                 p.landed = true
                 w.boss.hp -= m.damage
                 p.dealt += u32(m.damage)
@@ -623,6 +747,11 @@ fn step_player(p: mut Fighter, stick: u32, pressed: u32) {
             }
         }
     } else {
+        // Free, it faces where its stick points, and strikes or parries that way; a dodge goes
+        // where the stick says without turning.
+        if stick != 0 && pressed & DODGE == 0 {
+            p.facing = (stick - 1) / 3
+        }
         let weapon = WEAPONS[p.weapon]
         if pressed & ATTACK != 0 && begin(mut p, weapon.light) {} else if pressed & HEAVY != 0 &&
             begin(mut p, weapon.heavy) {} else if pressed & PARRY != 0 && p.stamina >= PARRY_COST {
@@ -700,16 +829,25 @@ fn step_boss(b: Boss, full: i32, made: mut u32, boss: mut Fighter, party: mut Ve
         if boss.timer > 0 {
             boss.timer -= 1
         }
+        // It turns to its target through its windup, till `LOCK` frames before its end.
+        if boss.act == WINDUP && boss.timer > LOCK && target < party.len() {
+            boss.facing = direction(party[target].x - boss.x, party[target].z - boss.z)
+        }
         let attack = if boss.move_ < ATTACKS.len() { ATTACKS[boss.move_] } else { ATTACKS[0] }
         if boss.act == ACTIVE && !boss.landed {
-            // It meets every player where it reaches, once: a parry staggers it, if a parry meets
-            // it at all; a dodge passes it.
+            // It meets every player where it reaches and within its arc, once: a parry staggers
+            // it, if a parry meets it at all and the one parrying faces it; a dodge passes it.
             var parried = false
             for i in 0..party.len() {
                 var p = party[i].clone()
                 let d = reach(boss.x, boss.z, p.x, p.z)
-                if p.hp > 0 && attack.near <= d && d <= attack.far {
-                    if p.act == PARRYING && attack.parried {
+                let (dx, dz) = (p.x - boss.x, p.z - boss.z)
+                let met = attack.near <= d &&
+                    d <= attack.far &&
+                    within(boss.facing, dx, dz, attack.arc)
+                if p.hp > 0 && met {
+                    let facing_it = within(p.facing, -dx, -dz, PARRY_ARC)
+                    if p.act == PARRYING && attack.parried && facing_it {
                         parried = true
                     } else if p.act != DODGING {
                         p.hp -= attack.damage
@@ -742,6 +880,8 @@ fn step_boss(b: Boss, full: i32, made: mut u32, boss: mut Fighter, party: mut Ve
     if target == party.len() {
         return
     }
+    // Free, it faces its target.
+    boss.facing = direction(party[target].x - boss.x, party[target].z - boss.z)
     if let Some((a, on)) = next_attack(b, boss.hp, full, made, best) {
         made += on
         boss.act = WINDUP
@@ -1152,4 +1292,65 @@ fn the_idol_falls_to_a_party_that_reads_its_tells_and_not_to_one_that_doesnt() {
     for a in 0..ATTACKS.len() {
         assert(all[a] > 0, f"attack {a} made")
     }
+}
+
+@test
+fn an_arc_is_about_its_fighters_facing() {
+    assert(within(AHEAD, dx: 0, dz: 100, arc: THRUST), "a thrust meets what's ahead")
+    assert(!within(AHEAD, dx: 100, dz: 100, arc: THRUST), "and nothing 45 degrees off")
+    assert(within(AHEAD, dx: 100, dz: 100, arc: CUT), "a cut meets 45 degrees off")
+    assert(!within(AHEAD, dx: 100, dz: -10, arc: CUT), "but not what's beside and behind")
+    assert(within(AHEAD, dx: 100, dz: 40, arc: SWEEP), "a sweep reaches round to the side")
+    assert(!within(AHEAD, dx: 0, dz: -100, arc: SWEEP), "not behind")
+    assert(within(AHEAD, dx: 0, dz: -100, arc: ALL_ROUND), "a stomp meets all round")
+    assert(direction(dx: 0, dz: -5) == BACK && direction(dx: 5, dz: 0) == 0)
+}
+
+@test
+fn a_cut_lands_on_what_its_wielder_faces() {
+    let cut = MOVES[WEAPONS[LONGSWORD].light]
+    var w = at_the_boss(LONGSWORD)
+    let hp = w.boss.hp
+    hold(mut w, input: ATTACK << 6, frames: cut.windup + 2)
+    assert(w.boss.hp == hp - cut.damage, "facing the boss, it lands")
+    var away = at_the_boss(LONGSWORD)
+    away.party[0].facing = BACK
+    hold(mut away, input: ATTACK << 6, frames: cut.windup + 2)
+    assert(away.boss.hp == hp, "its back to the boss, it misses")
+    // Pressed with the stick toward the boss, it turns as it cuts.
+    var turned = at_the_boss(LONGSWORD)
+    turned.party[0].facing = BACK
+    hold(mut turned, input: (ATTACK << 6) | (1 + AHEAD * 3), frames: cut.windup + 2)
+    assert(turned.party[0].facing == AHEAD && turned.boss.hp == hp - cut.damage, "turned, it lands")
+}
+
+@test
+fn the_idol_misses_who_steps_out_of_its_arc_once_it_turns_no_more() {
+    let palm = ATTACKS[1]
+    // Its palm thrust at the player ahead, turned no more: the player ahead or stepped aside.
+    let thrust = |aside: i32| -> World {
+        var w = at_the_boss(LONGSWORD)
+        w.party[0].z = 3 * UNIT
+        w.party[0].x = aside
+        w.boss.act = WINDUP
+        w.boss.move_ = 1
+        w.boss.timer = LOCK
+        for _ in 0..(LOCK + 2) {
+            step(mut w, [0])
+        }
+        take w
+    }
+    assert(thrust(0).party[0].hp == PLAYER_HP - palm.damage, "ahead, it's struck")
+    assert(thrust(2 * UNIT).party[0].hp == PLAYER_HP, "a step aside, its thrust misses")
+    // A parry meets what it faces: one turned away is swept.
+    var w = at_the_boss(LONGSWORD)
+    w.party[0].facing = BACK
+    w.boss.act = WINDUP
+    w.boss.move_ = 0
+    w.boss.timer = 1
+    w.party[0].act = PARRYING
+    w.party[0].timer = PARRY_WINDOW
+    step(mut w, [0])
+    step(mut w, [0])
+    assert(w.party[0].hp == PLAYER_HP - ATTACKS[0].damage, "a parry turned away doesn't meet it")
 }

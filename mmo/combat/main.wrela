@@ -759,10 +759,11 @@ fn two_logs() -> Vec<Log> {
     var a: Vec<Change> = Vec::new()
     var b: Vec<Change> = Vec::new()
     // Walk up (direction 4, full speed: 1 + 4 * 3 + 2), the first a little to the right too
-    // (direction 3), so both stand where they reach the boss, then attack over and over.
+    // (direction 3), so both stand where they reach the boss, facing it, then attack over and
+    // over. (Walked on past it, they'd swing with their backs to it, and miss.)
     a.push(Change { frame: 0, input: 12 })
     b.push(Change { frame: 0, input: 15 })
-    var f: u32 = 120
+    var f: u32 = 80
     while f < 3000 {
         a.push(Change { frame: f, input: 64 })
         a.push(Change { frame: f + 2, input: 0 })
