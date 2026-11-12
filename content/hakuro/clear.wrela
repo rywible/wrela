@@ -9,18 +9,18 @@ use std::transform::translate
 
 /// The snout's axis in his rest space (the mask's cone, the head scaled 1.1 about its joint):
 /// its root and tip, and the cone's radius at each.
-const ROOT = vec3(0.0, 1.6792, 0.0783)
-const TIP = vec3(0.0, 1.6352, 0.2063)
-const R_ROOT: f32 = 0.057
-const R_TIP: f32 = 0.019
+const ROOT = vec3(0.0, 1.677, 0.0743)
+const TIP = vec3(0.0, 1.6528, 0.1953)
+const R_ROOT: f32 = 0.044
+const R_TIP: f32 = 0.0143
 
 /// The mask's cheeks (his left's; the right mirrored): their middles and radius, in his rest space.
-const CHEEK = vec3(0.0726, 1.6308, 0.0830)
-const R_CHEEK: f32 = 0.065
+const CHEEK = vec3(0.052, 1.645, 0.072)
+const R_CHEEK: f32 = 0.05
 
 /// The mask's chin, under the snout's root, and its radius.
-const CHIN = vec3(0.0, 1.600, 0.090)
-const R_CHIN: f32 = 0.045
+const CHIN = vec3(0.0, 1.602, 0.082)
+const R_CHIN: f32 = 0.04
 
 /// A fist's middle in his rest space (his left; the right mirrored), and its half thickness.
 const FIST = vec3(0.795, 1.425, -0.062)

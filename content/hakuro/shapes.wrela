@@ -80,8 +80,9 @@ pub fn unscaled(p: vec3) -> vec3 {
 
 // ---- the mask -------------------------------------------------------------------------------
 
-/// The snout's tip. (It was 2.3 cm longer: from the side the mask read as a beak.)
-pub const TIP = vec3(0.0, 1.632, 0.186)
+/// The snout's tip. (It was 2.3 cm longer: from the side the mask read as a beak. And it
+/// fell 16° from its root: with his chin down as he carries it, it hung like an anteater's.)
+pub const TIP = vec3(0.0, 1.648, 0.176)
 
 /// An ear's height and its width at its base (m).
 const EAR_H: f32 = 0.168
@@ -122,78 +123,61 @@ fn ear(p: vec3, side: f32) -> f32 {
     max(d2 - 0.004, abs(z) - mix(0.011, 0.0045, up)) - 0.002
 }
 
-/// Where the fur at the mask's cheek ends, his left's two points (the right's mirrored): the
-/// lower and longer, and the upper.
-const RUFF_LOW = vec3(0.124, 1.602, -0.052)
-const RUFF_HIGH = vec3(0.128, 1.664, -0.058)
+/// Where the fur at the mask's cheek ends on his left (the right's mirrored): one short
+/// point, swept back and up past the mask's rim.
+const TUFT = vec3(0.098, 1.694, 0.004)
 
-/// The fur at the mask's cheek on `side`: two flat points swept back along the side of his
-/// head from the mask's rim, the lower the longer. (Round cones standing straight out from
-/// his cheeks, they read as tusks.)
-fn ruff(p: vec3, side: f32) -> f32 {
-    // (Flat against his head: half as thick out from it as they're wide.)
+/// The fur at the mask's cheek on `side`: one flat point at his cheekbone, swept back and up
+/// along the side of his head, part of the mask's own plate. (Two points to a side, low on
+/// his jaw and tipped in red, read as barbs stuck on the mask.)
+fn tuft(p: vec3, side: f32) -> f32 {
+    // (Flat against his head: half as thick out from it as it's wide.)
     let q = vec3(side * p.x, p.y, p.z)
     let flat = vec3(2.0, 1.0, 1.0)
-    let low = cone(
-        q * flat,
-        vec3(0.088, 1.648, 0.040) * flat,
-        RUFF_LOW * flat,
-        ra: 0.030,
-        rb: 0.003,
-    )
-    let high = cone(
-        q * flat,
-        vec3(0.096, 1.690, 0.026) * flat,
-        RUFF_HIGH * flat,
-        ra: 0.024,
-        rb: 0.003,
-    )
-    min(low, high) / 2.0
+    cone(q * flat, vec3(0.062, 1.666, 0.046) * flat, TUFT * flat, ra: 0.027, rb: 0.003) / 2.0
 }
 
-/// Hakuro's mask, in the unscaled head's space: a fox's face, wide at the brow and narrowing
-/// to a short muzzle; a slanted brow ridge over each slit eye; tall ears leaning out, their
-/// fronts turned outward; and two flat points of fur at each cheek, swept back. Its rim runs back round his cheeks
-/// to his ears, so it sits on his face as a shell: cut off flat across behind his brow, it
-/// was a plate held in front of a black block.
+/// Hakuro's mask, in the unscaled head's space: a fox's face as a mask is cut, sized to his
+/// own: as wide as his head at his cheekbones and narrowing in a wedge to a slim muzzle; a
+/// slanted brow ridge over each slit eye; tall ears leaning out from its top corners; one
+/// point of fur at each cheekbone, swept back. Its rim lies on the wrap round his head, a
+/// little way back round his cheeks. (It was cut from a shell 2 to 3 cm wider than his head
+/// a side, with round jowls under his cheeks: a faceplate held in front of him, widest where
+/// a fox's face is narrowest.)
 pub fn fox(p: vec3) -> f32 {
-    var face = ellip(p, vec3(0.0, 1.694, -0.004), vec3(0.106, 0.138, 0.130))
-    for s in [1.0, -1.0] {
-        face = smin(
-            face,
-            ellip(p, vec3(s * 0.060, 1.640, 0.064), vec3(0.040, 0.034, 0.046)),
-            0.03,
-        )
-    }
-    var sn = cone(p, vec3(0.0, 1.668, 0.070), TIP, ra: 0.047, rb: 0.015)
-    sn = smax(sn, -(p.y - 1.6), 0.01)
-    face = smin(face, sn, 0.021)
+    var face = ellip(p, vec3(0.0, 1.700, -0.010), vec3(0.085, 0.122, 0.128))
+    // Its wedge: from his cheekbones in to its muzzle.
+    let wedge = (abs(p.x) - 0.040 - 0.48 * (p.y - 1.600)) * 0.9
+    face = smax(face, wedge, 0.014)
+    var sn = cone(p, vec3(0.0, 1.670, 0.066), TIP, ra: 0.040, rb: 0.013)
+    sn = smax(sn, -(p.y - 1.604), 0.008)
+    face = smin(face, sn, 0.022)
     for s in [1.0, -1.0] {
         // Its brow's ridge, low by the nose and rising outward.
         face = smin(
             face,
             cone(
                 p,
-                vec3(s * 0.014, 1.724, 0.117),
-                vec3(s * 0.084, 1.754, 0.074),
-                ra: 0.012,
-                rb: 0.006,
+                vec3(s * 0.012, 1.724, 0.108),
+                vec3(s * 0.072, 1.752, 0.066),
+                ra: 0.011,
+                rb: 0.005,
             ),
-            0.018,
+            0.016,
         )
     }
-    // Its rim: back round his cheeks, further the further out.
-    let rim = 0.046 - 4.0 * p.x * p.x
+    // Its rim: a little way back round his cheeks, further the further out.
+    let rim = 0.030 - 1.5 * p.x * p.x
     var d = smax(face, -(p.z - rim), 0.006)
-    d = smax(d, -(p.y - 1.560), 0.004)
+    d = smax(d, -(p.y - 1.580), 0.004)
     d = smin(d, min(ear(p, 1.0), ear(p, -1.0)), 0.010)
     // (Its cheeks' fur after the rim's cut: it sweeps back past the rim.)
-    d = smin(d, min(ruff(p, 1.0), ruff(p, -1.0)), 0.012)
+    d = smin(d, min(tuft(p, 1.0), tuft(p, -1.0)), 0.012)
     // The eye slits, tilted 22°.
     for s in [1.0, -1.0] {
-        let q0 = vec2(s * (p.x - s * 0.037), p.y - 1.700)
+        let q0 = vec2(s * (p.x - s * 0.036), p.y - 1.702)
         let q = vec2(0.927184 * q0.x + 0.374607 * q0.y, -0.374607 * q0.x + 0.927184 * q0.y)
-        var e = (length(q / vec2(0.027, 0.006)) - 1.0) * 0.006
+        var e = (length(q / vec2(0.027, 0.0065)) - 1.0) * 0.0065
         e = max(e, -(p.z - 0.02))
         d = smax(d, -e, 0.0015)
     }
@@ -256,26 +240,29 @@ pub fn fox_paint(p: vec3) -> (vec3, f32) {
             tri2(e.xy, vec2(-0.023, 0.014), vec2(0.025, 0.014), vec2(0.004, EAR_H - 0.04)),
         )
     }
-    if p.y < 1.636 {
+    if p.y < 1.65 {
         marks = min(
             marks,
             stroke(
                 vec2(p.z, p.y),
-                vec2(TIP.z - 0.012, 1.618),
-                vec2(0.150, 1.612),
-                vec2(0.115, 1.618),
+                vec2(TIP.z - 0.012, 1.641),
+                vec2(0.150, 1.634),
+                vec2(0.115, 1.636),
                 w0: 0.0016,
                 w1: 0.0006,
             ),
         )
     }
     var c = if marks < 0.0 { red } else { white }
+    // (Inside an eye's slit, the dark behind the mask: its walls were lacquer, and a slit seen
+    // aslant showed white.)
+    let e0 = vec2(q.x - 0.036, p.y - 1.702)
+    let slit = vec2(0.927184 * e0.x + 0.374607 * e0.y, -0.374607 * e0.x + 0.927184 * e0.y)
+    if length(slit / vec2(0.027, 0.0065)) < 1.06 && p.z > 0.02 {
+        c = vec3(0.004, 0.003, 0.004)
+    }
     if length((p - TIP) * vec3(1.0, 1.3, 1.0)) < 0.016 {
         c = vec3(0.007, 0.006, 0.007)
-    }
-    // (Its cheeks' fur tipped in vermilion.)
-    if min(length(q - RUFF_LOW), length(q - RUFF_HIGH)) < 0.03 {
-        c = red
     }
     (c, 0.25)
 }

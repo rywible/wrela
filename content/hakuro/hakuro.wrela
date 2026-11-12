@@ -62,6 +62,8 @@ pub const TOP = Cloth { albedo: vec3(0.034, 0.034, 0.044), rough: 0.55, metal: 0
 pub const TROUSERS = Cloth { albedo: vec3(0.098, 0.101, 0.118), rough: 0.9, metal: 0.0 }
 /// The black wrap his mask is tied over, round his head above his top's neck.
 pub const WRAP = Cloth { albedo: vec3(0.030, 0.030, 0.038), rough: 0.9, metal: 0.0 }
+/// The cord his mask is tied on with: the vermilion of its marks.
+pub const CORD: vec3 = vec3(0.57, 0.016, 0.007)
 /// The thread his clothes are stitched with.
 pub const THREAD: vec3 = vec3(0.19, 0.19, 0.21)
 pub const HAIR = Cloth { albedo: vec3(0.027, 0.028, 0.045), rough: 0.7, metal: 0.0 }
@@ -405,16 +407,8 @@ fn top_at(p: vec3, px: f32) -> Cloth {
     }
 }
 
-/// How low the wrap his mask is tied over comes at a point round his head (rest height): to
-/// his jaw at his cheeks and the sides of his head, and up to his hairline behind, so his
-/// nape is bare under his hair.
-pub fn wrap_edge(p: vec3) -> f32 {
-    1.607 + 0.093 * smoothstep(-0.02, -0.075, p.z)
-}
-
 /// What he wears under his coat at a point of him at rest, and what he doesn't: his trousers
-/// to his belt, his top over it to its neckline, his neck bare above that, and the wrap round
-/// his head under his mask and his hair.
+/// to his belt, his top over it to its neckline, and his neck bare above that.
 fn worn_under(p: vec3, px: f32) -> Cloth {
     if p.y < 0.97 {
         return trousers_at(p, px)
@@ -423,18 +417,32 @@ fn worn_under(p: vec3, px: f32) -> Cloth {
     if abs(p.x) > 0.1 || p.y < neckline(p) {
         return top_at(p, px)
     }
+    // His neck's skin, in his jaw's shade under his chin.
+    let shade = mix(0.6, 1.0, smoothstep(1.6, 1.555, p.y))
+    Cloth { albedo: SKIN.albedo * mix(1.0, shade, smoothstep(-0.03, 0.03, p.z)), ..SKIN }
+}
+
+/// The wrap round his head, under his mask and his hair, at a point of his head at rest. It
+/// covers his head whole, to under his chin and to the foot of his skull, so his head is a
+/// head over his bare neck and his mask sits on it. (With his nape bare to his hairline and
+/// his cheeks bare under it, his head read as more neck, and his mask as hung in front of
+/// it.) Round it, his mask's cord.
+fn wrapped_head(p: vec3, px: f32) -> Cloth {
     // (Behind his mask, a dark void.)
     if p.y > 1.607 && p.z > 0.02 {
         return VOID
     }
-    let over = p.y - wrap_edge(p)
-    if over > 0.0 {
-        // (Its hem: a welt along its edge.)
-        return Cloth { relief: 0.0012 * stripe(over - 0.004, 0.008, px), ..WRAP }
+    // His mask's cord: from its sides at his eyes' height, back and down round his head.
+    let cord = abs(p.y - (1.712 + 0.3 * p.z)) - 0.0045
+    if cord < 0.0 && p.z < 0.04 {
+        return Cloth {
+            albedo: CORD,
+            rough: 0.6,
+            relief: 0.002 * sqrt(saturate(-cord / 0.0045)),
+            ..WRAP,
+        }
     }
-    // His neck's skin, in his jaw's shade and his mask's under his chin.
-    let shade = mix(0.55, 1.0, smoothstep(1.607, 1.565, p.y))
-    Cloth { albedo: SKIN.albedo * mix(1.0, shade, smoothstep(-0.03, 0.03, p.z)), ..SKIN }
+    WRAP
 }
 
 /// His coat's cloth at a point of it at rest, `e` outside its front opening (`opening`): a
@@ -572,7 +580,7 @@ pub fn charts() -> [Part<16, 13>; CHARTS] {
             chain: figure::chains::neck(),
             bones: [3, 4, 5, 0, 0, 0, 0, 0],
             root: 3,
-            form: neck_form::NECK,
+            form: NECK_FORM,
             changes: [chart::unchanged(); JOINTS],
             band: Band { f: vec2(0.0, 0.9), theta: vec2(0.0, TAU) },
             sunk: vec2(0.03, 0.3),
@@ -581,7 +589,7 @@ pub fn charts() -> [Part<16, 13>; CHARTS] {
             chain: figure::chains::head(),
             bones: [5, 0, 0, 0, 0, 0, 0, 0],
             root: 5,
-            form: head_form::HEAD,
+            form: HEAD_FORM,
             changes: [chart::unchanged(); JOINTS],
             band: Band { f: vec2(0.0, 0.93), theta: vec2(0.0, TAU) },
             sunk: vec2(0.0, 0.1),
@@ -747,7 +755,7 @@ pub fn grown(part: u32) -> Grown {
         return Grown { fillet: 0.012, reach: 9.0, laid: 0.012, cover: 0 }
     }
     if part == HEAD {
-        return Grown { fillet: 0.03, reach: 0.55 }
+        return Grown { fillet: 0.018, reach: 0.55 }
     }
     Grown { fillet: 0.009, reach: 0.8, rooted: 0.2 }
 }
@@ -776,6 +784,86 @@ pub const YOKE_STAYS: chart::Stay = chart::Stay {
     along: vec2(-2.0, -1.0),
 }
 
+/// His neck's radius about its line (`figure::chains::neck`: from inside his chest, through
+/// his neck's joint and his head's, into his skull), `f` of the way up it and `theta` round
+/// (0 his front, a half turn his nape; m). A column 13 cm across and a little less deep,
+/// that widens over its lower two thirds into the slope of his shoulders: least at his
+/// throat, most at his sides and behind, a fighter's. Down each side of his throat a muscle
+/// stands a little off it, from behind his ear to the notch between his collarbones.
+/// (His neck's form was read off the body he was sampled from, which wore a high collar: it
+/// was the collar's girth, 17 to 19 cm through, with the collar's folds in it. Under the
+/// collar nobody saw it; bare, his neck was as wide as his head, and lumpy.)
+fn neck_radius(f: f32, theta: f32) -> f32 {
+    let (front, sides) = (cos(theta), cos(2.0 * theta))
+    let column = 0.065 - 0.001 * front - 0.002 * sides
+    let base = 0.0905 - 0.011 * front - 0.0095 * sides
+    let slope = 1.0 - smoothstep(0.1, 0.62, f)
+    // The muscle's line: from 20° off his front at the bottom to 105° off it under his ear.
+    let off = abs(wrapped_angle(theta))
+    let line = 0.35 + 1.48 * smoothstep(0.15, 0.78, f)
+    let muscle = 0.0028 *
+        exp(-(off - line) * (off - line) / 0.16) *
+        smoothstep(0.12, 0.3, f) *
+        (1.0 - smoothstep(0.62, 0.8, f))
+    mix(column, base, slope * slope * (3.0 - 2.0 * slope)) + muscle
+}
+
+/// `a` (radians) as an angle within a half turn of 0.
+fn wrapped_angle(a: f32) -> f32 {
+    a - TAU * floor(a / TAU + 0.5)
+}
+
+/// How far from a point on a level line at height `y` (through x 0, z 0) the surface of the
+/// ellipsoid at `c` with radii `r` is, the way `theta` points (0 ahead; m); none where the
+/// line isn't inside it there.
+fn out_to(c: vec3, r: vec3, y: f32, theta: f32) -> f32 {
+    let up = (y - c.y) / r.y
+    if abs(up) >= 1.0 {
+        return 0.0
+    }
+    let s = sqrt(1.0 - up * up)
+    let (a, b) = (r.x * s, r.z * s)
+    if abs(c.z) >= b {
+        return 0.0
+    }
+    let (sn, cs) = (sin(theta), cos(theta))
+    let qa = sn * sn / (a * a) + cs * cs / (b * b)
+    let qb = -2.0 * c.z * cs / (b * b)
+    let qc = c.z * c.z / (b * b) - 1.0
+    (-qb + sqrt(max(qb * qb - 4.0 * qa * qc, 0.0))) / (2.0 * qa)
+}
+
+/// His skull under his hair (what `Hair` grows from, on him at rest, a little inside it), and
+/// his jaw: from under his ears forward and down to his chin.
+const CRANIUM_AT: vec3 = vec3(0.0, 1.7344, -0.0045)
+const CRANIUM: vec3 = vec3(0.079, 0.098, 0.109)
+const JAW_AT: vec3 = vec3(0.0, 1.65, 0.012)
+const JAW: vec3 = vec3(0.058, 0.064, 0.082)
+
+/// His head's radius about a line straight up through it (`figure::chains::head`), `f` of
+/// the way up and `theta` round (0 his front; m): his skull and his jaw, run into one
+/// another, and under his jaw a stub inside his neck. (His head's form was read off the
+/// body he was sampled from, which wore a wrap and a high collar: below his cheekbones it
+/// was their bulk, as wide and as deep as his skull down to his chin's height. With his neck
+/// bare it hung under his mask and over his nape as a ball, and no mask sat right on it.)
+fn head_radius(f: f32, theta: f32) -> f32 {
+    let y = 1.55 + 0.27 * f
+    let skull = out_to(CRANIUM_AT, CRANIUM, y, theta)
+    let jaw = out_to(JAW_AT, JAW, y, theta)
+    // (Run into one another over a centimetre and a half.)
+    let k = 0.015
+    let h = max(k - abs(skull - jaw), 0.0) / k
+    max(max(skull, jaw) + h * h * k * 0.25, 0.03)
+}
+
+/// His head's form (`head_radius`), in a charted form's numbers.
+@fuel(2 ** 36)
+pub const HEAD_FORM: Radial<16, 13> = chart::of(head_radius)
+
+/// His neck's form (`neck_radius`), in a charted form's numbers.
+@fuel(2 ** 36)
+pub const NECK_FORM: Radial<16, 13> = chart::of(neck_radius)
+
 /// How far his coat's collar stands out from his neck, `f` of the way up its line (m): none
 /// at its foot, 2 cm by its top.
 fn collar_flare(f: f32, theta: f32) -> f32 {
@@ -793,15 +881,29 @@ pub const COLLAR_FLARED: Radial<16, 13> = collar_form::COLLAR.plus(chart::of(col
 /// top, and a little off it the step between the two is the shoulders' edge and not a crack.
 pub const YOKE_OVER: f32 = 0.0015
 
-/// How far up his head's path its form closes under his chin (of the path's length): over
-/// its first 10 cm, so his jaw and the back of his skull narrow toward his neck as they come
-/// down. The forms tool reads his head from 0.18 of the way (`studio/forms`' `HAKURO_HEAD`),
-/// and closed only that far, the back of his skull kept its whole width down to his jaw's
-/// height and stood over his bare nape as a roll.
-pub const HEAD_CAP: f32 = 0.37
+/// How far up his head's path its form closes (of the path's length): its first centimetre
+/// and a half, the foot of the stub under his jaw, inside his neck.
+pub const HEAD_CAP: f32 = 0.055
 
 /// How far up his trunk's path its form closes at the fork of his legs.
 pub const FORK_CAP: f32 = 0.08
+
+/// How much less his trunk's radius is than it was fitted, `f` of the way up its path and
+/// `theta` round (m): none to the tops of his shoulders, then in to a stub that ends inside
+/// his neck. (Past the root of his neck the fitted form follows nothing: it swells to 18 cm
+/// in front. Under the collar's girth his neck used to be drawn at, that was hidden; with
+/// his neck its own size it stood out of his throat as a lump when his head went back, and
+/// round the foot of his neck as a second, wider neck.)
+fn trunk_trim(f: f32, theta: f32) -> f32 {
+    let fitted = trunk_form::TRUNK.radius(f: f, theta: theta)
+    let stub = 0.056 + 0.008 * cos(theta)
+    (stub - fitted) * smoothstep(0.84, 0.925, f)
+}
+
+/// His trunk's form: as it was fitted, its top trimmed to end inside his neck
+/// (`trunk_trim`).
+@fuel(2 ** 38)
+pub const TRUNK_FORM: Radial<24, 21> = trunk_form::TRUNK.plus(chart::of(trunk_trim))
 
 /// How far up its path his trunk is drawn: to its end, inside his neck.
 pub const TRUNK_TO: f32 = 1.0
@@ -837,7 +939,7 @@ pub fn wide_charts() -> [Part<24, 21>; WIDE_CHARTS] {
         // (His trunk is under what he wears the whole way: no outline of its own to draw
         // finely.)
         on_spine(
-            trunk_form::TRUNK,
+            TRUNK_FORM,
             vec2(0.0, TRUNK_TO),
             vec2(FORK_CAP, NECK_CAP),
             TRUNK_UNDER,
@@ -1005,6 +1107,9 @@ pub fn chart_paint(part: u32, rest: vec3, armhole: f32, inner: bool, px: f32) ->
     }
     if part == 2 {
         return wrap_at(rest, px)
+    }
+    if part == HEAD {
+        return wrapped_head(rest, px)
     }
     if part == 3 {
         return LEATHER
@@ -1502,4 +1607,62 @@ fn his_coats_armhole_is_one_loop_through_its_body_and_its_shoulder() {
     assert(armhole_edge(YOKE_LEFT, over, vec3(0.36, 0.0, 0.0)) > 0.0)
     assert(armhole_edge(YOKE_LEFT, over, vec3(0.36, 1.3, 0.0)) < 0.0)
     assert(armhole_edge(YOKE_LEFT, over, vec3(CAP_TO + 0.01, 0.0, 0.0)) < 0.0)
+}
+
+@test
+fn his_neck_is_a_neck_and_his_trunk_ends_inside_it() {
+    // His neck under his jaw is narrower than his head (13 cm across to his skull's 16), and
+    // widens into his shoulders at its foot: half as wide again at its sides.
+    let under_jaw = NECK_FORM.radius(f: 0.72, theta: TAU / 4.0)
+    let skull = HEAD_FORM.radius(f: 0.68, theta: TAU / 4.0)
+    assert(under_jaw > 0.06 && under_jaw < 0.07, f"his neck is {under_jaw} m to a side")
+    assert(skull > under_jaw + 0.008, f"his skull is {skull} m to a side")
+    assert(NECK_FORM.radius(f: 0.04, theta: TAU / 4.0) > 1.4 * under_jaw)
+    // Its front is its least: his throat doesn't stand out past his chin.
+    assert(NECK_FORM.radius(f: 0.04, theta: 0.0) < 0.075)
+    // Round it, it's smooth: no place within a centimetre of the next is 3 mm from it.
+    for i in 0..40 {
+        let f = 0.3 + 0.6 * f32(i) / 40.0
+        for j in 0..24 {
+            let theta = TAU * f32(j) / 24.0
+            let here = NECK_FORM.radius(f: f, theta: theta)
+            let next = NECK_FORM.radius(f: f, theta: theta + 0.15)
+            assert(abs(here - next) < 0.003, f"his neck steps {here - next} at {f}, {theta}")
+        }
+    }
+    // Past the root of his neck his trunk is a stub inside it, whichever way it's seen from.
+    for j in 0..8 {
+        let theta = TAU * f32(j) / 8.0
+        let stub = TRUNK_FORM.radius(f: 0.96, theta: theta)
+        assert(stub < 0.07, f"his trunk's top is {stub} m out at {theta}")
+    }
+    // And below his shoulders' tops it's as it was fitted.
+    assert(
+        abs(TRUNK_FORM.radius(f: 0.6, theta: 1.0) - trunk_form::TRUNK.radius(f: 0.6, theta: 1.0)) <
+            0.001,
+    )
+}
+
+@test
+fn his_mask_covers_his_face_and_is_sized_to_his_head() {
+    // Every point of the front of his head, from his chin to his brow, is behind his mask:
+    // inside its shell (but where its eyes' slits are cut, each side of his nose).
+    for i in 0..12 {
+        let y = 1.60 + 0.016 * f32(i)
+        for theta in [-0.5, 0.0, 0.5] {
+            if theta != 0.0 && abs(y - 1.712) < 0.02 {
+                continue
+            }
+            let r = HEAD_FORM.radius(f: (y - 1.55) / 0.27, theta: theta)
+            let p = vec3(r * sin(theta), y, r * cos(theta))
+            assert(fox(unscaled(p)) < 0.0, f"his face shows at {p}: {fox(unscaled(p))}")
+        }
+    }
+    // It's no wider than his head at his temples (his skull is 8 cm to a side there), and it
+    // ends under his chin, not at his throat.
+    assert(fox(unscaled(vec3(0.105, 1.75, 0.03))) > 0.0)
+    assert(fox(unscaled(vec3(0.0, 1.56, 0.09))) > 0.0)
+    // His jaw is under it: his head at his chin's height is narrower than his neck.
+    let jaw = HEAD_FORM.radius(f: 0.15, theta: TAU / 4.0)
+    assert(jaw < 0.05, f"his jaw is {jaw} m to a side at his chin")
 }

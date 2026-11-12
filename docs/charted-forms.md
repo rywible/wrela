@@ -54,7 +54,7 @@ Three fresh authors wrote the crab, the heron and the serpent from this doc and 
 
 ## Ends, and parts that don't bend
 
-- **An end that shows closes** (`Part::caps`, `chart::closed`): over a stated share of the path from its start or before its end, the radius falls along a quarter circle to nothing, so the end is round and meets the side without a crease. A trunk closes at the fork of the legs; a head closes under the chin. An open end is a tube's cut rim, and a rim that stands out from what's next to it draws as an ink tick.
+- **An end that shows closes** (`Part::caps`, `chart::closed`): over a stated share of the path from its start or before its end, the radius falls along a quarter circle to nothing, so the end is round and meets the side without a crease. A trunk closes at the fork of the legs, and where it ends inside a neck. An open end is a tube's cut rim, and a rim that stands out from what's next to it draws as an ink tick.
 - **A rigid part is one form on a line its own bone carries whole.** Hakuro's head is charted about a straight line from under his chin to his crown, carried by his head's bone alone, and his neck is its own form through the neck's joints. Charted about the neck's joints, his jaw (which hangs below the head's joint) stayed with the neck when the head went back, and stood out from the throat as a spike.
 
 ## A hand
@@ -81,7 +81,9 @@ Each of Hakuro's hands is six forms (`content/hakuro/hands.wrela`): four fingers
 - **A piece laid on another** (`Grown::laid`, `Grown::cover`): within a stated distance either side of the other form's side, its side is put on that side, and only where the other form's cover has it (a jacket's shoulder on its body; "Garments").
 - **A vertex that nothing can move does none of this.** Where the other form isn't, or the point is out of reach of the hold, the laying and the fillet, the vertex is `chart::vertex`'s for one place found on the other form's chart (`Limb::toward_at`). Reading the other form's side for every vertex of a jacket's collar and shoulders cost the combat lab about a millisecond a frame; skipped where it can't matter, about a fifth of one (the best of six runs each, on a busy machine).
 - **Find the cause in numbers.** The seam outlasted three changes to the geometry. A test that printed the thumb's side against the palm's, place by place, showed half the readings were wrong: a rounding difference had been taken for "past the path's end".
-- **A head grows from its neck too.** With his neck bare, the back of Hakuro's skull, closed under itself, stood over his nape as a roll. His head's form closes over a longer run (`HEAD_CAP`), so his jaw and the back of his skull narrow toward his neck, and it's filleted 3 cm onto his neck (`grows_from`, `grown`): the nape is one curve.
+- **A head grows from its neck too.** His head is filleted onto his neck (`grows_from`, `grown`), so jaw and nape run into it.
+- **Don't keep a form that was fitted to what a body wore.** Hakuro's neck and head were read off the body he was sampled from, which wore a high collar and a wrap round its head. The neck's form was the collar's girth, 17 to 19 cm through, with its folds in it; the head's, below his cheekbones, was the wrap's bulk, as wide as his skull down to his chin; and past the root of his neck his trunk's form followed nothing, and swelled. Under the collar nobody saw any of it. With his neck bare, his neck was as wide as his head and lumpy, the back of his head hung over it as a ball, his trunk's top stood out of his throat when his head went back, and no mask sat right on that head. Each is now written as what it is (`hakuro::neck_radius`: a column that widens into the slope of his shoulders; `hakuro::head_radius`: a skull and a jaw; `hakuro::trunk_trim`: a stub inside his neck) and put in a form's numbers with `chart::of`, once, as a constant.
+- **A mask is sized to the face it's on.** His mask was cut from a shell 2 to 3 cm wider than his head a side, with round jowls: a faceplate held in front of him. It's as wide as his head at his cheekbones, narrows in a wedge to a slim muzzle and covers his face to under his chin; its rim lies on the wrap round his head, which covers his head whole, and a cord ties it on. The inside of each eye's slit is painted dark: its walls were lacquer, and a slit seen aslant showed white.
 
 ## What changes with the pose
 
@@ -191,8 +193,6 @@ A round is run in stages, to keep its cost down:
 | Hakuro's arms, over the species' (against 416 radii kept of each sampled arm) | 16 by 13 | 1.06 and 0.99 mm; 3.6 mm |
 | Hakuro's trouser leg, over the species' (against the radii kept of his sampled body) | 16 by 13 | 0.89 mm; 3.2 mm |
 | Hakuro's trunk | 24 by 21 | 1.64 mm; 10.4 mm |
-| Hakuro's neck | 16 by 13 | 1.42 mm; 3.0 mm |
-| Hakuro's head, under his mask and hair | 16 by 13 | 2.10 mm; 8.5 mm |
 | Hakuro's jacket's body, over what's its own of his jacket | 24 by 21 | 2.06 mm; 23.5 mm (by its shoulders' corners) |
 | Hakuro's jacket's collar, with the top of his jacket's back | 16 by 13 | 1.55 mm; 7.2 mm |
 | Hakuro's jacket's shoulders, each | 16 by 13 | 1.80 mm; 8.6 mm |

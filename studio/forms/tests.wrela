@@ -4,8 +4,7 @@
 
 use engine::chart::Radial
 use main::{
-    Fitted, arm, hakuro_arm_left, hakuro_arm_right, hakuro_head, hakuro_jacket, hakuro_leg,
-    hakuro_trunk, leg,
+    Fitted, arm, hakuro_arm_left, hakuro_arm_right, hakuro_jacket, hakuro_leg, hakuro_trunk, leg,
 }
 
 /// The most two forms' numbers differ (m).
@@ -107,16 +106,13 @@ fn each_written_leg_is_its_reference_fitted() {
 }
 
 @test
-fn hakuros_trunk_neck_and_head_are_where_his_sampled_body_was() {
-    // Each kept as it's written, against the radii kept of his sampled body: a change to its
-    // line or to the form's basis that moved it would show. His trunk within 1.8 mm rms; his
-    // head, under his mask and his hair, within 3; his neck within 2.
+fn hakuros_trunk_is_where_his_sampled_body_was() {
+    // Kept as it's written, against the radii kept of his sampled body: a change to its line
+    // or to the form's basis that moved it would show. Within 1.8 mm rms. (His neck and his
+    // head are no longer read off that body: it wore a high collar and a wrap, and they were
+    // those. `hakuro::neck_radius` and `hakuro::head_radius` write them.)
     let t = hakuro_trunk().miss.spread
     assert(t.rms < 1.8 && t.worst < 13.0 && t.count >= 500, f"his trunk misses by {t.rms} mm rms")
-    let head = hakuro_head().miss.spread
-    assert(head.rms < 3.0 && head.count >= 200, f"his head misses by {head.rms} mm rms")
-    let neck = main::hakuro_neck().miss.spread
-    assert(neck.rms < 2.0 && neck.count >= 80, f"his neck misses by {neck.rms} mm rms")
 }
 
 @test

@@ -181,40 +181,6 @@ pub const HAKURO_JACKET: Spec = Spec {
     tuck: 1.0,
 }
 
-/// Hakuro's head under his mask and his hair: his sampled body's, from under his chin to his
-/// crown, about a line his head carries whole.
-pub const HAKURO_HEAD: Spec = Spec {
-    name: "hakuro-head",
-    file: "content/hakuro/head_form.wrela",
-    constant: "HEAD",
-    about: [
-        "Hakuro's head, under his mask and his hair, about a line straight up through his head",
-        "(`figure::chains::head`): fitted by the forms tool to his sampled body, which is gone, and",
-        "kept as it is. It closes under his chin (`hakuro::charts`).",
-    ],
-    chain: chains::head(),
-    span: vec2(0.18, 0.93),
-    most: 0.135,
-    tuck: 1.0,
-}
-
-/// Hakuro's neck: his sampled body's, from inside his collar to under his jaw. His jaw is past
-/// how far the reference is read (`most`), so the neck runs on smoothly behind it.
-pub const HAKURO_NECK: Spec = Spec {
-    name: "hakuro-neck",
-    file: "content/hakuro/neck_form.wrela",
-    constant: "NECK",
-    about: [
-        "Hakuro's neck, about the line through his neck's and his head's joints",
-        "(`figure::chains::neck`), read no further out than his throat: fitted by the forms tool to",
-        "his sampled body, which is gone, and kept as it is.",
-    ],
-    chain: chains::neck(),
-    span: vec2(0.3, 0.8),
-    most: 0.095,
-    tuck: 0.9,
-}
-
 /// Hakuro's jacket's collar: its outer face, standing round his neck, about a line straight up
 /// behind the root of his neck.
 pub const HAKURO_COLLAR: Spec = Spec {
@@ -591,15 +557,6 @@ pub fn hakuro_jacket() -> Fitted<24, 21> {
     )
 }
 
-/// Hakuro's head, kept as written.
-pub fn hakuro_head() -> Fitted<16, 13> {
-    kept(
-        HAKURO_HEAD,
-        hakuro::head_form::HEAD,
-        measured::samples_of(measured::HEAD, 16, 13, HAKURO_HEAD.span),
-    )
-}
-
 /// Hakuro's collar, kept as written.
 pub fn hakuro_collar() -> Fitted<16, 13> {
     kept(
@@ -624,15 +581,6 @@ pub fn hakuro_yoke_right() -> Fitted<16, 13> {
         HAKURO_YOKE_RIGHT,
         hakuro::yoke_right_form::YOKE_RIGHT,
         measured::samples_of(measured::YOKE_RIGHT, 16, 13, HAKURO_YOKE_RIGHT.span),
-    )
-}
-
-/// Hakuro's neck, kept as written.
-pub fn hakuro_neck() -> Fitted<16, 13> {
-    kept(
-        HAKURO_NECK,
-        hakuro::neck_form::NECK,
-        measured::samples_of(measured::NECK, 16, 13, HAKURO_NECK.span),
     )
 }
 
@@ -882,12 +830,6 @@ pub fn tool() -> u32 {
         if chosen(wanted, hand_spec(i).name) {
             results.push(written(hand_spec(i), hakuro_hand(i)))
         }
-    }
-    if chosen(wanted, HAKURO_NECK.name) {
-        results.push(written(HAKURO_NECK, hakuro_neck()))
-    }
-    if chosen(wanted, HAKURO_HEAD.name) {
-        results.push(written(HAKURO_HEAD, hakuro_head()))
     }
     if chosen(wanted, LEG.name) || chosen(wanted, HAKURO_LEG.name) {
         let species_leg = leg()
