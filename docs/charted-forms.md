@@ -42,6 +42,16 @@ It writes the file and prints the miss: the root mean square, the size half are 
 - **An end that shows closes** (`Part::caps`, `chart::closed`): over a stated share of the path from its start or before its end, the radius falls along a quarter circle to nothing, so the end is round and meets the side without a crease. A trunk closes at the fork of the legs; a head closes under the chin. An open end is a tube's cut rim, and a rim that stands out from what's next to it draws as an ink tick.
 - **A rigid part is one form on a line its own bone carries whole.** Hakuro's head is charted about a straight line from under his chin to his crown, carried by his head's bone alone, and his neck is its own form through the neck's joints. Charted about the neck's joints, his jaw (which hangs below the head's joint) stayed with the neck when the head went back, and stood out from the throat as a spike.
 
+## A hand
+
+Each of Hakuro's hands is six forms behind a switch (`hakuro::HANDS_CHARTED`, off; `content/hakuro/hands.wrela`): four fingers and a thumb, each on its own line from inside the palm through its three joints to its tip, and a palm on the forearm's and the hand's bones.
+
+- **A finger fits a chart well.** Read no further out than the gap to the finger beside it, each fits its sampled finger to 0.2 to 0.3 mm rms. Its path cuts a curled joint's corner over 8 mm, and its tip closes with a cap.
+- **A palm starts where the arm's own form ends,** not at the wrist. Hakuro's arm was fitted as far as inside his wrap, and past that its form holds a forearm's thickness: with the palm starting at the wrist, the cuff was thick and the hand read as a paddle stuck in it. A palm runs a little past the knuckles' line before it closes, or the fingers' roots show as tubes coming out of a small palm, and is read as far out as the root of the thumb, or a notch opens there.
+- **A fist drawn big** (`Limb::swell`) is its forms drawn thicker: bones that are scaled stretch a form's path and leave its thickness alone. A smear that draws finger bones out should leave the thumb with the hand, or the thumb's form comes away from the palm.
+- **Judged**, over four rounds of four critics against the sampled hands: the charted fist took the impact drawing 15 votes to none ("shows knuckle and finger lines" where the sampled fist "melts into the sleeve") and the guard 6 to 2; the follow-through and the recovery were even; the open hand at the hip, from the front, lost 15 to none. So the sampled hands stay.
+- **What's left.** The open hand: its fingers read as "fused into one tube" where the sampled hand's thumb and knuckles are picked out by their shade (finer shading, fingers fitted from their knuckles and a thinner wrist were each tried, and none turned a vote). A thin spike at a sharply bent wrist, where the palm's root comes out of the gauntlet's end. A thumb that stands off the fist like a stalk, where the sampled hand has a web.
+
 ## What changes with the pose
 
 A form made again along its posed path already bends. How the path takes a bent joint matters: a limb's chain cuts the joint's corner (`Chain::cut` 1), following the arc that meets both bones where the bend's rounding starts and ends. Read about that path, the reference body posed is nearer itself at rest than about a path through the joint (10.1 mm rms left against 12.1), and a deep fold reads as one arm, not two lobes. A longer rounding than 5 cm fitted worse.
@@ -105,5 +115,7 @@ A round is run in stages, to keep its cost down:
 | Hakuro's jacket's body, to under its shoulders | 24 by 21 | 2.22 mm; 63 mm (at its sides near its top, which its shoulders draw) |
 | Hakuro's jacket's collar | 16 by 13 | 1.14 mm; 9.9 mm |
 | Hakuro's jacket's shoulders, each (over all its rays meet) | 16 by 13 | 2.67 mm; 18.0 mm |
+| Hakuro's fingers and thumbs, each | 16 by 13 | 0.21 to 0.28 mm; 3.5 mm |
+| Hakuro's palms | 16 by 13 | 0.86 and 0.80 mm; 9.6 mm |
 
 Each is measured on rays between the fit's own places, on toolchain 0.32.0. `wrela tool forms` writes every one in about ten seconds.

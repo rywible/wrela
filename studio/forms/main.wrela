@@ -264,6 +264,99 @@ pub const HAKURO_YOKE_RIGHT: Spec = Spec {
     tuck: 1.0,
 }
 
+/// The pieces of a hand: its four fingers from the index, its thumb, its palm.
+pub const HAND_PIECES: u32 = 6
+
+const HAND_NAMES: [Text; 12] = [
+    "hakuro-index-left",
+    "hakuro-middle-left",
+    "hakuro-ring-left",
+    "hakuro-little-left",
+    "hakuro-thumb-left",
+    "hakuro-palm-left",
+    "hakuro-index-right",
+    "hakuro-middle-right",
+    "hakuro-ring-right",
+    "hakuro-little-right",
+    "hakuro-thumb-right",
+    "hakuro-palm-right",
+]
+const HAND_FILES: [Text; 12] = [
+    "content/hakuro/index_left_form.wrela",
+    "content/hakuro/middle_left_form.wrela",
+    "content/hakuro/ring_left_form.wrela",
+    "content/hakuro/little_left_form.wrela",
+    "content/hakuro/thumb_left_form.wrela",
+    "content/hakuro/palm_left_form.wrela",
+    "content/hakuro/index_right_form.wrela",
+    "content/hakuro/middle_right_form.wrela",
+    "content/hakuro/ring_right_form.wrela",
+    "content/hakuro/little_right_form.wrela",
+    "content/hakuro/thumb_right_form.wrela",
+    "content/hakuro/palm_right_form.wrela",
+]
+const HAND_CONSTANTS: [Text; 12] = [
+    "INDEX_LEFT",
+    "MIDDLE_LEFT",
+    "RING_LEFT",
+    "LITTLE_LEFT",
+    "THUMB_LEFT",
+    "PALM_LEFT",
+    "INDEX_RIGHT",
+    "MIDDLE_RIGHT",
+    "RING_RIGHT",
+    "LITTLE_RIGHT",
+    "THUMB_RIGHT",
+    "PALM_RIGHT",
+]
+
+/// Piece `i` of Hakuro's hands (his left's six in `HAND_PIECES`' order, then his right's): his
+/// left hand bare and his right in its glove, each its sampled hand's own surface. A finger
+/// from where it leaves his palm to where its tip starts to round (a part closes it from
+/// there: `Part::caps`); his palm from up his forearm, through his wrist, to his knuckles. A
+/// finger's reference is read no further out than the gap to the finger beside it.
+pub fn hand_spec(i: u32) -> Spec {
+    let piece = i % HAND_PIECES
+    let left = i < HAND_PIECES
+    let palm = piece == 5
+    Spec {
+        name: HAND_NAMES[i],
+        file: HAND_FILES[i],
+        constant: HAND_CONSTANTS[i],
+        about: [
+            "A piece of one of Hakuro's hands (his left bare, his right gloved): his sampled hand's",
+            "surface (`hand_left_grid`, `hand_right_grid`), read along rays from the piece's own",
+            "line (`hakuro::hands`) and fitted by the forms tool.",
+        ],
+        chain: if palm {
+            if left { hakuro::hands::palm_left() } else { hakuro::hands::palm_right() }
+        } else if left {
+            hakuro::hands::finger_left(piece)
+        } else {
+            hakuro::hands::finger_right(piece)
+        },
+        // (A finger is read from its knuckle on: there only the rays toward the back of his
+        // hand meet it, and the rest run on from them, so the form carries the knuckle's
+        // head. Read from past the web, his open hand had no line of knuckles.)
+        span: if palm { vec2(0.04, 0.94) } else if piece == 4 { vec2(0.55, 0.88) } else {
+            vec2(0.15, 0.88)
+        },
+        // (His palm is read as far out as the root of his thumb: cut short of it, a notch
+        // opened between his palm and his thumb.)
+        most: if palm { 0.07 } else { 0.016 },
+        tuck: 1.0,
+    }
+}
+
+/// Piece `i` of Hakuro's hands (`hand_spec`), fitted.
+pub fn hakuro_hand(i: u32) -> Fitted<16, 13> {
+    if i < HAND_PIECES {
+        fitted(Grid { samples: hakuro::hand_left_grid::samples(0) }, hand_spec(i))
+    } else {
+        fitted(Grid { samples: hakuro::hand_right_grid::samples(0) }, hand_spec(i))
+    }
+}
+
 /// A form fitted: its numbers as written, how far it is from its reference where it wasn't
 /// fitted, and how many rays it was fitted to.
 pub struct Fitted<const A: u32, const R: u32>: Copy {
@@ -828,6 +921,18 @@ fn stations_of(name: str) -> Option<String> {
     if name == HAKURO_COLLAR.name {
         return Some(stations(Grid { samples: hakuro::jacket_grid::samples(0) }, HAKURO_COLLAR))
     }
+    for i in 0..2 * HAND_PIECES {
+        if name == hand_spec(i).name {
+            if i < HAND_PIECES {
+                return Some(
+                    stations(Grid { samples: hakuro::hand_left_grid::samples(0) }, hand_spec(i)),
+                )
+            }
+            return Some(
+                stations(Grid { samples: hakuro::hand_right_grid::samples(0) }, hand_spec(i)),
+            )
+        }
+    }
     if name == HAKURO_YOKE_LEFT.name {
         return Some(stations(Grid { samples: hakuro::jacket_grid::samples(0) }, HAKURO_YOKE_LEFT))
     }
@@ -899,6 +1004,11 @@ pub fn tool() -> u32 {
     }
     if chosen(wanted, HAKURO_YOKE_RIGHT.name) {
         results.push(written(HAKURO_YOKE_RIGHT, hakuro_yoke(HAKURO_YOKE_RIGHT)))
+    }
+    for i in 0..2 * HAND_PIECES {
+        if chosen(wanted, hand_spec(i).name) {
+            results.push(written(hand_spec(i), hakuro_hand(i)))
+        }
     }
     if chosen(wanted, HAKURO_NECK.name) {
         results.push(written(HAKURO_NECK, hakuro_neck()))

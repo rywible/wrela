@@ -1384,7 +1384,7 @@ impl Aboard {
                     limbs[a],
                     rest.limbs[a],
                     self.charted.limbs[a],
-                    shaded(self.charted.limbs[a].form),
+                    hakuro::hakuro::shaded_part(a, self.charted.limbs[a].form),
                     a,
                     shot,
                     hv,

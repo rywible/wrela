@@ -124,7 +124,7 @@ pub fn scene(name: str) -> Option<Scene> {
 }
 
 /// The lists' names.
-pub const LISTS: [Text; 3] = ["arms", "rider", "body"]
+pub const LISTS: [Text; 4] = ["arms", "rider", "body", "hands"]
 
 /// The frames from `first` to `last`, every `every`th.
 pub fn every(first: u32, last: u32, every: u32) -> Vec<u32> {
@@ -206,6 +206,71 @@ pub fn list(name: str) -> Option<Vec<Shot>> {
                         down: 2,
                         about: "the whole cross, a frame in six",
                     },
+                ],
+            ),
+        )
+    }
+    if name == "hands" {
+        // His hands close: his fists through the exchange, and his open hands standing.
+        let close = |name: Text, scene: Text, frame: u32, crop: Crop, up: u32, about: Text| Shot {
+            name,
+            scene,
+            frames: Vec::from([frame]),
+            crop,
+            up,
+            about,
+        }
+        return Some(
+            Vec::from(
+                [
+                    close(
+                        "guard-fists",
+                        "exchange",
+                        99,
+                        Crop { x0: 560, y0: 170, x1: 980, y1: 400 },
+                        3,
+                        "both fighters' fists in their guards",
+                    ),
+                    close(
+                        "impact-fists",
+                        "exchange",
+                        204,
+                        Crop { x0: 450, y0: 120, x1: 1150, y1: 520 },
+                        2,
+                        "the cross landing, and the fists round it",
+                    ),
+                    close(
+                        "follow-fists",
+                        "exchange",
+                        210,
+                        Crop { x0: 200, y0: 0, x1: 1600, y1: 800 },
+                        1,
+                        "the follow-through",
+                    ),
+                    close(
+                        "recover-fists",
+                        "exchange",
+                        216,
+                        Crop { x0: 380, y0: 0, x1: 1500, y1: 900 },
+                        1,
+                        "the recovery",
+                    ),
+                    close(
+                        "open-hand-front",
+                        "turnaround",
+                        30,
+                        Crop { x0: 150, y0: 380, x1: 350, y1: 520 },
+                        4,
+                        "his open hand at his hip, from the front",
+                    ),
+                    close(
+                        "open-hand-side",
+                        "turnaround",
+                        30,
+                        Crop { x0: 720, y0: 380, x1: 920, y1: 520 },
+                        4,
+                        "his open hand at his hip, from the side",
+                    ),
                 ],
             ),
         )
