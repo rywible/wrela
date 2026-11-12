@@ -10,6 +10,7 @@
 
 use engine::chart
 use engine::sway
+use engine::bearing::Bearing
 use engine::chart::{Band, Grown, JOINTS, Limb, Part, Radial}
 use std::collections::Vec
 use std::math::TAU
@@ -114,6 +115,22 @@ pub fn skeleton() -> Skeleton {
     // His hair's own bone, where his head's is: it sways about his skull (`with_hair`).
     s.joint("hair", s.find("head"), HEAD_JOINT)
     s
+}
+
+/// How he carries himself over whatever move he's making (`engine::bearing`): his chin down,
+/// so his mask looks out from under its brow; his head held steady over his stride, most of
+/// the way level and facing where he's going; his chest up.
+pub const BEARING: Bearing = Bearing { chin: 0.14, steady: 0.75, chest: 0.07 }
+
+/// How far he leans into going (radians): none standing, a little at a walk (1.4 m/s), a
+/// sprinter's lean at a run (4 m/s) and no more past it.
+pub const WALK_LEAN: f32 = 0.03
+pub const RUN_LEAN: f32 = 0.17
+
+/// His bearing going `speed` (m/s): `BEARING`, leant into it.
+pub fn bearing_at(speed: f32) -> Bearing {
+    let lean = mix(WALK_LEAN, RUN_LEAN, smoothstep(1.4, 4.0, speed)) * smoothstep(0.0, 1.4, speed)
+    Bearing { lean, ..BEARING }
 }
 
 /// His hair's bone (`skeleton`'s last).

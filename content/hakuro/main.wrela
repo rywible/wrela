@@ -69,6 +69,12 @@ fn moved(time: f32) -> [mat4; 64] {
     pose.hips = pose.hips -
         PLAYED.travel_local * loops -
         PLAYED.travel_local * fract(time * PLAYED.fps / f32(max(PLAYED.frames, 2) - 1))
+    // (He carries himself his own way standing, walking and running: his fighting stance, his
+    // punch and his roll hold his head as they need it.)
+    if CARRIED > 0.0 && MOVE >= 2 && MOVE != 6 && MOVE != 7 {
+        let speed = if MOVE == 4 { 1.4 } else if MOVE == 5 { 4.0 } else { 0.0 }
+        pose = engine::bearing::carried(RIG.clone(), pose, hakuro::bearing_at(speed))
+    }
     let rig_m = palette(RIG.clone(), pose, translate(vec3(0.0)))
     var m = [translate(vec3(0.0)); 64]
     for b in 0..52 {
@@ -89,6 +95,10 @@ fn moved(time: f32) -> [mat4; 64] {
     }
     fists_off_mask(hands_off_hips(wrists_eased(m)))
 }
+
+/// 1 to carry him as he carries himself (`hakuro::BEARING`); 0 to see a move as it was
+/// captured (`--set CARRIED=0`).
+pub const CARRIED: f32 = 1.0
 
 /// 1 to stand him in the sheet's pose; 0 at rest, a T-pose (`--set POSED=0`).
 pub const POSED: f32 = 1.0

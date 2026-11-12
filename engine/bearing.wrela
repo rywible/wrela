@@ -1,0 +1,189 @@
+// How a body carries itself: its bearing, laid over whatever pose a move gives it. A capture is
+// how one person moved that day; a character is also how it holds its head and its chest while
+// it does. A bearing changes only a body's spine, its neck and its head (its arms go with its
+// chest; its hips and its legs are the move's, so its feet stay where they were planted):
+//
+// - its head held steady: level, and facing where its hips face, however its trunk rocks under
+//   it, as a hunter's is on what it watches;
+// - its chin down, so it looks out from under its brow;
+// - its chest lifted, its shoulders back with it;
+// - its trunk leant the way it's going.
+//
+// Its head keeps looking where the move had it look whatever its trunk is made to do: a lean
+// or a lifted chest is taken up in its neck.
+
+use std::quat::Quat
+use humanoid::{NONE, Pose, Rig, Rigid}
+
+/// A bearing: how far its head is tipped down from level (`chin`, radians); how much of its
+/// head's turn away from level and from where its hips face is taken out (`steady`: 0 none of
+/// it, 1 all); how far its trunk leans the way it faces, from the foot of its spine (`lean`,
+/// radians); and how far its chest is lifted, from its upper chest (`chest`, radians).
+pub struct Bearing: Copy {
+    pub chin: f32 = 0.0,
+    pub steady: f32 = 0.0,
+    pub lean: f32 = 0.0,
+    pub chest: f32 = 0.0,
+}
+
+/// No bearing of its own: the move's pose as it is.
+pub const PLAIN: Bearing = Bearing {}
+
+/// Each of `rig`'s bones in the body's space as `pose` has it.
+fn worlds(rig: Rig, pose: Pose) -> [Rigid; 64] {
+    var world = [Rigid::identity(); 64]
+    for b in 0..rig.bones.len() {
+        borrow rb = rig.bones[b]
+        let up = if rb.parent == NONE { rig.base } else { world[rb.parent] }
+        let t = if rb.parent == NONE { pose.hips } else { rb.rest.t }
+        world[b] = up.then(Rigid { q: pose.turns[b], t })
+    }
+    world
+}
+
+/// `pose` with bone `b` turned by `by` in the body's space (what hangs from it turns with it).
+fn turned(rig: Rig, pose: Pose, b: u32, by: Quat) -> Pose {
+    let w = worlds(rig, pose)
+    let p = rig.bones[b].parent
+    let up = if p == NONE { rig.base.q } else { w[p].q }
+    var out = pose
+    out.turns[b] = up.inverse().mul(by.mul(w[b].q))
+    out
+}
+
+/// The turn part of the way from `a` to `b` (`t` of it), the short way round.
+fn between(a: Quat, b: Quat, t: f32) -> Quat {
+    let to = if dot(a.v, b.v) < 0.0 { -b.v } else { b.v }
+    Quat { v: normalize(mix(a.v, to, vec4(t))) }
+}
+
+/// `pose` (on `rig`) carried as `how` says. A rig with no spine, neck or head is left as it is.
+pub fn carried(rig: Rig, pose: Pose, how: Bearing) -> Pose {
+    let hips = rig.find("hips")
+    let spine = rig.find("spine")
+    let head = rig.find("head")
+    if hips == NONE || spine == NONE || head == NONE {
+        return pose
+    }
+    let rest = rig.rest_world()
+    // Where its hips face, on the level, and its left from there; and its head as the move
+    // has it, which a lean or a lifted chest doesn't carry with it: a head keeps looking where
+    // it looked.
+    let moved = worlds(rig, pose)
+    let ahead = moved[hips].q.mul(rest[hips].q.inverse()).rotate(vec3(0.0, 0.0, 1.0))
+    let level = vec3(ahead.x, 0.0, ahead.z)
+    if length(level) < 0.2 {
+        // (On its back or its face, a roll's or a fall's: it has no heading to hold a head to.)
+        return pose
+    }
+    let facing = normalize(level)
+    let left = cross(vec3(0.0, 1.0, 0.0), facing)
+    var out = pose
+    if how.lean != 0.0 {
+        out = turned(rig, out, spine, Quat::axis_angle(left, how.lean))
+    }
+    let chest = if rig.find("upperChest") != NONE { rig.find("upperChest") } else {
+        rig.find("chest")
+    }
+    if how.chest != 0.0 && chest != NONE {
+        out = turned(rig, out, chest, Quat::axis_angle(left, -how.chest))
+    }
+    let w = worlds(rig, out)
+    // Its head at rest, turned to where its hips face.
+    let held = Quat::axis_angle(vec3(0.0, 1.0, 0.0), atan2(facing.x, facing.z)).mul(rest[head].q)
+    let steadied = between(moved[head].q, held, saturate(how.steady))
+    let tipped = Quat::axis_angle(left, how.chin).mul(steadied)
+    out.turns[head] = w[rig.bones[head].parent].q.inverse().mul(tipped)
+    out
+}
+
+/// A rig for the tests: hips, three bones of spine, a neck, a head and a leg, straight up at
+/// rest, facing +z.
+fn test_rig() -> Rig {
+    let same = mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    )
+    let up = |by: f32| Rigid { q: Quat::identity(), t: vec3(0.0, by, 0.0) }
+    var bones: Vec<humanoid::RigBone> = Vec::new()
+    var of = [NONE; 55]
+    let names = ["hips", "spine", "chest", "upperChest", "neck", "head", "leftUpperLeg"]
+    for i in 0..7 {
+        let v = humanoid::bone(names[i])
+        let parent = if i == 0 { NONE } else if i == 6 { 0 } else { i - 1 }
+        of[v] = i
+        bones.push(
+            humanoid::RigBone {
+                vrm: v,
+                parent,
+                rest: up(if i == 6 { -0.1 } else { 0.12 }),
+                ibm: same,
+            },
+        )
+    }
+    Rig { bones, of, base: Rigid::identity() }
+}
+
+/// A pose of the tests' rig: its trunk rocked `by` radians to its left at its chest, its head
+/// turned and tipped with it, its hips a metre up.
+fn rocked(by: f32) -> Pose {
+    var p = Pose { turns: [Quat::identity(); 64], hips: vec3(0.0, 1.0, 0.0) }
+    p.turns[2] = Quat::axis_angle(vec3(0.0, 0.0, 1.0), by)
+    p.turns[5] = Quat::axis_angle(vec3(0.0, 1.0, 0.0), 0.3)
+    p
+}
+
+@test
+fn a_plain_bearing_leaves_a_pose_as_it_is() {
+    let rig = test_rig()
+    let p = rocked(0.2)
+    let q = carried(rig, p, PLAIN)
+    for b in 0..7 {
+        assert(abs(dot(p.turns[b].v, q.turns[b].v)) > 0.999999, f"bone {b} turned")
+    }
+}
+
+@test
+fn a_steady_head_is_level_and_faces_ahead_over_a_trunk_that_rocks_and_leans() {
+    let rig = test_rig()
+    let how = Bearing { steady: 1.0, lean: 0.25 }
+    let w = worlds(rig, carried(rig, rocked(0.2), how))
+    // Its head: up is up and ahead is ahead, though its chest rocks a fifth of a radian and
+    // its trunk leans a quarter.
+    assert(w[5].q.rotate(vec3(0.0, 1.0, 0.0)).y > 0.9999)
+    assert(w[5].q.rotate(vec3(0.0, 0.0, 1.0)).z > 0.9999)
+    // Its upper chest leans ahead by the lean (and still rocks).
+    let chest_up = w[3].q.rotate(vec3(0.0, 1.0, 0.0))
+    assert(abs(atan2(chest_up.z, chest_up.y) - 0.25) < 0.02, f"its chest leans {chest_up.z}")
+    assert(abs(chest_up.x) > 0.15)
+    // Half as steady, its head is part of the way.
+    let half = worlds(rig, carried(rig, rocked(0.2), Bearing { steady: 0.5 }))
+    let tilt = half[5].q.rotate(vec3(0.0, 1.0, 0.0)).x
+    assert(abs(tilt) > 0.05 && abs(tilt) < 0.15, f"{tilt}")
+}
+
+@test
+fn a_chin_down_tips_a_head_that_far_and_a_lifted_chest_leans_it_back() {
+    let rig = test_rig()
+    let still = Pose { turns: [Quat::identity(); 64], hips: vec3(0.0, 1.0, 0.0) }
+    let w = worlds(rig, carried(rig, still, Bearing { chin: 0.2, chest: 0.1 }))
+    // Its head's way ahead points 0.2 of a radian down: its chin down by that, from level,
+    // whatever its chest does under it.
+    let ahead = w[5].q.rotate(vec3(0.0, 0.0, 1.0))
+    assert(abs(atan2(-ahead.y, ahead.z) - 0.2) < 0.001, f"{ahead.y}")
+    let chest_up = w[3].q.rotate(vec3(0.0, 1.0, 0.0))
+    assert(abs(atan2(-chest_up.z, chest_up.y) - 0.1) < 0.001)
+}
+
+@test
+fn a_bearing_leaves_hips_and_legs_to_the_move() {
+    let rig = test_rig()
+    var p = rocked(0.2)
+    p.turns[6] = Quat::axis_angle(vec3(1.0, 0.0, 0.0), 0.7)
+    let q = carried(rig, p, Bearing { chin: 0.2, steady: 1.0, lean: 0.3, chest: 0.1 })
+    assert(abs(dot(p.turns[0].v, q.turns[0].v)) > 0.999999)
+    assert(abs(dot(p.turns[6].v, q.turns[6].v)) > 0.999999)
+    assert(length(p.hips - q.hips) == 0.0)
+}
