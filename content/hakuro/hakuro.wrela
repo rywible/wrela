@@ -866,12 +866,9 @@ pub const COLLAR_FLARED: Radial<16, 13> = collar_form::COLLAR.plus(chart::of(col
 
 /// How far his jacket's shoulders stand off their fitted face, `f` of the way along a
 /// shoulder's line (m): 2 mm over it by his neck, where it lies on the top of his coat's
-/// back, down to 8 mm inside it by its seam. They were fitted to a cap that stood out over
-/// his arm; a sleeveless coat's shoulder lies on his own, and at its fitted height its
-/// outer end stood over the armhole as a stiff tab. (8 mm inside it the whole way, its
-/// inner end sank into the top of his coat's back.)
+/// back, down to 3 mm inside it by its seam, so its end lies on his shoulder.
 fn yoke_set(f: f32, theta: f32) -> f32 {
-    mix(0.002, -0.008, smoothstep(0.15, 0.36, f))
+    mix(0.002, -0.003, smoothstep(0.15, 0.3, f))
 }
 
 /// `yoke_set` in a form's numbers.
@@ -1045,37 +1042,40 @@ fn wrap_at(rest: vec3, px: f32) -> Cloth {
 /// How wide the gold binding of his coat's armholes is (m).
 pub const BINDING: f32 = 0.009
 
-/// Where his coat's shoulder seam is, out from his middle (m, on him at rest): just past
-/// his shoulder's joint. His coat has no sleeves: its shoulders end here.
-pub const SHOULDER_SEAM: f32 = 0.226
+/// The furthest out from his middle any of his coat's shoulder is (m, on him at rest): just
+/// inside his shoulder's joint. His coat has no sleeves, and its shoulders stop short of the point
+/// of his shoulder, as a vest's do (`armhole`'s arch crosses the top of his shoulder about
+/// 2 cm inside the joint): his whole shoulder is out of the armhole. (Ending past the joint,
+/// each shoulder ran 3 cm out beyond the armhole's sides as a stub of a sleeve: a tab over
+/// the top of his arm, its binding a hook in front and a wing behind where it met the
+/// sides'. And cut off straight at a seam just past the arch, the seam's binding and the
+/// arch's ran together into a gold patch on top of his shoulder.)
+pub const SHOULDER_SEAM: f32 = 0.205
 
 /// How far outside his coat's armhole a point of him at rest is (m, about; negative: in the
 /// armhole). One loop for each arm, cut through the jacket's body and its shoulder alike:
-/// where the coat meets a slanted oval tube about his arm's line, 19 cm high and 17 deep at
-/// the jacket's side (deeper, it grazed the jacket's back and its edge there was a smear),
-/// which crosses the top of his shoulder at its seam; and nothing of the coat is past the
-/// seam (`SHOULDER_SEAM`). (Each piece's own edge as its
-/// cover had it, the shoulder's rim and the body's armhole were two ragged edges that didn't
-/// meet. Then the shoulder ran on 2 cm past the seam as an arch over the top of his arm, on
-/// his arm's bone: with his arm down it stood off his arm as a stiff little cap sleeve,
-/// ragged behind.)
+/// where the coat meets a slanted oval tube about his arm's line, 20 cm high and 17 deep
+/// (deeper, it grazed the jacket's back and its edge there was a smear), which climbs as it
+/// goes out so that its top is over the top of his shoulder just inside its seam: the
+/// hole's edge crosses his shoulder there in an arch, one loop with its sides. Nothing of
+/// the coat is past the seam (`SHOULDER_SEAM`).
 pub fn armhole(p: vec3) -> f32 {
     let out = abs(p.x)
     if out < 0.12 {
         return 1.0
     }
-    // (The tube climbs as it goes out, steeply: by his shoulder's seam its top is over the
-    // top of his shoulder, so the hole's edge crosses his shoulder there in an arch, one
-    // smooth loop with its sides. Climbing gently, its top stayed under the cloth, and the
-    // edge ran up the tube's side, out along its top and over at the seam: a loop with a
-    // step in it.)
-    let middle = 1.40 + 1.2 * max(out - 0.19, 0.0)
-    let tube = (length(vec2((p.y - middle) / 0.096, (p.z + 0.062) / 0.084)) - 1.0) * 0.09
+    // (It climbs steeply past 16.5 cm out, so it meets the top of his shoulder squarely:
+    // climbing gently, it grazed his shoulder's top, and its binding there was a broad band
+    // of gold.)
+    let middle = 1.40 + 1.2 * max(out - 0.165, 0.0)
+    let tube = (length(vec2((p.y - middle) / 0.1, (p.z + 0.062) / 0.084)) - 1.0) * 0.09
     // (The seam only over his shoulder's top: from 5 cm under it the cut leans out, off the
     // coat's side. Straight down, it cut a line down the coat's side wherever the side was
-    // as far out as the seam.)
+    // as far out as the seam. Over his shoulder it's a true distance, so its binding is as
+    // wide as the rest: scaled as the leaning cut is, the binding there was 2 cm of gold.)
+    let lean = saturate((1.47 - p.y) / 0.05)
     let seam = SHOULDER_SEAM + 2.0 * max(1.47 - p.y, 0.0) - out
-    min(tube, seam * 0.447)
+    min(tube, seam * mix(1.0, 0.447, lean))
 }
 
 /// How far out from his middle the top of his coat's back, under his collar's foot, is his
@@ -1612,7 +1612,7 @@ fn his_coats_armhole_is_one_loop_through_its_body_and_its_shoulder() {
     // Over the top of his shoulder the hole's edge crosses just inside the seam: cloth on
     // the top of his shoulder 3 cm in from it, none at it or past it. His coat has no
     // sleeve: nothing of it is out over his arm.
-    assert(armhole(vec3(SHOULDER_SEAM - 0.03, 1.53, -0.065)) > 0.0)
+    assert(armhole(vec3(SHOULDER_SEAM - 0.03, 1.56, -0.065)) > 0.0)
     for z in [-0.12, -0.065, 0.0] {
         assert(armhole(vec3(SHOULDER_SEAM + 0.005, 1.535, z)) < 0.0, f"cloth past the seam at {z}")
     }
