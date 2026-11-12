@@ -5,7 +5,9 @@
 
 use shapes::{TAILS_AXIS, TAILS_FROM, TAILS_TO, hem, tails}
 use engine::realize::{Mesh, SkinVertex, Tally}
-use std::gpu::{GlobalId, GpuBuffer, GpuSpan, Slots, Unorm8x4, buffer, dispatch}
+use std::collections::Vec
+use std::gpu::{GlobalId, GpuBuffer, GpuSpan, Slots, Unorm8x4, buffer, dispatch, write}
+use std::math::TAU
 
 // ---- the tails' drape, worked out on a grid over the cloth's middle -------------------------
 
@@ -87,10 +89,12 @@ fn hung(rest: vec3, top: vec3, palettes: [mat4], first: u32) -> vec3 {
     anchor + v * c + cross(k, v) * sin(angle) + k * dot(k, v) * (1.0 - c)
 }
 
-/// How firmly a node is held where his hips carry it: wholly up under the jacket's hem (it's
-/// tucked there), free from a hand's width below it.
+/// How firmly a node is held where his hips carry it: wholly along the seam where the tails
+/// carry on from his jacket (their top centimetre and a half), free from 8 cm below it. (Held
+/// a hand's width down, as they were when their top was tucked under a longer jacket, a thigh
+/// lifted in a stride came through the held cloth at his hip: it couldn't ride up over it.)
 fn pinned(rest: vec3) -> f32 {
-    let u = clamp((rest.y - 0.78) / 0.08, 0.0, 1.0)
+    let u = clamp((rest.y - 0.85) / 0.065, 0.0, 1.0)
     u * u * (3.0 - 2.0 * u)
 }
 
@@ -163,6 +167,7 @@ pub fn cloth_relax(
     palettes: [mat4],
     views: u32,
     stride: u32,
+    legs: [f32],
     pos: [vec4],
     out: mut Slots<vec4>,
     id: GlobalId,
@@ -205,7 +210,11 @@ pub fn cloth_relax(
     }
     var q = p + pull / max(weight, 1.0) * 1.6
     q = off_legs_now(q, rest, palettes, first)
+    q = off_trousers(q, palettes, first, legs, CLEAR_OF_LEG, 10.0)
     q = mix(q, target, pin)
+    // (Where it's held at the seam it can't hang off a leg, only be put out of one: a thigh
+    // swung out as he stands, or lifted in a stride, came through the cloth his hips hold.)
+    q = off_trousers(q, palettes, first, legs, CLEAR_PINNED, 10.0)
     out[id] = vec4(q, 0.0)
 }
 
@@ -265,6 +274,8 @@ pub struct Drape {
     facing: GpuBuffer<vec4>,
     // (Each view's hips at the last step.)
     root: GpuBuffer<vec4>,
+    // (His trouser legs' radii at rest, `leg_radii`: what the cloth is kept off.)
+    legs: GpuBuffer<f32>,
     flip: u32,
     fresh: bool,
 }
@@ -280,6 +291,7 @@ pub fn drape_room(views: u32) -> Drape {
         out: buffer(n),
         facing: buffer(n),
         root: buffer(views),
+        legs: leg_radii(),
         flip: 0,
         fresh: true,
     }
@@ -291,6 +303,7 @@ fn cloth_frame(
     palettes: GpuBuffer<mat4>,
     views: u32,
     stride: u32,
+    legs: GpuBuffer<f32>,
     dt: f32,
     fresh: u32,
     pos: mut GpuBuffer<vec4>,
@@ -323,6 +336,7 @@ fn cloth_frame(
                 palettes: palettes.items(),
                 views: views,
                 stride: stride,
+                legs: legs.items(),
                 pos: next.items(),
                 out: mut pos,
             ),
@@ -333,6 +347,7 @@ fn cloth_frame(
                 palettes: palettes.items(),
                 views: views,
                 stride: stride,
+                legs: legs.items(),
                 pos: pos.items(),
                 out: mut next,
             ),
@@ -375,6 +390,7 @@ impl Drape {
                 palettes,
                 views,
                 stride,
+                self.legs,
                 step,
                 fresh,
                 mut self.pos_a,
@@ -390,6 +406,7 @@ impl Drape {
                 palettes,
                 views,
                 stride,
+                self.legs,
                 step,
                 fresh,
                 mut self.pos_b,
@@ -415,10 +432,155 @@ impl Drape {
     }
 }
 
-/// `p` (a node of the cloth, at rest `rest`) kept off his legs and arms as `palette` (from
-/// `first`) poses them: straight off each thigh, shin, boot, forearm and hand, a couple of
-/// centimetres clear (less however far into it the cloth already hangs at rest, so the
-/// capsules can be as fat as his baggy trousers).
+/// How far off his trouser legs' sides the cloth is kept (m): where it hangs free, and where
+/// it's pinned up under his jacket's hem (only so a thigh swung out doesn't come through it:
+/// kept as clear there as below, its top stood out past the hem as a ledge).
+const CLEAR_OF_LEG: f32 = 0.012
+const CLEAR_PINNED: f32 = 0.003
+
+/// How far along a leg's path at rest his hip's joint is, and his knee's (m): the path starts
+/// 8 cm over his hip (`figure::chains::leg_left`).
+const HIP_ALONG: f32 = 0.08
+const KNEE_ALONG: f32 = 0.509
+
+/// His trouser legs' radii at rest, as a table the cloth's step reads (`leg_radii`): for each
+/// leg (his left, his right) and each of its two lengths (thigh, shin), `LEG_ROWS` places
+/// along it by `LEG_COLS` angles round it. A thigh's rows start `ABOVE_HIP` of its length over
+/// his hip's joint, where his trousers' seat is.
+const LEG_ROWS: u32 = 24
+const LEG_COLS: u32 = 32
+const ABOVE_HIP: f32 = 0.18
+
+/// The joints either end of length `seg` (0 his thigh, 1 his shin) of his leg on `side` (0
+/// his left), at rest.
+fn leg_ends(side: u32, seg: u32) -> (vec3, vec3) {
+    let sx = if side == 0 { 1.0 } else { -1.0 }
+    if seg == 0 {
+        return (vec3(0.114 * sx, 0.971, -0.036), vec3(0.114 * sx, 0.542, -0.036))
+    }
+    (vec3(0.114 * sx, 0.542, -0.036), vec3(0.114 * sx, 0.086, -0.088))
+}
+
+/// His trouser legs' radii at rest about each of their straight lengths: how far his charted
+/// leg's side (`hakuro::charts`) is from the length's line, at each row's place along it and
+/// each column's angle round it (from his front, toward his left). A trouser leg is 8 cm deep
+/// one way and 15 the other: a capsule fat enough for the one let the cloth lie inside the
+/// other, and his thigh came through his coat's skirt wherever he stood with a leg out. The
+/// form's own side read at every node every pass (`Limb::toward`) kept the cloth off it as
+/// well and took 90 ms a frame; the table is that side, read once.
+fn leg_radii() -> GpuBuffer<f32> {
+    let parts = hakuro::charts()
+    var radii: Vec<f32> = Vec::new()
+    for side in 0..2 {
+        let leg = parts[4 + side].rest()
+        let whole = leg.path.length()
+        for seg in 0..2 {
+            let (a, b) = leg_ends(side, seg)
+            let e = b - a
+            let from = if seg == 0 { -ABOVE_HIP } else { 0.0 }
+            for i in 0..LEG_ROWS {
+                let h = mix(from, 1.0, f32(i) / f32(LEG_ROWS - 1))
+                let along = (if seg == 0 { HIP_ALONG } else { KNEE_ALONG }) + h * length(e)
+                let fr = leg.path.frame(along)
+                let on = a + e * h
+                for j in 0..LEG_COLS {
+                    let phi = TAU * f32(j) / f32(LEG_COLS)
+                    let way = vec3(sin(phi), 0.0, cos(phi))
+                    let theta = atan2(dot(way, fr.left), dot(way, fr.up))
+                    radii.push(length(leg.side(f: along / whole, theta: theta) - on))
+                }
+            }
+        }
+    }
+    // (Each place the most of itself and the places round it: read between places, a fold of
+    // his trousers finer than the table stood through the cloth as specks.)
+    var hull: Vec<f32> = Vec::new()
+    for k in 0..4 {
+        for i in 0..LEG_ROWS {
+            for j in 0..LEG_COLS {
+                var most = 0.0
+                for di in 0..3 {
+                    for dj in 0..3 {
+                        let ii = u32(clamp(i32(i) + i32(di) - 1, 0, i32(LEG_ROWS) - 1))
+                        let jj = (j + dj + LEG_COLS - 1) % LEG_COLS
+                        most = max(most, radii[(k * LEG_ROWS + ii) * LEG_COLS + jj])
+                    }
+                }
+                hull.push(most)
+            }
+        }
+    }
+    var out: GpuBuffer<f32> = buffer(2 * 2 * LEG_ROWS * LEG_COLS)
+    write(mut out, 0, hull)
+    out
+}
+
+/// `p` (a node of the cloth) kept `clear` off his trouser legs as `palette` (from `first`)
+/// poses them (`legs`: `leg_radii`), where that moves it no more than about `most` (m). The
+/// cloth's point is taken back to him at rest by his thigh's bone and by his shin's in turn,
+/// and where it's by that bone's length of the leg it's kept clear of the leg's side there,
+/// out from the length's line.
+fn off_trousers(p: vec3, palette: [mat4], first: u32, legs: [f32], clear: f32, most: f32) -> vec3 {
+    var q = p
+    // His middle, between his hips: the cloth hangs outside his legs, out from it.
+    let mid = ((palette[first + 18] * vec4(0.114, 0.971, -0.036, 1.0)).xyz +
+        (palette[first + 19] * vec4(-0.114, 0.971, -0.036, 1.0)).xyz) *
+        0.5
+    for side in 0..2 {
+        for seg in 0..2 {
+            let m = palette[first + 18 + 2 * seg + side]
+            let off = q - m[3].xyz
+            let back = vec3(dot(m[0].xyz, off), dot(m[1].xyz, off), dot(m[2].xyz, off))
+            let (a, b) = leg_ends(side, seg)
+            let e = b - a
+            let h = dot(back - a, e) / dot(e, e)
+            let from = if seg == 0 { -ABOVE_HIP } else { 0.0 }
+            if h > from && h < 1.0 {
+                let d = back - (a + e * h)
+                let rho = length(d)
+                // The leg's radius there: between the table's rows and columns.
+                let row = (h - from) / (1.0 - from) * f32(LEG_ROWS - 1)
+                let col = fract(atan2(d.x, d.z) / TAU + 1.0) * f32(LEG_COLS)
+                let i0 = min(u32(floor(row)), LEG_ROWS - 2)
+                let j0 = u32(floor(col)) % LEG_COLS
+                let j1 = (j0 + 1) % LEG_COLS
+                let fi = clamp(row - f32(i0), 0.0, 1.0)
+                let fj = col - floor(col)
+                let base = ((side * 2 + seg) * LEG_ROWS + i0) * LEG_COLS
+                let r = mix(
+                    mix(legs[base + j0], legs[base + j1], fj),
+                    mix(legs[base + LEG_COLS + j0], legs[base + LEG_COLS + j1], fj),
+                    fi,
+                )
+                let need = r + clear - rho
+                if need > 0.0 && rho > 1.0e-5 {
+                    var n = (m * vec4(d / rho, 0.0)).xyz
+                    // (Off a leg always to its outer side, seen from his middle: pushed
+                    // straight off it, cloth just beside a leg kicked back slid round it and
+                    // the leg came out behind the coat.)
+                    let flat = vec3(q.x - mid.x, 0.0, q.z - mid.z)
+                    let fl = length(flat)
+                    if fl > 1.0e-4 {
+                        let o = flat / fl
+                        let outer = dot(n, o)
+                        if outer < 0.3 {
+                            n = normalize(n + o * (0.3 - outer) * 2.0)
+                        }
+                    }
+                    // (All the way clear if that's no more than `most`; less the deeper in
+                    // it is, and not at all from twice `most`.)
+                    q = q + n * need * (1.0 - smoothstep(most, 2.0 * most, need))
+                }
+            }
+        }
+    }
+    q
+}
+
+/// `p` (a node of the cloth, at rest `rest`) kept off his boots and arms as `palette` (from
+/// `first`) poses them: straight off each boot, forearm and hand, a capsule each, a couple of
+/// centimetres clear (less however far into a boot's the cloth already hangs at rest). His
+/// trouser legs are `off_trousers`'.
 fn off_legs_now(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
     var q = p
     // His middle, between his hips: the cloth hangs outside his legs, out from it.
@@ -427,57 +589,43 @@ fn off_legs_now(p: vec3, rest: vec3, palette: [mat4], first: u32) -> vec3 {
         0.5
     for side in 0..2 {
         let sx = if side == 0 { 1.0 } else { -1.0 }
-        let hip = (palette[first + 18 + side] * vec4(0.114 * sx, 0.971, -0.036, 1.0)).xyz
-        let knee = (palette[first + 20 + side] * vec4(0.114 * sx, 0.542, -0.036, 1.0)).xyz
-        let ankle = (palette[first + 22 + side] * vec4(0.114 * sx, 0.086, -0.088, 1.0)).xyz
         let heel = (palette[first + 22 + side] * vec4(0.124 * sx, 0.065, -0.13, 1.0)).xyz
         let toe = (palette[first + 22 + side] * vec4(0.124 * sx, 0.055, 0.14, 1.0)).xyz
         let elbow = (palette[first + 10 + side] * vec4(0.463 * sx, 1.455, -0.073, 1.0)).xyz
         let wrist = (palette[first + 12 + side] * vec4(0.706 * sx, 1.455, -0.065, 1.0)).xyz
         let knuckle = (palette[first + 12 + side] * vec4(0.86 * sx, 1.45, -0.05, 1.0)).xyz
-        for k in 0..5 {
-            let a = if k == 0 { hip } else if k == 1 { knee } else if k == 2 { heel } else if k ==
-                3 { elbow } else { wrist }
-            let b = if k == 0 { knee } else if k == 1 { ankle } else if k == 2 { toe } else if k ==
-                3 { wrist } else { knuckle }
-            let ra = if k == 0 { 0.135 } else if k == 1 { 0.13 } else if k == 2 {
-                0.085
-            } else if k == 3 { 0.055 } else { 0.042 }
-            let rb = if k == 0 { 0.125 } else if k == 1 { 0.2 } else if k == 2 {
-                0.075
-            } else if k == 3 { 0.042 } else { 0.045 }
-            // (How far in the capsule the cloth hangs at rest: legs only, the arms are clear.)
+        for k in 0..3 {
+            let a = if k == 0 { heel } else if k == 1 { elbow } else { wrist }
+            let b = if k == 0 { toe } else if k == 1 { wrist } else { knuckle }
+            let ra = if k == 0 { 0.085 } else if k == 1 { 0.055 } else { 0.042 }
+            let rb = if k == 0 { 0.075 } else if k == 1 { 0.042 } else { 0.045 }
+            // (How far in the capsule the cloth hangs at rest: his boot's only, his arms are
+            // clear.)
             var inside = 0.0
-            if k < 3 {
-                let ar = if k == 0 { vec3(0.114 * sx, 0.971, -0.036) } else if k == 1 {
-                    vec3(0.114 * sx, 0.542, -0.036)
-                } else { vec3(0.124 * sx, 0.065, -0.13) }
-                let br = if k == 0 { vec3(0.114 * sx, 0.542, -0.036) } else if k == 1 {
-                    vec3(0.114 * sx, 0.086, -0.088)
-                } else { vec3(0.124 * sx, 0.055, 0.14) }
-                let er = br - ar
+            if k == 0 {
+                let ar = vec3(0.124 * sx, 0.065, -0.13)
+                let er = vec3(0.124 * sx, 0.055, 0.14) - ar
                 let hr = clamp(dot(rest - ar, er) / dot(er, er), 0.0, 1.0)
                 inside = max(mix(ra, rb, hr) + 0.02 - length(rest - (ar + er * hr)), 0.0)
             }
             let e = b - a
             let h = clamp(dot(q - a, e) / dot(e, e), 0.0, 1.0)
-            let at = a + e * h
-            let off = q - at
+            let off = q - (a + e * h)
             let d = length(off)
             let r = mix(ra, rb, h) + 0.02 - inside
             if r - d > 0.0 && d > 1.0e-5 {
                 var n = off / d
-                // (Off a leg always to its outer side, seen from his middle: pushed straight off
-                // it, cloth just beside a leg kicked back slid round it and the leg came out
-                // behind the coat.)
-                if k < 3 {
+                // (Off a boot always to its outer side, seen from his middle: pushed straight
+                // off it, cloth just beside a heel kicked back slid round it and the boot came
+                // out behind the coat.)
+                if k == 0 {
                     let flat = vec3(q.x - mid.x, 0.0, q.z - mid.z)
                     let fl = length(flat)
                     if fl > 1.0e-4 {
                         let o = flat / fl
-                        let side = dot(n, o)
-                        if side < 0.3 {
-                            n = normalize(n + o * (0.3 - side) * 2.0)
+                        let outer = dot(n, o)
+                        if outer < 0.3 {
+                            n = normalize(n + o * (0.3 - outer) * 2.0)
                         }
                     }
                 }

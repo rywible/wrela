@@ -10,7 +10,7 @@ use std::transform::translate
 /// The snout's axis in his rest space (the mask's cone, the head scaled 1.1 about its joint):
 /// its root and tip, and the cone's radius at each.
 const ROOT = vec3(0.0, 1.6792, 0.0783)
-const TIP = vec3(0.0, 1.6325, 0.2279)
+const TIP = vec3(0.0, 1.6352, 0.2063)
 const R_ROOT: f32 = 0.057
 const R_TIP: f32 = 0.019
 
@@ -32,14 +32,18 @@ const SHOULDER = vec3(0.212, 1.455, -0.065)
 /// The bones of an arm from the upper arm down (his left's; the right's each one more): upper
 /// arm, forearm, hand, the old finger and thumb bones, then each finger joint.
 fn arm_bone(i: u32, side: u32) -> u32 {
-    let b = if i == 0 { 8 } else if i == 1 { 10 } else if i == 2 { 12 } else if i == 3 { 14 } else if i == 4 { 16 } else { 26 + 2 * (i - 5) }
+    let b = if i == 0 { 8 } else if i == 1 { 10 } else if i == 2 { 12 } else if i == 3 {
+        14
+    } else if i == 4 { 16 } else { 26 + 2 * (i - 5) }
     b + side
 }
 
 /// A turn (a rotation matrix) taking `a` onto `b` about the point `at`.
 fn swung(a: vec3, b: vec3, at: vec3) -> mat4 {
     let r = arc(a, b).to_mat3()
-    translate(at) * mat4(vec4(r[0], 0.0), vec4(r[1], 0.0), vec4(r[2], 0.0), vec4(0.0, 0.0, 0.0, 1.0)) * translate(-at)
+    translate(at) *
+        mat4(vec4(r[0], 0.0), vec4(r[1], 0.0), vec4(r[2], 0.0), vec4(0.0, 0.0, 0.0, 1.0)) *
+        translate(-at)
 }
 
 /// `m` (his palette) with each fist moved off the snout and cheeks.
@@ -132,6 +136,57 @@ pub fn hands_off_hips(m: [mat4; 64]) -> [mat4; 64] {
                 let b = arm_bone(i, side)
                 out[b] = r * out[b]
             }
+        }
+    }
+    out
+}
+
+/// His left elbow, wrist and knuckles at rest (the right's mirrored), and his ankles' height.
+const ELBOW = vec3(0.463, 1.455, -0.073)
+const WRIST = vec3(0.706, 1.455, -0.065)
+const KNUCKLES = vec3(0.83, 1.45, -0.06)
+const ANKLE_HIGH: f32 = 0.086
+
+/// The most a hand that bears no weight bends at its wrist (degrees), and how high over the
+/// ground his feet stand on a wrist is before the hand counts as bearing none (m: none of the
+/// limit under the first, all of it from the second).
+const WRIST_MOST: f32 = 30.0
+const WRIST_FREE = vec2(0.1, 0.28)
+
+/// `m` (his palette) with each wrist's bend held to `WRIST_MOST` unless its hand is down by
+/// the ground: the hand and its fingers turned back about the wrist toward the forearm's line.
+/// A keyed roll plants his palms, wrists bent square, and holds that bend as he comes up: the
+/// hand left the ground still bent back, its fingers spread at the air beside his head.
+pub fn wrists_eased(m: [mat4; 64]) -> [mat4; 64] {
+    var out = m
+    let ground = min(
+        (m[22] * vec4(0.114, ANKLE_HIGH, -0.088, 1.0)).y,
+        (m[23] * vec4(-0.114, ANKLE_HIGH, -0.088, 1.0)).y,
+    ) -
+        ANKLE_HIGH
+    for side in 0..2 {
+        let sx = if side == 0 { 1.0 } else { -1.0 }
+        let elbow = (m[10 + side] * vec4(ELBOW.x * sx, ELBOW.y, ELBOW.z, 1.0)).xyz
+        let wrist = (m[12 + side] * vec4(WRIST.x * sx, WRIST.y, WRIST.z, 1.0)).xyz
+        let knuckles = (m[12 + side] * vec4(KNUCKLES.x * sx, KNUCKLES.y, KNUCKLES.z, 1.0)).xyz
+        let fore = normalize(wrist - elbow)
+        let hand = normalize(knuckles - wrist)
+        let bend = acos(clamp(dot(fore, hand), -1.0, 1.0))
+        let most = WRIST_MOST * 0.0174532925
+        let free = smoothstep(WRIST_FREE.x, WRIST_FREE.y, wrist.y - ground)
+        // (Past the limit it keeps a fifth of what's over, so a bend that grows still shows.)
+        let over = max(bend - most, 0.0) * 0.8 * free
+        if over <= 0.0001 {
+            continue
+        }
+        // The hand's line turned toward the forearm's by what's over.
+        let side_way = normalize(hand - fore * dot(hand, fore))
+        let kept = bend - over
+        let to = fore * cos(kept) + side_way * sin(kept)
+        let r = swung(hand, to, wrist)
+        for i in 2..20 {
+            let b = arm_bone(i, side)
+            out[b] = r * out[b]
         }
     }
     out

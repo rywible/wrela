@@ -9,7 +9,9 @@
 // skeleton are its template's.)
 
 use engine::chart
+use engine::sway
 use engine::chart::{Band, Grown, JOINTS, Limb, Part, Radial}
+use std::collections::Vec
 use std::math::TAU
 use engine::creature::{Creature, Skeleton, creature, hard, smooth}
 use engine::character::Shaded
@@ -25,6 +27,9 @@ pub struct Cloth: Copy + GpuData + Blend {
     pub albedo: vec3,
     pub rough: f32,
     pub metal: f32,
+    /// How far the cloth's surface stands off the form it's on here (m): a seam's welt, a
+    /// rib, a weave's thread. What draws it tilts its light by this (`dressed`).
+    pub relief: f32 = 0.0,
 }
 
 impl Shaded for Cloth {
@@ -48,7 +53,17 @@ pub const CHARCOAL = Cloth { albedo: vec3(0.070, 0.070, 0.088), rough: 0.85, met
 pub const GOLD = Cloth { albedo: vec3(0.690, 0.380, 0.016), rough: 0.35, metal: 1.0 }
 pub const LINING = Cloth { albedo: vec3(0.300, 0.150, 0.022), rough: 0.6, metal: 0.15 }
 pub const SKIN = Cloth { albedo: vec3(0.500, 0.250, 0.130), rough: 0.72, metal: 0.0 }
-pub const SASH = Cloth { albedo: vec3(0.043, 0.043, 0.055), rough: 0.8, metal: 0.0 }
+/// His top: a fitted black compression knit, smoother than his jacket's cloth, so light picks
+/// out his chest and his sleeved arm under the matte jacket.
+pub const TOP = Cloth { albedo: vec3(0.034, 0.034, 0.044), rough: 0.55, metal: 0.0 }
+/// His trousers: a charcoal twill, a step lighter than his jacket and his top and matte
+/// where his top shines. (As light as graphite, with nothing on them, they read as grey
+/// sweatpants.)
+pub const TROUSERS = Cloth { albedo: vec3(0.098, 0.101, 0.118), rough: 0.9, metal: 0.0 }
+/// The black wrap his mask is tied over, round his head above his top's neck.
+pub const WRAP = Cloth { albedo: vec3(0.030, 0.030, 0.038), rough: 0.9, metal: 0.0 }
+/// The thread his clothes are stitched with.
+pub const THREAD: vec3 = vec3(0.19, 0.19, 0.21)
 pub const HAIR = Cloth { albedo: vec3(0.027, 0.028, 0.045), rough: 0.7, metal: 0.0 }
 pub const VOID = Cloth { albedo: vec3(0.004, 0.003, 0.004), rough: 1.0, metal: 0.0 }
 pub const LEATHER = Cloth { albedo: vec3(0.030, 0.030, 0.040), rough: 0.45, metal: 0.0 }
@@ -96,7 +111,40 @@ pub fn skeleton() -> Skeleton {
             parent = b
         }
     }
+    // His hair's own bone, where his head's is: it sways about his skull (`with_hair`).
+    s.joint("hair", s.find("head"), HEAD_JOINT)
     s
+}
+
+/// His hair's bone (`skeleton`'s last).
+pub const HAIR_BONE: u32 = 56
+
+/// What his hair sways about, and where its mass is, on him at rest: the middle of his skull,
+/// and a point over the back of his crown, in among its spikes.
+pub const HAIR_PIVOT: vec3 = vec3(0.0, 1.7, -0.01)
+pub const HAIR_MASS: vec3 = vec3(0.0, 1.85, -0.07)
+
+/// His hair's spring (`engine::sway`): it swings three times a second and is most of the way
+/// still in half a second, and its mass goes no more than 3 cm from where his head holds it
+/// (a turn of a little over a tenth of a radian: further, and its spikes passed through his
+/// mask's ears).
+pub const HAIR_SPRING: sway::Spring = sway::Spring { rate: 3.0, damping: 0.28, most: 0.03 }
+
+/// Where his head holds his hair's mass as `palette` poses him: what `sway::Sway::step` is
+/// given.
+pub fn hair_held(palette: [mat4; 64]) -> vec3 {
+    (palette[5] * vec4(HAIR_MASS, 1.0)).xyz
+}
+
+/// `palette` with his hair's bone set: his head's, turned about the middle of his skull so
+/// that his hair's mass is `off` (m) from where his head holds it (`sway::Sway::step`'s
+/// answer; none: his hair goes with his head). Every palette he's drawn with goes through
+/// this: his hair's vertices are on its own bone.
+pub fn with_hair(palette: [mat4; 64], off: vec3) -> [mat4; 64] {
+    var out = palette
+    let pivot = (palette[5] * vec4(HAIR_PIVOT, 1.0)).xyz
+    out[HAIR_BONE] = sway::turn_about(pivot, hair_held(palette), off) * palette[5]
+    out
 }
 
 /// The fingers in their bones' order: index, middle, ring, little finger, thumb.
@@ -164,52 +212,241 @@ const FINGER_NAMES_RIGHT = [
 
 /// The body's paint at `p` (rest space), his clothes by region as the locked outfit has them.
 pub fn body_paint(p: vec3) -> Cloth {
-    // The head: under the mask a dark void, behind it a black wrap.
-    // (His nape bare between his collar and his hair, as the sheet's back view.)
-    // Its edges: the collar's top curving up round his neck, his hairline above.
-    let nape = p.y - 1.645
-    if nape > 0.0 && p.y < 1.70 && p.z < -0.02 {
-        return SKIN
-    }
-    if p.y > 1.56 {
-        return if p.z > 0.0 { VOID } else { BLACK }
-    }
-    // The arms, from the jacket's armholes: each a loop round his arm's root, out over the top
-    // of his shoulder and in at his armpit, the jacket over his chest and back either side.
-    let e = (p.y - 1.40) / 0.10
-    let f = (p.z + 0.04) / 0.08
-    let hole = 0.16 + 0.045 * min(e * e + f * f, 4.0)
-    if p.y > 1.28 && p.x > hole {
-        // His left: bare, a charcoal wrap round the forearm.
-        return if p.x > 0.565 && p.x < 0.70 { CHARCOAL } else { SKIN }
-    }
-    if p.y > 1.28 && p.x < -hole {
-        // His right: the jacket's sleeve, a leather gauntlet, a black glove.
-        return if p.x < -0.50 { LEATHER } else { BLACK }
-    }
-    // The trousers.
-    if p.y < 0.97 {
-        return CHARCOAL
-    }
-    jacket_front(p)
+    worn_under(p, 0.0005)
 }
 
-/// His jacket's cloth at a point of it at rest: black, open down the front, the opening
-/// swinging to his right as it goes down, its edges gold; inside it, a charcoal top.
-fn jacket_front(p: vec3) -> Cloth {
-    if p.z > 0.0 && p.y < 1.52 {
-        let t = clamp((1.50 - p.y) / 0.50, 0.0, 1.0)
-        let e = abs(p.x + 0.05 * t) - (0.040 + 0.070 * sqrt(t))
-        if e < 0.0 {
-            // (His shirt: a matte charcoal knit, so it reads as a layer under the jacket.)
-            return CHARCOAL
+// ---- what his clothes are made of -------------------------------------------------------------
+//
+// Each cloth is its colour and its relief at a point of him at rest: its weave, its seams and
+// their stitches, its pockets and its ribs. `px` is how much of him a pixel covers there (m):
+// a line is drawn a pixel soft, and a pattern finer than two pixels isn't drawn at all (it
+// would shimmer).
+
+/// How much of a line `w` wide (m) a point `d` from its middle is in.
+fn stripe(d: f32, w: f32, px: f32) -> f32 {
+    saturate((0.5 * w - abs(d)) / max(px, 0.0003) + 0.5)
+}
+
+/// How much of a pattern that repeats every `period` (m) is drawn: all of it from eight
+/// pixels a repeat, none of it at four. (Drawn down to two pixels a repeat, a weave's threads
+/// beat against the pixels in rings across his chest.)
+fn fine(period: f32, px: f32) -> f32 {
+    saturate(0.25 * period / max(px, 0.00001) - 1.0)
+}
+
+/// A sewn seam `d` from its line (m), `along` it (m): a welt 11 mm wide with a groove down its
+/// middle (`x`: its relief, m) and a row of stitches either side of the groove (`y`: how much
+/// of the point is thread).
+fn seam(d: f32, along: f32, px: f32) -> vec2 {
+    let dash = if fract(along / 0.008) < 0.62 { fine(0.008, px) } else { 0.0 }
+    vec2(
+        0.0009 * stripe(d, 0.011, px) - 0.0012 * stripe(d, 0.003, px),
+        (stripe(d - 0.0045, 0.0013, px) + stripe(d + 0.0045, 0.0013, px)) * dash,
+    )
+}
+
+/// `base` with a seam's relief and thread on it (`seam`'s answer, or several added).
+fn sewn(base: Cloth, on: vec2) -> Cloth {
+    Cloth {
+        albedo: mix(base.albedo, THREAD, vec3(saturate(on.y) * 0.85)),
+        relief: base.relief + on.x,
+        ..base,
+    }
+}
+
+/// How far outside a box `half` wide and high about `at` a point of a flat piece is (m;
+/// negative inside).
+fn boxed(q: vec2, at: vec2, half: vec2) -> f32 {
+    let d = abs(q - at) - half
+    max(d.x, d.y)
+}
+
+/// His trousers at a point of them at rest (his legs', and his trunk's under his belt):
+/// charcoal twill combat trousers. A seam down the outside of each leg; a bellows pocket on
+/// each thigh with a flap and a gold snap; a knee's panel between two seams, pleated to bend;
+/// the cloth gathered into his boots; a fly and a waistband under his belt.
+fn trousers_at(p: vec3, px: f32) -> Cloth {
+    // About his leg's line: how far round from its front (0; a quarter turn its outside).
+    let za = if p.y > 0.542 { -0.036 } else {
+        mix(-0.088, -0.036, saturate((p.y - 0.086) / 0.456))
+    }
+    let out = abs(p.x) - 0.114
+    let fore = p.z - za
+    let phi = atan2(out, fore)
+    let leg = p.y < 0.86
+    // Its weave, and the cloth's own crumple: long soft folds across the leg, more of them
+    // where it's gathered into his boot.
+    let girth = phi * max(length(vec2(out, fore)), 0.04)
+    var relief = 0.00016 * sin(TAU * (girth + p.y) / 0.0028) * fine(0.0028, px)
+    relief += 0.0011 * sin(p.y * 70.0 + 2.2 * sin(phi * 2.0 + p.y * 17.0))
+    let gathered = 1.0 - smoothstep(0.34, 0.45, p.y)
+    relief += 0.0020 * gathered * sin(phi * 15.0 + 3.0 * sin(p.y * 40.0))
+    var on = vec2(0.0)
+    // Down its outside.
+    if out > 0.0 {
+        on += seam(fore, p.y, px)
+    }
+    var cloth = TROUSERS
+    if leg {
+        // His knee's panel, on the front of his leg.
+        let front = smoothstep(-0.03, 0.01, fore)
+        on += (seam(p.y - 0.615, girth, px) + seam(p.y - 0.468, girth, px)) * front
+        for k in 0..3 {
+            relief -= 0.0009 * front * stripe(p.y - (0.578 - 0.037 * f32(k)), 0.004, px)
         }
-        if e < 0.013 {
-            return GOLD
+        // His thigh's pocket, on its outside: the pocket standing off his leg, its flap over
+        // its top, a snap on the flap.
+        if out > 0.0 {
+            let q = vec2(fore, p.y)
+            let pocket = boxed(q, vec2(0.0, 0.672), vec2(0.052, 0.078))
+            let flap = boxed(q, vec2(0.0, 0.752), vec2(0.056, 0.022))
+            relief += 0.0028 * saturate(-pocket / 0.004) + 0.0020 * saturate(-flap / 0.003)
+            on.y += stripe(pocket + 0.006, 0.0013, px) *
+                fine(0.008, px) *
+                (if fract((q.x + q.y) / 0.008) < 0.62 { 1.0 } else { 0.0 })
+            // (Under the flap's edge, its shadow.)
+            let under = stripe(q.y - 0.727, 0.004, px) * saturate(-pocket / 0.004)
+            cloth = Cloth { albedo: cloth.albedo * (1.0 - 0.55 * under), ..cloth }
+            if length(q - vec2(0.0, 0.745)) < 0.0065 {
+                return Cloth { relief: 0.0045, ..GOLD }
+            }
+        }
+    } else {
+        // Under his belt: its waistband, and its fly down his front.
+        on += seam(p.y - 0.944, girth, px)
+        if p.z > 0.0 {
+            on += seam(p.x - 0.014, p.y, px) * smoothstep(0.944, 0.93, p.y)
         }
     }
-    BLACK
+    sewn(Cloth { relief, ..cloth }, on)
 }
+
+/// How far from the line from `a` to `b` a point of a flat piece is (m), and how far along it.
+fn along_line(q: vec2, a: vec2, b: vec2) -> vec2 {
+    let e = b - a
+    let h = clamp(dot(q - a, e) / dot(e, e), 0.0, 1.0)
+    vec2(length(q - (a + e * h)), h * length(e))
+}
+
+/// A flat-locked seam of his top `d` from its line: a low flat welt, its thread laid across
+/// it in a ladder.
+fn flatlock(d: f32, along: f32, px: f32) -> vec2 {
+    let ladder = 0.5 + 0.5 * sin(TAU * along / 0.0032)
+    vec2(0.0005 * stripe(d, 0.007, px), stripe(d, 0.0055, px) * mix(0.45, ladder, fine(0.0032, px)))
+}
+
+/// Where his top's neck is rolled over (rest height): the top of its turtleneck.
+pub const NECK_ROLL: f32 = 1.628
+
+/// His top at a point of it at rest (his trunk's over his belt, his neck's, his right arm's):
+/// a black compression knit, close as a skin and smoother than his jacket. Flat-locked seams
+/// from his neck to under each arm and down each side; its neck a ribbed turtleneck rolled
+/// over under his jaw; over that, the wrap his mask is tied on.
+fn top_at(p: vec3, px: f32) -> Cloth {
+    if p.y > NECK_ROLL + 0.016 {
+        return WRAP
+    }
+    // Its knit's courses.
+    var relief = 0.00010 * sin(TAU * p.y / 0.0018) * fine(0.0018, px)
+    var on = vec2(0.0)
+    if p.y > 1.50 {
+        // Its neck: ribs up it, and its top rolled over, a shadow under the roll.
+        let round = atan2(p.x, p.z + 0.03)
+        let ribs = fine(0.008, px)
+        relief += 0.0008 * sin(round * 46.0) * ribs
+        let roll = (p.y - NECK_ROLL) / 0.016
+        var cloth = Cloth { albedo: TOP.albedo * (1.0 + 0.5 * ribs * sin(round * 46.0)), ..TOP }
+        if abs(roll) < 1.0 {
+            relief += 0.0045 * sqrt(1.0 - roll * roll)
+        } else {
+            let under = stripe(p.y - (NECK_ROLL - 0.019), 0.006, px)
+            cloth = Cloth { albedo: cloth.albedo * (1.0 - 0.6 * under), ..cloth }
+        }
+        return Cloth { relief, ..cloth }
+    }
+    if p.x < -0.2 {
+        // His right arm's sleeve: one seam, under his arm.
+        if p.y < 1.455 {
+            on += flatlock(p.z + 0.068, p.x, px)
+        }
+    } else {
+        // From his neck to under each arm, and down each side.
+        let q = vec2(abs(p.x), p.y)
+        let raglan = along_line(q, vec2(0.052, 1.495), vec2(0.176, 1.335))
+        on += flatlock(raglan.x, raglan.y, px)
+        if abs(p.x) > 0.09 && p.y < 1.33 {
+            on += flatlock(p.z + 0.012, p.y, px)
+        }
+    }
+    Cloth {
+        albedo: mix(TOP.albedo, THREAD * 0.6, vec3(saturate(on.y) * 0.8)),
+        relief: relief + on.x,
+        ..TOP,
+    }
+}
+
+/// What he wears under his coat at a point of him at rest: his trousers to his belt, his top
+/// over it and up his neck, and the wrap round his head.
+fn worn_under(p: vec3, px: f32) -> Cloth {
+    // (Under his mask, a dark void.)
+    if p.y > 1.56 && p.z > 0.02 {
+        return VOID
+    }
+    if p.y < 0.97 {
+        return trousers_at(p, px)
+    }
+    top_at(p, px)
+}
+
+/// His coat's cloth at a point of it at rest, `e` outside its front opening (`opening`): a
+/// matte black twill, its edge bound in gold, a row of stitches inside the binding. Seams
+/// down its back and its sides and across its shoulders.
+fn coat_at(p: vec3, e: f32, px: f32) -> Cloth {
+    if e < TRIM {
+        // (The binding: a rounded welt.)
+        let across = (e / TRIM) * 2.0 - 1.0
+        return Cloth { relief: 0.0016 * sqrt(max(1.0 - across * across, 0.0)), ..GOLD }
+    }
+    let relief = 0.00018 * sin(TAU * (p.x + p.z + p.y) / 0.003) * fine(0.003, px)
+    var on = vec2(0.0, stripe(e - TRIM - 0.004, 0.0013, px) * (if fract(p.y / 0.008) < 0.62 {
+        fine(0.008, px)
+    } else { 0.0 }))
+    if p.z < -0.02 {
+        // Down the middle of its back, and across its shoulders.
+        on += seam(p.x, p.y, px)
+        on += seam(p.y - 1.405, p.x, px)
+    }
+    if abs(p.x) > 0.1 && p.y < 1.28 {
+        on += seam(p.z + 0.02, p.y, px)
+    }
+    // Round its waist, where its skirt is sewn on (`COAT_SEAM`).
+    on += seam(p.y - (COAT_SEAM + 0.008), atan2(p.x, p.z + 0.043) * 0.2, px)
+    sewn(Cloth { relief, ..BLACK }, on)
+}
+
+/// How far outside his jacket's front opening a point of him at rest is (m; negative: in the
+/// opening). The jacket hangs open from its collar to its hem: a hand's width at his throat,
+/// widening down to where his coat's tails' front edges hang (`shapes::TAILS_FROM`, 12 cm
+/// either side of his middle), and straight down from there. One line from collar to the
+/// tails' hem: the opening was a slanted slot that stopped at his belt, with the jacket closed
+/// across his hips under it, and its gold edges read as a sweatshirt's cords.
+pub fn opening(p: vec3) -> f32 {
+    if p.z <= 0.0 {
+        return 1.0
+    }
+    let t = clamp((1.50 - p.y) / 0.60, 0.0, 1.0)
+    // (Over its collar's foot the opening widens again: the collar stands open at his throat.)
+    let by_width = abs(p.x) - (0.035 + 0.083 * pow(t, 0.85) + 0.45 * max(p.y - 1.50, 0.0))
+    // (By his hips, where the tails' edges are: at their angle about the tails' own axis, so
+    // the jacket's edge runs into the tails' whatever the cloth's girth there.)
+    let rel = p - shapes::TAILS_AXIS
+    let r = length(rel.xz)
+    let by_angle = (atan2(abs(rel.x), rel.z) - shapes::TAILS_FROM * 0.0174532925) * r
+    mix(by_angle, by_width, smoothstep(0.93, 1.04, p.y))
+}
+
+/// How wide the gold along his jacket's front edges and his tails' is (m).
+pub const TRIM: f32 = 0.017
 
 /// His left arm at rest: the figure's arm and what his is over it (`arm_left_form`), about
 /// the figure's arm's chain (`figure::chains::arm_left`).
@@ -313,21 +550,29 @@ pub fn charts() -> [Part<16, 13>; CHARTS] {
         },
         // His jacket's collar: one rigid form on a line his chest carries. Its shoulders: each
         // on his collarbone and his upper arm, so it goes where his arm goes.
-        worn(figure::chains::collar(), [3, 3], collar_form::COLLAR, vec2(0.09, 0.87), 0.0),
-        worn(
-            figure::chains::yoke_left(),
-            [6, 8],
-            yoke_left_form::YOKE_LEFT,
-            vec2(0.07, 0.5),
-            YOKE_OVER,
-        ),
-        worn(
-            figure::chains::yoke_right(),
-            [7, 9],
-            yoke_right_form::YOKE_RIGHT,
-            vec2(0.07, 0.5),
-            YOKE_OVER,
-        ),
+        worn(figure::chains::collar(), [3, 3], COLLAR_FLARED, vec2(0.09, 0.87), 0.0),
+        Part {
+            stays_with: 3,
+            stays: YOKE_STAYS,
+            ..worn(
+                figure::chains::yoke_left(),
+                [6, 8],
+                yoke_left_form::YOKE_LEFT,
+                vec2(0.07, CAP_TO),
+                YOKE_OVER,
+            ),
+        },
+        Part {
+            stays_with: 3,
+            stays: YOKE_STAYS,
+            ..worn(
+                figure::chains::yoke_right(),
+                [7, 9],
+                yoke_right_form::YOKE_RIGHT,
+                vec2(0.07, CAP_TO),
+                YOKE_OVER,
+            ),
+        },
         hand_piece(0, 0),
         hand_piece(0, 1),
         hand_piece(0, 2),
@@ -446,6 +691,9 @@ pub fn grows_from(part: u32) -> u32 {
 /// the body is over the same 12 mm: the pieces overlap, and each as its own sheet the one
 /// stood off the other as a plate with a shade of its own.
 pub fn grown(part: u32) -> Grown {
+    if part == COLLAR {
+        return Grown { fillet: 0.012, reach: 9.0, laid: 0.012, cover: 0, beyond: 10.0 }
+    }
     if of_jacket(part) {
         return Grown { fillet: 0.012, reach: 9.0, laid: 0.012, cover: 0 }
     }
@@ -463,6 +711,31 @@ pub const COLLAR: u32 = 8
 pub const YOKE_LEFT: u32 = 9
 pub const YOKE_RIGHT: u32 = 10
 pub const JACKET_BODY: u32 = CHARTS + 1
+
+/// What of each of his coat's shoulders stays on his chest (`chart::Stay`): its top, within
+/// 1.1 radians of straight up, rides his collarbone and his arm, so the cap's arch goes
+/// over his arm wherever it is; from 1.4 radians off that, where its edge runs into the
+/// jacket's body's at the armhole, it lies where his chest has it, so the armhole's binding
+/// is one loop however his arm swings. (All of it with his arm, the cap's ends came away
+/// from the armhole's loop in his run and the gold line broke there.)
+pub const YOKE_STAYS: chart::Stay = chart::Stay {
+    by: chart::NO_STAY.by,
+    round: vec3(0.0, 1.1, 1.4),
+    along: vec2(-2.0, -1.0),
+}
+
+/// How far his coat's collar stands out from his neck, `f` of the way up its line (m): none
+/// at its foot, 2 cm from its middle up.
+fn collar_flare(f: f32, theta: f32) -> f32 {
+    0.02 * smoothstep(0.3, 0.6, f)
+}
+
+/// His coat's collar's form: as it was fitted, stood out from his neck toward its top: a
+/// coat's collar, with his top's neck inside it, and not a second neck. (A constant: worked
+/// out where his charts are made, each frame, it was a form fitted twice a frame, and the
+/// combat lab's frame went from 11 ms to 81.)
+@fuel(2 ** 36)
+pub const COLLAR_FLARED: Radial<16, 13> = collar_form::COLLAR.plus(chart::of(collar_flare))
 
 /// How far his jacket's shoulders stand off their fitted face (m): they lie over its body's
 /// top, and a little off it the step between the two is the shoulders' edge and not a crack.
@@ -593,35 +866,179 @@ pub fn shaded_wide(form: Radial<24, 21>) -> Radial<24, 11> {
     form.softened(SHADED_DETAIL).kept()
 }
 
-/// His paint on charted part `part` (`charts`' order, then `wide_charts`'): his arms and what's
-/// over them each one cloth, the others by where the place is on him at rest (`rest`), as his
-/// outfit's regions are written.
-pub fn chart_paint(part: u32, rest: vec3) -> Cloth {
-    if part == 0 {
-        return SKIN
+/// Where the wrap round his left forearm ends, at his wrist (his rest space, m along his arm).
+pub const WRAP_END: f32 = 0.664
+
+/// The wrap round his left forearm at a point of it at rest: a charcoal cloth band wound
+/// round it, each turn rising to its edge and falling back within a fifth of the turn (a
+/// step straight down, and the light across it flipped in ragged black marks).
+fn wrap_at(rest: vec3, px: f32) -> Cloth {
+    let turn = fract((rest.x - 0.565) / 0.022)
+    let rise = smoothstep(0.0, 0.8, turn) * (1.0 - smoothstep(0.8, 1.0, turn))
+    Cloth { relief: 0.0009 * rise * fine(0.022, px), ..CHARCOAL }
+}
+
+/// How wide the gold binding of his coat's armholes is (m).
+pub const BINDING: f32 = 0.009
+
+/// How far outside his coat's armhole a point of him at rest is (m, about; negative: in the
+/// armhole). One loop for each arm, cut through the jacket's body and its shoulder alike:
+/// where the coat meets a slanted oval tube about his arm's line, 19 cm high and 17 deep at
+/// the jacket's side (deeper, it grazed the jacket's back and its edge there was a smear) and
+/// rising as it goes out along his arm, so the shoulder's cap ends in an arch over
+/// the top of his arm. (Each piece's own edge as its cover had it, the cap's rim and the
+/// body's armhole were two ragged edges that didn't meet.)
+pub fn armhole(p: vec3) -> f32 {
+    let out = abs(p.x)
+    if out < 0.12 {
+        return 1.0
     }
-    if part == 1 {
-        return BLACK
+    let middle = 1.40 + 0.39 * max(out - 0.19, 0.0)
+    (length(vec2((p.y - middle) / 0.096, (p.z + 0.062) / 0.084)) - 1.0) * 0.09
+}
+
+/// How low a shoulder of his coat comes down his chest and his back (rest height): under
+/// this it's the jacket's body.
+pub const YOKE_FOOT: f32 = 1.42
+
+/// Where along a shoulder's path its cap starts to narrow, and where it ends (of the path's
+/// length: his shoulder's joint is 0.33 of the way); how far round from straight up the cap
+/// reaches where it starts (radians); and a shoulder's radius about its path, about (m).
+const CAP_FROM: f32 = 0.325
+const CAP_TO: f32 = 0.385
+const CAP_ROUND: f32 = 1.35
+const CAP_RADIUS: f32 = 0.075
+
+/// How far inside his coat's armhole's edge a point of charted part `part` is (m, about;
+/// under 0: in the armhole, cut away), `rest` where it is on him at rest and `place` on its
+/// chart. The jacket's body is cut where `armhole` has it. A shoulder ends just past his
+/// shoulder's joint, in an arch over the top of his arm, drawn on its own chart: the angle
+/// round its path it reaches narrows from `CAP_ROUND` to nothing between `CAP_FROM` and
+/// `CAP_TO` of the way along. (Cut by the same tube as the body, which runs nearly along a
+/// shoulder's side, its edge was a row of steps; and 6 cm out over his arm, as it was
+/// sculpted, the cap stood off his arm as a stiff tab whenever the arm moved.)
+pub fn armhole_edge(part: u32, rest: vec3, place: vec3) -> f32 {
+    if part == JACKET_BODY {
+        return armhole(rest)
+    }
+    if part != YOKE_LEFT && part != YOKE_RIGHT {
+        return 1.0
+    }
+    if place.x <= CAP_FROM {
+        return armhole(rest)
+    }
+    let along = saturate((place.x - CAP_FROM) / (CAP_TO - CAP_FROM))
+    let reach = CAP_ROUND * sqrt(1.0 - along * along)
+    min(
+        (reach - abs(chart::wrapped(place.y))) * CAP_RADIUS,
+        (CAP_TO - place.x) * 0.373,
+    )
+}
+
+/// What charted part `part` is made of at a point of it (`charts`' order, then
+/// `wide_charts`'): `rest` is where the point is on him at rest and `place` where it is on the
+/// part's chart; `armhole` how far inside his coat's armhole's edge it is
+/// (`armhole_edge`); `inner` whether it's the inside of a piece of his coat that's
+/// seen; `px` how much of him a pixel covers there (m). His bare arm, the wrap and the gauntlet on his forearms, his hands; his
+/// coat's pieces (their outside its cloth, bound in gold at every edge; their inside its
+/// lining); and what he wears under it (`worn_under`).
+pub fn chart_paint(part: u32, rest: vec3, armhole: f32, inner: bool, px: f32) -> Cloth {
+    if part == 0 {
+        // (His bare arm in his coat's shade where the shoulder's cap is over it.)
+        let lit = mix(0.3, 1.0, smoothstep(0.215, 0.29, rest.x))
+        return Cloth { albedo: SKIN.albedo * lit, ..SKIN }
     }
     if part == 2 {
-        return CHARCOAL
+        return wrap_at(rest, px)
     }
     if part == 3 {
         return LEATHER
     }
-    if part == JACKET_BODY {
-        return jacket_paint(rest)
-    }
-    // (His collar and his jacket's shoulders are its black all over: by where they are on
-    // him at rest a shoulder's rim, out over his arm, took his arm's paint.)
     if of_jacket(part) {
-        return BLACK
+        if inner {
+            // (Its lining in the coat's own shade away from its front edges and its collar's
+            // top: lit all over, what showed of it through an armhole was a bright patch on
+            // his shoulder.)
+            let edge = min(opening(rest), collar_top(rest) - rest.y)
+            let lit = mix(0.1, 1.0, 1.0 - smoothstep(0.015, 0.09, edge))
+            return Cloth { albedo: LINING.albedo * lit, ..LINING }
+        }
+        // (Its armholes bound: one loop through its body and its shoulder.)
+        if armhole < BINDING {
+            return Cloth { relief: 0.0012, ..GOLD }
+        }
+        if part == JACKET_BODY {
+            return coat_at(rest, opening(rest), px)
+        }
+        if part == COLLAR {
+            // (Its front edges the jacket's own, on up; its top edge bound as they are.)
+            return coat_at(rest, min(opening(rest), collar_top(rest) - rest.y), px)
+        }
+        // A shoulder: a seam along its top.
+        return sewn(coat_at(rest, 1.0, px), seam(rest.z + 0.065, rest.x, px))
     }
-    body_paint(rest)
+    // (His left hand bare, his right in a black glove. The wrap round his left forearm
+    // carries on over the heel of his palm to his wrist: the wrap's own form ends inside his
+    // palm's, where the two surfaces lie in one another, and with his palm bare there the
+    // wrap's end showed through it as ragged dark marks.)
+    if of_hand(part) {
+        if part >= HAND_LEFT + HAND_PIECES {
+            return LEATHER
+        }
+        return if rest.x < WRAP_END { wrap_at(rest, px) } else { SKIN }
+    }
+    worn_under(rest, px)
+}
+
+/// How high his coat's collar stands at a point round it (rest height): to the middle of his
+/// neck behind, a little lower at its front edges, so his top's neck shows over it all round.
+pub fn collar_top(p: vec3) -> f32 {
+    1.565 + 0.03 * smoothstep(0.05, -0.05, p.z)
+}
+
+/// How far inside its cover's edge a point of charted part `part` is (places along its path;
+/// under 0 where the part isn't): his coat's pieces'. A part with no cover is everywhere.
+pub fn chart_edge(part: u32, covers: [f32], place: vec3) -> f32 {
+    if !of_jacket(part) {
+        return 1000.0
+    }
+    let at = if part == JACKET_BODY { 0 } else { part - COLLAR + 1 }
+    chart::inside(covers, place.x, place.y, at: at)
+}
+
+/// What a pixel of charted part `part` shows: whether the part is there at all (`hidden`:
+/// outside its cover or cut away), what it's made of there, and its normal with the cloth's
+/// relief on it (and turned about where it's a coat's inside that's seen).
+pub struct Dressed: Copy {
+    pub hidden: bool,
+    pub cloth: Cloth,
+    pub normal: vec3,
+}
+
+/// Charted part `part`'s pixel (`v`: what its vertices passed down; `n`: its form's normal
+/// there, `chart::Vertex::normal_from`; `from_eye`: the way from the eye to it, unit;
+/// `covers`: `jacket_covers`). Each of the three programs that draw him asks this, so his
+/// clothes are the same in all of them.
+pub fn dressed(part: u32, v: chart::Vertex, n: vec3, from_eye: vec3, covers: [f32]) -> Dressed {
+    let edge = chart_edge(part, covers, v.place)
+    let inner = two_faced(part) && dot(n, from_eye) > 0.0
+    let px = 0.5 * (length(dpdx(v.rest)) + length(dpdy(v.rest)))
+    // (How far inside its armhole's edge, in the cloth's own width: where the cloth runs
+    // nearly along the armhole's tube the distance from the tube grows slowly across it, and
+    // by that alone the binding spread into a patch.)
+    let hole = armhole_edge(part, v.rest, v.place)
+    let across = length(vec2(dpdx(hole), dpdy(hole))) / max(px, 0.000001)
+    let cloth = chart_paint(part, v.rest, hole / clamp(across, 0.25, 1.5), inner, px)
+    let normal = engine::character::embossed(n, v.world, cloth.relief)
+    Dressed {
+        hidden: edge < 0.0 || chart_cut(part, v.rest, v.place),
+        cloth,
+        normal: if inner { -normal } else { normal },
+    }
 }
 
 /// His jacket's pieces' covers in GPU memory (`jacket_cover`: where each is on its chart, as
-/// how far inside its edge each place is: `chart::Cover::edges`), in the order `chart_hidden`
+/// how far inside its edge each place is: `chart::Cover::edges`), in the order `chart_edge`
 /// reads them.
 pub fn jacket_covers() -> std::gpu::GpuBuffer<f32> {
     let limbs = charts()
@@ -633,12 +1050,35 @@ pub fn jacket_covers() -> std::gpu::GpuBuffer<f32> {
     let of = |part: Part<16, 13>| {
         round(part.chain.rest().length(), part.form.radius(f: 0.5, theta: 0.0))
     }
+    // The body's cover as it was written has the front of an older jacket, a slanted slot
+    // that swung to his right: its front is made whole here, from its hem to the foot of its
+    // collar, and the jacket's opening is cut where `opening` has it (`chart_cut`). Its
+    // armholes and its neck stay as they were written.
+    let at_rest = body.rest()
+    var marks: Vec<bool> = Vec::new()
+    for i in 0..chart::COVER_ALONG {
+        for j in 0..chart::COVER_ROUND {
+            let at = at_rest.side(
+                f: (f32(i) + 0.5) / f32(chart::COVER_ALONG),
+                theta: (f32(j) + 0.5) / f32(chart::COVER_ROUND) * TAU,
+            )
+            let front = at.z > 0.0 && at.y < 1.47 && abs(at.x) < 0.17
+            // (And its sides whole up to where its shoulders take over: its armholes are cut
+            // where `armhole` has them.)
+            let side = abs(at.x) > 0.1 && at.y < 1.45
+            marks.push(front || side || jacket_cover::JACKET_COVER.at(i, j))
+        }
+    }
+    // (Its collar's cover whole, and its shoulders': the collar's front and its top are cut
+    // where `opening` and `collar_top` have them, a shoulder's edges where `armhole` and
+    // `YOKE_FOOT` do.)
+    let all: Vec<bool> = Vec::filled(chart::COVER_ALONG * chart::COVER_ROUND, true)
     chart::uploaded(
         [
-            jacket_cover::JACKET_COVER,
-            jacket_cover::COLLAR_COVER,
-            jacket_cover::YOKE_LEFT_COVER,
-            jacket_cover::YOKE_RIGHT_COVER,
+            chart::cover_of(marks),
+            chart::cover_of(all),
+            chart::cover_of(all),
+            chart::cover_of(all),
         ],
         [
             round(body.chain.rest().length(), body.form.radius(f: 0.5, theta: 0.0)),
@@ -649,37 +1089,84 @@ pub fn jacket_covers() -> std::gpu::GpuBuffer<f32> {
     )
 }
 
-/// Whether charted part `part` isn't at `place` on its chart (how far along, the angle
-/// round), by its cover's edges in `covers` (`jacket_covers`): his jacket's pieces, which
-/// aren't at its open front, its armholes or where another piece takes over. A program draws
-/// nothing of a part there.
-pub fn chart_hidden(part: u32, covers: [f32], place: vec3) -> bool {
-    if !of_jacket(part) {
-        return false
-    }
-    let at = if part == JACKET_BODY { 0 } else { part - COLLAR + 1 }
-    chart::inside(covers, place.x, place.y, at: at) < 0.0
-}
-
 /// Whether charted part `part` is cut away at a place besides (where it is on him at rest):
 /// his jacket's front's edge where `body_paint` has his shirt showing, so the gold along it
 /// keeps its width.
-pub fn chart_cut(part: u32, rest: vec3) -> bool {
-    if part == JACKET_BODY && rest.z > 0.0 && rest.y < 1.52 && rest.y >= 0.97 {
-        let t = clamp((1.50 - rest.y) / 0.50, 0.0, 1.0)
-        return abs(rest.x + 0.05 * t) - (0.040 + 0.070 * sqrt(t)) < 0.0
+pub fn chart_cut(part: u32, rest: vec3, place: vec3) -> bool {
+    if part == COLLAR {
+        return opening(rest) < 0.0 || rest.y > collar_top(rest)
     }
-    false
+    if part == YOKE_LEFT || part == YOKE_RIGHT {
+        return armhole_edge(part, rest, place) < 0.0 || rest.y < YOKE_FOOT
+    }
+    part == JACKET_BODY && (opening(rest) < 0.0 || rest.y < COAT_SEAM || armhole(rest) < 0.0)
 }
+
+/// Where his jacket stops and his coat's tails carry on (rest height): just under the tails'
+/// top (`shapes::TAILS_TOP`), so the two are one coat with no hem between them.
+pub const COAT_SEAM: f32 = 0.927
 
 /// The collar's paint: the jacket's black, standing up round his neck, open in front.
 fn collar_paint(p: vec3) -> Cloth {
     BLACK
 }
 
-/// The belt's paint: plain black, as the sheet has it.
+/// His belt's height, its half width, and where its buckle's middle is (rest space).
+const BELT_AT: f32 = 0.975
+const BELT_HALF: f32 = 0.021
+const BUCKLE: vec3 = vec3(0.0, 0.975, 0.1225)
+
+/// His belt at `q` (rest space): a leather band 4 cm wide round his trousers' waist, and a
+/// buckle on its front, a frame with a prong across it.
+fn belt(q: vec3) -> f32 {
+    let e = length(vec2(q.x / 0.172, (q.z + 0.006) / 0.124))
+    let band = max((e - 1.0) * 0.124, abs(q.y - BELT_AT) - BELT_HALF)
+    let c = q - BUCKLE
+    let outer = max(max(abs(c.x) - 0.031, abs(c.y) - 0.028), abs(c.z) - 0.0045)
+    let hole = max(abs(c.x) - 0.021, abs(c.y) - 0.018)
+    let frame = max(outer, -hole)
+    let prong = max(max(abs(c.x + 0.004) - 0.0025, abs(c.y) - 0.0275), abs(c.z - 0.002) - 0.003)
+    min(band, min(frame, prong))
+}
+
+/// His belt as a shape on his spine's first joint (`at`: the joint at rest).
+pub struct Belt: Copy + GpuData {
+    pub at: vec3,
+}
+
+impl Surface for Belt {
+    fn bound(self) -> Bound {
+        Bound { centre: vec3(0.0, BELT_AT, 0.0) - self.at, radius: 0.22, slope: 0.5 }
+    }
+
+    fn interval(self, over: Box3) -> Interval {
+        let r = 1.5 * 0.5 * length(over.hi - over.lo)
+        let d = self.distance(over.center())
+        Interval { lo: d - r, hi: d + r }
+    }
+
+    fn distance(self, p: vec3) -> f32 {
+        belt(p + self.at)
+    }
+
+    fn lipschitz(self, near: f32) -> f32 {
+        1.5
+    }
+}
+
+/// His belt's paint (`p` from its joint): black leather, a row of stitches along each edge,
+/// its buckle gold.
 fn sash_paint(p: vec3) -> Cloth {
-    SASH
+    let q = p + vec3(0.0, 1.072, -0.007)
+    let c = q - BUCKLE
+    if c.z > -0.006 && abs(c.x) < 0.033 && abs(c.y) < 0.03 {
+        if max(abs(c.x) - 0.021, abs(c.y) - 0.018) > -0.0005 || abs(c.x + 0.004) < 0.003 {
+            return GOLD
+        }
+    }
+    let stitch = stripe(abs(q.y - BELT_AT) - 0.015, 0.0015, 0.0008) *
+        (if fract(atan2(q.x, q.z) / 0.045) < 0.6 { 1.0 } else { 0.0 })
+    Cloth { albedo: mix(LEATHER.albedo, THREAD, vec3(stitch * 0.7)), ..LEATHER }
 }
 
 /// The skull the hair grows from, in the unscaled head's space (the body's, measured).
@@ -691,7 +1178,7 @@ pub struct Mask: Copy + GpuData {}
 
 impl Surface for Mask {
     fn bound(self) -> Bound {
-        Bound { centre: vec3(0.0, 0.12, 0.07), radius: 0.24, slope: 0.5 }
+        Bound { centre: vec3(0.0, 0.14, 0.05), radius: 0.31, slope: 0.5 }
     }
 
     /// By its bound on the gradient from its centre's distance: no derived interval of all
@@ -841,17 +1328,6 @@ impl Surface for Tails {
     }
 }
 
-/// The long jacket's paint at `p` (rest space): as `body_paint` has it above his belt; below,
-/// where his trousers are, it carries on black, gold along its front edges.
-pub fn jacket_paint(p: vec3) -> Cloth {
-    if p.y >= 0.97 {
-        // (Its own cloth all over: by his body's paint, a rim out over his arm took his arm's.)
-        return jacket_front(p)
-    }
-    // (Its gold trim ends at his belt, as the sheet's: below, the tails' own hem is gold.)
-    BLACK
-}
-
 /// The tails' paint: black outside, gold lined, a gold band along the hem.
 fn tails_paint(p: vec3) -> Cloth {
     let q = p + vec3(0.0, 0.949, -0.043)
@@ -863,6 +1339,12 @@ fn tails_paint(p: vec3) -> Cloth {
     }
     let low = shapes::hem(clamp(deg, 42.0, 318.0))
     if q.y < low + 0.022 {
+        return GOLD
+    }
+    // (Its front edges gold too, on from his jacket's: one trim from his collar to the hem.)
+    let edge = shapes::front_edge(q.y)
+    let round = min(deg - edge, 360.0 - edge - deg) * 0.0174532925 * length(rel.xz)
+    if round < TRIM {
         return GOLD
     }
     if through >= -0.004 {
@@ -897,12 +1379,9 @@ pub fn hero() -> Creature<Cloth> {
         .join(
             "sash",
             b("spine 1"),
-            // A flat leather belt, about 4 cm, straight-sided (an oval band bulged into a tube).
-            oval(vec3(0.19, 0.6, 0.14))
-                .translate(vec3(0.0, 0.975, 0.0))
-                .intersect(cuboid(vec3(1.0, 0.021, 1.0)).translate(vec3(0.0, 0.975, 0.0)))
-                .with_at(sash_paint)
-                .translate(-s.rest(b("spine 1"))),
+            // A flat leather belt, about 4 cm, straight-sided (an oval band bulged into a tube),
+            // on his trousers under his open jacket.
+            Belt { at: s.rest(b("spine 1")) }.with_at(sash_paint),
             seam: hard(),
         )
         .join(
@@ -935,6 +1414,51 @@ pub fn head() -> Creature<Cloth> {
     let s = skeleton()
     let head = s.find("head")
     creature(s)
-        .join("hair", head, Hair {}.with_at(hair_paint))
+        .join("hair", s.find("hair"), Hair {}.with_at(hair_paint))
         .join("mask", head, Mask {}.with_at(mask_paint), seam: hard())
+}
+
+@test
+fn his_coats_front_edge_is_one_line_from_its_collar_into_its_tails() {
+    // Where his jacket stops and his tails carry on, the jacket's front edge is where the
+    // tails' is, on each side: the gold along them is one line.
+    let a = shapes::front_edge(COAT_SEAM) * 0.0174532925
+    for side in [1.0, -1.0] {
+        let p = vec3(
+            shapes::TAILS_AXIS.x + side * sin(a) * 0.19,
+            COAT_SEAM,
+            shapes::TAILS_AXIS.z + cos(a) * 0.19,
+        )
+        assert(abs(opening(p)) < 0.004, f"{opening(p)} m off the tails' edge")
+    }
+    // And from his throat down, the opening only widens: a point of his chest's front is
+    // further inside it the lower it is.
+    var last = opening(vec3(0.1, 1.5, 0.12))
+    for i in 1..31 {
+        let now = opening(vec3(0.1, 1.5 - 0.019 * f32(i), 0.12))
+        assert(now <= last + 0.0001, f"at {1.5 - 0.019 * f32(i)}")
+        last = now
+    }
+    // The tails' front edge is cut back from his waist: past the front of his thigh (47
+    // degrees round) a hand's breadth down, and further the lower.
+    assert(shapes::front_edge(shapes::TAILS_TOP) == shapes::TAILS_FROM)
+    assert(shapes::front_edge(shapes::TAILS_TOP - 0.09) > 55.0)
+    assert(shapes::front_edge(0.6) > shapes::front_edge(0.8))
+}
+
+@test
+fn his_coats_armhole_is_one_loop_through_its_body_and_its_shoulder() {
+    // Where a shoulder takes over from the jacket's body, both are cut by the same rule: a
+    // point of his rest space is in the armhole of both or of neither.
+    for i in 0..12 {
+        let p = vec3(0.17 + 0.004 * f32(i), YOKE_FOOT, -0.065 + 0.01 * f32(i))
+        let place = vec3(0.2, 1.0, 0.0)
+        assert(armhole_edge(JACKET_BODY, p, place) == armhole_edge(YOKE_LEFT, p, place))
+    }
+    // A shoulder ends past his shoulder's joint in an arch over the top of his arm: there at
+    // its top, gone at its sides, and gone altogether past `CAP_TO`.
+    let over = vec3(0.24, 1.53, -0.065)
+    assert(armhole_edge(YOKE_LEFT, over, vec3(0.36, 0.0, 0.0)) > 0.0)
+    assert(armhole_edge(YOKE_LEFT, over, vec3(0.36, 1.3, 0.0)) < 0.0)
+    assert(armhole_edge(YOKE_LEFT, over, vec3(CAP_TO + 0.01, 0.0, 0.0)) < 0.0)
 }

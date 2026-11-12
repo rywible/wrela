@@ -80,63 +80,120 @@ pub fn unscaled(p: vec3) -> vec3 {
 
 // ---- the mask -------------------------------------------------------------------------------
 
-/// The snout's tip.
-pub const TIP = vec3(0.0, 1.6295, 0.20875)
+/// The snout's tip. (It was 2.3 cm longer: from the side the mask read as a beak.)
+pub const TIP = vec3(0.0, 1.632, 0.186)
 
-/// An ear: a flattened triangle cupped on its front, `side` 1 his left, -1 his right.
-fn ear(p: vec3, side: f32) -> f32 {
-    let base = vec3(side * 0.060, 1.775, 0.015)
-    let d0 = p - base
-    // Its frame: turned 18° out about z and 8° back about x (the design's R; q = Rᵀ (p − base)).
-    let q = vec3(
-        0.951057 * d0.x - side * 0.309017 * d0.y,
-        side * 0.30601 * d0.x + 0.941801 * d0.y - 0.139173 * d0.z,
-        side * 0.043007 * d0.x + 0.132361 * d0.y + 0.990268 * d0.z,
+/// An ear's height and its width at its base (m).
+const EAR_H: f32 = 0.168
+const EAR_W: f32 = 0.074
+
+/// A point in an ear's own frame (`side` 1 his left, -1 his right): from the ear's base, x
+/// across it, y up it, z out of its front. The ear leans 22° out and 8° back, and its front
+/// is turned 20° outward: facing straight ahead, it was a blade's edge from the side. (Leant
+/// 16° back, it stood in among his hair's spikes, and one came through its front.)
+fn in_ear(p: vec3, side: f32) -> vec3 {
+    let d0 = p - vec3(side * 0.066, 1.772, 0.018)
+    let d = vec3(
+        0.939693 * d0.x - side * 0.342020 * d0.z,
+        d0.y,
+        side * 0.342020 * d0.x + 0.939693 * d0.z,
     )
-    let h = 0.15
-    let w = 0.055
-    let d2 = tri2(q.xy, vec2(-w / 2.0, 0.0), vec2(w / 2.0, 0.0), vec2(side * 0.004, h))
-    let across = clamp(abs(q.x) / (w / 2.0), 0.0, 1.0)
-    let z = q.z + 0.012 * (1.0 - across * across) * clamp(q.y / h, 0.0, 1.0)
-    max(d2 - 0.004, abs(z) - 0.005) - 0.002
+    vec3(
+        0.927184 * d.x - side * 0.374607 * d.y,
+        side * 0.370961 * d.x + 0.918161 * d.y - 0.139173 * d.z,
+        side * 0.052135 * d.x + 0.129039 * d.y + 0.990268 * d.z,
+    )
 }
 
-/// Hakuro's mask, in the unscaled head's space: a fox's face with a long snout, a brow ridge,
-/// tall ears and two slit eyes, cut behind its rim and under the chin.
+/// An ear: a tall triangle, thick at its base and thin at its tip, cupped on its front. (A
+/// plate 5 mm thick the whole way up, upright, it was a blade from the side.)
+fn ear(p: vec3, side: f32) -> f32 {
+    let q = in_ear(p, side)
+    let up = clamp(q.y / EAR_H, 0.0, 1.0)
+    let d2 = tri2(
+        q.xy,
+        vec2(-EAR_W / 2.0, 0.0),
+        vec2(EAR_W / 2.0, 0.0),
+        vec2(side * 0.004, EAR_H),
+    )
+    let across = clamp(abs(q.x) / (EAR_W / 2.0), 0.0, 1.0)
+    // (Its back bowed out, its front hollowed: a shell's section, not a board's.)
+    let z = q.z + 0.016 * (1.0 - across * across) * (1.0 - 0.5 * up)
+    max(d2 - 0.004, abs(z) - mix(0.011, 0.0045, up)) - 0.002
+}
+
+/// Where the fur at the mask's cheek ends, his left's two points (the right's mirrored): the
+/// lower and longer, and the upper.
+const RUFF_LOW = vec3(0.124, 1.602, -0.052)
+const RUFF_HIGH = vec3(0.128, 1.664, -0.058)
+
+/// The fur at the mask's cheek on `side`: two flat points swept back along the side of his
+/// head from the mask's rim, the lower the longer. (Round cones standing straight out from
+/// his cheeks, they read as tusks.)
+fn ruff(p: vec3, side: f32) -> f32 {
+    // (Flat against his head: half as thick out from it as they're wide.)
+    let q = vec3(side * p.x, p.y, p.z)
+    let flat = vec3(2.0, 1.0, 1.0)
+    let low = cone(
+        q * flat,
+        vec3(0.088, 1.648, 0.040) * flat,
+        RUFF_LOW * flat,
+        ra: 0.030,
+        rb: 0.003,
+    )
+    let high = cone(
+        q * flat,
+        vec3(0.096, 1.690, 0.026) * flat,
+        RUFF_HIGH * flat,
+        ra: 0.024,
+        rb: 0.003,
+    )
+    min(low, high) / 2.0
+}
+
+/// Hakuro's mask, in the unscaled head's space: a fox's face, wide at the brow and narrowing
+/// to a short muzzle; a slanted brow ridge over each slit eye; tall ears leaning out, their
+/// fronts turned outward; and two flat points of fur at each cheek, swept back. Its rim runs back round his cheeks
+/// to his ears, so it sits on his face as a shell: cut off flat across behind his brow, it
+/// was a plate held in front of a black block.
 pub fn fox(p: vec3) -> f32 {
-    var face = ellip(p, vec3(0.0, 1.69, -0.004), vec3(0.110, 0.140, 0.132))
+    var face = ellip(p, vec3(0.0, 1.694, -0.004), vec3(0.106, 0.138, 0.130))
     for s in [1.0, -1.0] {
         face = smin(
             face,
-            ellip(p, vec3(s * 0.066, 1.628, 0.060), vec3(0.048, 0.040, 0.052)),
+            ellip(p, vec3(s * 0.060, 1.640, 0.064), vec3(0.040, 0.034, 0.046)),
             0.03,
         )
     }
-    let w = vec3(1.0 / 1.04, 1.0, 1.0)
-    var sn = cone(p * w, vec3(0.0, 1.672, 0.070), TIP * w, ra: 0.052, rb: 0.017)
+    var sn = cone(p, vec3(0.0, 1.668, 0.070), TIP, ra: 0.047, rb: 0.015)
     sn = smax(sn, -(p.y - 1.6), 0.01)
-    face = smin(face, sn, 0.035 * 0.6)
+    face = smin(face, sn, 0.021)
     for s in [1.0, -1.0] {
+        // Its brow's ridge, low by the nose and rising outward.
         face = smin(
             face,
             cone(
                 p,
-                vec3(s * 0.012, 1.735, 0.112),
-                vec3(s * 0.070, 1.745, 0.085),
-                ra: 0.010,
+                vec3(s * 0.014, 1.724, 0.117),
+                vec3(s * 0.084, 1.754, 0.074),
+                ra: 0.012,
                 rb: 0.006,
             ),
-            0.02,
+            0.018,
         )
     }
-    var d = smax(face, -(p.z - 0.040), 0.006)
+    // Its rim: back round his cheeks, further the further out.
+    let rim = 0.046 - 4.0 * p.x * p.x
+    var d = smax(face, -(p.z - rim), 0.006)
     d = smax(d, -(p.y - 1.560), 0.004)
     d = smin(d, min(ear(p, 1.0), ear(p, -1.0)), 0.010)
-    // The eye slits, tilted 16°.
+    // (Its cheeks' fur after the rim's cut: it sweeps back past the rim.)
+    d = smin(d, min(ruff(p, 1.0), ruff(p, -1.0)), 0.012)
+    // The eye slits, tilted 22°.
     for s in [1.0, -1.0] {
-        let q0 = vec2(s * (p.x - s * 0.036), p.y - 1.700)
-        let q = vec2(0.961262 * q0.x + 0.275637 * q0.y, -0.275637 * q0.x + 0.961262 * q0.y)
-        var e = (length(q / vec2(0.024, 0.0065)) - 1.0) * 0.0065
+        let q0 = vec2(s * (p.x - s * 0.037), p.y - 1.700)
+        let q = vec2(0.927184 * q0.x + 0.374607 * q0.y, -0.374607 * q0.x + 0.927184 * q0.y)
+        var e = (length(q / vec2(0.027, 0.006)) - 1.0) * 0.006
         e = max(e, -(p.z - 0.02))
         d = smax(d, -e, 0.0015)
     }
@@ -190,10 +247,13 @@ pub fn fox_paint(p: vec3) -> (vec3, f32) {
             w1: 0.0006,
         ),
     )
-    if p.y > 1.775 && p.z > 0.0 {
+    // An ear's inside, on its front: red.
+    let e = in_ear(q, 1.0)
+    let on_ear = e.y > 0.006 && abs(e.x) < EAR_W
+    if on_ear && e.z > -0.004 {
         marks = min(
             marks,
-            tri2(q.xy, vec2(0.0458, 1.7931), vec2(0.0835, 1.7808), vec2(0.1004, 1.8878)),
+            tri2(e.xy, vec2(-0.023, 0.014), vec2(0.025, 0.014), vec2(0.004, EAR_H - 0.04)),
         )
     }
     if p.y < 1.636 {
@@ -212,6 +272,10 @@ pub fn fox_paint(p: vec3) -> (vec3, f32) {
     var c = if marks < 0.0 { red } else { white }
     if length((p - TIP) * vec3(1.0, 1.3, 1.0)) < 0.016 {
         c = vec3(0.007, 0.006, 0.007)
+    }
+    // (Its cheeks' fur tipped in vermilion.)
+    if min(length(q - RUFF_LOW), length(q - RUFF_HIGH)) < 0.03 {
+        c = red
     }
     (c, 0.25)
 }
@@ -260,7 +324,9 @@ fn blade(p: vec3, a: vec3, b0: vec3, r0: f32, arc: f32) -> f32 {
         let ri = r * pow(1.0 - s, 0.8) + 0.002
         let pa = a + (last - a) + t * ((flat - 1.0) * dot(last - a, t))
         let pb = a + (pt - a) + t * ((flat - 1.0) * dot(pt - a, t))
-        d = min(d, cone(q, pa, pb, rl * flat, ri * flat) / flat)
+        // (Each length run smoothly into the last: joined at a crease, a spike was a stack
+        // of rings, a horn's and not a lock of hair's.)
+        d = smin(d, cone(q, pa, pb, rl * flat, ri * flat) / flat, 0.006)
         last = pt
         rl = ri
     }
@@ -276,7 +342,14 @@ pub fn hair(p: vec3, skull: f32) -> f32 {
     // (Far from every spike's reach, the cap alone: the spikes are evaluated near the head.)
     if length(p - vec3(0.0, 1.76, -0.12)) < 0.32 {
         for c in CLUMPS {
-            cap = smin(cap, blade(p, c.0, c.1, c.2, c.3), 0.0025)
+            // (Only the spikes that could be the nearest: one whose whole reach is further off
+            // than what's already found changes nothing. Every pixel of his head read all
+            // fifteen, five lengths each.)
+            let b = c.0 + (c.1 - c.0) * 0.64
+            let reach = 0.5 * length(b - c.0) + c.2 + c.3 + 0.006
+            if length(p - (c.0 + b) * 0.5) - reach < cap + 0.004 {
+                cap = smin(cap, blade(p, c.0, c.1, c.2, c.3), 0.0025)
+            }
         }
     }
     smax(cap, p.z + 0.012, 0.008)
@@ -393,21 +466,53 @@ pub const FLARE: f32 = 0.06
 pub const VENT_TOP: f32 = 0.0
 pub const VENT_HALF: f32 = 0.004
 
-/// How far round from straight ahead the tails' edges are (degrees): open in front between.
+/// How far round from straight ahead the tails' edges are at their top (degrees): open in
+/// front between.
 pub const TAILS_FROM: f32 = 42.0
 pub const TAILS_TO: f32 = 318.0
 
-/// The tails' girth, from `TAILS_FROM` to `TAILS_TO` every 12° (m from the axis): the long
-/// jacket's outside just above its hem (measured by jacket_long.py), so they carry on its line.
+/// How much further round each front edge is cut back by the time it's fallen `CUT_OVER` (m)
+/// from the tails' top (degrees): a cutaway coat, its front edges sweeping back from his
+/// waist to its long tails behind. (Hanging straight down from his waist, each front edge lay
+/// down the middle of a thigh: a thigh lifted in a stride took the edge on its front, and the
+/// edge rode it as a ragged line.)
+pub const CUT_BACK: f32 = 44.0
+pub const CUT_OVER: f32 = 0.34
+
+/// How far round from straight ahead the tails' front edge is at height `y` (degrees; its
+/// other edge is as far from straight ahead the other way).
+pub fn front_edge(y: f32) -> f32 {
+    // (Quickest at his waist, as a tailcoat's front is cut: by a hand's breadth down, the edge
+    // is past the front of his thigh. Easing away from his waist, the edge's top corner still
+    // lay on his thigh, and a stride lifted it as a small wing at his belt.)
+    let t = clamp((TAILS_TOP - y) / CUT_OVER, 0.0, 1.0)
+    TAILS_FROM + CUT_BACK * (1.0 - (1.0 - t) * (1.0 - t))
+}
+
+/// The tails' girth at their top, from `TAILS_FROM` to `TAILS_TO` every 12° (m from the
+/// axis): his jacket's own outside where the tails carry on from it (`hakuro::COAT_SEAM`),
+/// read off its charted form, so the coat is one surface across the seam. (His left and his
+/// right aren't quite alike: the jacket's form isn't.)
 pub const TAILS_GIRTH: [f32; 24] = [
-    0.184, 0.202, 0.216, 0.222, 0.228, 0.232, 0.228, 0.214, 0.190, 0.168, 0.152, 0.146, 0.146,
-    0.152, 0.168, 0.190, 0.214, 0.228, 0.232, 0.228, 0.222, 0.216, 0.202, 0.184,
+    0.1854, 0.2057, 0.2171, 0.2214, 0.2280, 0.2364, 0.2346, 0.2164, 0.1913, 0.1698, 0.1551, 0.1486,
+    0.1489, 0.1549, 0.1696, 0.1917, 0.2160, 0.2346, 0.2368, 0.2275, 0.2216, 0.2171, 0.2074, 0.1988,
 ]
 
+/// The girth at `deg`: a smooth curve through the table (Catmull-Rom). Straight from one
+/// number to the next, the tails' top was 24 flat faces, each lit as its own block.
 fn girth(deg: f32) -> f32 {
     let f = clamp((deg - TAILS_FROM) / 12.0, 0.0, 22.999)
     let i = u32(f)
-    mix(TAILS_GIRTH[i], TAILS_GIRTH[i + 1], f - f32(i))
+    let t = f - f32(i)
+    let p0 = TAILS_GIRTH[if i > 0 { i - 1 } else { 0 }]
+    let p1 = TAILS_GIRTH[i]
+    let p2 = TAILS_GIRTH[i + 1]
+    let p3 = TAILS_GIRTH[min(i + 2, 23)]
+    0.5 *
+        (2.0 * p1 +
+            (p2 - p0) * t +
+            (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t * t +
+            (3.0 * p1 - p0 - 3.0 * p2 + p3) * t * t * t)
 }
 
 /// Where the hem is at `deg` round (y, m): a long back tail, shorter at the front edges,
@@ -436,21 +541,20 @@ pub fn tails(p: vec3) -> (f32, f32) {
     let f = fract(s * 5.0 + 0.5)
     let saw = f - smoothstep(0.72, 1.0, f) - 0.5 + 0.14
     let fold = (0.05 * pow(tt, 0.6) + 0.006) * saw * 1.4
-    // The sheet's drape: on from the long jacket's hem at its line, then straight out to the
-    // hem, an A-line, falling in long folds. (Eased out over his hips from his belt and then
-    // hanging straight read as a kilt.) Tucked in under the jacket above its hem.
-    // (Out to the jacket's line well above its hem, so no ledge shows under it.)
-    // (Drawn well in above the hem: the jacket narrows to his waist above it, and the tails' top
-    // standing proud of it read as a belt.)
-    let tuck = clamp((JACKET_HEM + 0.035 - p.y) / 0.04, 0.0, 1.0)
-    let rr = girth(inside) -
-        0.083 +
-        0.06 * tuck * tuck * (3.0 - 2.0 * tuck) +
-        FLARE * max(JACKET_HEM - p.y, 0.0) +
-        fold * clamp((JACKET_HEM - p.y) / 0.06, 0.0, 1.0)
+    // Its drape: on from the jacket at the jacket's own line (the jacket stops where the
+    // tails start, `hakuro::COAT_SEAM`: the coat is one line from collar to hem), an A-line
+    // from there, its folds coming in over the first hand's breadth and deepening as they
+    // fall. (Eased out over his hips from his belt and then hanging straight read as a kilt.
+    // Tucked in under a jacket that came 6 cm down over them, the two front edges never met.
+    // Its folds starting all at once under the old hem's height, their start was a ridge
+    // round his hips that caught the light as a second belt.)
+    let down = max(TAILS_TOP - p.y, 0.0)
+    let eased = clamp(down / 0.30, 0.0, 1.0)
+    let rr = girth(inside) - 0.009 + FLARE * down + fold * eased * eased * (3.0 - 2.0 * eased)
     var d = abs(r - rr) - 0.009
     // Its front edges: the distance round to the nearer (negative between them).
-    d = max(d, max(TAILS_FROM - deg, deg - TAILS_TO) * 0.0174532925 * r)
+    let edge = front_edge(p.y)
+    d = max(d, max(edge - deg, deg - (360.0 - edge)) * 0.0174532925 * r)
     d = max(d, max(p.y - TAILS_TOP, low - p.y))
     // Its vent: split up the middle of the back from the hem, so each side follows its own leg.
     let vent = max(abs(deg - 180.0) * 0.0174532925 * r - VENT_HALF, p.y - VENT_TOP)

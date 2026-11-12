@@ -1,0 +1,175 @@
+// What hangs off a body and isn't the body: a mass held to a point of it on a spring, that
+// lags when the point speeds up, overshoots when it stops, and settles (hair on a head, a
+// tassel, a pouch at a belt). The body's bones say where the point is each frame; the mass
+// answers the point's change of speed, not its speed, so a body carried along steadily (a
+// runner, a rider on a boat) holds it still.
+
+use std::quat::Quat
+
+/// A spring a mass is held on: how many times a second it swings (`rate`), how fast its swing
+/// dies (`damping`: 1 never overshoots, 0 never stops), and the furthest it's let from where
+/// the body holds it (`most`, m).
+pub struct Spring: Copy {
+    pub rate: f32,
+    pub damping: f32,
+    pub most: f32,
+}
+
+/// A mass on a spring: how far it is from where the body holds it (`off`, m) and how fast
+/// that changes; where the body held it at the last step and how fast it carried it; and how
+/// many steps it has had (the body's speed is known from the second, its change from the
+/// third).
+pub struct Sway: Copy {
+    pub off: vec3,
+    pub speed: vec3,
+    pub at: vec3,
+    pub carried: vec3,
+    pub steps: u32,
+}
+
+/// The greatest change of speed a mass answers (m/s²): a cut from one place to another isn't a
+/// push.
+const MOST_PUSH: f32 = 60.0
+
+/// The longest a step is taken in one go (s): a longer one is taken in parts, so a slow frame
+/// can't throw the mass out.
+const STEP: f32 = 1.0 / 240.0
+
+/// A mass at rest where its body holds it.
+pub fn still() -> Sway {
+    Sway { off: vec3(), speed: vec3(), at: vec3(), carried: vec3(), steps: 0 }
+}
+
+impl Sway {
+    /// It `dt` seconds on, its body now holding it at `to`: how far from there it is (m). No
+    /// time passed, or more than a tenth of a second (a pause, a cut): it starts again from
+    /// where it hangs.
+    pub fn step(mut self, to: vec3, dt: f32, how: Spring) -> vec3 {
+        if dt <= 0.0 || dt > 0.1 {
+            if dt > 0.1 {
+                self.steps = 0
+            }
+            if self.steps == 0 {
+                self.at = to
+                self.steps = 1
+            }
+            return self.off
+        }
+        let carried = (to - self.at) / dt
+        var push = vec3()
+        if self.steps >= 2 {
+            push = (carried - self.carried) / dt
+            let hard = length(push)
+            if hard > MOST_PUSH {
+                push = push * (MOST_PUSH / hard)
+            }
+        }
+        self.at = to
+        self.carried = carried
+        self.steps = min(self.steps + 1, 3)
+        let w = 6.2831853 * how.rate
+        let parts = max(u32(ceil(dt / STEP)), 1)
+        let h = dt / f32(parts)
+        for _ in 0..parts {
+            self.speed += (self.off * (-w * w) - self.speed * (2.0 * how.damping * w) - push) * h
+            self.off += self.speed * h
+        }
+        let far = length(self.off)
+        if far > how.most {
+            self.off = self.off * (how.most / far)
+            // (Held at its limit, it keeps none of the speed that took it there.)
+            self.speed = self.speed -
+                self.off * (max(dot(self.speed, self.off), 0.0) / (far * how.most))
+        }
+        self.off
+    }
+}
+
+/// The turn about `pivot` that swings the point `from` to `off` from where it was, as near as
+/// a turn can: what a rigid thing on a pivot does when its far end is pushed `off` (a mass of
+/// hair about the middle of a skull).
+pub fn turn_about(pivot: vec3, from: vec3, off: vec3) -> mat4 {
+    let u = normalize(from - pivot)
+    let w = normalize(from + off - pivot)
+    let axis = cross(u, w)
+    let s = length(axis)
+    if s < 1.0e-6 {
+        return mat4(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(0.0, 0.0, 0.0, 1.0),
+        )
+    }
+    let r = Quat::axis_angle(axis / s, atan2(s, dot(u, w))).to_mat3()
+    let t = pivot - r * pivot
+    mat4(vec4(r[0], 0.0), vec4(r[1], 0.0), vec4(r[2], 0.0), vec4(t, 1.0))
+}
+
+const TEST_SPRING: Spring = Spring { rate: 3.0, damping: 0.3, most: 0.05 }
+
+@test
+fn a_mass_carried_steadily_hangs_still() {
+    var s = still()
+    var off = vec3()
+    for i in 0..120 {
+        off = s.step(vec3(4.0 * f32(i) / 60.0, 1.7, 0.0), 1.0 / 60.0, TEST_SPRING)
+    }
+    assert(length(off) < 0.0001, f"{length(off)} m off a head carried at 4 m/s")
+}
+
+@test
+fn a_mass_lags_a_start_overshoots_a_stop_and_settles() {
+    var s = still()
+    let dt = 1.0 / 60.0
+    // Held still, then carried off at 2 m/s over a tenth of a second: it's left behind.
+    var x = 0.0
+    var v = 0.0
+    var behind = 0.0
+    for i in 0..40 {
+        if i >= 10 && i < 16 {
+            v += 20.0 * dt
+        }
+        x += v * dt
+        behind = min(behind, s.step(vec3(x, 0.0, 0.0), dt, TEST_SPRING).x)
+    }
+    assert(behind < -0.01, f"it lagged the start by {-behind} m")
+    // Stopped dead: it swings on past where it's held, then comes back to it.
+    var ahead = 0.0
+    var off = vec3()
+    for i in 0..180 {
+        if i < 6 {
+            v -= 20.0 * dt
+        }
+        x += v * dt
+        off = s.step(vec3(x, 0.0, 0.0), dt, TEST_SPRING)
+        ahead = max(ahead, off.x)
+    }
+    assert(ahead > 0.01, f"it overshot the stop by {ahead} m")
+    assert(length(off) < 0.001, f"{length(off)} m off three seconds after the stop")
+}
+
+@test
+fn a_mass_is_never_further_off_than_its_spring_lets_it() {
+    var s = still()
+    var most = 0.0
+    for i in 0..60 {
+        // (Thrown about: a metre one way and back, every other frame.)
+        let x = if i % 2 == 0 { 0.0 } else { 0.4 }
+        most = max(most, length(s.step(vec3(x, 0.0, 0.0), 1.0 / 60.0, TEST_SPRING)))
+    }
+    assert(most <= TEST_SPRING.most + 0.0001, f"{most} m off")
+}
+
+@test
+fn a_turn_about_a_pivot_swings_the_far_end_where_its_pushed() {
+    let pivot = vec3(0.0, 1.7, 0.0)
+    let from = vec3(0.0, 1.85, -0.05)
+    let m = turn_about(pivot, from, vec3(0.03, 0.0, 0.0))
+    let to = (m * vec4(from, 1.0)).xyz
+    assert(abs(to.x - 0.03) < 0.002 && abs(length(to - pivot) - length(from - pivot)) < 0.0001)
+    // The pivot stays where it is, and no push is no turn.
+    assert(length((m * vec4(pivot, 1.0)).xyz - pivot) < 0.00001)
+    let none = turn_about(pivot, from, vec3())
+    assert(length((none * vec4(from, 1.0)).xyz - from) < 0.00001)
+}

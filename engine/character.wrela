@@ -685,3 +685,22 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
         }
     }
 }
+
+/// A surface's normal with a relief on it (`height`, m, out along the normal, as it is at this
+/// pixel): the surface tilted by the height's slope across the screen, with no texture's
+/// coordinates to take the slope along (M. Mikkelsen, "Bump Mapping Unparametrized Surfaces on
+/// the GPU", 2010). `n` is the surface's normal (unit) and `world` where the pixel is on it. A
+/// fragment's: the slopes are the differences between a pixel and its neighbours. What's
+/// written as a relief is a seam, a weave, a rib: finer than a form's side is drawn, and
+/// seen only by how it catches light.
+pub fn embossed(n: vec3, world: vec3, height: f32) -> vec3 {
+    let sx = dpdx(world)
+    let sy = dpdy(world)
+    let r1 = cross(sy, n)
+    let r2 = cross(n, sx)
+    let det = dot(sx, r1)
+    let grad = (r1 * dpdx(height) + r2 * dpdy(height)) * (if det < 0.0 { -1.0 } else { 1.0 })
+    let out = n * abs(det) - grad
+    let l = length(out)
+    if l > 1.0e-12 { out / l } else { n }
+}
