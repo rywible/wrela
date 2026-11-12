@@ -1,0 +1,470 @@
+// A heron drawn along its charts: a wading bird as tall as a man, with no mesh, no reference
+// and no skin weights anywhere. Each of its parts is a radius written as a rule of its place
+// (`chart::of`: how far along its chain, the angle round it) about a chain of joints: a body, a
+// neck held in an S, a head with its dagger of a beak, a tail, two long legs with the bird's
+// backward-bending ankle, and three toes to each foot. A stalk poses its bones; each frame every
+// part is laid where its bones are (`Part::posed`) and drawn from its vertices' numbers on the
+// grid its size on screen calls for (`place_of`, `Limb::side_and_normal`).
+
+use engine::chart
+use engine::chart::{Chain, Grids, JOINTS, Part, Radial, WHOLE, chain}
+use engine::view::{Camera, NEAREST, first_camera}
+use std::gpu::{
+    ClipPosition, Cull, DepthTexture, FragCoord, Rgba8, Texture, VertexIndex, begin_pass_with_depth,
+    begin_screen_pass, depth_texture, draw, texture,
+}
+use std::math::{PI, TAU}
+use std::transform::identity
+
+const W: u32 = 640
+const H: u32 = 480
+
+/// Where the picture is taken from: 0 the side, 1 the front, 2 three-quarters from above.
+pub const VIEW: u32 = 0
+
+/// 1: the stalk plays with time; 0: held still at the start of its cycle.
+pub const PLAY: u32 = 1
+
+/// A part's form: 12 control values along its chain, 2 harmonics round (5 terms).
+type Form = Radial<12, 5>
+
+/// The heron's parts: its body, its neck, its head and beak, its tail, then its legs (left,
+/// right), then three toes to each foot.
+pub const PARTS: u32 = 19
+
+/// Its bones: its body, four along its neck, its head, then an upper and a lower for each leg.
+const BODY: u32 = 0
+const NECK: u32 = 1
+const HEAD: u32 = 5
+const LEGS: u32 = 6
+
+/// A body deeper than it is wide, full at its breast (angle 0 is its back).
+fn body_rule(f: f32, theta: f32) -> f32 {
+    let deep = mix(0.12, 0.15, smoothstep(0.3, 0.8, f))
+    let wide = mix(0.085, 0.1, smoothstep(0.3, 0.8, f))
+    let c = cos(theta)
+    let s = sin(theta)
+    deep * wide / sqrt(deep * deep * s * s + wide * wide * c * c) - 0.01 * c
+}
+
+/// A neck thin as a rope, thicker where it leaves the breast, and a little at its throat.
+fn neck_rule(f: f32, _theta: f32) -> f32 {
+    mix(0.05, 0.028, smoothstep(0.0, 0.45, f)) - 0.004 * smoothstep(0.7, 1.0, f)
+}
+
+/// A skull and a dagger of a beak, narrower than it is deep (angle 0 is its top).
+fn head_rule(f: f32, theta: f32) -> f32 {
+    let skull = 0.034 * smoothstep(0.0, 0.08, f) * (1.0 - 0.45 * smoothstep(0.1, 0.24, f))
+    let beak = 0.019 * (1.0 - smoothstep(0.2, 1.0, f)) + 0.003
+    let s = sin(theta)
+    let thin = 1.0 - 0.42 * s * s * smoothstep(0.1, 0.35, f)
+    (skull + beak * smoothstep(0.08, 0.2, f) + 0.0) * thin
+}
+
+/// A folded wing along the body's side: deep and thin, ending in a point behind.
+fn wing_rule(f: f32, theta: f32) -> f32 {
+    let s = sin(theta)
+    let c = cos(theta)
+    let deep = mix(0.075, 0.05, smoothstep(0.3, 1.0, f))
+    let wide = 0.032
+    deep * wide / sqrt(deep * deep * s * s + wide * wide * c * c)
+}
+
+/// A crest: a thin streamer from the back of the head.
+fn plume_rule(f: f32, theta: f32) -> f32 {
+    let s = sin(theta)
+    let c = cos(theta)
+    let deep = mix(0.012, 0.003, f)
+    let wide = mix(0.005, 0.002, f)
+    deep * wide / sqrt(deep * deep * s * s + wide * wide * c * c)
+}
+
+/// A short tail, a wedge flat and wide, narrowing to its tip.
+fn tail_rule(f: f32, theta: f32) -> f32 {
+    let s = sin(theta)
+    let c = cos(theta)
+    let deep = 0.02
+    let wide = mix(0.07, 0.035, f)
+    deep * wide / sqrt(deep * deep * s * s + wide * wide * c * c)
+}
+
+/// A leg: feathered thigh, a knob at its ankle, then a thin, bare shank.
+fn leg_rule(f: f32, _theta: f32) -> f32 {
+    let thigh = mix(0.04, 0.026, smoothstep(0.0, 0.42, f))
+    let shank = 0.0165
+    let knob = 0.009 * exp(-(f - 0.47) * (f - 0.47) / 0.0012)
+    mix(thigh, shank, smoothstep(0.36, 0.5, f)) + knob
+}
+
+/// A toe: flat, wider than deep, narrowing to its tip.
+fn toe_rule(f: f32, theta: f32) -> f32 {
+    let s = sin(theta)
+    let c = cos(theta)
+    let deep = mix(0.009, 0.005, f)
+    let wide = mix(0.014, 0.007, f)
+    deep * wide / sqrt(deep * deep * s * s + wide * wide * c * c)
+}
+
+@fuel(2 ** 36)
+const BODY_FORM: Form = chart::of(body_rule)
+@fuel(2 ** 36)
+const NECK_FORM: Form = chart::of(neck_rule)
+@fuel(2 ** 36)
+const HEAD_FORM: Form = chart::of(head_rule)
+@fuel(2 ** 36)
+const TAIL_FORM: Form = chart::of(tail_rule)
+@fuel(2 ** 36)
+const WING_FORM: Form = chart::of(wing_rule)
+@fuel(2 ** 36)
+const PLUME_FORM: Form = chart::of(plume_rule)
+@fuel(2 ** 36)
+const LEG_FORM: Form = chart::of(leg_rule)
+@fuel(2 ** 36)
+const TOE_FORM: Form = chart::of(toe_rule)
+
+/// Leg `k`'s (0 left, 1 right) hip, ankle and foot at rest: the ankle a little behind the hip
+/// and the foot, the bird's backward-bending joint.
+fn leg_hip(k: u32) -> vec3 {
+    vec3(if k == 0 { 0.075 } else { -0.075 }, 0.99, 0.02)
+}
+
+fn leg_ankle(k: u32) -> vec3 {
+    leg_hip(k) + vec3(0.0, -0.46, -0.035)
+}
+
+fn leg_foot(k: u32) -> vec3 {
+    leg_ankle(k) + vec3(0.0, -0.5, 0.035)
+}
+
+/// The neck's joints at rest: from the breast, forward and up, back and up, forward and up to
+/// the head: an S.
+fn neck_joint(i: u32) -> vec3 {
+    if i == 0 {
+        vec3(0.0, 1.02, 0.2)
+    } else if i == 1 {
+        vec3(0.0, 1.17, 0.4)
+    } else if i == 2 {
+        vec3(0.0, 1.42, 0.33)
+    } else if i == 3 {
+        vec3(0.0, 1.6, 0.34)
+    } else {
+        vec3(0.0, 1.72, 0.48)
+    }
+}
+
+/// A part on `c` whose bones are `bones`, hanging from `root`, closing over `caps`.
+fn part(c: Chain, bones: [u32; 4], root: u32, form: Form, caps: vec2) -> Part<12, 5> {
+    Part {
+        chain: c,
+        bones: [bones[0], bones[1], bones[2], bones[3], 0, 0, 0, 0],
+        root,
+        form,
+        changes: [chart::unchanged(); JOINTS],
+        band: WHOLE,
+        sunk: vec2(0.0, 0.1),
+        folds: [0, 0],
+        caps,
+    }
+}
+
+/// The heron's parts.
+fn heron() -> [Part<12, 5>; PARTS] {
+    let up = vec3(y: 1.0)
+    let body = chain(
+        [vec3(0.0, 1.05, -0.28), vec3(0.0, 1.07, 0.0), vec3(0.0, 1.09, 0.26)],
+        up,
+        before: 0.04,
+        after: 0.04,
+        round: 0.0,
+    )
+    let neck = chain(
+        [neck_joint(0), neck_joint(1), neck_joint(2), neck_joint(3), neck_joint(4)],
+        up,
+        before: 0.0,
+        after: 0.04,
+        round: 0.07,
+        cut: 1.0,
+    )
+    let head = chain([vec3(0.0, 1.73, 0.46), vec3(0.0, 1.67, 0.9)], up)
+    let tail = chain(
+        [vec3(0.0, 1.08, -0.3), vec3(0.0, 1.03, -0.52)],
+        up,
+        before: 0.04,
+    )
+    var out = [part(body, [BODY, BODY, 0, 0], BODY, BODY_FORM, vec2(0.28, 0.3)); PARTS]
+    out[1] = part(neck, [NECK, NECK + 1, NECK + 2, NECK + 3], BODY, NECK_FORM, vec2(0.0, 0.0))
+    out[2] = part(head, [HEAD, 0, 0, 0], HEAD, HEAD_FORM, vec2(0.08, 0.1))
+    out[3] = part(tail, [BODY, 0, 0, 0], BODY, TAIL_FORM, vec2(0.0, 0.35))
+    let plume = chain([vec3(0.0, 1.745, 0.5), vec3(0.0, 1.71, 0.22)], up, before: 0.02)
+    out[18] = part(plume, [HEAD, 0, 0, 0], HEAD, PLUME_FORM, vec2(0.0, 0.4))
+    for k in 0..2 {
+        let side = if k == 0 { 1.0 } else { -1.0 }
+        let wing = chain(
+            [
+                vec3(0.087 * side, 1.12, 0.14),
+                vec3(0.092 * side, 1.07, -0.12),
+                vec3(0.085 * side, 1.02, -0.4),
+            ],
+            up,
+            round: 0.0,
+        )
+        out[4 + k] = part(wing, [BODY, BODY, 0, 0], BODY, WING_FORM, vec2(0.25, 0.5))
+        let leg = chain(
+            [leg_hip(k), leg_ankle(k), leg_foot(k)],
+            vec3(x: 1.0),
+            before: 0.05,
+            after: 0.01,
+            round: 0.06,
+            cut: 1.0,
+        )
+        out[6 + k] = part(
+            leg,
+            [LEGS + 2 * k, LEGS + 2 * k + 1, 0, 0],
+            BODY,
+            LEG_FORM,
+            vec2(0.0, 0.0),
+        )
+        // Three toes to a foot, fanned out forward from the foot, one bone (the lower leg's)
+        // carrying each.
+        for t in 0..3 {
+            let fan = f32(t) - 1.0
+            let from = leg_foot(k) + vec3(0.0, 0.01, -0.015)
+            let to = vec3(from.x + 0.065 * fan, 0.012, from.z + 0.2 - 0.04 * abs(fan))
+            let toe = chain([from, to], up, before: 0.015)
+            out[8 + 3 * k + t] = part(
+                toe,
+                [LEGS + 2 * k + 1, 0, 0, 0],
+                LEGS + 2 * k + 1,
+                TOE_FORM,
+                vec2(0.0, 0.3),
+            )
+        }
+    }
+    out
+}
+
+/// A turn of `angle` about the axis through `at` along unit `axis`.
+fn turn_about(axis: vec3, angle: f32, at: vec3) -> mat4 {
+    let c = cos(angle)
+    let s = sin(angle)
+    let k = axis
+    let x = vec3(1.0, 0.0, 0.0) * c + cross(k, vec3(1.0, 0.0, 0.0)) * s + k * (k.x * (1.0 - c))
+    let y = vec3(0.0, 1.0, 0.0) * c + cross(k, vec3(0.0, 1.0, 0.0)) * s + k * (k.y * (1.0 - c))
+    let z = vec3(0.0, 0.0, 1.0) * c + cross(k, vec3(0.0, 0.0, 1.0)) * s + k * (k.z * (1.0 - c))
+    let moved = at - (x * at.x + y * at.y + z * at.z)
+    mat4(vec4(x, 0.0), vec4(y, 0.0), vec4(z, 0.0), vec4(moved, 1.0))
+}
+
+/// How far forward (negative) or back (positive) a leg swings its hip, and how far it bends
+/// its ankle to lift its foot, at `p` (0 to 1) of its step: over its first two fifths it lifts,
+/// swings forward and sets its foot down; over the rest it stands and the body goes over it.
+fn step(p: f32) -> vec2 {
+    let s = saturate(p / 0.4)
+    let swing = mix(0.22, -0.26, smoothstep(0.0, 1.0, s))
+    let stand = mix(-0.26, 0.22, saturate((p - 0.4) / 0.6))
+    let hip = if p < 0.4 { swing } else { stand }
+    // (The foot folds up behind it as it comes through, and opens out to land.)
+    let lift = if p < 0.4 { 1.15 * sin(PI * s) * sin(PI * s) } else { 0.0 }
+    vec2(hip, lift)
+}
+
+/// The heron's bones at `time` (s) of a stalk: its legs step in turn, slow and high, its body
+/// rising and settling, its neck easing forward and back with each step, its head held level.
+fn stalk(time: f32) -> [mat4; 64] {
+    var m = [identity(); 64]
+    let cycle = 0.8 * time
+    let beat = TAU * cycle
+    let across = vec3(x: 1.0)
+    let bob = 0.012 * sin(2.0 * beat)
+    let body = mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, bob, 0.0, 1.0),
+    )
+    m[BODY] = body
+    // (The neck unfolds and folds: its base leans, its middle and top answer.)
+    let ease = sin(beat)
+    let a1 = 0.2 * ease
+    let a2 = -0.34 * ease
+    let a3 = 0.26 * ease
+    let a4 = 0.1 * ease
+    m[NECK] = body * turn_about(across, a1, neck_joint(0))
+    m[NECK + 1] = m[NECK] * turn_about(across, a2, neck_joint(1))
+    m[NECK + 2] = m[NECK + 1] * turn_about(across, a3, neck_joint(2))
+    m[NECK + 3] = m[NECK + 2] * turn_about(across, a4, neck_joint(3))
+    m[HEAD] = m[NECK + 3] * turn_about(across, -0.8 * (a1 + a2 + a3 + a4), neck_joint(4))
+    for k in 0..2 {
+        let st = step(fract(cycle + 0.5 * f32(k)))
+        let upper = body * turn_about(across, st.x, leg_hip(k))
+        m[LEGS + 2 * k] = upper
+        m[LEGS + 2 * k + 1] = upper * turn_about(across, st.y, leg_ankle(k))
+    }
+    m
+}
+
+pub struct State {
+    grids: Grids,
+    colour: Texture<Rgba8>,
+    depth: DepthTexture,
+}
+
+pub fn init() -> State {
+    State {
+        grids: chart::grids(),
+        colour: texture(width: W, height: H),
+        depth: depth_texture(width: W, height: H),
+    }
+}
+
+/// Where the heron is seen from: its whole height and stride in frame.
+fn eye() -> Camera {
+    let at = vec3(0.0, 0.88, 0.2)
+    let from = if VIEW == 0 {
+        vec3(-3.0, 0.95, 0.2)
+    } else if VIEW == 1 {
+        vec3(0.0, 0.95, 3.25)
+    } else {
+        vec3(-1.9, 2.1, 2.3)
+    }
+    first_camera(from, at, 0.75, width: W, height: H).unjittered()
+}
+
+/// A part's pixel: its tint (`near` before `split` of the way along it, `far` after) lit from
+/// the camera's upper side, in three flat steps; on the head (`eyed`, about a path `length`
+/// long), an eye each side of the skull: a yellow iris with a black pupil, painted by place on
+/// the chart (how far along, how far round from the side, in metres).
+@fragment
+pub fn heron_pixel(
+    v: chart::Vertex,
+    near: vec3,
+    far: vec3,
+    split: f32,
+    light: vec3,
+    eyed: f32,
+    length: f32,
+) -> vec4 {
+    let lit = dot(normalize(v.normal), light)
+    let step = if lit > 0.45 { 1.0 } else if lit > 0.0 { 0.72 } else { 0.45 }
+    var tint = if v.place.x < split { near } else { far }
+    if eyed > 0.5 {
+        // (Slightly above the side: angle 0 is the top, the eye 0.3 of a radian up from it.)
+        let up = abs(asin(clamp(cos(v.place.y), -1.0, 1.0))) - 0.3
+        let along = (v.place.x - 0.16) * length
+        let d = sqrt(along * along + up * up * 0.0012)
+        if d < 0.021 {
+            tint = if d < 0.009 { vec3(0.02, 0.02, 0.03) } else { vec3(0.98, 0.86, 0.15) }
+        }
+    }
+    vec4(tint * step, 1.0)
+}
+
+/// The screen's corner of a triangle over all of it.
+@vertex
+pub fn over_screen(vertex: VertexIndex) -> ClipPosition {
+    let x = f32(vertex.index % 2) * 4.0 - 1.0
+    let y = f32(vertex.index / 2) * 4.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.5, 1.0) }
+}
+
+/// The picture's texel at a pixel.
+@fragment
+pub fn shown(pixel: FragCoord, picture: Texture<Rgba8>) -> vec4 {
+    picture.load(min(u32(pixel.position.x), W - 1), min(u32(pixel.position.y), H - 1))
+}
+
+/// A part's tints: before and after `split` of the way along it.
+struct Tints: Copy {
+    near: vec3,
+    far: vec3,
+    split: f32,
+}
+
+/// The tints of part `k`: a blue-grey body and tail, a pale neck, a dark crown over a yellow
+/// beak, yellow-brown legs whose thighs are feathered grey, toes the legs' colour.
+fn tints(k: u32) -> Tints {
+    if k == 0 {
+        Tints { near: vec3(0.55, 0.62, 0.72), far: vec3(0.55, 0.62, 0.72), split: 2.0 }
+    } else if k == 1 {
+        Tints { near: vec3(0.78, 0.8, 0.86), far: vec3(0.78, 0.8, 0.86), split: 2.0 }
+    } else if k == 2 {
+        Tints { near: vec3(0.12, 0.13, 0.2), far: vec3(0.93, 0.66, 0.12), split: 0.3 }
+    } else if k == 3 {
+        Tints { near: vec3(0.28, 0.33, 0.45), far: vec3(0.28, 0.33, 0.45), split: 2.0 }
+    } else if k < 6 {
+        Tints { near: vec3(0.3, 0.37, 0.52), far: vec3(0.3, 0.37, 0.52), split: 2.0 }
+    } else if k < 8 {
+        Tints { near: vec3(0.6, 0.65, 0.74), far: vec3(0.78, 0.58, 0.22), split: 0.34 }
+    } else if k == 18 {
+        Tints { near: vec3(0.12, 0.13, 0.2), far: vec3(0.12, 0.13, 0.2), split: 2.0 }
+    } else {
+        Tints { near: vec3(0.7, 0.52, 0.2), far: vec3(0.7, 0.52, 0.2), split: 2.0 }
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let cam = eye()
+    let bones = stalk(if PLAY == 1 { time } else { 0.0 })
+    let parts = heron()
+    // (Lit from the camera's upper side, so each view shows the heron's shape.)
+    let light = normalize(normalize(cam.eye - vec3(0.0, 0.88, 0.2)) * 0.5 + vec3(0.0, 0.8, 0.0))
+    let p = begin_pass_with_depth(
+        mut s.colour,
+        mut s.depth,
+        clear: vec4(0.86, 0.87, 0.83, 1.0),
+        clear_depth: 0.0,
+    )
+    for k in 0..PARTS {
+        let limb = parts[k].posed(bones)
+        let level = limb.level(cam.eye, f32(H), cam.tan_half)
+        let span = chart::level_span(level)
+        let t = tints(k)
+        draw(
+            p,
+            chart::vertex.bind(
+                rest: parts[k].rest(),
+                form: limb,
+                band: parts[k].band,
+                under: parts[k].sunk,
+                level: level,
+                seen: cam,
+            ),
+            heron_pixel.bind(
+                near: t.near,
+                far: t.far,
+                split: t.split,
+                light: light,
+                eyed: if k == 2 { 1.0 } else { 0.0 },
+                length: limb.path.length(),
+            ),
+            indices: s.grids.indices,
+            first_index: span.x,
+            index_count: span.y,
+            cull: Cull::Back,
+            depth: NEAREST,
+        )
+    }
+    p.end()
+    let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(screen, over_screen, shown.bind(picture: s.colour), vertices: 3)
+    screen.present()
+}
+
+@test
+fn a_stalking_herons_legs_reach_its_feet() {
+    // Through a whole step of the stalk, each leg's path ends where its lower bone carries its
+    // foot (a centimetre on, where the chain runs past it) and keeps its length within two
+    // centimetres of its length at rest, though its ankle folds its foot up behind it.
+    let parts = heron()
+    for step in 0..21 {
+        let bones = stalk(f32(step) / 20.0)
+        for k in 0..2 {
+            let limb = parts[6 + k].posed(bones)
+            let foot = (bones[LEGS + 2 * k + 1] * vec4(leg_foot(k), 1.0)).xyz
+            let last = limb.path.at[limb.path.vertices - 1]
+            assert(abs(length(last - foot) - 0.01) < 0.0001, f"{length(last - foot)}")
+            let kept = limb.path.length() - parts[6 + k].rest().path.length()
+            assert(abs(kept) < 0.02, f"{kept}")
+        }
+    }
+}
