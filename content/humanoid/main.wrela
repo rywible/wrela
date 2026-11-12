@@ -16,16 +16,17 @@
 // (stepping round) and walks it back, each change inertial. The body is Hakuro (`HAKURO`), as
 // he stands, carries himself and runs (content/hakuro's `manner`); `--set HAKURO=0` plays the
 // bare body with the captures' own gaits. `--set SHOW=12` stands the body in
-// its guard and throws the hand-posed cross (`fists`), twice. `--set SHOW=16` plays a take NVIDIA's
+// its guard and throws the solved cross (`solved`), twice. `--set SHOW=16` plays a take NVIDIA's
 // Kimodo made from a text prompt (`kimodo`), its right cross retimed to the fight's frame data.
 
 use body::{
     HAKURO_GAITS, ACCAD_M1_RUN, ACCAD_M1_RUN_RAW, ACCAD_M1_WALK, ACCAD_M1_WALK_RAW, ACCAD_M2_RUN,
     ACCAD_M2_RUN_RAW, ACCAD_M2_WALK, ACCAD_M2_WALK_CODE, ACCAD_M2_WALK_RAW, ACT_PUNCH, ACT_ROLL,
-    ACTS, ACTS_CODE, GAITS, GAITS_CODE, HERO, PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW,
-    T_POSE, TURNS, TURNS_RAW, WALK, WALK_RAW,
+    ACTS, GAITS, GAITS_CODE, HERO, PUNCH, IDLE, IDLE_RAW, JOG, JOG_RAW, RUN, RUN_RAW, T_POSE, TURNS,
+    TURNS_RAW, WALK, WALK_RAW,
 }
 use engine::anime
+use engine::written::Beats
 use engine::anime::{Anime, Drawer}
 use fighter::{Fighters, fighters, hakuro_palette}
 use hakuro::manner
@@ -99,26 +100,29 @@ pub const ANIME: u32 = 1
 /// `smear`: of its travel since the last drawing): `--set SMEAR=0` draws them unsmeared.
 pub const SMEAR: f32 = 0.6
 
-/// `SHOW=12`'s cross: the hand-keyed one (`fists::CROSS`), or with `--set SOLVED=1` the solved
-/// one (`solved::CROSS`: goal poses, each part of the body on its own clock, its numbers solved
-/// against spec.wrela). A trial: the two are judged side by side before either goes.
-pub const SOLVED: u32 = 0
-
-/// The fight's moves (`fists::ACTS`), their cross as `SOLVED` says.
+/// The fight's moves (`fists::LOOKS` says how each is drawn): the running punch, the roll, the
+/// solved cross (`solved::CROSS`: goal poses, each part of the body on its own clock, its
+/// numbers solved against spec.wrela) and the steps.
 @fuel(2 ** 40)
-const FIGHT_ACTS: [Move; 7] = fight_acts()
+const FIGHT_ACTS: [Move; 7] = [
+    ACTS[ACT_PUNCH].clone(),
+    ACTS[ACT_ROLL].clone(),
+    solved::CROSS.clone(),
+    fists::STEP_IN.clone(),
+    fists::STEP_OUT.clone(),
+    fists::STEP_LEFT.clone(),
+    fists::STEP_RIGHT.clone(),
+]
 
-fn fight_acts() -> [Move; 7] {
-    [
-        fists::ACTS[0].clone(),
-        fists::ACTS[1].clone(),
-        if SOLVED == 1 { solved::CROSS.clone() } else { fists::ACTS[ACT_CROSS].clone() },
-        fists::ACTS[3].clone(),
-        fists::ACTS[4].clone(),
-        fists::ACTS[5].clone(),
-        fists::ACTS[6].clone(),
-    ]
-}
+/// `SHOW=11`'s one-offs from the moves written in Wrela, no capture read (`CODE`): the solved
+/// cross at the fight's attack frames (`Written::played`), and the roll (content/moves).
+@fuel(2 ** 40)
+const ACTS_CODE: [Move; 2] = [
+    solved::cross_at(
+        Beats::of_frames(body::ATTACK_WINDUP, body::ATTACK_ACTIVE, body::ATTACK_RECOVERY, body::HZ),
+    ),
+    body::ROLL_CODE.clone(),
+]
 
 /// How kinetic the moment is (0 quiet): `--set KINETIC=0.6` frays the ink.
 pub const KINETIC: f32 = 0.0
@@ -256,8 +260,6 @@ pub fn init() -> State {
             Mover::standing(vec3(0.0), 0.0, FIGHT_GAITS)
         } else if SHOW == 13 {
             Mover::standing(vec3(0.0), 0.0, accad_fists::GUARD_GAITS)
-        } else if SHOW == 14 {
-            Mover::standing(vec3(0.0), 0.0, accad_fists::KEYED_GAITS)
         } else {
             Mover::standing(vec3(0.0), 0.0, PLAYED_GAITS)
         },
@@ -323,11 +325,11 @@ pub fn stand_script(last: f32, time: f32) -> (vec3, u32, bool) {
     (vec3(0.0), humanoid::NONE, false)
 }
 
-/// `SHOW=13` and `14`'s script: the body stands in its guard and throws its cross (13 the
-/// captured one, `accad_fists`; 14 the hand-posed one, `fists`, from a still guard), twice.
+/// `SHOW=13`'s script: the body stands in its guard and throws the captured cross
+/// (`accad_fists`), twice.
 pub fn cross_script(last: f32, time: f32) -> (vec3, u32, bool) {
     let at = |t: f32| -> bool { last < t && time >= t }
-    let act = if SHOW == 13 { accad_fists::ACT_TAKEN } else { accad_fists::ACT_KEYED }
+    let act = accad_fists::ACT_TAKEN
     for t in [1.2, 3.2] {
         if at(t) {
             return (vec3(0.0), act, false)
@@ -367,19 +369,6 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
         playback::step(
             mut s.mover,
             accad_fists::GUARD_GAITS,
-            accad_fists::ACTS,
-            HERO.rig,
-            s.mask,
-            stick,
-            act,
-            upper,
-            how,
-            dt,
-        )
-    } else if SHOW == 14 {
-        playback::step(
-            mut s.mover,
-            accad_fists::KEYED_GAITS,
             accad_fists::ACTS,
             HERO.rig,
             s.mask,
@@ -633,9 +622,8 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.width = width
         s.height = height
     }
-    let game = SHOW == 11 || SHOW == 12 || SHOW == 13 || SHOW == 14
+    let game = SHOW == 11 || SHOW == 12 || SHOW == 13
     let crosses = SHOW == 13 ||
-        SHOW == 14 ||
         SHOW == 16 ||
         SHOW == 18 ||
         SHOW == 19 ||

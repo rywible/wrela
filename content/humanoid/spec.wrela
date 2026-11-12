@@ -23,9 +23,9 @@ pub fn spec<C: Checks>(c: mut C) {
     c.near("cross: fist on its target, across (m)", t.at.x, TARGET.x, within: 0.005)
     c.near("cross: fist on its target, up (m)", t.at.y, TARGET.y, within: 0.005)
     c.near("cross: fist on its target, ahead (m)", t.at.z, TARGET.z, within: 0.005)
-    // Fast, as the hand-keyed cross it stands beside is (28 m/s), not as a boxer's fist is
+    // Fast, as the hand-keyed cross it replaced was (28 m/s), not as a boxer's fist is
     // (9.14 m/s: Walilko, Viano and Bir 2005): judged side by side, the cross held to a
-    // boxer's speed had less snap (Ryan's look, 2026-11-12). Held under the hand-keyed one's.
+    // boxer's speed had less snap (Ryan's look, 2026-11-12). Held under that cross's.
     c.at_least("cross: fist's fastest (m/s)", t.fastest, 12.0, within: 0.5)
     c.at_most("cross: fist's fastest (m/s)", t.fastest, 26.0, within: 0.5)
     // Fastest as it lands, not before.
@@ -39,11 +39,11 @@ pub fn spec<C: Checks>(c: mut C) {
     c.at_most("cross: fist slows on its way in (m/s)", t.slows, 0.0, within: 0.5)
     // Its snap, as it's drawn. On twos (`engine::anime`) the eye gets the drawing before the
     // contact's and the contact's. In the first the hips have gone and the fist is still
-    // back; the fist's whole way out is the second. (The hand-keyed cross's fist comes 76 cm
+    // back; the fist's whole way out is the second. (The hand-keyed cross's fist came 76 cm
     // into its contact's drawing; one whose throw is spread over three drawings has no snap.)
     let before = anime::drawing_before(CONTACT, Anime {})
     let m = cross()
-    let loaded = m.end(HERO.rig, m.keys[2].at + m.chain.wrist)
+    let loaded = m.end(HERO.rig, m.keys[2].at + m.taste.chain.wrist)
     let out_left = length(t.at - m.end(HERO.rig, before)) / length(t.at - loaded)
     c.at_least(
         "cross: fist's way out left for its contact's drawing, of the whole",
@@ -71,7 +71,7 @@ pub fn spec<C: Checks>(c: mut C) {
     )
     // The load is held a beat before the throw sets off: two of a game's frames with the fist
     // still, which gets there later than the hips by its lag.
-    let still = m.keys[2].at - (m.keys[1].at + m.chain.wrist)
+    let still = m.keys[2].at - (m.keys[1].at + m.taste.chain.wrist)
     c.at_least("cross: the fist still before the throw (s)", still, 0.03, within: 0.005)
     // Home slower than it went: a recovery faster than the blow is what the eye takes for
     // the blow.

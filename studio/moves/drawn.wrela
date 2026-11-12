@@ -63,9 +63,9 @@ pub fn shown(rig: Rig, gaits: Gaits, strike: Move, look: Look) -> Shown {
             mask,
             vec3(0.0),
             act,
-            false,
-            Handling {},
-            1.0 / HZ,
+            upper: false,
+            how: Handling {},
+            dt: 1.0 / HZ,
         )
         let s = anime::drawn(
             mut d,

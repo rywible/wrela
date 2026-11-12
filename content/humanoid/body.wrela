@@ -395,14 +395,7 @@ pub const ACT_ROLL: u32 = 1
 @fuel(2 ** 40)
 pub const ACTS: [Move; 2] = [PUNCH.clone(), ROLL.clone()]
 
-/// The same one-offs from the moves written in Wrela (content/moves): no capture read.
+/// The roll written in Wrela (content/moves), eased and carried ahead as the captured one is: no
+/// capture read.
 @fuel(2 ** 40)
-pub const ACTS_CODE: [Move; 2] = [
-    punched(
-        playback::moved(
-            moves::punch::PUNCH.clip(HERO.rig.clone(), PUNCH_KEYED.clip.fps),
-            HERO.rig.clone(),
-        ),
-    ),
-    rolled(moves::roll::ROLL.clip(HERO.rig.clone(), ROLL_RAW.fps)),
-]
+pub const ROLL_CODE: Move = rolled(moves::roll::ROLL.clip(HERO.rig.clone(), ROLL_RAW.fps))

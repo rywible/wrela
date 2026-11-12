@@ -322,36 +322,11 @@ pub const GUARD_GAITS: Gaits = Gaits {
     stop_entry: GAITS.stop_entry,
 }
 
-/// The hand-posed cross's gaits for the comparison: its guard key held still (no bounce), so the
-/// two crosses are seen from the same standing start.
-@fuel(2 ** 40)
-pub const KEYED_GAITS: Gaits = keyed_gaits()
-
-fn keyed_gaits() -> Gaits {
-    let g = fists::guard()
-    var h = g
-    h.at = GUARD.clip.length()
-    var c = keys::keyed(HERO.rig, [g, h], fps: 30.0, fist: 2.0)
-    c.looped = true
-    c = breathed(c, c.length() / 2.0)
-    Gaits {
-        idle: in_place(c),
-        walk: GAITS.walk.clone(),
-        run: GAITS.run.clone(),
-        start: GAITS.start.clone(),
-        stop: GAITS.stop.clone(),
-        start_exit: GAITS.start_exit,
-        stop_entry: GAITS.stop_entry,
-    }
-}
-
-/// The acts of the comparison: 0 the captured cross, 1 the hand-posed one, both drawn as the
-/// everyday strike.
+/// The captured cross as an act (`SHOW=13`), drawn as the everyday strike.
 pub const ACT_TAKEN: u32 = 0
-pub const ACT_KEYED: u32 = 1
 @fuel(2 ** 40)
-pub const ACTS: [Move; 2] = [CROSS.clone(), fists::CROSS.clone()]
-pub const LOOKS: [Look; 2] = [LIGHT, LIGHT]
+pub const ACTS: [Move; 1] = [CROSS.clone()]
+pub const LOOKS: [Look; 1] = [LIGHT]
 
 /// Male 2 boxing (ACCAD's "extended 1", 20 s of punches, footwork and guard) on the body: what
 /// real arms do, for `engine::arms`' checks.
@@ -379,8 +354,7 @@ pub const REAL: arms::Real = arms::real(
 )
 
 /// The captured cross's arms, and its guard's, are arms a person makes: elbows bending the way
-/// elbows bend, hands clear of the head, shapes near a real arm's. (The hand-posed cross is
-/// checked alongside, for comparison, not held to it.)
+/// elbows bend, hands clear of the head, shapes near a real arm's.
 @test
 fn the_captured_crosss_arms_are_human() {
     borrow rig = HERO.rig
@@ -388,7 +362,6 @@ fn the_captured_crosss_arms_are_human() {
     for (name, c) in [
         ("the captured cross", CROSS.clip.clone()),
         ("its guard", GUARD.clip.clone()),
-        ("the hand-posed cross", fists::CROSS.clip.clone()),
     ] {
         let k = arms::checked(rig, c, REAL)
         print(
@@ -397,9 +370,7 @@ fn the_captured_crosss_arms_are_human() {
         for flag in k.flags.clone() {
             print(f"  {flag}")
         }
-        if name != "the hand-posed cross" {
-            bad += k.flags.len()
-        }
+        bad += k.flags.len()
     }
     assert(bad == 0, f"{bad} arm faults")
 }

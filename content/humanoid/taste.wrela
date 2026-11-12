@@ -1,0 +1,29 @@
+// The lab's fighter's taste (`engine::written::Taste`): his habits, true of every move he makes,
+// as a player's are true of every piece. How his body follows his hips is his, not a move's:
+// the cross and the lead hook (solved.wrela, hook.wrela) are written with it. It's the hook's own
+// chain, which the hook held every check with; the cross was solved again with it (`wrela tool
+// moves -- --solve build/sheets cross-solved`). A solve of the taste and both strikes at once
+// (21 numbers) was tried and stopped: its first step took 14 minutes.
+
+use engine::written::{Chain, Taste}
+
+/// How he follows his hips: the chest, then the striking arm's collar, shoulder, elbow and
+/// wrist, each a little later. The lags are short and the order comes of the eases: the hips
+/// ease into a contact, the chest keeps a little over half its snap, and the arm, stopped dead
+/// by it, all of it. Longer lags check a fist that the body carries (a hook's): the arm, later,
+/// reaches for where its keys put it and gives back late what the hips carried early, a dip in
+/// the fist's speed. (These were the lead hook's own; the cross's longer ones, 0.04 s to the
+/// wrist, made the hook's fist slow 1.7 m/s on its way in, and the cross solved again with these
+/// holds all its checks.) A solve may move it as a whole (`--free taste.wrela:chain`).
+pub fn taste() -> Taste {
+    let chain = Chain {
+        trunk: 0.015,
+        collar: 0.020,
+        shoulder: 0.025,
+        elbow: 0.025,
+        wrist: 0.025,
+        body_snap: 0.0,
+        trunk_snap: 0.6,
+    }
+    Taste { chain }
+}

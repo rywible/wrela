@@ -28,7 +28,6 @@ use std::transform::{rotate_y, translate}
 use reference_rig::reference_rig
 use fingers::{FIST_CURL, HIP_CURL, RELAXED_CURL, THUMB_AXIS, below, curled, curled_each, turn_about}
 use engine::humanoid::{Clip, Pose, Rig, palette}
-use moves::punch::PUNCH
 use moves::rest::REST
 use moves::roll::ROLL
 use moves::run::RUN
@@ -40,8 +39,9 @@ use moves::walk::WALK
 /// A move to play on him, as the game's moves are written (content/moves, fitted to the
 /// reference's rig, whose joints are his) and as he makes them his (`manner`): 0 none (the
 /// sheet's pose), 1 the fighting stance's bounce, 2 the loose idle out of a fight, 3 his
-/// stand, 4 the walk, 5 his run, 6 the cross, 7 the roll, 8 setting off, 9 stopping
-/// (`--set MOVE=1`). Each plays in place.
+/// stand, 4 the walk, 5 his run, 7 the roll, 8 setting off, 9 stopping (`--set MOVE=1`; 6, the
+/// fitted punch, is gone: his strikes are written, and play in the combat lab,
+/// content/humanoid). Each plays in place.
 pub const MOVE: u32 = 0
 
 /// The rig the moves are fitted to, and the move `MOVE` names as a clip.
@@ -58,7 +58,6 @@ fn played(mv: u32) -> Clip {
         5 => if CARRIED > 0.0 { manner::sprint().clip(RIG.clone(), 30.0) } else {
             RUN.clip(RIG.clone(), 30.0)
         },
-        6 => PUNCH.clip(RIG.clone(), 30.0),
         7 => ROLL.clip(RIG.clone(), 30.0),
         8 => START.clip(RIG.clone(), 30.0),
         9 => STOP.clip(RIG.clone(), 30.0),
@@ -81,9 +80,9 @@ fn moved_in(clip: Clip, mv: u32, time: f32) -> [mat4; 64] {
         clip.travel_local * loops -
         clip.travel_local * fract(time * clip.fps / f32(max(clip.frames, 2) - 1))
     // (He carries himself his own way walking and running, and in another's idle: his stand
-    // is his already, and his fighting stance, his punch and his roll hold his head as they
+    // is his already, and his fighting stance and his roll hold his head as they
     // need it.)
-    if CARRIED > 0.0 && mv >= 2 && mv != 3 && mv != 6 && mv != 7 {
+    if CARRIED > 0.0 && mv >= 2 && mv != 3 && mv != 7 {
         let how = if mv == 2 { manner::BEARING } else { manner::bearing_at(going_in(mv)) }
         pose = engine::bearing::carried(RIG.clone(), pose, how)
     }
@@ -93,7 +92,7 @@ fn moved_in(clip: Clip, mv: u32, time: f32) -> [mat4; 64] {
     manner::palette_of(
         rig_m,
         standing: if mv == 3 { 1.0 } else { 0.0 },
-        fists: if mv == 1 || mv == 6 { 1.0 } else { 0.0 },
+        fists: if mv == 1 { 1.0 } else { 0.0 },
     )
 }
 

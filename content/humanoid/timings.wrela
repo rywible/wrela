@@ -154,7 +154,6 @@ fn timing_names_keys_out_of_reach() {
     far.fists[1] = far.fists[1] + vec3(0.0, 0.0, 1.5)
     let asked = keys::misses(rig, [fists::guard(), far], 60.0)
     assert(asked.len() == 1 && flagged(asked, "right fist"), "a fist put 1.5 m past the guard")
-    for m in keys::misses(rig, fists::cross_keys(), 60.0) {
-        print(f"the keyed cross: {m}")
-    }
+    let written = solved::cross().keys
+    assert(keys::misses(rig, written, 60.0).len() == 0, "the solved cross's keys are within reach")
 }

@@ -122,17 +122,6 @@ pub fn moves() -> Vec<Move> {
                 ],
             },
             Move {
-                name: "punch",
-                file: "punch.wrela",
-                constant: "PUNCH",
-                clip: PUNCH_KEYED.clip.clone(),
-                about: [
-                    "The cross: Quaternius's Punch_Cross (Universal Animation Library, CC0), held to its",
-                    "feet (content/humanoid's `PUNCH_KEYED`), then keyed as a shot by the moves tool.",
-                    "The fight's timing is laid on it as it plays (`playback::timed`).",
-                ],
-            },
-            Move {
                 name: "roll",
                 file: "roll.wrela",
                 constant: "ROLL",
@@ -181,7 +170,6 @@ fn exchange_cross(rig: Rig) -> Clip {
 pub fn played() -> Vec<(Text, Played, u32)> {
     Vec::from(
         [
-            ("cross", fists::CROSS.clone(), RIGHT_ARM),
             ("cross-solved", solved::CROSS.clone(), RIGHT_ARM),
             ("hook-solved", hook::HOOK.clone(), LEFT_ARM),
         ],
@@ -198,13 +186,6 @@ pub fn strikes(rig: Rig) -> Vec<Strike> {
                 limb: RIGHT_ARM,
                 contact: X_BEFORE,
                 about: "the combat lab's cross as it's drawn, hit-stop and all (exchange::striker_on)",
-            },
-            Strike {
-                name: "cross",
-                clip: fists::CROSS.clip.clone(),
-                limb: RIGHT_ARM,
-                contact: fists::CROSS_HIT,
-                about: "the hand-keyed cross (fists::CROSS, engine::keys)",
             },
             Strike {
                 name: "cross-solved",
@@ -521,7 +502,6 @@ fn each_written_move_is_the_clip_it_was_fitted_to() {
         ("idle", moves::idle::IDLE.clip(rig.clone(), IDLE.fps)),
         ("start", moves::start::START.clip(rig.clone(), ACCAD_M2_START.fps)),
         ("stop", moves::stop::STOP.clip(rig.clone(), ACCAD_M2_STOP.fps)),
-        ("punch", moves::punch::PUNCH.clip(rig.clone(), PUNCH_KEYED.clip.fps)),
         ("roll", moves::roll::ROLL.clip(rig.clone(), ROLL_RAW.fps)),
     ]
     for m in moves() {
