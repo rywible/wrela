@@ -49,7 +49,7 @@ use std::tool::args
 use std::tool::files
 use std::tool::files::rooted
 
-pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --sheet <out-dir> [strike ...] | --solve <out-dir> <strike> | --read <out-dir> <strike> | --drawn [strike ...] | --differ <strike> <strike>"
+pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --contact | --sheet <out-dir> [strike ...] | --solve <out-dir> <strike> | --read <out-dir> <strike> | --drawn [strike ...] | --differ <strike> <strike>"
 
 /// A move: its name on the command line, its file in content/moves and its constant there, the
 /// clip it's fitted to (a looped one as a cycle, a one-off as a shot), and what the file says it
@@ -151,14 +151,25 @@ pub struct Strike: Clone {
 const X_BEFORE: f32 = 0.7
 const X_AFTER: f32 = 0.9
 
-/// The exchange's striker as he's drawn (`exchange::striker_on`, the hit-stop and the
-/// connection in), from `X_BEFORE` before the contact, a pose for each of a game's frames.
+/// The exchange's striker as he's drawn (`exchange::Exchange`: the hold, his fist on what it
+/// struck and the shock up his arm in), from `X_BEFORE` before the contact, a pose for each of a
+/// game's frames.
 fn exchange_cross(rig: Rig) -> Clip {
-    let from = exchange::hit_at() - X_BEFORE
-    let n = u32((X_BEFORE + exchange::TUNED.hold + X_AFTER) * timing::RATE)
+    let t = exchange::TUNED
+    let steps = exchange::played(t, after: 1.0, seconds: 1.0 + 1.5 + t.hold + X_AFTER)
+    var landed = 0
+    for i in 0..steps.len() {
+        if steps[i].since() >= 0.0 {
+            landed = i
+            break
+        }
+    }
+    let from = landed - u32(X_BEFORE * timing::RATE)
+    let n = u32((X_BEFORE + t.hold + X_AFTER) * timing::RATE)
     var poses: Vec<engine::humanoid::Pose> = Vec::with_capacity(n)
     for f in 0..n {
-        poses.push(exchange::striker_on(from + f32(f) / timing::RATE, exchange::TUNED))
+        let (p, _) = steps[min(from + f, steps.len() - 1)].striker_pose()
+        poses.push(p)
     }
     timing::clip_of(rig, poses, timing::RATE)
 }
@@ -185,7 +196,7 @@ pub fn strikes(rig: Rig) -> Vec<Strike> {
                 clip: exchange_cross(rig),
                 limb: RIGHT_ARM,
                 contact: X_BEFORE,
-                about: "the combat lab's cross as it's drawn, hit-stop and all (exchange::striker_on)",
+                about: "the combat lab's cross as it's drawn, hit-stop and all (exchange::Exchange)",
             },
             Strike {
                 name: "cross-solved",
@@ -389,6 +400,11 @@ fn written(m: Move, rig: Rig) -> Result<String, String> {
 pub fn tool() -> u32 {
     let wanted = args()
     let rig = HERO.rig.clone()
+    if wanted.len() >= 1 && wanted[0].as_str() == "--contact" {
+        // The exchange's contact: how the blow lands and how both bodies take it.
+        print(exchange::sheet(exchange::TUNED).as_str())
+        return 0
+    }
     if wanted.len() >= 1 && wanted[0].as_str() == "--drawn" {
         // Each played strike as it's drawn, drawing by drawing.
         var done = 0

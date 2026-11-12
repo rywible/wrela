@@ -1,0 +1,197 @@
+// A blow's contact, as both bodies take it, laid into their inertia (`engine::playback`). A hit
+// lands (`Hit`: where, which way, how heavy, how long both are held), and:
+// - while it's held, the striking fist stays on what it struck (`pinned`);
+// - as the hold breaks, the one struck is knocked along the blow (`taken`): its head, neck and
+//   chest tipped back from it and its hips pushed, each a spin or a speed laid into its inertia,
+//   which the inertia's springs rise into and let die (`playback::decay`): a reaction that comes
+//   of the blow, how heavy and which way, with no clip to play;
+// - the blow runs back up the striking arm the way it came (`recoiled`): the forearm, the upper
+//   arm, the collar and the chest each checked back from it, each less, likewise;
+// - and the camera's kicked along it (`Kick`).
+// What content/humanoid's exchange did by hand for one punch, for any blow on any body.
+
+use humanoid::{NONE, Pose, Rig, Rigid, pose_world}
+use keys::arm_to
+use playback::{Mover, decayed}
+use std::collections::Vec
+use std::transform::inverse
+
+const UP: vec3 = vec3(0.0, 1.0, 0.0)
+
+/// A blow: where it lands (the world), the way it goes (the world, any length), how heavy it is
+/// (0 a touch, 1 the heaviest a fight has), and how long both bodies are held at it (s).
+pub struct Hit: Copy {
+    pub at: vec3,
+    pub way: vec3,
+    pub weight: f32,
+    pub hold: f32,
+}
+
+/// How a body takes blows and gives them, at a blow of weight 1: how fast its head is tipped back
+/// (rad/s) and how much of that its neck, chest and spine take; how fast its hips are pushed
+/// along the blow (m/s); how fast the blow runs back up a striking forearm (rad/s), and how much
+/// of that its upper arm, collar and chest take; how long what's laid in takes to die (its
+/// inertia's half-life, s); and how fast the camera's kicked along it (m/s).
+pub struct Give: Copy {
+    pub knock: f32 = 7.0,
+    pub neck: f32 = 0.5,
+    pub chest: f32 = 0.3,
+    pub spine: f32 = 0.15,
+    pub push: f32 = 1.4,
+    pub shock: f32 = 5.0,
+    pub upper: f32 = 0.5,
+    pub collar: f32 = 0.3,
+    pub trunk: f32 = 0.2,
+    pub half: f32 = 0.14,
+    pub kick: f32 = 0.9,
+}
+
+/// `way` (the world) as body `m` has it: its heading taken off.
+fn into_body(m: Mover, way: vec3) -> vec3 {
+    Quat::axis_angle(UP, m.heading).inverse().rotate(way)
+}
+
+/// Bone `b`'s parent's frame in `w` (the body's space; the rig's base for a root).
+fn parent_frame(rig: Rig, w: [Rigid; 64], b: u32) -> Quat {
+    let p = rig.bones[b].parent
+    if p == NONE { rig.base.q } else { w[p].q }
+}
+
+/// Spin bone `b` of `m` at `rate` (rad/s) about `axis` (the body's space): laid into its inertia,
+/// in its parent's frame as the inertia holds it.
+fn spun(m: mut Mover, rig: Rig, w: [Rigid; 64], b: u32, axis: vec3, rate: f32) {
+    if b == NONE || length(axis) < 1.0e-6 {
+        return
+    }
+    m.inertia.spins[b] += parent_frame(rig, w, b).inverse().rotate(normalize(axis)) * rate
+}
+
+/// Body `m` (on `rig`) struck by `hit`, as it gives (`give`): its head tipped back along the blow
+/// and its neck, chest and spine after it, its hips pushed; each laid into its inertia, which
+/// rises into it and lets it die over `give.half`.
+pub fn taken(m: mut Mover, rig: Rig, hit: Hit, give: Give) {
+    let way = into_body(m, hit.way)
+    let flat = vec3(way.x, 0.0, way.z)
+    if length(flat) < 1.0e-6 {
+        return
+    }
+    let w = pose_world(rig, m.shown)
+    // (About this, a bone's top goes the way the blow does.)
+    let tip = cross(UP, normalize(flat))
+    let k = give.knock * hit.weight
+    for (name, share) in [
+        ("head", 1.0),
+        ("neck", give.neck),
+        ("upperChest", give.chest),
+        ("chest", give.chest),
+        ("spine", give.spine),
+    ] {
+        spun(mut m, rig, w, rig.find(name), tip, k * share)
+    }
+    m.inertia.hips_speed += rig.base.q.inverse().rotate(normalize(flat)) * give.push * hit.weight
+    m.half = give.half
+}
+
+/// Body `m` (on `rig`) having struck `hit` with its `arm` (0 the left, 1 the right), as it gives
+/// (`give`): the blow back up the arm the way it came, each part turned so its far end goes back
+/// against the blow: the forearm most, then the upper arm, the collar and the chest; laid into
+/// its inertia, dying over `give.half`.
+pub fn recoiled(m: mut Mover, rig: Rig, hit: Hit, arm: u32, give: Give) {
+    let back = -normalize(into_body(m, hit.way))
+    let w = pose_world(rig, m.shown)
+    let side = if arm == 0 { "left" } else { "right" }
+    let parts = [
+        (f"{side}LowerArm", f"{side}Hand", 1.0),
+        (f"{side}UpperArm", f"{side}LowerArm", give.upper),
+        (f"{side}Shoulder", f"{side}UpperArm", give.collar),
+    ]
+    let k = give.shock * hit.weight
+    for (name, end, share) in parts {
+        let (b, e) = (rig.find(name.as_str()), rig.find(end.as_str()))
+        if b == NONE || e == NONE {
+            continue
+        }
+        spun(mut m, rig, w, b, cross(w[e].t - w[b].t, back), k * share)
+    }
+    // (The chest turned about up, its striking shoulder going back.)
+    let chest = rig.find("upperChest")
+    let shoulder = rig.find(f"{side}UpperArm".as_str())
+    if chest != NONE && shoulder != NONE {
+        let out = w[shoulder].t - w[chest].t
+        let turn = if dot(cross(UP, out), back) > 0.0 { 1.0 } else { -1.0 }
+        spun(mut m, rig, w, chest, UP * turn, k * give.trunk)
+    }
+    m.half = give.half
+}
+
+/// `pose` (drawn at `place`) with its `arm`'s fist on `at` (the world): what it struck, held
+/// there while the blow's held, whatever the rest of the body does.
+pub fn pinned(rig: Rig, pose: Pose, place: mat4, arm: u32, at: vec3) -> Pose {
+    let a = pose_world(rig, pose)
+    let nb = rig.bones.len()
+    var w: Vec<Rigid> = Vec::with_capacity(nb)
+    for b in 0..nb {
+        w.push(a[b])
+    }
+    arm_to(rig, mut w, arm, (inverse(place) * vec4(at, 1.0)).xyz)
+    var out = pose
+    for b in 0..nb {
+        let up = rig.bones[b].parent
+        let pq = if up == NONE { rig.base.q } else { w[up].q }
+        out.turns[b] = pq.inverse().mul(w[b].q)
+    }
+    out
+}
+
+/// The camera kicked by blows: how far it's off where it'd be (the world, m), and how fast it's
+/// going; each blow sets it going along the way the blow goes, and it's sprung back.
+pub struct Kick: Copy {
+    pub at: vec3,
+    pub speed: vec3,
+}
+
+impl Kick {
+    pub fn none() -> Kick {
+        Kick { at: vec3(0.0), speed: vec3(0.0) }
+    }
+
+    /// Kicked by `hit`, as `give` says.
+    pub fn kicked(mut self, hit: Hit, give: Give) {
+        let flat = vec3(hit.way.x, 0.0, hit.way.z)
+        if length(flat) > 1.0e-6 {
+            self.speed += normalize(flat) * give.kick * hit.weight
+        }
+    }
+
+    /// `dt` (s) on, sprung back over `give.half` (twice as long as a body's: a camera's heavier).
+    pub fn step(mut self, give: Give, dt: f32) {
+        let (x, v) = decayed(self.at, self.speed, 2.0 * give.half, dt)
+        self.at = x
+        self.speed = v
+    }
+}
+
+/// How heavy a blow is (`Hit::weight`, 0 to 1) that holds its bodies `hold` s, of the most a fight
+/// holds them (`most`, s): a fight's hold is its blow's weight (mmo/combat's `hold_of`).
+pub fn weight_of(hold: f32, most: f32) -> f32 {
+    clamp(hold / max(most, 1.0e-4), 0.0, 1.0)
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// A spin laid into a body's inertia rises into a turn and dies away: what a blow does to the one
+/// it lands on, with no clip.
+@test
+fn a_spin_laid_in_rises_and_dies() {
+    let (x1, v1) = decayed(vec3(0.0), vec3(1.0, 0.0, 0.0), half: 0.14, dt: 0.1)
+    assert(x1.x > 0.02, "it turns")
+    var x = x1
+    var v = v1
+    for _ in 0..60 {
+        let (a, b) = decayed(x, v, half: 0.14, dt: 1.0 / 60.0)
+        x = a
+        v = b
+    }
+    assert(abs(x.x) < 0.01 * x1.x + 1.0e-4, "and a second on it's all but gone")
+    assert(weight_of(hold: 0.1, most: 0.133) > 0.7 && weight_of(hold: 1.0, most: 0.133) == 1.0)
+}

@@ -10,8 +10,10 @@
 //
 // The moves are stand-ins, every one hand-keyed or written in Wrela: every strike is the solved
 // cross (content/humanoid's `solved`), timed to its move's frames; the dodge is the roll
-// (content/moves); a parry is the step back; a stagger, and a hit taken, the reel (`fists::REEL`,
-// until reactions are made from the blow). The idol is the same body, larger, in stone.
+// (content/moves); a parry is the step back. A blow is no clip (`engine::contact`): both bodies
+// are held still through the rules' hold, and as it breaks the one struck is knocked along the
+// blow and the blow runs back up the striker's arm, each laid into its inertia; the camera's
+// kicked along it. The idol is the same body, larger, in stone.
 
 use std::collections::Vec
 use std::gpu::{
@@ -25,11 +27,14 @@ use engine::anime::{Anime, Drawer, LIGHT, Look, PLAIN, STRIKE}
 use engine::humanoid::{Pose, palette}
 use engine::playback
 use engine::playback::{Gaits, Handling, Move, Mover}
+use engine::contact
+use engine::contact::{Give, Hit, Kick}
+use engine::humanoid::pose_world
 use engine::view::first_camera
 use engine::written::Beats
 use humanoid::body::{GAITS_CODE, HERO, ROLL_CODE}
 use humanoid::exchange::{X_STONE, X_TINT}
-use humanoid::fists::{GUARD, REEL, STEP_OUT}
+use humanoid::fists::{GUARD, STEP_OUT}
 use humanoid::ink::ink
 use humanoid::look::{SUN, Shot}
 use humanoid::paint::{backdrop, body, ground, paint_backdrop, paint_body, paint_ground}
@@ -51,7 +56,6 @@ pub const IDOL_SCALE: f32 = 1.6
 pub const BOSS_STRIKES: u32 = 6
 pub const ACT_DODGE: u32 = 13
 pub const ACT_PARRY: u32 = 14
-pub const ACT_STRUCK: u32 = 15
 
 /// The solved cross at a move's beats (`engine::written::Written::played`): its keys laid on
 /// the move's frames, its contact on the frame the rules hit, the first of its active ones. (The
@@ -70,9 +74,9 @@ fn dodged() -> Move {
 }
 
 @fuel(2 ** 40)
-pub const ACTS: [Move; 16] = acts()
+pub const ACTS: [Move; 15] = acts()
 
-fn acts() -> [Move; 16] {
+fn acts() -> [Move; 15] {
     let m = |i: u32| -> Move {
         struck_at(MOVES[i].windup, MOVES[i].active, MOVES[i].recovery)
     }
@@ -95,13 +99,12 @@ fn acts() -> [Move; 16] {
         b(6),
         dodged(),
         STEP_OUT.clone(),
-        REEL.clone(),
     ]
 }
 
 /// How each is drawn: a hard strike as a strike (on twos, an impact frame), a light one lighter,
 /// the rest as they play.
-pub const LOOKS: [Look; 16] = [
+pub const LOOKS: [Look; 15] = [
     LIGHT,
     STRIKE,
     LIGHT,
@@ -115,7 +118,6 @@ pub const LOOKS: [Look; 16] = [
     STRIKE,
     STRIKE,
     STRIKE,
-    PLAIN,
     PLAIN,
     PLAIN,
 ]
@@ -163,7 +165,24 @@ pub struct Body: Copy {
     pub frame: u32,
     /// The boss's (its strikes are `BOSS_STRIKES` on, and it's drawn larger).
     pub boss: bool,
+    /// The rules' hold on it as last seen, and a blow it struck or took that it gives to as the
+    /// hold breaks (`STRUCK` or `STRIKER` in `role`; `NOTHING` none).
+    pub hold: u32,
+    pub hit: Hit,
+    pub role: u32,
 }
+
+/// What a body's pending blow is to it (`Body::role`).
+pub const NOTHING: u32 = 0
+pub const STRUCK: u32 = 1
+pub const STRIKER: u32 = 2
+
+/// How the fight's bodies take blows and give them (`engine::contact::Give`).
+pub const GIVE: Give = Give {}
+
+/// The most frames the rules hold a blow (mmo/combat's `hold_of`): a blow held that long is as
+/// heavy as a fight's blows get.
+const MOST_HOLD: u32 = 8
 
 /// Where the rules put `seen` (m).
 pub fn place_of(seen: Seen) -> vec3 {
@@ -182,6 +201,9 @@ impl Body {
             at,
             frame: 0,
             boss,
+            hold: 0,
+            hit: Hit { at: vec3(0.0), way: vec3(0.0, 0.0, 1.0), weight: 0.0, hold: 0.0 },
+            role: NOTHING,
         }
     }
 }
@@ -226,13 +248,6 @@ pub fn begun(b: Body, seen: Seen) -> (u32, f32) {
     if seen.act == PARRYING && b.act != PARRYING {
         return (ACT_PARRY, 0.0)
     }
-    if seen.act == STAGGERED && b.act != STAGGERED {
-        return (ACT_STRUCK, 0.0)
-    }
-    // A hit taken (the rules stagger no player: the body reels, and is free when they are).
-    if seen.hp < b.hp && seen.act != DODGING {
-        return (ACT_STRUCK, 0.0)
-    }
     (engine::humanoid::NONE, 0.0)
 }
 
@@ -266,6 +281,16 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
             b.mover.act_time = t - dt
         }
     }
+    // Held at a blow, it's still; as the hold breaks it gives to the blow.
+    let held = seen.hold > 0
+    if !held && b.role != NOTHING {
+        if b.role == STRUCK {
+            contact::taken(mut b.mover, HERO.rig, b.hit, GIVE)
+        } else {
+            contact::recoiled(mut b.mover, HERO.rig, b.hit, arm: 1, give: GIVE)
+        }
+        b.role = NOTHING
+    }
     let pose = playback::step(
         mut b.mover,
         GAITS,
@@ -276,7 +301,7 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
         act,
         upper: false,
         how: HOW,
-        dt: dt,
+        dt: if held { 1.0e-4 } else { dt },
     )
     if act != engine::humanoid::NONE && into > b.mover.act_time {
         // (Begun on a frame already past, as a rollback finds it: it catches up.)
@@ -297,6 +322,7 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
     b.act = seen.act
     b.move_ = seen.move_
     b.hp = seen.hp
+    b.hold = seen.hold
     b.at = at
     b.frame = frame
     let placed = playback::placed(b.mover)
@@ -348,11 +374,19 @@ pub fn shown(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> S
 pub struct Bodies: Clone {
     bodies: Vec<Body>,
     mask: [f32; 64],
+    /// The camera's kick from the fight's blows, and how many blows have landed.
+    kick: Kick,
+    pub blows: u32,
 }
 
 impl Bodies {
     pub fn new() -> Bodies {
-        Bodies { bodies: Vec::new(), mask: playback::upper_body(HERO.rig) }
+        Bodies {
+            bodies: Vec::new(),
+            mask: playback::upper_body(HERO.rig),
+            kick: Kick::none(),
+            blows: 0,
+        }
     }
 
     /// Each body stepped `dt` (s) on, following `w`: what each shows, the boss's first. A fight
@@ -366,6 +400,8 @@ impl Bodies {
                 self.bodies.push(Body::new(w.player(i), boss: false))
             }
         }
+        self.contacts(w)
+        self.kick.step(GIVE, dt)
         var out: Vec<Shown> = Vec::new()
         for k in 0..n {
             let seen = if k == 0 { w.boss() } else { w.player(k - 1) }
@@ -374,6 +410,72 @@ impl Bodies {
             self.bodies[k] = b
         }
         out
+    }
+
+    /// The blows the rules land as they go from what the bodies last saw to `w`: a striker (its
+    /// strike active, its hold begun) and each it struck (its health down, or staggered: a
+    /// parried blow), the blow from where the striker's fist is drawn, along the way from it to
+    /// the one struck, as heavy as the rules hold it. Each gives to it as its hold breaks; the
+    /// camera's kicked at once.
+    fn contacts(mut self, w: World) {
+        let n = self.bodies.len()
+        borrow rig = HERO.rig
+        let hand = rig.find("rightHand")
+        for k in 0..n {
+            let seen = if k == 0 { w.boss() } else { w.player(k - 1) }
+            let b = self.bodies[k]
+            let struck = seen.hp < b.hp || (seen.act == STAGGERED && b.act != STAGGERED)
+            if !struck || w.frame == b.frame {
+                continue
+            }
+            // Its striker: the boss for a player, the nearest player striking for the boss.
+            var from = n
+            var best = 1.0e9
+            for j in 0..n {
+                if (k == 0) == (j == 0) {
+                    continue
+                }
+                let s = if j == 0 { w.boss() } else { w.player(j - 1) }
+                let d = length(drawn_at(self.bodies[j]) - drawn_at(b))
+                if (s.act == ACTIVE || s.act == RECOVER) && d < best {
+                    best = d
+                    from = j
+                }
+            }
+            if from == n {
+                continue
+            }
+            let striker = if from == 0 { w.boss() } else { w.player(from - 1) }
+            let a = self.bodies[from]
+            let scale = if a.boss { IDOL_SCALE } else { 1.0 }
+            let fist = playback::placed(a.mover) *
+                vec4(pose_world(rig, a.mover.shown)[hand].t * scale, 1.0)
+            let way = drawn_at(b) - drawn_at(a)
+            // (A parried blow staggers what threw it: it's struck back as hard as blows go.)
+            let parried = seen.act == STAGGERED
+            let frames = max(max(striker.hold, seen.hold), 1)
+            let hit = Hit {
+                at: fist.xyz,
+                way: if parried { -way } else { way },
+                weight: if parried { 1.0 } else {
+                    contact::weight_of(hold: f32(frames), most: f32(MOST_HOLD))
+                },
+                hold: f32(frames) / f32(HZ),
+            }
+            self.bodies[k].hit = hit
+            self.bodies[k].role = STRUCK
+            if !parried {
+                self.bodies[from].hit = hit
+                self.bodies[from].role = STRIKER
+            }
+            self.kick.kicked(hit, GIVE)
+            self.blows += 1
+        }
+    }
+
+    /// Where the camera's kicked to by the fight's blows (m, the world).
+    pub fn kicked(self) -> vec3 {
+        self.kick.at
     }
 
     /// Body `k`'s (the boss's 0, player `i`'s `i + 1`), as last followed.
@@ -499,6 +601,8 @@ impl Ring {
         let want_look = middle + vec3(0.0, FOCUS, 0.0)
         let want_eye = want_look + way * far
         let k = if first { 1.0 } else { 1.0 - pow(0.5, clamp(dt, 0.0, 0.1) / STEADY) }
+        // (A blow kicks it along the way it goes, and it's sprung back: `engine::contact::Kick`.)
+        let kick = self.bodies.kicked()
         self.look = mix(self.look, want_look, vec3(k))
         // (The eye eased about where it looks, so the distance eases, not the chord.)
         let off = mix(self.eye - self.look, want_eye - want_look, vec3(k))
@@ -508,7 +612,7 @@ impl Ring {
             resolution: vec2(f32(width), f32(height)),
             held: floor(time * 12.0) / 12.0,
             kinetic,
-            cam: first_camera(self.eye, self.look, 0.62, width, height),
+            cam: first_camera(self.eye + kick, self.look + kick, 0.62, width, height),
             sun: normalize(SUN),
             feet: my_at,
             left,
@@ -684,4 +788,34 @@ fn every_strike_puts_its_fist_on_its_contact_on_the_frame_the_rules_hit() {
             assert(f == hit || off(f) >= on, f"strike {k}: nearer its contact on frame {f}")
         }
     }
+}
+
+/// A fight's blows are laid into the bodies: the idol struck by a jab is knocked back along it
+/// as the hold breaks (its head turned off what its guard gives it), and the jab's arm shocked.
+@test
+fn a_blow_the_rules_land_knocks_the_one_struck_and_shocks_the_striker() {
+    var w = World::armed([combat::sim::FISTS])
+    var b = Bodies::new()
+    let dt = 1.0 / 60.0
+    // (The idol walks in; the player jabs it when it's near.)
+    var knocked = 0.0
+    var shocked = 0.0
+    var input: u32 = 0
+    for _ in 0..900 {
+        let p = w.player(0)
+        let i = w.boss()
+        let d = length(place_of(p) - place_of(i))
+        if d < 2.6 && p.act == IDLE && w.reads(0) & (combat::sim::ATTACK << 6) != 0 {
+            input = input ^ (combat::sim::ATTACK << 6)
+        }
+        combat::sim::step(mut w, [input])
+        let _ = b.follow(w, dt)
+        let head = HERO.rig.find("head")
+        let arm = HERO.rig.find("rightLowerArm")
+        knocked = max(knocked, length(b.body(0).mover.inertia.turns[head]))
+        shocked = max(shocked, length(b.body(1).mover.inertia.turns[arm]))
+    }
+    assert(b.blows > 0, "a blow lands")
+    assert(knocked > 0.02, f"the idol's head knocked {knocked} rad")
+    assert(shocked > 0.02, f"the jab's arm shocked {shocked} rad")
 }
