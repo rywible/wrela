@@ -160,12 +160,13 @@ pub fn hold_of(damage: i32) -> u32 {
 }
 
 /// Knockback (a trial, Ryan's decision of 2026-11-12): a blow that lands pushes the one it lands
-/// on along the way from its striker, as far as it's heavy. `KNOCKBACK` false turns it off.
+/// on along the way from its striker, as far as it's heavy. `KNOCKBACK` false turns it off. Three
+/// times as far as it was first tried (45 units), on Ryan's look at the two side by side.
 pub const KNOCKBACK: bool = true
-/// How far the heaviest blow (held `MOST_HOLD` frames) pushes a man-sized body (units: 0.70 m).
-/// A blow held `h` frames pushes `(h - 2)²` 36ths of it: the idol's slam 0.70 m, its palm 0.31,
-/// its sweep 0.18, its stomp 0.08; a jab or a first cut, held 3, about 2 cm.
-pub const PUSH: i32 = 45
+/// How far the heaviest blow (held `MOST_HOLD` frames) pushes a man-sized body (units: 2.11 m).
+/// A blow held `h` frames pushes `(h - 2)²` 36ths of it: the idol's slam 2.11 m, its palm 0.94,
+/// its sweep 0.52, its stomp 0.23; a jab or a first cut, held 3, about 6 cm.
+pub const PUSH: i32 = 135
 pub const MOST_HOLD: u32 = 8
 /// What of a push the idol takes, in quarters: a stone god many times a man's weight is pushed
 /// a quarter as far.
@@ -1643,8 +1644,8 @@ fn a_blow_pushes_the_one_struck_by_its_weight() {
         assert(push_of(MOST_HOLD) == 0, "off, no blow pushes")
         return
     }
-    assert(push_of(8) == PUSH && push_of(3) < 2 && push_of(6) * 9 == PUSH * 4, "by the hold")
-    // The slam (held 8): still through its hold, then pushed back 0.7 m, half of it on its
+    assert(push_of(8) == PUSH && push_of(3) == PUSH / 36 && push_of(6) * 9 == PUSH * 4, "by the hold")
+    // The slam (held 8): still through its hold, then pushed back 2.1 m, half of it on its
     // first two frames.
     var w = struck_by(2)
     let z0 = w.party[0].z
