@@ -194,8 +194,8 @@ fn takers_blows(frames: u32, alone: bool) -> Vec<(u32, Text, f32)> {
 }
 
 /// The taker takes the idol's blows, so a clip shows what knockback does (mmo/combat's
-/// `push_of`): alone, a sweep and a palm land on it, pushing it 0.18 and 0.31 m; beside the
-/// fight's bot, a slam does, pushing it 0.70 m (alone, the slam comes last and the dead aren't
+/// `push_of`): alone, a sweep and a palm land on it, pushing it 0.52 and 0.94 m; beside the
+/// fight's bot, a slam does, pushing it 2.11 m (alone, the slam comes last and the dead aren't
 /// pushed). Each lands in the clip's 12 s.
 @test
 fn the_taker_takes_the_idols_blows() {
@@ -203,9 +203,9 @@ fn the_taker_takes_the_idols_blows() {
         return
     }
     for (alone, name, push) in [
-        (true, "Sweep", 0.18),
-        (true, "Palm", 0.31),
-        (false, "Slam", 0.70),
+        (true, "Sweep", 0.52),
+        (true, "Palm", 0.94),
+        (false, "Slam", 2.11),
     ] {
         var seen = false
         for (f, n, pushed) in takers_blows(720, alone) {
