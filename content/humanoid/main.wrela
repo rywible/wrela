@@ -50,6 +50,7 @@ use std::gpu::{
 use engine::sound::{Cue, Palette, Surface, Swish, Babble, Breath, mixer}
 use engine::sound
 use lab::{Lab, preset, preset_name}
+use exchange::Exchange
 use std::audio::{RingWriter, play}
 use std::input::{Event, Key, PadButton, events}
 use std::io::print
@@ -88,9 +89,6 @@ const PLAYED_ACTS: [Move; 2] = if CODE == 1 { ACTS_CODE.clone() } else { ACTS.cl
 /// `SHOW=11` as a game without this layer's help would play it, for comparison: `--set CUT=1`
 /// cuts from move to move and lets the feet go where the moves put them.
 pub const CUT: u32 = 0
-
-/// (Measuring: `--set PROBE_FIST=1` prints the fist's path round the contact.)
-pub const PROBE_FIST: u32 = 0
 
 /// `SHOW=11`'s fight moves drawn as anime is (`engine::anime`: on twos, the strike pushed past
 /// and held, fists and feet smeared): `--set ANIME=0` draws them smooth.
@@ -173,6 +171,8 @@ pub struct State {
     held: vec4,
     mask: [f32; 64],
     drawer: Drawer,
+    /// `SHOW=28`'s exchange.
+    ex: Exchange,
     /// `SHOW=29`'s: the lab, its panel, and the cues to its sounds.
     lab: Lab,
     ui: Ui,
@@ -221,15 +221,9 @@ pub const LAB_SOUNDS: Palette = Palette {
 }
 
 pub fn init() -> State {
-    if SHOW == 29 && PROBE_FIST == 1 {
-        print(exchange::fist_track())
-    }
-    if SHOW == 28 && PROBE_FIST == 1 {
-        print(exchange::move_track(184, 262))
-    }
     if SHOW == 28 {
         print(
-            f"exchange: hit at {exchange::hit_at():.3} s, blow {exchange::BLOW}, foe at {exchange::PLACE[3].xyz}, contact {exchange::contact()}",
+            f"exchange: the cross lands at {exchange::KNUCKLES}, the one struck stands at {exchange::FOE_AT}",
         )
     }
     print(
@@ -241,6 +235,7 @@ pub fn init() -> State {
     }
     State {
         lab: Lab::new(),
+        ex: Exchange::new(exchange::TUNED, after: if SHOW == 28 { exchange::THROW } else { -1.0 }),
         ui: Ui::new(Fonts::load()),
         renderer: Renderer::new(Fonts::load()),
         cues,
@@ -396,17 +391,6 @@ fn played(s: mut State, time: f32) -> (Pose, mat4) {
     (pose, playback::placed(s.mover))
 }
 
-/// The struck fighter's palette from the rig's `foe`: Hakuro's, his head squashed along the blow
-/// while the fist is in it (the exchange's clock `xc`, below 0 none).
-fn struck_palette(foe: [mat4; 64], xc: f32, xt: exchange::Tune) -> [mat4; 64] {
-    let m = hakuro_palette(foe)
-    if xc < 0.0 {
-        return m
-    }
-    let head = bone_at(foe, HERO.rig.rest_world(), "head") + vec3(0.0, 0.07, 0.0)
-    fighter::squashed(m, head, exchange::BLOW, exchange::squash(xc, xt))
-}
-
 fn pose_at(time: f32) -> Pose {
     let n = HERO.rig.bones.len()
     let raw = RAW == 1
@@ -437,7 +421,6 @@ fn pose_at(time: f32) -> Pose {
         24 => kimodo::SHRUG_D.pose(time % kimodo::SHRUG_D.length()),
         25 => kimodo::SHRUG_N.pose(time % kimodo::SHRUG_N.length()),
         26 => kimodo::fight_round(time),
-        28 => exchange::striker_on(time, exchange::TUNED),
         27 => kimodo::FIGHT_IDLE_M.pose(time % kimodo::FIGHT_IDLE_M.length()),
         _ => if time < IDLE_AT {
             T_POSE.pose(0.0)
@@ -479,8 +462,7 @@ fn lab_aside(t: exchange::Tune, l: Lab, width: u32) -> vec3 {
     if !l.panel {
         return vec3(0.0)
     }
-    let side = -exchange::BLOW.z / exchange::BLOW.x
-    let d = normalize(vec3(side, 0.0, 1.0))
+    let d = normalize(vec3(0.0, 0.0, 1.0))
     let right = vec3(d.z, 0.0, -d.x)
     let far = if t.giant { 12.0 } else { 3.4 }
     right * far * l.zoom * 0.45 * (LAB_W + 20.0) / f32(width)
@@ -497,8 +479,10 @@ fn lab_panel(s: mut State, time: f32, width: u32, height: u32) {
     mut ui = s.ui
     mut l = s.lab
     // (The lab runs on its own clock, slowed as its panel says.)
-    l.clock += clamp(time - l.last_time, 0.0, 0.1) * l.speed
+    let step = clamp(time - l.last_time, 0.0, 0.1) * l.speed
+    l.clock += step
     l.last_time = time
+    l.advance(max(step, 1.0e-4))
     let g = l.clock
     ui.begin(screen, input)
     var punch = false
@@ -639,16 +623,15 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         SHOW == 29
 
     let dt = clamp(time - s.last, 1.0e-4, 0.1)
-    let (pose, place) = if game { played(mut s, time) } else if SHOW == 29 {
-        (lab::striker_at(s.lab, s.lab.clock), identity())
-    } else { (pose_at(time), identity()) }
+    if SHOW == 28 {
+        s.ex.step(dt)
+        s.last = time
+    }
+    let (pose, place) = if game { played(mut s, time) } else { (pose_at(time), identity()) }
     var bones = palette(HERO.rig, pose, place)
-    // The exchange's clock and tuning: the scripted one's, or the lab's last press's (below 0,
-    // no exchange).
-    let xt = if SHOW == 29 { s.lab.shown() } else { exchange::TUNED }
-    let xc = if SHOW == 28 { time } else if SHOW == 29 { lab::exchange_clock(s.lab) } else { -1.0 }
-    // (How swiftly the fist is going in, 0 to 1: the smear's drawing.)
-    var swift = 0.0
+    // The exchange, the scripted one's or the lab's: who's struck and how, and its bodies.
+    let x = if SHOW == 29 { s.lab.ex.clone() } else { s.ex.clone() }
+    let xt = x.tune()
 
     // Hakuro as the body a game plays: how he's holding himself, eased from what he's doing.
     let hero = HAKURO == 1 && SHOW == 11
@@ -716,86 +699,48 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.fighters.pose(0, manner::palette_of(bones, standing: s.held.z, fists: s.held.w))
     }
     let fight = HAKURO == 1 && (SHOW == 28 || SHOW == 29)
-    if fight {
-        // His punching arm smeared on the drawings where his fist is going in fast.
-        let rw0 = HERO.rig.rest_world()
-        let before = if SHOW == 28 { pose_at(time - 1.0 / 60.0) } else {
-            lab::striker_at(s.lab, s.lab.clock - 1.0 / 60.0)
-        }
-        let was = bone_at(palette(HERO.rig, before, place), rw0, "rightHand")
-        let fist = bone_at(bones, rw0, "rightHand")
-        let going = (fist - was) * 60.0
-        // (Only on its way in: the contact drawing is the clean one.)
-        let short = dot(exchange::KNUCKLES - exchange::BLOW * 0.09 - fist, exchange::BLOW)
-        swift = clamp((dot(going, exchange::BLOW) - 2.0) / 3.0, 0.0, 1.0) *
-            smoothstep(0.03, 0.1, short)
-        // (And his fist drawn big where it counts: going in, and on the face.)
-        let landed = if xc >= 0.0 { exchange::squash(xc, xt) / exchange::X_SQUASH } else { 0.0 }
-        let way = if landed > 0.0 { exchange::BLOW } else { going }
-        let big = 1.0 + max(0.3 * swift, exchange::X_FIST * landed)
-        s.fighters.pose(
-            0,
-            fighter::smeared(hakuro_palette(bones), fist, way, exchange::X_SMEAR * swift, big),
-        )
-        s.fighters.fist_grown(0, 1, big)
-    }
-    if SHOW == 28 {
-        var foe = palette(
-            HERO.rig,
-            exchange::clear_of(
-                exchange::struck(exchange::played_at(time, exchange::TUNED), exchange::TUNED),
-                exchange::PLACE,
-                pose,
-            ),
-            exchange::PLACE,
-        )
+    let exchanged = SHOW == 28 || SHOW == 29
+    if exchanged {
+        // The striker as he's drawn (smeared where his fist's going in), the one struck in his
+        // place (`exchange::Exchange`: the contact is the engine's).
+        bones = x.striker_palette()
+        write(mut s.palette, 0, bones)
+        var foe = x.struck_palette()
         foe[63] = mat4(
-            exchange::STRUCK_TINT,
-            vec4(normalize((exchange::PLACE * vec4(1.0, 0.0, 0.0, 0.0)).xyz), 1.0),
+            exchange::tint(xt),
+            vec4(normalize((exchange::place(xt) * vec4(1.0, 0.0, 0.0, 0.0)).xyz), 1.0),
             vec4(0.0),
             vec4(0.0),
         )
         write(mut s.palette2, 0, foe)
         if fight {
-            s.fighters.pose(1, struck_palette(foe, xc, xt))
-        }
-    }
-    let shown = s.lab.shown()
-    if SHOW == 29 {
-        let at = exchange::place(shown)
-        // (His hands kept out of the punching arm; the giant's are far above it.)
-        let struck = lab::struck_at(s.lab, s.lab.clock)
-        let struck = if shown.giant { struck } else { exchange::clear_of(struck, at, pose) }
-        var foe = palette(HERO.rig, struck, at)
-        foe[63] = mat4(
-            exchange::tint(shown),
-            vec4(normalize((at * vec4(1.0, 0.0, 0.0, 0.0)).xyz), 1.0),
-            vec4(0.0),
-            vec4(0.0),
-        )
-        write(mut s.palette2, 0, foe)
-        if fight {
-            s.fighters.pose(1, struck_palette(foe, xc, xt))
+            // (His fist drawn big on the blow; the head it struck squashed along it.)
+            let (big, squash) = x.drawn_big()
+            let rw = HERO.rig.rest_world()
+            let fist = bone_at(bones, rw, "rightHand")
+            s.fighters.pose(
+                0,
+                fighter::smeared(hakuro_palette(bones), fist, exchange::BLOW, 0.0, big),
+            )
+            s.fighters.fist_grown(0, 1, big)
+            let head = bone_at(foe, rw, "head") + vec3(0.0, 0.07, 0.0)
+            s.fighters.pose(1, fighter::squashed(hakuro_palette(foe), head, exchange::BLOW, squash))
         }
     }
     // The camera follows the hips along the ground, steadily: where they are on average over a
     // stride, so it neither surges with each step nor sways with the hips. A game's body is
     // followed where gameplay puts it, which is steady already.
-    let (kick, push) = if SHOW == 28 { exchange::camera(time, exchange::TUNED) } else if SHOW ==
-        29 { lab::camera(s.lab, s.lab.clock) } else { (0.0, 0.0) }
-    if SHOW == 28 {
-        kinetic = max(kinetic, exchange::flash(time, exchange::TUNED))
+    let (kick, push) = if exchanged { x.camera() } else { (vec3(0.0), 0.0) }
+    if exchanged {
+        let (k, f) = x.kinetic()
+        kinetic = max(kinetic, k)
+        force = f
     }
-    if SHOW == 29 {
-        kinetic = max(kinetic, lab::flash(s.lab, s.lab.clock))
-    }
-    let hips = if SHOW == 28 {
-        (vec3(0.0, 0.0, 0.25) + exchange::PLACE[3].xyz) * 0.5 + exchange::BLOW * kick
-    } else if SHOW == 29 {
-        // (The giant framed wide enough for his whole body, the striker nearer the middle.)
-        mix(vec3(0.0, 0.0, 0.25), exchange::place(shown)[3].xyz, if shown.giant { 0.45 } else {
-            0.5
-        }) + exchange::BLOW * kick + lab_aside(shown, s.lab, width)
+    let hips = if exchanged {
+        // (Between the two: the giant framed wide enough for his whole body, the striker nearer
+        // the middle; kicked along the blow.)
+        let between = mix(vec3(0.0), exchange::place(xt)[3].xyz, if xt.giant { 0.45 } else { 0.5 })
+        between + kick + if SHOW == 29 { lab_aside(xt, s.lab, width) } else { vec3(0.0) }
     } else if SHOW == 26 { vec3(0.0, 0.0, 0.25) } else if SHOW == 19 {
         vec3(0.0, 0.0, 0.25) +
             kimodo::a_shake(time % kimodo::stance_round() - kimodo::STANCE.length())
@@ -808,26 +753,22 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         steady_hips(time)
     }
     let walking = SHOW != 12 && !crosses && (SHOW >= 3 || (SHOW == 0 && time >= WALK_AT))
-    let side = if SHOW == 28 || SHOW == 29 { -exchange::BLOW.z / exchange::BLOW.x } else if SHOW ==
-        12 ||
-        crosses { CROSS_SIDE } else if walking { SIDE } else { -0.55 }
+    let side = if exchanged { 0.0 } else if SHOW == 12 || crosses { CROSS_SIDE } else if walking {
+        SIDE
+    } else { -0.55 }
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
     // (The lab frames the fighter or the giant, as far as its panel says.)
-    let (far, focus) = if SHOW != 29 { (FAR, FOCUS) } else if shown.giant {
+    let (far, focus) = if SHOW != 29 { (FAR, FOCUS) } else if xt.giant {
         (12.0 * s.lab.zoom, 3.6)
     } else { (3.4 * s.lab.zoom, 1.05) }
-    // (The hit staged close: the camera in on the contact as the cross winds up, out again
-    // as he's knocked away.)
-    let stage = if SHOW == 28 { exchange::staged(time, exchange::TUNED) } else if SHOW == 29 {
-        lab::staged(s.lab, s.lab.clock)
-    } else { 0.0 }
-    let with = if SHOW == 28 { exchange::staged_with(time, exchange::TUNED) } else if SHOW == 29 {
-        lab::staged_with(s.lab, s.lab.clock)
-    } else { 0.0 }
+    // (The hit staged close: the camera in on the contact as the cross winds up, out again as
+    // he's knocked away.)
+    let (stage, with) = if exchanged { x.staged() } else { (0.0, 0.0) }
+    let along = exchange::BLOW * with
     var shot = shot_at(
         time,
         mix(focus, exchange::X_STAGE_FOCUS, stage),
-        vec3(hips.x + exchange::BLOW.x * with, 0.0, hips.z + exchange::BLOW.z * with),
+        vec3(hips.x + along.x, 0.0, hips.z + along.z),
         width,
         height,
         far * mix(1.0, exchange::X_STAGE, stage) - push,
@@ -837,51 +778,35 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     )
     shot.force_from = vec4(force.from, if force.heavy { 1.0 } else { 0.0 })
     shot.force_to = vec4(force.to, force.by)
-    if SHOW == 28 {
-        let (b0, b1) = exchange::blast(time, exchange::TUNED)
+    if exchanged {
+        let (b0, b1) = x.blast()
         shot.blast = b0
         shot.blast_dir = b1
     }
-    if fight {
-        // Each fighter's own shadow, and the strike's force along the striker's arm.
-        let rw = HERO.rig.rest_world()
-        let mine = bone_at(bones, rw, "hips")
-        let his = if SHOW == 28 { exchange::PLACE[3].xyz } else { exchange::place(shown)[3].xyz }
-        // (`w` 2: they cast their own shadows, in their own shapes.)
+    if exchanged {
+        // Each fighter's own shadow (`w` 2: they cast their own shapes).
+        let mine = bone_at(bones, HERO.rig.rest_world(), "hips")
+        let his = exchange::place(xt)[3].xyz
         shot.pair_a = vec4(mine.x, 0.0, mine.z, 2.0)
         shot.pair_b = vec4(his.x, 0.0, his.z, 2.0)
-        if xc >= 0.0 {
-            // (Going in, the force is the fist's own speed, and the ink trails off it; landed,
-            // the strike's, dying after the hit-stop.)
-            let coming = xc < exchange::hit_at()
-            let by = if coming { swift } else { exchange::force(xc, xt) }
-            shot.force_from = vec4(bone_at(bones, rw, "rightUpperArm"), if coming { swift } else {
-                0.0
-            })
-            shot.force_to = vec4(bone_at(bones, rw, "rightHand"), by)
-        }
     }
     if SHOW == 29 {
-        let (b0, b1) = lab::blast(s.lab, s.lab.clock)
-        shot.blast = b0
-        shot.blast_dir = b1
         // The sounds: heard from the camera, the fist's whoosh as it goes and the hit as it lands
         // (harder the longer the hit-stop holds it).
         let at = vec3(hips.x, focus, hips.z)
         let eye = at + normalize(vec3(side, 0.18, 1.0)) * (far - push)
         let fwd = normalize(vec2(at.x - eye.x, at.z - eye.z))
         let _ = s.cues.push(Cue::Listen { at: eye, forward: fwd })
-        let (swing, hit) = lab::sounds(mut s.lab, s.lab.clock)
+        let (swing, hit, fist) = x.sounds()
         let v = s.lab.volume
-        let fist = exchange::KNUCKLES
         if swing && v > 0.0 {
             let _ = s.cues.push(
                 Cue::Whoosh { at: fist, kind: 0, amount: 0.8 * v, seed: u32(time * 60.0) },
             )
         }
         if hit && v > 0.0 {
-            let kind = if shown.giant { 1 } else { 0 }
-            let strength = v * (0.75 + shown.hold)
+            let kind = if xt.giant { 1 } else { 0 }
+            let strength = v * (0.75 + xt.hold)
             let _ = s.cues.push(Cue::Impact { at: fist, kind, strength, seed: u32(time * 60.0) })
         }
     }
@@ -898,10 +823,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.fighters.step(dt)
     }
     if fight {
-        // (Their cloth moves on the bodies' clock: held through the hit-stop with them.)
-        let played = if SHOW == 28 { exchange::played_at(time, exchange::TUNED) } else { time }
-        s.fighters.step(clamp(played - s.cloth_at, 0.0, 0.1))
-        s.cloth_at = played
+        // (Their cloth held through the hit-stop with them.)
+        let held = x.since() >= 0.0 && x.since() < xt.hold
+        s.fighters.step(if held { 0.0 } else { dt })
     }
     let p = begin_pass3_with_depth(
         mut s.colour,
@@ -931,7 +855,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             cull: Cull::Back,
             depth: engine::view::NEAREST,
         )
-        if (SHOW == 28 && exchange::X_FOE == 1) || SHOW == 29 {
+        if exchanged {
             let shot2 = shot
             draw(
                 p,

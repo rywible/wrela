@@ -5,37 +5,23 @@
 // slots, A and B. A take records the presses' times; replayed, it plays them through A, then B,
 // then A again, so the same strikes are seen through both.
 //
-// Every press is the exchange's own clock started at the cross, so the contact lands where the
-// exchange put it, whatever the tuning. The bodies blend from where the last press left them.
+// Every press throws the exchange's cross from where the two stand (`exchange::Exchange`), so
+// the blow lands where the exchange puts it, whatever the tuning.
 
-use body::HERO
-use engine::humanoid
-use engine::humanoid::Pose
-use exchange::{Tune, foe_idle, hit_at, played_at, striker, struck}
-use kimodo::{FIGHT_IDLE_M, a_end, a_hit}
+use exchange::{Exchange, Tune}
 
 /// No press yet.
 pub const NEVER: f32 = -1.0e6
 
-/// Where a press starts the exchange's clock: the cross starts two bounces in.
-pub fn start() -> f32 {
-    FIGHT_IDLE_M.length() * 2.0
-}
-
 /// How long after a press the next is taken: once the cross is home again.
 pub fn busy(t: Tune) -> f32 {
-    a_end() + t.hold + 0.1
+    solved::CROSS.length() + t.hold + 0.1
 }
 
 /// How long after a press the one struck is back on his mark (s): a replay's punch waits for
-/// it, so it never starts with him gliding back in.
+/// it.
 pub fn settle(t: Tune) -> f32 {
-    to_contact() + t.hold + exchange::reaction_home() + 0.15
-}
-
-/// How long from a press to the contact (s, on the clock).
-pub fn to_contact() -> f32 {
-    hit_at() - start()
+    busy(t) + 0.3
 }
 
 /// The presets: the bare exchange, a grounded one, anime at contact, and anime with the blast.
@@ -127,6 +113,8 @@ pub struct Lab: Clone {
     pub speed: f32,
     pub last_time: f32,
     pub panel: bool,
+    /// The exchange the presses throw.
+    pub ex: Exchange,
 }
 
 impl Lab {
@@ -155,6 +143,7 @@ impl Lab {
             speed: 1.0,
             last_time: 0.0,
             panel: true,
+            ex: Exchange::new(a, after: -1.0),
         }
     }
 
@@ -172,7 +161,7 @@ impl Lab {
     pub fn fire(mut self, at: f32, tune: Tune, b: bool) {
         self.prev = self.now
         self.now = Press { at, tune, b }
-        self.last_clock = clock(at, at) - 1.0e-3
+        self.ex.again(tune)
     }
 
     /// A press from the player at `g`: taken if the last is done, and recorded if a take is
@@ -246,103 +235,9 @@ impl Lab {
     }
 }
 
-/// The exchange's clock at `g` for a press at `at`.
-pub fn clock(g: f32, at: f32) -> f32 {
-    start() + (g - at)
-}
-
-/// The striker at `g` as press `p` left him: bouncing, if there was none.
-fn striker_by(g: f32, p: Press) -> Pose {
-    if p.at <= NEVER {
-        return FIGHT_IDLE_M.pose(g % FIGHT_IDLE_M.length())
+impl Lab {
+    /// The exchange `dt` (s, on the lab's clock) on.
+    pub fn advance(mut self, dt: f32) {
+        self.ex.step(dt)
     }
-    let c = clock(g, p.at)
-    exchange::striker_on(c, p.tune)
-}
-
-/// The one struck at `g` as press `p` left him.
-fn struck_by(g: f32, p: Press) -> Pose {
-    if p.at <= NEVER {
-        return if p.tune.giant { struck(0.0, p.tune) } else { exchange::foe_waiting(g) }
-    }
-    struck(played_at(clock(g, p.at), p.tune), p.tune)
-}
-
-/// The striker at `g`: out of where the last press left him into this one's cross, quickly.
-pub fn striker_at(l: Lab, g: f32) -> Pose {
-    let n = HERO.rig.bones.len()
-    let to = striker_by(g, l.now)
-    let w = smoothstep(0.0, 0.1, g - l.now.at)
-    if w >= 1.0 {
-        return to
-    }
-    humanoid::blend(striker_by(g, l.prev), to, w, n)
-}
-
-/// The one struck at `g`: his bounce eased into the one the exchange times its contact on over
-/// the windup, so the blow lands where it was placed.
-pub fn struck_at(l: Lab, g: f32) -> Pose {
-    let n = HERO.rig.bones.len()
-    let to = struck_by(g, l.now)
-    let w = smoothstep(0.0, to_contact() * 0.8, g - l.now.at)
-    if w >= 1.0 || l.prev.tune.giant != l.now.tune.giant {
-        return to
-    }
-    humanoid::blend(struck_by(g, l.prev), to, w, n)
-}
-
-/// The camera's kick and push, the impact frame, and the blast at `g`.
-pub fn camera(l: Lab, g: f32) -> (f32, f32) {
-    if l.now.at <= NEVER {
-        return (0.0, 0.0)
-    }
-    exchange::camera(clock(g, l.now.at), l.now.tune)
-}
-
-/// How far the hit's staged close now (0 to 1; never the giant's: he's framed whole).
-pub fn staged(l: Lab, g: f32) -> f32 {
-    if l.now.at <= NEVER || l.now.tune.giant {
-        return 0.0
-    }
-    exchange::staged(clock(g, l.now.at), l.now.tune)
-}
-
-pub fn staged_with(l: Lab, g: f32) -> f32 {
-    if l.now.at <= NEVER || l.now.tune.giant {
-        return 0.0
-    }
-    exchange::staged_with(clock(g, l.now.at), l.now.tune)
-}
-
-/// The exchange's clock now, as the last press left it (below 0: no press yet).
-pub fn exchange_clock(l: Lab) -> f32 {
-    if l.now.at <= NEVER { -1.0 } else { clock(l.clock, l.now.at) }
-}
-
-pub fn flash(l: Lab, g: f32) -> f32 {
-    if l.now.at <= NEVER {
-        return 0.0
-    }
-    exchange::flash(clock(g, l.now.at), l.now.tune)
-}
-
-pub fn blast(l: Lab, g: f32) -> (vec4, vec4) {
-    if l.now.at <= NEVER {
-        return (vec4(0.0, 0.0, 0.0, -1.0), vec4(0.0))
-    }
-    exchange::blast(clock(g, l.now.at), l.now.tune)
-}
-
-/// What sounds this frame, as the press's clock passes from last frame's to `g`'s: the whoosh
-/// (as the fist leaves), and the hit (at contact).
-pub fn sounds(l: mut Lab, g: f32) -> (bool, bool) {
-    if l.now.at <= NEVER {
-        return (false, false)
-    }
-    let c = clock(g, l.now.at)
-    let was = l.last_clock
-    l.last_clock = c
-    let h = hit_at()
-    let swing = h - 0.12
-    (was < swing && c >= swing, was < h && c >= h)
 }

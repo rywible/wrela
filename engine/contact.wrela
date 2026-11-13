@@ -1,0 +1,484 @@
+// A blow's contact, as both bodies take it, with no clip to play. A hit lands (`Hit`: where,
+// which way, how heavy, how long both are held), and:
+// - while it's held, both bodies are held at it (`paced`), and the striking fist stays on what it
+//   struck (`pinned`);
+// - as the hold breaks, the one struck is knocked (`Knock`): his head snapped back, his trunk
+//   bent back after it, his guard knocked open, and his whole body driven back along the blow
+//   (`Mover::knocked`, which his planted feet step after, `playback::planted`). Each part goes out
+//   at its own pace, is held there a beat (for as long as a fight holds him reeling), and comes
+//   home at its own; the heavier the blow, the further, the longer the beat and the slower home;
+//   blows on blows add up to a stated most, never past it;
+// - the blow runs back up the striking arm the way it came, a joint at a time (`Shock`): the
+//   forearm, then the upper arm, the collar and the chest, each checked back from it, each less;
+// - and the camera's kicked along it (`Kick`).
+// The knock and the shock are their own state, each part its own spring, laid over the pose
+// `playback::step` gives (`over`): a change of move under them neither ends them nor is slowed by
+// them. What content/humanoid's exchange did by hand for one punch, for any blow on any body.
+
+use humanoid::{NONE, Pose, Rig, Rigid, pose_world}
+use keys::arm_to
+use playback::{Mover, decayed}
+use std::collections::Vec
+use std::transform::inverse
+
+const UP: vec3 = vec3(0.0, 1.0, 0.0)
+
+/// How far along the floor a body's moved in the playback step a held one takes (s): not 0, as a
+/// step reads its speeds over it.
+const STILL: f32 = 1.0e-4
+
+/// A blow: where it lands (the world), the way it goes (the world, any length), how heavy it is
+/// (0 a touch, 1 the heaviest a fight has), and how long both bodies are held at it (s).
+pub struct Hit: Copy {
+    pub at: vec3,
+    pub way: vec3,
+    pub weight: f32,
+    pub hold: f32,
+}
+
+/// How a body takes blows and gives them. Each amount is a blow of weight 1's (a lighter one gives
+/// less, `size_of`):
+/// - how far its head's snapped back (rad; its neck takes half of it), its trunk bent back (rad,
+///   spread over its spine, chest and upper chest), each upper arm knocked open off its guard
+///   (rad; its forearm takes `fore` of it), and its whole body driven back along the blow (m);
+/// - how fast each goes out (each a half-life, s: the head snaps, the trunk follows, the body's
+///   drive last), how long it's held out there (`beat`, and `beat_heavy` more at weight 1), and how
+///   fast each comes home (`home`, the drive's `home_drive`; at weight 1 `heavy` times as slow);
+/// - how many weight-1 blows' worth blows on blows add up to at most (`most`);
+/// - how far a striking forearm's checked back by the blow (rad), how much of that its upper arm,
+///   collar and chest take, how long the shock takes from one joint to the next (s) and how long
+///   it takes to die (its half-life, s);
+/// - how fast the camera's kicked along it (m/s), sprung back over `kick_half` (s).
+pub struct Give: Copy {
+    pub tip: f32 = 0.5,
+    pub lean: f32 = 0.35,
+    pub open: f32 = 0.9,
+    pub fore: f32 = 0.6,
+    pub back: f32 = 0.72,
+    pub snap: f32 = 0.025,
+    pub bend: f32 = 0.05,
+    pub fling: f32 = 0.04,
+    pub drive: f32 = 0.07,
+    pub beat: f32 = 0.08,
+    pub beat_heavy: f32 = 0.17,
+    pub home: f32 = 0.1,
+    pub home_drive: f32 = 0.13,
+    pub heavy: f32 = 1.6,
+    pub most: f32 = 1.5,
+    pub shock: f32 = 0.35,
+    pub upper: f32 = 0.5,
+    pub collar: f32 = 0.3,
+    pub trunk: f32 = 0.2,
+    pub shock_step: f32 = 0.017,
+    pub shock_half: f32 = 0.12,
+    pub kick: f32 = 0.9,
+    pub kick_half: f32 = 0.28,
+}
+
+/// How far a blow of `weight` knocks the one it struck, of how far one of weight 1 does: light
+/// blows stay light (a quarter's an eighth as far), heavy ones throw him.
+pub fn size_of(weight: f32) -> f32 {
+    let w = clamp(weight, 0.0, 1.0)
+    w * sqrt(w)
+}
+
+/// `dt` (s) as a body held at a blow steps it: still (`held`, `grind` none), or slowed to `grind`
+/// of its pace (a striker driving on in). The one way both bodies are held at a blow.
+pub fn paced(dt: f32, held: bool, grind: f32) -> f32 {
+    if held { max(dt * grind, STILL) } else { dt }
+}
+
+/// `way` (the world) as body `m` has it: its heading taken off.
+fn into_body(m: Mover, way: vec3) -> vec3 {
+    Quat::axis_angle(UP, m.heading).inverse().rotate(way)
+}
+
+/// `v` no longer than `most`.
+fn bounded(v: vec3, most: f32) -> vec3 {
+    let l = length(v)
+    if l > most { v * (most / l) } else { v }
+}
+
+/// One part of a body's give: where it is, how fast it's going, and where it's going out to; a
+/// critically damped spring (`playback::decayed`) toward that, or home.
+pub struct Part: Copy {
+    pub x: vec3,
+    pub v: vec3,
+    pub goal: vec3,
+}
+
+impl Part {
+    pub fn none() -> Part {
+        Part { x: vec3(0.0), v: vec3(0.0), goal: vec3(0.0) }
+    }
+
+    /// `dt` (s) on toward `to`, at `half`.
+    fn step(mut self, to: vec3, half: f32, dt: f32) {
+        let (x, v) = decayed(self.x - to, self.v, half, dt)
+        self.x = to + x
+        self.v = v
+    }
+}
+
+/// `pose` with bone `b` turned by `turn` (the body's space, a rotation vector), about its own
+/// joint, its parent as `w` has it.
+fn turned_by(rig: Rig, w: [Rigid; 64], pose: mut Pose, b: u32, turn: vec3) {
+    let a = length(turn)
+    if b == NONE || a < 1.0e-6 {
+        return
+    }
+    let p = rig.bones[b].parent
+    let pq = if p == NONE { rig.base.q } else { w[p].q }
+    let q = Quat::axis_angle(turn / a, a)
+    pose.turns[b] = pq.inverse().mul(q).mul(pq).mul(pose.turns[b])
+}
+
+/// A body knocked by blows: its head, its trunk and its guard (each a rotation vector, the body's
+/// space; the guard's the way it's knocked open, as far as its length) and its whole body's drive
+/// (the world, m), each a `Part`; how long it's still held out there (s), whether a fight holds it
+/// out (reeling), and how heavy the blow that's out was.
+pub struct Knock: Copy {
+    pub head: Part,
+    pub trunk: Part,
+    pub guard: Part,
+    pub drive: Part,
+    pub beat: f32,
+    pub held: bool,
+    pub weight: f32,
+}
+
+impl Knock {
+    pub fn none() -> Knock {
+        Knock {
+            head: Part::none(),
+            trunk: Part::none(),
+            guard: Part::none(),
+            drive: Part::none(),
+            beat: 0.0,
+            held: false,
+            weight: 0.0,
+        }
+    }
+
+    /// Struck by `hit`, body `m` giving as `give` says: each part sent further out (up to its
+    /// most), held out its beat again.
+    pub fn struck(mut self, m: Mover, hit: Hit, give: Give) {
+        let way = into_body(m, hit.way)
+        let flat = vec3(way.x, 0.0, way.z)
+        if length(flat) < 1.0e-6 {
+            return
+        }
+        let along = normalize(flat)
+        let s = size_of(hit.weight)
+        // (About this, a bone's top goes the way the blow does.)
+        let tip = cross(UP, along)
+        self.head.goal = bounded(self.head.goal + tip * give.tip * s, give.tip * give.most)
+        self.trunk.goal = bounded(self.trunk.goal + tip * give.lean * s, give.lean * give.most)
+        self.guard.goal = bounded(self.guard.goal + along * give.open * s, give.open * give.most)
+        let world = normalize(vec3(hit.way.x, 0.0, hit.way.z))
+        self.drive.goal = bounded(self.drive.goal + world * give.back * s, give.back * give.most)
+        self.weight = max(self.weight, clamp(hit.weight, 0.0, 1.0))
+        self.beat = max(self.beat, give.beat + give.beat_heavy * self.weight)
+    }
+
+    /// Held out (a fight's stagger) or let go: held, the beat doesn't run out.
+    pub fn reeling(mut self, held: bool) {
+        self.held = held
+    }
+
+    /// `dt` (s) on, as `give` says: each part out at its pace while it's held out, then home at
+    /// its own.
+    pub fn stepped(mut self, give: Give, dt: f32) {
+        if !self.held {
+            self.beat = max(self.beat - dt, 0.0)
+        }
+        let out = self.held || self.beat > 0.0
+        if !out {
+            self.head.goal = vec3(0.0)
+            self.trunk.goal = vec3(0.0)
+            self.guard.goal = vec3(0.0)
+            self.drive.goal = vec3(0.0)
+        }
+        let slow = 1.0 + (give.heavy - 1.0) * self.weight
+        let home = give.home * slow
+        self.head.step(self.head.goal, if out { give.snap } else { home }, dt)
+        self.trunk.step(self.trunk.goal, if out { give.bend } else { home }, dt)
+        self.guard.step(self.guard.goal, if out { give.fling } else { home }, dt)
+        self.drive.step(self.drive.goal, if out { give.drive } else { give.home_drive * slow }, dt)
+        // (Bounded as it goes, too: a spring under way doesn't carry past the most.)
+        self.drive.x = bounded(self.drive.x, give.back * give.most)
+        if !out && self.still() {
+            self.weight = 0.0
+        }
+    }
+
+    /// `dt` (s) on, on body `m` (`stepped`), its whole body's drive laid on where it's drawn
+    /// (`Mover::knocked`).
+    pub fn step(mut self, m: mut Mover, give: Give, dt: f32) {
+        self.stepped(give, dt)
+        m.knocked = self.drive.x
+    }
+
+    /// Whether every part's home (within a centimetre, or a degree).
+    pub fn still(self) -> bool {
+        length(self.drive.x) < 0.01 &&
+            length(self.head.x) < 0.0175 &&
+            length(self.trunk.x) < 0.0175 &&
+            length(self.guard.x) < 0.0175
+    }
+
+    /// `pose` (on `rig`) as knocked: its head and neck snapped back, its spine, chest and upper
+    /// chest bent back, each arm flung open, out to its side, back along the blow and down, its
+    /// forearm after it (`give.fore` of it).
+    pub fn over(self, rig: Rig, pose: Pose, give: Give) -> Pose {
+        var out = pose
+        let w = pose_world(rig, pose)
+        turned_by(rig, w, mut out, rig.find("head"), self.head.x)
+        turned_by(rig, w, mut out, rig.find("neck"), self.head.x * 0.5)
+        turned_by(rig, w, mut out, rig.find("upperChest"), self.trunk.x * 0.35)
+        turned_by(rig, w, mut out, rig.find("chest"), self.trunk.x * 0.35)
+        turned_by(rig, w, mut out, rig.find("spine"), self.trunk.x * 0.3)
+        let open = length(self.guard.x)
+        let chest = rig.find("upperChest")
+        if open < 1.0e-6 || chest == NONE {
+            return out
+        }
+        let along = self.guard.x / open
+        for side in ["left", "right"] {
+            let (u, l, h) = (
+                rig.find(f"{side}UpperArm".as_str()),
+                rig.find(f"{side}LowerArm".as_str()),
+                rig.find(f"{side}Hand".as_str()),
+            )
+            if u == NONE || l == NONE || h == NONE {
+                continue
+            }
+            let side_of = w[u].t - w[chest].t
+            let aside = vec3(side_of.x, 0.0, side_of.z) - along * dot(side_of, along)
+            let toward = normalize(normalize(aside + vec3(1.0e-6, 0.0, 0.0)) + along * 0.5 - UP)
+            let swing = |b: u32, amount: f32| -> vec3 {
+                let c = cross(w[h].t - w[b].t, toward)
+                if length(c) < 1.0e-6 { vec3(0.0) } else { normalize(c) * amount }
+            }
+            turned_by(rig, w, mut out, u, swing(u, open))
+            turned_by(rig, w, mut out, l, swing(l, open * give.fore))
+        }
+        out
+    }
+}
+
+/// The joints a shock runs up, in turn: the forearm, the upper arm, the collar, the chest.
+const SHOCKED: u32 = 4
+
+/// A blow running back up the arm that struck it, a joint at a time: the blow, the arm (0 the
+/// left, 1 the right), how long since the hold broke (s; below 0, none), how many of the arm's
+/// joints it's reached, and each joint's turn back against the blow (rad, in `x.x`), each its own
+/// spring.
+pub struct Shock: Copy {
+    pub hit: Hit,
+    pub arm: u32,
+    pub since: f32,
+    pub laid: u32,
+    pub joints: [Part; 4],
+}
+
+impl Shock {
+    pub fn none() -> Shock {
+        Shock {
+            hit: Hit { at: vec3(0.0), way: vec3(0.0, 0.0, 1.0), weight: 0.0, hold: 0.0 },
+            arm: 1,
+            since: -1.0,
+            laid: SHOCKED,
+            joints: [Part::none(); 4],
+        }
+    }
+
+    /// Blow `hit`, struck with `arm`, its hold broken now: to run up the arm.
+    pub fn struck(hit: Hit, arm: u32) -> Shock {
+        Shock { hit, arm, since: 0.0, laid: 0, joints: [Part::none(); 4] }
+    }
+
+    /// `dt` (s) on, as `give` says: each joint the shock's reached set going, the forearm first,
+    /// `give.shock_step` s a joint, rising to its share of `give.shock` and dying away.
+    pub fn step(mut self, give: Give, dt: f32) {
+        let shares = [1.0, give.upper, give.collar, give.trunk]
+        let s = size_of(self.hit.weight)
+        // (Set going at a speed that rises to its share at its farthest: `decayed`, set going at
+        // `v`, goes `v` over its rate and e.)
+        let rate = 1.3862944 / give.shock_half
+        while self.laid < SHOCKED && self.since >= f32(self.laid) * give.shock_step {
+            let j = self.laid
+            self.joints[j].v.x += give.shock * shares[j] * s * rate * 2.7182818
+            self.laid += 1
+        }
+        for j in 0..SHOCKED {
+            self.joints[j].step(vec3(0.0), give.shock_half, dt)
+            self.joints[j].x.x = min(self.joints[j].x.x, give.shock * shares[j] * give.most)
+        }
+        if self.since >= 0.0 {
+            self.since += dt
+        }
+    }
+
+    /// How far joint `j` is turned back (degrees).
+    pub fn turned(self, j: u32) -> f32 {
+        self.joints[j].x.x * 57.29578
+    }
+
+    /// `pose` (body `m`'s, on `rig`) with the shock in its arm: each part turned so its far end
+    /// goes back against the blow, the chest turned about up, its striking shoulder going back.
+    pub fn over(self, m: Mover, rig: Rig, pose: Pose) -> Pose {
+        if self.since < 0.0 {
+            return pose
+        }
+        var out = pose
+        let w = pose_world(rig, pose)
+        let back = -normalize(into_body(m, self.hit.way))
+        let side = if self.arm == 0 { "left" } else { "right" }
+        let parts = [
+            (f"{side}LowerArm", f"{side}Hand"),
+            (f"{side}UpperArm", f"{side}LowerArm"),
+            (f"{side}Shoulder", f"{side}UpperArm"),
+        ]
+        for j in 0..3 {
+            let (name, end) = parts[j]
+            let (b, e) = (rig.find(name.as_str()), rig.find(end.as_str()))
+            if b == NONE || e == NONE {
+                continue
+            }
+            let c = cross(w[e].t - w[b].t, back)
+            if length(c) > 1.0e-6 {
+                turned_by(rig, w, mut out, b, normalize(c) * self.joints[j].x.x)
+            }
+        }
+        let chest = rig.find("upperChest")
+        let shoulder = rig.find(f"{side}UpperArm".as_str())
+        if chest != NONE && shoulder != NONE {
+            let o = w[shoulder].t - w[chest].t
+            let turn = if dot(cross(UP, o), back) > 0.0 { 1.0 } else { -1.0 }
+            turned_by(rig, w, mut out, chest, UP * turn * self.joints[3].x.x)
+        }
+        out
+    }
+}
+
+/// `pose` (drawn at `place`) with its `arm`'s fist on `at` (the world): what it struck, held
+/// there while the blow's held, whatever the rest of the body does.
+pub fn pinned(rig: Rig, pose: Pose, place: mat4, arm: u32, at: vec3) -> Pose {
+    let a = pose_world(rig, pose)
+    let nb = rig.bones.len()
+    var w: Vec<Rigid> = Vec::with_capacity(nb)
+    for b in 0..nb {
+        w.push(a[b])
+    }
+    arm_to(rig, mut w, arm, (inverse(place) * vec4(at, 1.0)).xyz)
+    var out = pose
+    for b in 0..nb {
+        let up = rig.bones[b].parent
+        let pq = if up == NONE { rig.base.q } else { w[up].q }
+        out.turns[b] = pq.inverse().mul(w[b].q)
+    }
+    out
+}
+
+/// The camera kicked by blows: how far it's off where it'd be (the world, m), and how fast it's
+/// going; each blow sets it going along the way the blow goes, and it's sprung back.
+pub struct Kick: Copy {
+    pub at: vec3,
+    pub speed: vec3,
+}
+
+impl Kick {
+    pub fn none() -> Kick {
+        Kick { at: vec3(0.0), speed: vec3(0.0) }
+    }
+
+    /// Kicked by `hit`, as `give` says.
+    pub fn kicked(mut self, hit: Hit, give: Give) {
+        let flat = vec3(hit.way.x, 0.0, hit.way.z)
+        if length(flat) > 1.0e-6 {
+            self.speed += normalize(flat) * give.kick * hit.weight
+        }
+    }
+
+    /// `dt` (s) on, sprung back over `give.kick_half`.
+    pub fn step(mut self, give: Give, dt: f32) {
+        let (x, v) = decayed(self.at, self.speed, give.kick_half, dt)
+        self.at = x
+        self.speed = v
+    }
+}
+
+/// How heavy a blow is (`Hit::weight`, 0 to 1) that holds its bodies `hold` s, of the most a fight
+/// holds them (`most`, s): a fight's hold is its blow's weight (mmo/combat's `hold_of`).
+pub fn weight_of(hold: f32, most: f32) -> f32 {
+    clamp(hold / max(most, 1.0e-4), 0.0, 1.0)
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// How a knock of one or more blows of `weight` goes, stepped alone: when the head's 90% out, when
+/// the drive is, how far the drive goes, and when it's home within a centimetre (s).
+fn knock_read(weight: f32, blows: u32) -> (f32, f32, f32, f32) {
+    let give = Give {}
+    var k = Knock::none()
+    let s = size_of(weight)
+    for _ in 0..blows {
+        k.head.goal = bounded(
+            k.head.goal + vec3(1.0, 0.0, 0.0) * give.tip * s,
+            give.tip * give.most,
+        )
+        k.drive.goal = bounded(
+            k.drive.goal + vec3(0.0, 0.0, 1.0) * give.back * s,
+            give.back * give.most,
+        )
+        k.weight = weight
+        k.beat = give.beat + give.beat_heavy * weight
+    }
+    let goal = length(k.drive.goal)
+    let dt = 1.0 / 120.0
+    var head_at = -1.0
+    var drive_at = -1.0
+    var home = -1.0
+    var far = 0.0
+    for i in 0..600 {
+        k.stepped(give, dt)
+        let t = f32(i + 1) * dt
+        if head_at < 0.0 && length(k.head.x) > 0.9 * give.tip * s {
+            head_at = t
+        }
+        if drive_at < 0.0 && length(k.drive.x) > 0.9 * goal {
+            drive_at = t
+        }
+        far = max(far, length(k.drive.x))
+        if length(k.drive.x) > 0.01 {
+            home = t
+        }
+    }
+    (head_at, drive_at, far, home)
+}
+
+/// A knock goes out fast, holds a beat and comes home: the head out first, the body's drive last;
+/// the heavier the blow the further and the sooner home a light one is; blows on blows stop at the
+/// most.
+@test
+fn a_knock_goes_out_holds_and_comes_home() {
+    let give = Give {}
+    let (head, drive, far, home) = knock_read(1.0, 1)
+    assert(head > 0.0 && head < 0.1, f"the head's snapped back in {head} s")
+    assert(drive > head, f"the body's driven after it, in {drive} s")
+    assert(far > 0.9 * give.back && far <= give.back, f"weight 1 drives it {far} m")
+    assert(home > 1.0 && home < 1.8, f"home in {home} s")
+    let (_, _, light, light_home) = knock_read(0.25, 1)
+    assert(
+        light < 0.15 * far && light_home < home,
+        f"a quarter's {light} m, home in {light_home} s",
+    )
+    let (_, _, stacked, _) = knock_read(1.0, 5)
+    assert(stacked <= give.back * give.most + 1.0e-4, f"five blows drive it {stacked} m")
+    assert(
+        paced(0.016, held: true, grind: 0.0) == STILL &&
+            paced(0.016, held: false, grind: 0.0) == 0.016,
+    )
+    assert(weight_of(hold: 0.1, most: 0.133) > 0.7 && weight_of(hold: 1.0, most: 0.133) == 1.0)
+}

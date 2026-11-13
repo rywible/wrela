@@ -771,6 +771,10 @@ pub struct Mover: Copy {
     pub pushed: f32,
     /// How fast (m/s) it was carried as its whole-body one-off began.
     pub carry_in: f32,
+    /// How far something outside its moves has knocked it off its place (the world, m; a blow,
+    /// `engine::contact::Knock`): drawn there, its planted feet stepping after it, but never
+    /// changed here.
+    pub knocked: vec3,
 }
 
 impl Mover {
@@ -802,6 +806,7 @@ impl Mover {
             through: 0.0,
             pushed: 0.0,
             carry_in: 0.0,
+            knocked: vec3(0.0),
         }
     }
 }
@@ -910,7 +915,10 @@ pub fn step(
         m.stood += dt
         // Asked to go well aside, it turns where it stands first, stepping round, and sets off
         // once it faces nearly the way it's going, its feet set.
-        let set = m.feet[0].step == 0.0 && m.feet[1].step == 0.0
+        // (A foot stepping only to settle its stance, not turned round, doesn't hold it: a body
+        // asked to go goes, and that step ends as the going takes its feet.)
+        let turning = |p: Planted| -> bool { p.step > 0.0 && p.twist > 0.5 * SETTLE_TWIST }
+        let set = !turning(m.feet[0]) && !turning(m.feet[1])
         if want > 0.2 && !whole && aside < how.go_within && set {
             next_doing = if how.clips { STARTING } else { GOING }
             next_phase = how.start_phase
@@ -1128,6 +1136,9 @@ pub struct Planted: Copy {
     pub yaw: f32,
     /// How far (rad) the move has turned the foot from how it's held.
     pub twist: f32,
+    /// The lowest (m, the body's own height) the move has put the ankle lately, let rise at
+    /// `FLOOR_RISE`: the floor a stance up on the balls of its feet (a fighter's bounce) stands on.
+    pub floor: f32,
 }
 
 impl Planted {
@@ -1145,16 +1156,19 @@ impl Planted {
             yaw_from: 0.0,
             yaw: 0.0,
             twist: 0.0,
+            floor: 1.0e6,
         }
     }
 }
 
-/// When a foot is down: its ankle within `PLANT_LOW` (m) of its height at rest and going slower
+/// When a foot is down: its ankle within `PLANT_LOW` (m) of its height at rest, or of the lowest
+/// its move has put it lately (`Planted::floor`, let rise at `FLOOR_RISE` m/s), and going slower
 /// than `PLANT_SLOW` (m/s) along the floor (one down already, `PLANT_KEEP`, while the move's
 /// pulled it less than `KEEP_FAR` (m) from where it's held); how quickly (s) a hold takes, and lets go as the foot
 /// lifts (`HOLD_OUT_PACE` over the body's speed, between `HOLD_OUT_LEAST` and `HOLD_OUT`); and
 /// the furthest (m) the animation may pull from where the foot's held, past which it's dragged.
 const PLANT_LOW: f32 = 0.025
+const FLOOR_RISE: f32 = 0.03
 const PLANT_SLOW: f32 = 0.6
 const PLANT_KEEP: f32 = 1.6
 const KEEP_FAR: f32 = 0.15
@@ -1186,7 +1200,10 @@ const HOLD_MOST: f32 = 0.35
 /// through each, a foot on the ground stays put, and lets go as it lifts.
 pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pose {
     var out = pose
-    let world = Rigid { q: Quat::axis_angle(vec3(0.0, 1.0, 0.0), m.heading), t: m.place + m.drift }
+    let world = Rigid {
+        q: Quat::axis_angle(vec3(0.0, 1.0, 0.0), m.heading),
+        t: m.place + m.drift + m.knocked,
+    }
     let hips = world.then(rig.base).then(Rigid { q: pose.turns[0], t: pose.hips })
     // Whether a foot's down is judged in the body's own frame, against the ground going under it:
     // a body turning on the spot or carried on by gameplay doesn't lift its feet.
@@ -1239,7 +1256,10 @@ pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pos
         let carried_on = m.pushed > 0.0
         // A foot already down stays down until it lifts or truly sweeps away: the move's foot
         // drifts as a run's mixed into a walk, which is no step.
-        let low = said.y - rest_y < PLANT_LOW
+        // (Up on the balls of its feet, a stance's ankles ride over their height at rest: they're
+        // down on the lowest the move's put them lately.)
+        p.floor = min(said.y, p.floor + FLOOR_RISE * dt)
+        let low = said.y - rest_y < PLANT_LOW || said.y - p.floor < PLANT_LOW
         let kept = p.down && speed < PLANT_KEEP && p.gap < KEEP_FAR
         let down = low && (speed < PLANT_SLOW || kept) && !carried_on
         if p.hold == 0.0 {
@@ -1319,10 +1339,11 @@ pub fn planted(m: mut Mover, rig: Rig, pose: Pose, moving: Pose, dt: f32) -> Pos
     out
 }
 
-/// Where a body `m` is drawn: at its place (and what's left of a change's drift from it), turned
+/// Where a body `m` is drawn: at its place (and what's left of a change's drift from it, and what
+/// it's knocked off it), turned
 /// to its heading. `m.place` is gameplay's alone: a change never moves it.
 pub fn placed(m: Mover) -> mat4 {
-    let at = m.place + m.drift
+    let at = m.place + m.drift + m.knocked
     let (c, s) = (cos(m.heading), sin(m.heading))
     mat4(
         vec4(c, 0.0, -s, 0.0),

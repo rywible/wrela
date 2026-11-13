@@ -75,7 +75,8 @@ pub const SCENES: [Text; 8] = [
 /// The scene named `name`, if there is one.
 /// - `exchange`: the combat lab's exchange (content/humanoid, `SHOW=28`): Hakuro and his double
 ///   in their guards, a step in, the cross thrown and landed, and the recovery, at 30 frames a
-///   second; its clip is the four seconds the cross is in.
+///   second; its clip is the cross and the one struck thrown and home again (four seconds before
+///   it lands, three and a half after), and its look the fighters close.
 /// - `played`: the lab's fight as it's played (`SHOW=12`): the body bounces in its guard, steps
 ///   in and throws its cross, at 60 frames a second; its clip is the cross, from the step in
 ///   to the fist home.
@@ -98,7 +99,8 @@ pub fn scene(name: str) -> Option<Scene> {
                 height: 900,
                 fps: 30.0,
                 clip_first: 96,
-                clip_last: 216,
+                clip_last: 312,
+                look: Crop { x0: 400, y0: 50, x1: 1200, y1: 850 },
             },
         )
     }
