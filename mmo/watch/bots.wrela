@@ -123,3 +123,27 @@ pub fn bot(w: World, i: u32, before: u32, weapon: u32, react: u32) -> u32 {
     }
     held
 }
+
+/// A bot that takes the idol's blows: it walks to its own side of the idol and strikes it there
+/// with its light attack whenever it's free, and never answers a tell (no parry, no dodge). So
+/// the idol's sweeps, palms and slams land on it, and what a blow does to a player (mmo/combat's
+/// knockback) is there to see; pushed off, it walks straight back in and strikes. For a clip
+/// (`TAKER` in this program), not a fighter's measure: the bench's bots are `bot`'s.
+pub fn taker(w: World, i: u32, before: u32, weapon: u32) -> u32 {
+    let p = w.player(i)
+    let b = w.boss()
+    let held = before & BUTTON_BITS
+    let press = |button: u32| -> u32 { held ^ (button << 6) }
+    let (dx, dz) = (b.x - p.x, b.z - p.z)
+    let d = dist(dx, dz)
+    if p.hp <= 0 || w.over || p.act != IDLE {
+        return held
+    }
+    let reach = MOVES[WEAPONS[weapon].light].reach
+    if d <= reach - 16 {
+        return press(ATTACK) | stick_to(dx, dz, 0)
+    }
+    let (ox, oz) = spot(i, reach - 40)
+    let (tx, tz) = (b.x + ox - p.x, b.z + oz - p.z)
+    held | stick_to(tx, tz, if dist(tx, tz) > 128 { 2 } else { 0 })
+}
