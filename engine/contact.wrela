@@ -63,7 +63,8 @@ pub fn kept(hit: Hit, striker: bool, grind: f32) -> f32 {
 ///   fast each comes home (`home`, the drive's `home_drive`; at weight 1 `heavy` times as slow);
 /// - how many weight-1 blows' worth blows on blows add up to at most (`most`); and how far a body
 ///   whose place a fight's rules carry (`Knock::carried`) may be drawn behind it at most (`carry`,
-///   m);
+///   m), and how fast it's drawn after it (`carry_half`, a half-life, s; 0, at the drive's pace,
+///   laid on its drive);
 /// - how far a striking forearm's checked back by the blow (rad), how much of that its upper arm,
 ///   collar and chest take, how long the shock takes from one joint to the next (s) and how long
 ///   it takes to die (its half-life, s);
@@ -85,6 +86,7 @@ pub struct Give: Copy {
     pub heavy: f32 = 1.6,
     pub most: f32 = 1.5,
     pub carry: f32 = 0.0,
+    pub carry_half: f32 = 0.0,
     pub shock: f32 = 0.35,
     pub upper: f32 = 0.5,
     pub collar: f32 = 0.3,
@@ -164,6 +166,9 @@ pub struct Knock: Copy {
     pub trunk: Part,
     pub guard: Part,
     pub drive: Part,
+    /// How far behind the place a fight's rules carry it it's drawn (the world, m;
+    /// `Knock::carried`), where `Give::carry_half` gives the rules' push a pace of its own.
+    pub carry: Part,
     /// How far it's sunk at the knees (m, in `x.x`).
     pub sink: Part,
     pub beat: f32,
@@ -178,6 +183,7 @@ impl Knock {
             trunk: Part::none(),
             guard: Part::none(),
             drive: Part::none(),
+            carry: Part::none(),
             sink: Part::none(),
             beat: 0.0,
             held: false,
@@ -234,10 +240,17 @@ impl Knock {
     }
 
     /// The body's place carried `by` (the world, m) by what struck it (a fight's rules pushing it):
-    /// it's drawn where it was, and its drive takes it there at the drive's pace, its feet
-    /// stepping after it. The rules' push is the drive, not one laid on top of it.
-    pub fn carried(mut self, by: vec3) {
-        self.drive.x -= vec3(by.x, 0.0, by.z)
+    /// it's drawn where it was, and taken there, its feet stepping after it: at `give.carry_half`'s
+    /// pace, the rules' push as it goes; or, that 0, as its drive, at the drive's pace. The rules'
+    /// push is the drive, not one laid on top of it.
+    pub fn carried(mut self, by: vec3, give: Give) {
+        let by = vec3(by.x, 0.0, by.z)
+        // (At a pace of its own, `carry_half`, its own part; else laid on its drive.)
+        if give.carry_half > 0.0 {
+            self.carry.x -= by
+        } else {
+            self.drive.x -= by
+        }
     }
 
     /// Held out (a fight's stagger) or let go: held, the beat doesn't run out.
@@ -268,6 +281,11 @@ impl Knock {
         self.drive.step(self.drive.goal, if out { give.drive } else { give.home_drive * slow }, dt)
         // (Bounded as it goes, too: a spring under way doesn't carry past the most.)
         self.drive.x = bounded(self.drive.x, max(give.back * give.most, give.carry))
+        // The rules' push, after them at its own pace, held out or not: it's where they have it.
+        if give.carry_half > 0.0 {
+            self.carry.step(vec3(0.0), give.carry_half, dt)
+            self.carry.x = bounded(self.carry.x, give.carry)
+        }
         if !out && self.still() {
             self.weight = 0.0
         }
@@ -277,12 +295,13 @@ impl Knock {
     /// (`Mover::knocked`).
     pub fn step(mut self, m: mut Mover, give: Give, dt: f32) {
         self.stepped(give, dt)
-        m.knocked = self.drive.x
+        m.knocked = self.drive.x + self.carry.x
     }
 
     /// Whether every part's home (within a centimetre, or a degree).
     pub fn still(self) -> bool {
         length(self.drive.x) < 0.01 &&
+            length(self.carry.x) < 0.01 &&
             length(self.head.x) < 0.0175 &&
             length(self.trunk.x) < 0.0175 &&
             length(self.guard.x) < 0.0175 &&
