@@ -35,6 +35,8 @@ pub const ATTACK: u32 = 1
 pub const PARRY: u32 = 2
 pub const DODGE: u32 = 4
 pub const HEAVY: u32 = 8
+/// Locking on to the foe, and letting go: a press (a toggle, as the others are) flips it.
+pub const LOCK_ON: u32 = 16
 
 /// Positions are in 1/64 of a metre.
 const UNIT: i32 = 64
@@ -414,6 +416,9 @@ struct Fighter: Clone + Eq {
     shove_z: i32,
     carried_x: i32,
     carried_z: i32,
+    /// Whether it's locked on to the foe (`LOCK_ON`): its facing the foe's way while it's free,
+    /// its stick moving it without turning it.
+    locked: bool,
 }
 
 impl Fighter {
@@ -439,6 +444,7 @@ impl Fighter {
             shove_z: 0,
             carried_x: 0,
             carried_z: 0,
+            locked: false,
         }
     }
 }
@@ -448,6 +454,17 @@ const DIR_X: [i32; 16] = [64, 59, 45, 24, 0, -24, -45, -59, -64, -59, -45, -24, 
 const DIR_Z: [i32; 16] = [0, 24, 45, 59, 64, 59, 45, 24, 0, -24, -45, -59, -64, -59, -45, -24]
 /// Speed at each magnitude, in units a frame.
 const SPEED: [i32; 3] = [2, 4, 6]
+
+/// Lock-on (a trial, as knockback is): a player may lock on to the foe (`LOCK_ON`) and let go.
+/// Locked, while it's free it faces the foe every frame, the nearest of the 16 ways to it, and its
+/// stick moves it without turning it, at `LOCKED_SPEED`. `LOCKING` false turns it off: a press of
+/// the button does nothing.
+pub const LOCKING: bool = true
+/// A locked-on fighter's speed at each of the stick's magnitudes (units a frame: 0.94 m/s, and
+/// 1.9): the pace a body facing one way and going another goes at (100STYLE's Neutral sidestep
+/// walk 0.6 m/s and run 1.6, its back walk 0.76 and run 1.5), as near as a whole unit a frame
+/// comes.
+pub const LOCKED_SPEED: [i32; 3] = [1, 1, 2]
 
 /// The directions the party and the boss face as a fight begins: toward each other (+z, -z).
 const AHEAD: u32 = 4
@@ -540,7 +557,7 @@ fn reach(ax: i32, az: i32, bx: i32, bz: i32) -> i32 {
 
 /// Which bits of a player's input the rules read: its stick, and its buttons.
 pub const STICK_BITS: u32 = 63
-pub const BUTTON_BITS: u32 = 960
+pub const BUTTON_BITS: u32 = 1984
 /// The light attack's bit: what the rules read in a recovery a combo goes on from.
 const CHAIN_BITS: u32 = ATTACK << 6
 
@@ -588,6 +605,8 @@ pub struct Seen: Copy {
     /// walk.
     pub carried_x: i32 = 0,
     pub carried_z: i32 = 0,
+    /// Whether it's locked on to the foe (`LOCK_ON`).
+    pub locked: bool = false,
 }
 
 impl World {
@@ -676,8 +695,9 @@ impl World {
         if p.act == IDLE && p.hold == 0 {
             return STICK_BITS | BUTTON_BITS
         }
-        // A button it can act on within the buffer's frames, kept till then.
-        var read: u32 = 0
+        // A button it can act on within the buffer's frames, kept till then; and locking on,
+        // whatever it's doing.
+        var read: u32 = LOCK_ON << 6
         for b in [ATTACK, PARRY, DODGE, HEAVY] {
             if until(p, b) <= self.buffer {
                 read |= b << 6
@@ -725,6 +745,7 @@ fn seen(f: Fighter) -> Seen {
         hold: f.hold,
         carried_x: f.carried_x,
         carried_z: f.carried_z,
+        locked: f.locked,
     }
 }
 
@@ -773,7 +794,11 @@ pub fn step(w: mut World, inputs: [u32]) {
         if p.hp <= 0 {
             continue
         }
-        step_player(mut p, stick, pressed, w.buffer)
+        if LOCKING && pressed & LOCK_ON != 0 {
+            p.locked = !p.locked
+        }
+        let foe = (w.boss.x, w.boss.z)
+        step_player(mut p, stick, pressed & !LOCK_ON, w.buffer, foe)
         if p.act == ACTIVE && !p.landed && w.boss.hp > 0 {
             let m = MOVES[p.move_]
             let (dx, dz) = (w.boss.x - p.x, w.boss.z - p.z)
@@ -867,7 +892,7 @@ fn begin(p: mut Fighter, m: u32) -> bool {
 }
 
 @deterministic
-fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32) {
+fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32, foe: (i32, i32)) {
     // A press it can't act on yet is kept (`buffer` frames), the latest over any before it: one
     // slot, which a combo's next cut is taken from as any other press is.
     if fresh != 0 {
@@ -919,8 +944,10 @@ fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32) {
         }
     } else {
         // Free, it faces where its stick points, and strikes or parries that way; a dodge goes
-        // where the stick says without turning.
-        if stick != 0 && pressed & DODGE == 0 {
+        // where the stick says without turning. Locked on, it faces the foe.
+        if p.locked {
+            p.facing = direction(foe.0 - p.x, foe.1 - p.z)
+        } else if stick != 0 && pressed & DODGE == 0 {
             p.facing = (stick - 1) / 3
         }
         let weapon = WEAPONS[p.weapon]
@@ -947,7 +974,9 @@ fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32) {
         }
         if stick != 0 {
             let dir = (stick - 1) / 3
-            let speed = SPEED[(stick - 1) % 3]
+            let speed = if p.locked { LOCKED_SPEED[(stick - 1) % 3] } else {
+                SPEED[(stick - 1) % 3]
+            }
             p.x += DIR_X[dir] * speed / 64
             p.z += DIR_Z[dir] * speed / 64
         }
@@ -957,6 +986,10 @@ fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32) {
     }
     p.x = clamp(p.x, -ARENA, ARENA)
     p.z = clamp(p.z, -ARENA, ARENA)
+    // (Locked on and free, it faces the foe from where it's got to.)
+    if p.locked && p.act == IDLE {
+        p.facing = direction(foe.0 - p.x, foe.1 - p.z)
+    }
 }
 
 /// The attack boss `b` makes next, its health `hp` of `full`, `made` places through its pattern,
@@ -1277,7 +1310,8 @@ fn a_light_press_in_a_cuts_recovery_goes_on_to_the_combos_next() {
     // (Each held at its contact, `hold_of`.)
     hold(mut w, input: ATTACK << 6, frames: first.windup + first.active + hold_of(first.damage))
     assert(w.party[0].act == RECOVER && w.party[0].move_ == 2, "the first cut recovers")
-    assert(w.reads(0) == CHAIN_BITS, "its recovery reads only the attacks")
+    // (And locking on, read whenever it's up.)
+    assert(w.reads(0) == CHAIN_BITS | (LOCK_ON << 6), "its recovery reads only the attacks")
     assert(w.boss.hp == hp - first.damage, "it landed")
     // Pressed again (the bit flips back): the second cut.
     hold(mut w, input: 0, frames: 1)
@@ -1289,7 +1323,7 @@ fn a_light_press_in_a_cuts_recovery_goes_on_to_the_combos_next() {
     let third = MOVES[4]
     hold(mut w, input: ATTACK << 6, frames: third.windup + third.active + hold_of(third.damage))
     assert(w.boss.hp == hp - first.damage - second.damage - third.damage, "all three land")
-    assert(w.reads(0) == 0, "the combo's last cut goes on to nothing")
+    assert(w.reads(0) == LOCK_ON << 6, "the combo's last cut goes on to nothing")
     hold(mut w, input: ATTACK << 6, frames: third.recovery + 1)
     assert(w.party[0].act == IDLE, "and it's done")
 }
@@ -1303,7 +1337,7 @@ fn each_weapon_fights_with_its_own_moves() {
         hold(mut w, input: HEAVY << 6, frames: 1 + heavy.windup + heavy.active)
         assert(w.boss.hp == hp - heavy.damage, "a heavy attack lands its weapon's damage")
         assert(w.party[0].stamina == STAMINA - heavy.cost, "and costs its stamina")
-        assert(w.reads(0) == 0, "a heavy is no combo's start")
+        assert(w.reads(0) == LOCK_ON << 6, "a heavy is no combo's start")
     }
     // A light press in a fists' jab's recovery starts nothing: its combo is one jab.
     var f = at_the_boss(FISTS)
@@ -1727,4 +1761,36 @@ fn no_hit_no_push_and_the_edge_stops_it() {
     assert(o.boss.hp < o.full, "the overhead lands")
     let moved = o.boss.z - bz
     assert(moved == push_of(hold_of(heavy.damage)) / 4, f"the idol's pushed {moved} units")
+}
+
+/// Locked on (`LOCK_ON`, a press), a free fighter faces the foe every frame, the nearest of the 16
+/// ways to it, and its stick moves it without turning it, at `LOCKED_SPEED`; a second press lets
+/// go, and it faces where its stick points again. With `LOCKING` off a press does nothing.
+@test
+fn locked_on_a_fighter_faces_the_foe_and_goes_any_way() {
+    var w = World::armed([LONGSWORD]).standing_still()
+    let lock = LOCK_ON << 6
+    // Round to the idol's left, the stick square to the line between them, at its slowest.
+    let aside = 1 + 0 * 3
+    step(mut w, [lock | aside])
+    if !LOCKING {
+        assert(!w.party[0].locked && w.party[0].facing == 0, "off, a press does nothing")
+        return
+    }
+    assert(w.party[0].locked, "a press locks on")
+    for _ in 0..120 {
+        let x0 = w.party[0].x
+        step(mut w, [lock | aside])
+        let p = w.party[0].clone()
+        let toward = direction(w.boss.x - p.x, w.boss.z - p.z)
+        assert(p.facing == toward, f"it faces the foe: {p.facing}, the foe's way {toward}")
+        assert(
+            p.x - x0 == DIR_X[0] * LOCKED_SPEED[0] / 64,
+            "and goes the stick's way at the locked pace",
+        )
+    }
+    // Let go: it faces its stick again.
+    step(mut w, [aside])
+    step(mut w, [aside])
+    assert(!w.party[0].locked && w.party[0].facing == 0, "a second press lets go")
 }

@@ -135,6 +135,10 @@ pub const GAITS: Gaits = Gaits {
     stop: GAITS_CODE.stop.clone(),
     start_exit: GAITS_CODE.start_exit,
     stop_entry: GAITS_CODE.stop_entry,
+    // (Locked on to the foe, it faces him and goes any way about him: content/humanoid's lock-on
+    // gaits.)
+    locked: humanoid::armed::LOCKED.clone(),
+    holds: false,
 }
 
 /// How a fighting body follows its stick: it sets off and stops at once (the rules do), without
@@ -305,6 +309,14 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
         if going != engine::humanoid::NONE && going == b.mover.acting {
             b.mover.act_time = t - dt
         }
+    }
+    // Locked on in the rules, it faces the way they face it and goes where they take it, its
+    // feet going any way about the way it faces (`playback`'s locked gaits); else it turns to
+    // face where it goes.
+    if seen.locked {
+        b.mover.facing(facing)
+    } else {
+        b.mover.unlocked()
     }
     // Held at a blow, it's still; as the hold breaks it gives to the blow.
     let held = seen.hold > 0

@@ -40,7 +40,7 @@ pub const GUARD: Move = in_place(STANCE.clone())
 @fuel(2 ** 40)
 pub const ARMED_GAITS: Gaits = Gaits {
     idle: GUARD.clone(),
-    locked: locked_gaits(),
+    locked: LOCKED.clone(),
     holds: true,
     ..FIGHT_GAITS.clone(),
 }
@@ -60,7 +60,11 @@ fn mirrored(c: Clip) -> Clip {
 }
 
 /// The lock-on gaits, as `Gaits::locked` has them: back, left and right, each a walk and a run.
-/// The captures step to the body's right; its left is their mirror.
+/// The captures step to the body's right; its left is their mirror. The armed gaits' and the
+/// game's bodies' (mmo/game's `bodies::GAITS`).
+@fuel(2 ** 40)
+pub const LOCKED: Vec<Move> = locked_gaits()
+
 fn locked_gaits() -> Vec<Move> {
     borrow rig = HERO.rig
     let (sw, sr) = (
