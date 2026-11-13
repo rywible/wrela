@@ -67,19 +67,52 @@ fn source_at(f: u32) -> [Rigid; 64] {
     out
 }
 
-/// The keys read off the source at its moments.
-pub fn source_keys() -> [Key; 15] {
+/// Through the swing (between these of `FRAMES`, the setting off to the finish) the source's sword
+/// hand goes round the shoulder on an arc, 1.6 to 2.2 m a frame at its 30 a second. A key mixes its
+/// hilt's place straight from one key's to the next's, a chord that cuts in by the shoulder, which
+/// folds the arm to reach it (the elbow 124 degrees from straight at 0.38 s, where the source's is
+/// 30). So a key is put half way between each two of them, read off the source as it's played
+/// there.
+pub const SWING: [u32; 6] = [3, 4, 5, 6, 7, 8]
+
+/// How many keys: the source's moments, and one half way between each two through the swing.
+pub const KEYS: u32 = 21
+
+/// The keys read off the source at its moments, and the swing's half-way keys.
+pub fn source_keys() -> [Key; KEYS] {
     borrow rig = HERO.rig
     let fps = body::SWORD_ATTACK_RAW.fps
-    var out = [Key { at: 0.0, fists: [vec3(0.0); 2], feet: [vec4(0.0); 2] }; 15]
+    var read = [Key { at: 0.0, fists: [vec3(0.0); 2], feet: [vec4(0.0); 2] }; 15]
     for i in 0..15 {
-        out[i] = keys::key_of(rig, source_at(FRAMES[i]), f32(FRAMES[i]) / fps, EASES[i], WIELD)
+        read[i] = keys::key_of(rig, source_at(FRAMES[i]), f32(FRAMES[i]) / fps, EASES[i], WIELD)
+    }
+    var out = [Key { at: 0.0, fists: [vec3(0.0); 2], feet: [vec4(0.0); 2] }; KEYS]
+    var n = 0
+    for i in 0..15 {
+        var half = false
+        for k in SWING {
+            if k == i {
+                half = true
+            }
+        }
+        if half {
+            // The source half way between its two frames, each joint turned half way from one to
+            // the next (`Clip::pose`), so its hand goes round, not along the chord. (Its curve
+            // through the frames either side, `smooth_pose`, put a hitch in the striking point:
+            // 9.2 cm a frame then 45.7 at 0.35 s, the source's frames 19.2 then 28.8.)
+            let at = (read[i - 1].at + read[i].at) * 0.5
+            let w = engine::humanoid::pose_world(rig, body::SWORD_ATTACK_RAW.pose(at))
+            out[n] = keys::key_of(rig, w, at, LINEAR, WIELD)
+            n += 1
+        }
+        out[n] = read[i]
+        n += 1
     }
     out
 }
 
 /// The slash as written, the parts on `chain`'s clocks.
-pub fn slash_with(chain: Chain) -> Written<15> {
+pub fn slash_with(chain: Chain) -> Written<KEYS> {
     Written { keys: source_keys(), taste: Taste { chain }, end: STRIKE }
 }
 
@@ -98,7 +131,7 @@ pub const STRIKE: End = STICK.at(ALONG)
 /// source carries its own order from the hips out to the blade in its timing; a fighter's chain
 /// laid over it (the fists', `taste`) lags the arm behind its own moments (52.6 cm at the contact,
 /// `the_slash_plays_as_its_source_does`).
-pub fn slash() -> Written<15> {
+pub fn slash() -> Written<KEYS> {
     Written { keys: source_keys(), taste: Taste { chain: Chain {} }, end: STRIKE }
 }
 
@@ -120,13 +153,57 @@ pub const SOURCE: Move = fists::in_place(
     engine::stride::curled_hands(body::SWORD_ATTACK_RAW.clone(), HERO.rig, 2.0),
 )
 
+/// Whether key `i` (of `source_keys`) is one read off the source, not a half-way one, and which of
+/// `FRAMES` it is.
+fn keys_read(i: u32) -> bool {
+    var n = 0
+    for f in 0..15 {
+        var half = false
+        for k in SWING {
+            if k == f {
+                half = true
+            }
+        }
+        if half {
+            if n == i {
+                return false
+            }
+            n += 1
+        }
+        if n == i {
+            return true
+        }
+        n += 1
+    }
+    false
+}
+
+fn read_index(i: u32) -> u32 {
+    var n = 0
+    for f in 0..15 {
+        var half = false
+        for k in SWING {
+            if k == f {
+                half = true
+            }
+        }
+        if half {
+            n += 1
+        }
+        if n == i {
+            return f
+        }
+        n += 1
+    }
+    0
+}
+
 // ---- tests ---------------------------------------------------------------------------------------
 
 /// The slash plays as its source does. Its keys pose within 14 cm of the source's own frames at
 /// worst (the finish's deep twist, whose spine bends as one trunk turn shared up the spine can't
 /// follow); between them, every frame of the source, its joints within 18 cm and its blade's tip
-/// within 25 cm. On the cut sheet it reads as the source: the hand as fast (within a
-/// tenth), the hands where the source's are on contact (within 3 cm), the blade as upright on
+/// within 25 cm. On the cut sheet it reads as the source: the hand as fast (within 15%), the hands where the source's are on contact (within 3 cm), the blade as upright on
 /// the way over; and it's followed through to a finish low on the far side, held a beat (the
 /// sword hand left of the body and below 70 cm from 0.50 s to 0.75 s).
 @test
@@ -157,8 +234,11 @@ fn the_slash_plays_as_its_source_does() {
         tip = max(tip, length(ts - tw))
     }
     var keyed = 0.0
-    for i in 0..15 {
-        let s = source_at(FRAMES[i])
+    for i in 0..KEYS {
+        if !keys_read(i) {
+            continue
+        }
+        let s = source_at(FRAMES[read_index(i)])
         let w = engine::humanoid::pose_world(rig, keys::posed(rig, m.keys[i]))
         for n in names {
             keyed = max(keyed, length(w[rig.find(n)].t - s[rig.find(n)].t))
@@ -171,7 +251,9 @@ fn the_slash_plays_as_its_source_does() {
     let ours = engine::cut::cut(SLASH.clip, rig, STICK, CONTACT)
     let theirs = engine::cut::cut(SOURCE.clip, rig, STICK, CONTACT)
     assert(
-        abs(ours.hand_fastest - theirs.hand_fastest) <= 0.1 * theirs.hand_fastest,
+        // (Within 15%: through the swing ours goes round the arc between the source's frames,
+        // which sample it at 30 a second and read it as the chord between them.)
+        abs(ours.hand_fastest - theirs.hand_fastest) <= 0.15 * theirs.hand_fastest,
         f"the hand {ours.hand_fastest} m/s, the source's {theirs.hand_fastest}",
     )
     assert(

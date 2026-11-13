@@ -88,8 +88,10 @@ fn shape(w: [Rigid], a: [u32; 4], c: [u32; 3]) -> (vec3, vec3) {
 
 /// One frame's three numbers for arm `a` (side `s`): how far its elbow's bend is off a real
 /// one's (degrees; 0 where it isn't bent past `BENT`), how far its hand is into the head (m, 0
-/// where it's clear), and how far its shape is from the nearest real arm's (degrees).
-fn measured(w: [Rigid], a: [u32; 4], ch: [u32; 3], centre: vec3, r: Real, s: u32) -> [f32; 3] {
+/// where it's clear), and how far its shape is from the nearest real arm's (degrees). Then, to
+/// say why: how far its upper arm and its forearm each are from that nearest's, and how far its
+/// upper arm's raised above the chest's level and drawn back behind it (degrees).
+fn measured(w: [Rigid], a: [u32; 4], ch: [u32; 3], centre: vec3, r: Real, s: u32) -> [f32; 7] {
     let (angle, axis) = bend(w, a)
     let off = if angle > BENT { acos(clamp(dot(axis, r.hinge[s]), -1.0, 1.0)) / DEG } else { 0.0 }
     var into = 0.0
@@ -98,12 +100,24 @@ fn measured(w: [Rigid], a: [u32; 4], ch: [u32; 3], centre: vec3, r: Real, s: u32
     }
     let (u, v) = shape(w, a, ch)
     var best = 1.0e9
+    var split = vec2(0.0)
     for k in 0..r.upper[s].len() {
-        let d = acos(clamp(dot(u, r.upper[s][k]), -1.0, 1.0)) +
-            acos(clamp(dot(v, r.fore[s][k]), -1.0, 1.0))
-        best = min(best, d)
+        let du = acos(clamp(dot(u, r.upper[s][k]), -1.0, 1.0))
+        let dv = acos(clamp(dot(v, r.fore[s][k]), -1.0, 1.0))
+        if du + dv < best {
+            best = du + dv
+            split = vec2(du, dv)
+        }
     }
-    [off, into, best / DEG]
+    [
+        off,
+        into,
+        best / DEG,
+        split.x / DEG,
+        split.y / DEG,
+        asin(clamp(u.y, -1.0, 1.0)) / DEG,
+        asin(clamp(-u.z, -1.0, 1.0)) / DEG,
+    ]
 }
 
 /// What real arms did: each elbow's usual bend axis, and the arm shapes real people made, by side
@@ -112,6 +126,10 @@ pub struct Real: Clone {
     pub hinge: [vec3; 2],
     pub upper: [Vec<vec3>; 2],
     pub fore: [Vec<vec3>; 2],
+    /// What the shapes were taken from, said where an arm's far from all of them: a bank of
+    /// captured arms holds only the arms its takes made, and an arm doing what none did (a
+    /// sword's load, from takes with no weapon) is far from them for that.
+    pub of: Text = "",
 }
 
 /// The real arms: the elbows' bends from `takes` (clips on `rig`), the shapes from `shapes` (packed
@@ -256,9 +274,24 @@ pub fn report(rig: Rig, c: Clip, r: Real) -> Vec<String> {
     var from = [c.frames; 6]
     var worst = [0.0; 6]
     var at = [0.0; 6]
+    // (Where an arm's shape is worst, which of its parts is off the nearest real arm's, and how
+    // far.)
+    var split = [vec2(0.0); 2]
+    var rise = [vec2(0.0); 2]
+    // (The furthest any of the bank's upper arms is raised above the chest's level, and drawn
+    // back behind it, each side, in degrees.)
+    var furthest = [vec2(-90.0); 2]
+    for s in 0..2 {
+        for u in r.upper[s] {
+            furthest[s] = max(
+                furthest[s],
+                vec2(asin(clamp(u.y, -1.0, 1.0)), asin(clamp(-u.z, -1.0, 1.0))) / DEG,
+            )
+        }
+    }
     for f in 0..c.frames + 1 {
         let t = f32(f) / c.fps
-        var m = [[0.0; 3]; 2]
+        var m = [[0.0; 7]; 2]
         if f < c.frames {
             let w = world(rig, c, f)
             let centre = w[head].t + w[head].q.rotate(middle)
@@ -278,6 +311,10 @@ pub fn report(rig: Rig, c: Clip, r: Real) -> Vec<String> {
                     if m[s][k] > worst[i] {
                         worst[i] = m[s][k]
                         at[i] = t
+                        if k == 2 {
+                            split[s] = vec2(m[s][3], m[s][4])
+                            rise[s] = vec2(m[s][5], m[s][6])
+                        }
                     }
                 } else if from[i] != c.frames {
                     let side = if s == 0 { "left" } else { "right" }
@@ -287,8 +324,10 @@ pub fn report(rig: Rig, c: Clip, r: Real) -> Vec<String> {
                             f"{span}: the {side} elbow bends across its hinge, {worst[i]:.0} degrees at worst ({at[i]:.2} s)"
                         } else if k == 1 {
                             f"{span}: the {side} hand is inside the head, {worst[i] * 100.0:.1} cm at worst ({at[i]:.2} s)"
-                        } else {
+                        } else if r.of == "" {
                             f"{span}: the {side} arm is like no arm a person made, {worst[i]:.0} degrees off at worst ({at[i]:.2} s)"
+                        } else {
+                            f"{span}: the {side} arm is like no arm in the bank ({r.of}), {worst[i]:.0} degrees off at worst ({at[i]:.2} s): its upper arm {split[s].x:.0} and its forearm {split[s].y:.0} degrees off the nearest; the upper arm raised {rise[s].x:.0} degrees above the chest's level and drawn back {rise[s].y:.0} behind it, the bank's furthest {furthest[s].x:.0} and {furthest[s].y:.0}"
                         },
                     )
                     from[i] = c.frames

@@ -92,7 +92,8 @@ fn stroke(img: mut Image, a: (f64, f64), b: (f64, f64), c: vec3u) {
 
 /// A dot `r` pixels out each way about `p`.
 fn dot_at(img: mut Image, p: (f64, f64), r: u32, c: vec3u) {
-    if p.0 < f64(r) || p.1 < f64(r) {
+    // (Off the picture, or no point at all, a NaN: nothing.)
+    if !(p.0 >= f64(r) && p.1 >= f64(r) && p.0 < 1.0e6 && p.1 < 1.0e6) {
         return
     }
     let (x, y) = (u32(p.0 + 0.5), u32(p.1 + 0.5))
@@ -218,7 +219,9 @@ pub fn chart(clip: Clip, rig: Rig, t: Timing, name: str) -> Image {
     for (i, c, word) in [(is, SET, "SETS OFF"), (ic, HIT, "CONTACT")] {
         let x = u32(x_of(f32(i)))
         img.rect(x, STRIP_TOP - 14, x + 1, STRIP_TOP + STRIP_H, c)
-        img.text(if i == is { x - 100 } else { x + 6 }, STRIP_TOP - 14, word, 2, c)
+        // (Its label to the left of the line, kept on the picture for a strike that sets off
+        // within its first tenth of a second.)
+        img.text(if i == is { max(x, 100) - 100 } else { x + 6 }, STRIP_TOP - 14, word, 2, c)
     }
     for part in 0..5 {
         var top = 1.0e-6

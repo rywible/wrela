@@ -21,7 +21,7 @@ use playback::{ACTIVE, Move, Mover, layered}
 /// at most `smear_most` times its length), from how fast (m/s, against the body) a fist or foot
 /// must go to smear; what the body holds (`engine::held`), whose trail is drawn as its limbs'
 /// smears are; and how much bigger its striking end is drawn on the blow (`big` of its size,
-/// added: 0 none), for how long after its contact (`big_for`, s, then let go over a tenth of a
+/// added: 0 none; a hand that holds something isn't: its blow's end is what it holds), for how long after its contact (`big_for`, s, then let go over a tenth of a
 /// second), about a point `big_ahead` (m) on from its end along its forearm or shin (a fist's
 /// knuckles).
 pub struct Anime: Copy {
@@ -452,7 +452,10 @@ pub fn drawn(
         trail.along = normalize(t - h + vec3(1.0e-6))
     }
     var grown = not_grown()
-    if how.big > 0.0 && d.since_contact >= 0.0 && d.fastest < 4 {
+    // (A limb's end, its fist or foot, grown on the blow; not the hand that holds a thing, whose
+    // blow's end is the thing: a blade drawn with a lump at its hilt.)
+    let holding = how.held.held() && LIMB_ENDS[min(d.fastest, 3)].bone == how.held.hand
+    if how.big > 0.0 && d.since_contact >= 0.0 && d.fastest < 4 && !holding {
         let on = 1.0 - smoothstep(how.big_for, how.big_for + 0.1, d.since_contact)
         let end = LIMB_ENDS[d.fastest]
         let e = end.bone_of(rig)
