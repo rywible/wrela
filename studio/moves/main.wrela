@@ -349,7 +349,8 @@ pub fn strikes(rig: Rig) -> Vec<Strike> {
                 clip: humanoid::slash::SLASH.clip.clone(),
                 end: humanoid::slash::STRIKE,
                 contact: humanoid::slash::CONTACT,
-                about: "the slash (slash::SLASH, engine::written): keys read off Sword_Attack at its own moments, followed through",
+                about: "the slash (slash::SLASH, engine::written): keys read off Sword_Attack at its own moments, followed through, stepping in as its feet leave the floor (slash::stepped)",
+                root: humanoid::slash::SLASH.root.clone(),
             },
             Strike {
                 name: "slash-source",

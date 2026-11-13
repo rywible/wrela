@@ -278,6 +278,208 @@ fn travels(p: mut Fighter, k: u32, foe: (i32, i32)) {
     }
 }
 
+/// Hit shapes from the sweep (a trial, as knockback is): a strike meets what's in the floor's
+/// shape its striking part sweeps through its active frames (`SWEPT_SHAPES`), read off the move the game
+/// draws for it, not a reach and an arc typed by hand (`Move::reach`, `Move::arc`). Its foe is hit
+/// where its body (`BODY`, `IDOL_BODY`) comes within that shape. `SWEPT` false turns it off: a
+/// strike meets what's within its reach and arc, as before.
+pub const SWEPT: bool = true
+/// How many pieces each active frame's sweep is held in: halves, so a blade going round a long
+/// way in a frame is held near its arc, not the chord across it.
+pub const PIECES: u32 = 2
+/// Each of `MOVES`' sweep, a piece at a time through its active frames (`PIECES` to a frame, at
+/// most 6 frames): what its striking part (a blade from its cross to its point, a fist) covers on
+/// the floor from where the piece begins to where it ends, as four corners round (the part's
+/// near and far ends as it begins, its far and near as it ends), each across (to the striker's
+/// left) and ahead of where the rules have the striker on that frame (units); the ninth, 1
+/// where the part's within a man's height for some of the piece, 0 where it passes over his head
+/// or under the floor. Read off the move the game draws for each (mmo/game's `bodies::sweep_of`,
+/// held equal by `the_rules_hit_what_the_drawn_strike_sweeps`).
+pub const SWEPT_SHAPES: [[[i32; 9]; 12]; 6] = [
+    [
+        [10, 11, 10, 11, 14, 31, 14, 31, 1],
+        [14, 31, 14, 31, -1, 49, -1, 49, 1],
+        [-1, 49, -1, 49, -4, 50, -4, 50, 1],
+        [-4, 50, -4, 50, -2, 50, -2, 50, 1],
+        [-2, 50, -2, 50, -3, 50, -3, 50, 1],
+        [-3, 50, -3, 50, -3, 51, -3, 51, 1],
+        [-3, 51, -3, 51, -3, 51, -3, 51, 1],
+        [-3, 51, -3, 51, -3, 51, -3, 51, 1],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ],
+    [
+        [15, 26, 15, 26, 10, 40, 10, 40, 1],
+        [10, 40, 10, 40, -1, 49, -1, 49, 1],
+        [-1, 49, -1, 49, -3, 50, -3, 50, 1],
+        [-3, 50, -3, 50, -2, 50, -2, 50, 1],
+        [-2, 50, -2, 50, -3, 50, -3, 50, 1],
+        [-3, 50, -3, 50, -3, 51, -3, 51, 1],
+        [-3, 51, -3, 51, -3, 51, -3, 51, 1],
+        [-3, 51, -3, 51, -3, 51, -3, 51, 1],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ],
+    [
+        [-38, -30, -36, -35, -63, 13, -50, 15, 1],
+        [-50, 15, -63, 13, -58, 88, -29, 51, 1],
+        [-29, 51, -58, 88, -41, 103, -20, 55, 1],
+        [-20, 55, -41, 103, -35, 107, -17, 56, 1],
+        [-17, 56, -35, 107, -17, 111, -10, 57, 1],
+        [-10, 57, -17, 111, -3, 109, -3, 57, 1],
+        [-3, 57, -3, 109, 14, 104, 4, 55, 1],
+        [4, 55, 14, 104, 30, 94, 11, 51, 1],
+        [11, 51, 30, 94, 44, 81, 18, 46, 1],
+        [18, 46, 44, 81, 51, 65, 22, 41, 1],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ],
+    [
+        [-33, -39, -30, -41, -61, 5, -51, 8, 1],
+        [-51, 8, -61, 5, -58, 88, -29, 51, 1],
+        [-29, 51, -58, 88, -40, 104, -19, 55, 1],
+        [-19, 55, -40, 104, -35, 107, -17, 56, 1],
+        [-17, 56, -35, 107, -17, 111, -10, 57, 1],
+        [-10, 57, -17, 111, -3, 109, -3, 57, 1],
+        [-3, 57, -3, 109, 14, 104, 4, 55, 1],
+        [4, 55, 14, 104, 30, 94, 11, 51, 1],
+        [11, 51, 30, 94, 44, 81, 18, 46, 1],
+        [18, 46, 44, 81, 51, 65, 22, 41, 1],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ],
+    [
+        [-42, -18, -43, -24, -66, 20, -48, 20, 1],
+        [-48, 20, -66, 20, -58, 88, -29, 51, 1],
+        [-29, 51, -58, 88, -42, 103, -20, 55, 1],
+        [-20, 55, -42, 103, -35, 107, -17, 56, 1],
+        [-17, 56, -35, 107, -17, 111, -10, 57, 1],
+        [-10, 57, -17, 111, -3, 109, -3, 57, 1],
+        [-3, 57, -3, 109, 14, 104, 4, 55, 1],
+        [4, 55, 14, 104, 30, 94, 11, 51, 1],
+        [11, 51, 30, 94, 44, 81, 18, 46, 1],
+        [18, 46, 44, 81, 51, 65, 22, 41, 1],
+        [22, 41, 51, 65, 53, 52, 25, 37, 1],
+        [25, 37, 53, 52, 53, 42, 26, 33, 1],
+    ],
+    [
+        [-50, 16, -69, 14, -73, 53, -42, 36, 1],
+        [-42, 36, -73, 53, -58, 88, -29, 51, 1],
+        [-29, 51, -58, 88, -46, 101, -22, 55, 1],
+        [-22, 55, -46, 101, -35, 107, -17, 56, 1],
+        [-17, 56, -35, 107, -17, 111, -10, 57, 1],
+        [-10, 57, -17, 111, -3, 109, -3, 57, 1],
+        [-3, 57, -3, 109, 14, 104, 4, 55, 1],
+        [4, 55, 14, 104, 30, 94, 11, 51, 1],
+        [11, 51, 30, 94, 44, 81, 18, 46, 1],
+        [18, 46, 44, 81, 51, 65, 22, 41, 1],
+        [22, 41, 51, 65, 53, 52, 25, 37, 1],
+        [25, 37, 53, 52, 53, 42, 26, 33, 1],
+    ],
+]
+/// A man's body, and the idol's, as the rules take them: a circle as wide as the shoulders out
+/// to the outside of the upper arms (units: 0.26 m, and the idol 1.6 times; NEAREST is the two
+/// side by side).
+pub const BODY: i32 = 17
+pub const IDOL_BODY: i32 = 27
+
+/// Whether a body `body` wide (units, its radius) whose middle is `across` (to the striker's left)
+/// and `ahead` of the striker is met by move `m`'s sweep on its active frame `j` (0 its first).
+pub fn swept(m: u32, j: u32, across: i32, ahead: i32, body: i32) -> bool {
+    if m >= MOVES.len() {
+        return false
+    }
+    for k in 0..PIECES {
+        let i = j * PIECES + k
+        if i >= 12 {
+            return false
+        }
+        let q = SWEPT_SHAPES[m][i]
+        if q[8] != 0 && near_quad(q, across, ahead, body) {
+            return true
+        }
+    }
+    false
+}
+
+/// Whether (`x`, `z`) is within `r` of the four-cornered shape `q` (its corners in order round, as
+/// `SWEPT_SHAPES` has them; it may fold, so it's taken as two triangles): inside it, or within `r` of an
+/// edge. In whole numbers.
+fn near_quad(q: [i32; 9], x: i32, z: i32, r: i32) -> bool {
+    let c = [(q[0], q[1]), (q[2], q[3]), (q[4], q[5]), (q[6], q[7])]
+    if in_triangle(c[0], c[1], c[2], x, z) || in_triangle(c[0], c[2], c[3], x, z) {
+        return true
+    }
+    for e in 0..4 {
+        if near_edge(c[e], c[(e + 1) % 4], x, z, r) {
+            return true
+        }
+    }
+    false
+}
+
+fn in_triangle(a: (i32, i32), b: (i32, i32), c: (i32, i32), x: i32, z: i32) -> bool {
+    let side = |p: (i32, i32), q: (i32, i32)| -> i64 {
+        i64(q.0 - p.0) * i64(z - p.1) - i64(q.1 - p.1) * i64(x - p.0)
+    }
+    // (A triangle with no area, its corners on a line, has no inside: its edges are its all.)
+    let area = i64(b.0 - a.0) * i64(c.1 - a.1) - i64(b.1 - a.1) * i64(c.0 - a.0)
+    if area == 0 {
+        return false
+    }
+    let (s0, s1, s2) = (side(a, b), side(b, c), side(c, a))
+    (s0 >= 0 && s1 >= 0 && s2 >= 0) || (s0 <= 0 && s1 <= 0 && s2 <= 0)
+}
+
+/// Whether (`x`, `z`) is within `r` of the edge from `a` to `b`: in whole numbers, both sides
+/// squared.
+fn near_edge(a: (i32, i32), b: (i32, i32), x: i32, z: i32, r: i32) -> bool {
+    let (ux, uz) = (i64(b.0 - a.0), i64(b.1 - a.1))
+    let (wx, wz) = (i64(x - a.0), i64(z - a.1))
+    let rr = i64(r) * i64(r)
+    let along = wx * ux + wz * uz
+    let long = ux * ux + uz * uz
+    if along <= 0 || long == 0 {
+        return wx * wx + wz * wz <= rr
+    }
+    if along >= long {
+        let (vx, vz) = (i64(x - b.0), i64(z - b.1))
+        return vx * vx + vz * vz <= rr
+    }
+    let cross = wx * uz - wz * ux
+    cross * cross <= rr * long
+}
+
+/// Whether move `m`, by the reach and arc typed for it, meets what's `across` and `ahead` of its
+/// striker (`SWEPT` off).
+pub fn reached(m: u32, across: i32, ahead: i32) -> bool {
+    // (Facing ahead, +z: its left is +x.)
+    m < MOVES.len() &&
+        reach(0, 0, across, ahead) <= MOVES[m].reach &&
+        within(AHEAD, across, ahead, MOVES[m].arc)
+}
+
+/// How far ahead move `m` meets a foe of `body` at most (units): the farthest its sweep goes, and
+/// the body (`SWEPT`); or its reach.
+pub fn reach_of(m: u32, body: i32) -> i32 {
+    if !SWEPT || m >= MOVES.len() {
+        return if m < MOVES.len() { MOVES[m].reach } else { 0 }
+    }
+    var far = 0
+    for q in SWEPT_SHAPES[m] {
+        if q[8] != 0 {
+            for c in 0..4 {
+                far = max(far, q[c * 2 + 1])
+            }
+        }
+    }
+    far + body
+}
+
 /// A parry meets a blow from the half ahead of the one parrying.
 const PARRY_ARC: i32 = 0
 // A dodge: invulnerable while it lasts, moving fast.
@@ -937,7 +1139,14 @@ pub fn step(w: mut World, inputs: [u32]) {
         if p.act == ACTIVE && !p.landed && w.boss.hp > 0 {
             let m = MOVES[p.move_]
             let (dx, dz) = (w.boss.x - p.x, w.boss.z - p.z)
-            if reach(p.x, p.z, w.boss.x, w.boss.z) <= m.reach && within(p.facing, dx, dz, m.arc) {
+            // (The idol about the striker: across to its left and ahead, as its sweep has them.)
+            let (fx, fz) = (DIR_X[p.facing % 16], DIR_Z[p.facing % 16])
+            let (across, ahead) = ((dx * fz - dz * fx) / 64, (dx * fx + dz * fz) / 64)
+            let j = into_move(p) - m.windup
+            let met = if SWEPT { swept(p.move_, j, across, ahead, IDOL_BODY) } else {
+                reach(p.x, p.z, w.boss.x, w.boss.z) <= m.reach && within(p.facing, dx, dz, m.arc)
+            }
+            if met {
                 p.landed = true
                 w.boss.hp -= m.damage
                 p.dealt += u32(m.damage)
@@ -1419,7 +1628,9 @@ fn a_bit_the_rules_dont_read_changes_nothing_then_or_later() {
 fn at_the_boss(weapon: u32) -> World {
     var w = World::armed([weapon])
     w.party[0].x = 0
-    w.party[0].z = 6 * UNIT - 2 * UNIT
+    // (Near enough that either weapon's strike meets it, its step taken: 100 units, where the
+    // fists' sweep, `SWEPT`, meets the idol from 110 at most.)
+    w.party[0].z = 6 * UNIT - 100
     w
 }
 
@@ -1697,16 +1908,18 @@ fn a_cut_lands_on_what_its_wielder_faces() {
     let cut = MOVES[WEAPONS[LONGSWORD].light]
     var w = at_the_boss(LONGSWORD)
     let hp = w.boss.hp
-    hold(mut w, input: ATTACK << 6, frames: cut.windup + 2)
+    // (Through its active frames: a cut that sweeps in from one side meets what's straight
+    // ahead a frame or two after it's begun to, `SWEPT`.)
+    hold(mut w, input: ATTACK << 6, frames: cut.windup + cut.active + 1)
     assert(w.boss.hp == hp - cut.damage, "facing the boss, it lands")
     var away = at_the_boss(LONGSWORD)
     away.party[0].facing = BACK
-    hold(mut away, input: ATTACK << 6, frames: cut.windup + 2)
+    hold(mut away, input: ATTACK << 6, frames: cut.windup + cut.active + 1)
     assert(away.boss.hp == hp, "its back to the boss, it misses")
     // Pressed with the stick toward the boss, it turns as it cuts.
     var turned = at_the_boss(LONGSWORD)
     turned.party[0].facing = BACK
-    hold(mut turned, input: (ATTACK << 6) | (1 + AHEAD * 3), frames: cut.windup + 2)
+    hold(mut turned, input: (ATTACK << 6) | (1 + AHEAD * 3), frames: cut.windup + cut.active + 1)
     assert(turned.party[0].facing == AHEAD && turned.boss.hp == hp - cut.damage, "turned, it lands")
 }
 
@@ -1749,9 +1962,14 @@ fn a_blow_holds_both_at_its_contact_by_its_weight() {
     w.boss.act = RECOVER
     w.boss.move_ = 0
     w.boss.timer = 60
-    let pressed = 1 + cut.windup
-    for _ in 0..pressed {
+    // (Till it lands: on its hit frame, or with `SWEPT` a frame or two on, where its sweep meets
+    // what's straight ahead.)
+    let till = 1 + cut.windup + cut.active
+    for _ in 0..till {
         step(mut w, [ATTACK << 6])
+        if w.party[0].hold > 0 {
+            break
+        }
     }
     assert(w.party[0].act == ACTIVE && w.party[0].hold == hold_of(cut.damage), "the cut's held")
     assert(w.boss.hold == hold_of(cut.damage), "and so is what it struck")
@@ -1763,8 +1981,11 @@ fn a_blow_holds_both_at_its_contact_by_its_weight() {
     up.boss.act = WINDUP
     up.boss.move_ = 2
     up.boss.timer = 40
-    for _ in 0..pressed {
+    for _ in 0..till {
         step(mut up, [ATTACK << 6])
+        if up.party[0].hold > 0 {
+            break
+        }
     }
     assert(up.party[0].hold > 0 && up.boss.hold == 0, "its windup runs on")
 }
@@ -2010,6 +2231,34 @@ fn a_strike_carries_its_striker_and_the_foe_and_the_edge_stop_it() {
         step(mut e, [ATTACK << 6])
     }
     assert(e.party[0].z == if TRAVELLING { ARENA } else { ARENA - 4 }, "the edge stops it")
+}
+
+/// A strike meets what its sweep covers (`SWEPT`): the idol stood where the longsword's first
+/// cut's blade passes on its hit frame is hit; stood a little past the farthest its sweep goes
+/// (`reach_of`), it isn't, though the reach typed for the cut would have it. With `SWEPT` off, the
+/// typed reach and arc decide, as before.
+@test
+fn a_strike_meets_what_its_sweep_covers() {
+    let cut = WEAPONS[LONGSWORD].light
+    let m = MOVES[cut]
+    let land = |ahead: i32| -> bool {
+        var w = World::armed([LONGSWORD]).standing_still()
+        w.party[0].x = 0
+        w.party[0].z = w.boss.z - ahead - travelled(cut, m.windup)
+        let hp = w.boss.hp
+        step(mut w, [ATTACK << 6])
+        for _ in 0..m.windup + m.active + 2 {
+            step(mut w, [ATTACK << 6])
+        }
+        w.boss.hp < hp
+    }
+    let far = reach_of(cut, IDOL_BODY)
+    assert(land(far - 40), "met within its sweep")
+    let beyond = far + 8
+    assert(
+        land(beyond) == if SWEPT { false } else { beyond <= m.reach },
+        f"stood {beyond} units off: met only by the typed reach ({m.reach})",
+    )
 }
 
 /// A boss stood still (`World::standing_still`) makes no move of its own, however near a player

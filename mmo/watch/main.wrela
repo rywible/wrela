@@ -33,6 +33,9 @@ pub const TITLE: Text = ""
 /// Whether the first player is a bot that takes the idol's blows (`bots::taker`): 0 not, 1 alone
 /// against the idol, 2 beside the fight's bot.
 pub const TAKER: u32 = 0
+/// What the taker fights with: the longsword, as the game's fighters do. (The fists' sweep reaches
+/// the idol only from under its feet, `sim::SWEPT`, where its stomp meets them, not its palm.)
+const TAKER_WEAPON: u32 = LONGSWORD
 /// Whether the first player plays the movement script (`script`), alone with the longsword: 0
 /// not, 1 so.
 pub const SCRIPT: u32 = 0
@@ -66,7 +69,9 @@ pub fn init() -> State {
     let renderer = Renderer::new(fonts)
     State {
         truth: if SCRIPT == 1 { World::armed([LONGSWORD]).standing_still() } else if TAKER == 1 {
-            World::armed([WEAPONS_OF[0]])
+            World::armed([TAKER_WEAPON])
+        } else if TAKER == 2 {
+            World::armed([TAKER_WEAPON, WEAPONS_OF[1]])
         } else { World::armed(WEAPONS_OF) },
         past: Vec::new(),
         inputs: Vec::from([Vec::new(), Vec::new()]),
@@ -98,7 +103,7 @@ fn play_to(s: mut State, to: u32) {
             let x = if SCRIPT == 1 && i == 0 {
                 script::input(mut s.script, s.truth, before)
             } else if TAKER != 0 && i == 0 {
-                taker(s.truth, i, before, WEAPONS_OF[i], s.guard)
+                taker(s.truth, i, before, TAKER_WEAPON, s.guard)
             } else {
                 bot(s.truth, i, before, WEAPONS_OF[i], REACT)
             }
@@ -206,7 +211,9 @@ fn the_bots_fight_the_idol() {
 /// `TAKER` plays: each one's frame, its name, and how far the rules pushed the taker for it (m,
 /// read half a second on).
 fn takers_blows(frames: u32, alone: bool) -> Vec<(u32, Text, f32)> {
-    var w = if alone { World::armed([WEAPONS_OF[0]]) } else { World::armed(WEAPONS_OF) }
+    var w = if alone { World::armed([TAKER_WEAPON]) } else {
+        World::armed([TAKER_WEAPON, WEAPONS_OF[1]])
+    }
     var before = [u32(0), 0]
     var out: Vec<(u32, Text, f32)> = Vec::new()
     var open: Vec<(u32, Text, vec2)> = Vec::new()
@@ -214,7 +221,7 @@ fn takers_blows(frames: u32, alone: bool) -> Vec<(u32, Text, f32)> {
     var parried = false
     for _ in 0..frames {
         let second = if alone { 0 } else { bot(w, 1, before[1], WEAPONS_OF[1], REACT) }
-        let ins = [taker(w, 0, before[0], WEAPONS_OF[0], guard), second]
+        let ins = [taker(w, 0, before[0], TAKER_WEAPON, guard), second]
         before = ins
         let (was, attack) = (w.player(0), w.boss().move_)
         let staggered = w.boss().act == combat::sim::STAGGERED

@@ -62,6 +62,12 @@ pub fn input(s: mut Script, w: World, before: u32) -> u32 {
     let d = dist(dx, dz)
     // (How far as the rules measure a strike's reach: the larger side and half the smaller.)
     let r = if abs(dx) > abs(dz) { abs(dx) + abs(dz) / 2 } else { abs(dz) + abs(dx) / 2 }
+    // (Where its cut meets the idol from, its step taken: as far off as the rules have the cut
+    // reach, `sim::reach_of`, less a little.)
+    let cut = combat::sim::WEAPONS[combat::sim::LONGSWORD].light
+    let strikes_from = combat::sim::reach_of(cut, combat::sim::IDOL_BODY) -
+        16 +
+        combat::sim::travelled(cut, combat::sim::MOVES[cut].windup)
     // The blow: once it's landed, its frame and how far it pushed.
     if s.let_go && s.hit_at == 0 && p.hp < 100 {
         s.hit_at = f
@@ -93,7 +99,7 @@ pub fn input(s: mut Script, w: World, before: u32) -> u32 {
     if f < 840 {
         s.said = "LOCKED ON: coming in"
         // (To a step outside the cut's reach: the slash's step takes him in.)
-        return if r > 200 { held | stick_to(dx, dz, 2) } else { held }
+        return if r > strikes_from { held | stick_to(dx, dz, 2) } else { held }
     }
     if f == 840 {
         s.said = "STRIKE TRAVELS: the slash steps in 0.50 m"
@@ -148,7 +154,7 @@ pub fn input(s: mut Script, w: World, before: u32) -> u32 {
     }
     if since < 240 {
         s.said = "LOCKED ON: stepping back in"
-        return if r > 150 { held | stick_to(dx, dz, 2) } else { held }
+        return if r > strikes_from - 32 { held | stick_to(dx, dz, 2) } else { held }
     }
     if since == 240 {
         s.said = "DODGE"
