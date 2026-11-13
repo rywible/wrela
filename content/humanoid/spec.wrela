@@ -617,8 +617,8 @@ fn downcut_spec<C: Checks>(c: mut C) {
     c.at_least("cut: the hands' height while the blade's still up (m)", low, 1.27, within: 0.02)
 }
 
-/// What the slash (slash.wrela) should measure: its source's bands (`slash::SOURCE_CUT`, the cut
-/// sheet's reading of `Sword_Attack` on the body), so a later change of ours, a second hand on the
+/// What the slash (slash.wrela) should measure: its source's bands (`slash::SOURCE_HAND_UP` and the rest, the
+/// cut sheet's reading of `Sword_Attack` on the body), so a later change of ours, a second hand on the
 /// grip, a longer blade, a foe at a set distance, can't drift from what it was fitted to. Each as
 /// `the_slash_plays_as_its_source_does` holds it, read off the written move so a solve can follow
 /// it:
@@ -638,7 +638,6 @@ fn slash_spec<C: Checks>(c: mut C) {
 fn slash_spec_of<C: Checks>(c: mut C, m: engine::written::Written<slash::KEYS>) {
     borrow rig = HERO.rig
     let at = slash::CONTACT
-    let src = slash::SOURCE_CUT.clone()
     let hand = rig.find("rightHand")
     let chest = rig.find("upperChest")
     // (Fastest as it lands: the striking point, read from setting off.)
@@ -664,11 +663,11 @@ fn slash_spec_of<C: Checks>(c: mut C, m: engine::written::Written<slash::KEYS>) 
     c.at_most("slash: hand's fastest (m/s)", fastest, slash::SOURCE_HAND * 1.15, within: 0.5)
     // The hands on contact.
     let w = pose_world(rig, m.pose(rig, at))
-    c.near("slash: hand up on contact (m)", w[hand].t.y, src.hand_y, within: 0.03)
+    c.near("slash: hand up on contact (m)", w[hand].t.y, slash::SOURCE_HAND_UP, within: 0.03)
     c.near(
         "slash: hand ahead of the chest on contact (m)",
         w[hand].t.z - w[chest].t.z,
-        src.hand_ahead,
+        slash::SOURCE_HAND_AHEAD,
         within: 0.03,
     )
     // The blade most upright on the way over (from setting off to the blow, at 60 a second).
@@ -682,7 +681,7 @@ fn slash_spec_of<C: Checks>(c: mut C, m: engine::written::Written<slash::KEYS>) 
     c.near(
         "slash: blade most upright on the way over (degrees)",
         asin(clamp(most_up, -1.0, 1.0)) * 57.29578,
-        src.upright,
+        slash::SOURCE_UPRIGHT,
         within: 5.0,
     )
     // The finish, low on the far side, held.
@@ -713,7 +712,7 @@ fn the_slash_spec_holds_and_bites() {
     var r = std::lift::Report::new()
     slash_spec(mut r)
     assert(r.missed == 0 && r.held >= 10, f"the slash holds its spec: {r.done()}")
-    let standing = engine::written::Written { keys: slash::source_keys(), ..slash::slash() }
+    let standing = engine::written::Written { keys: slash::SOURCE_KEYS, ..slash::slash() }
     var a = std::lift::Report::new()
     slash_spec_of(mut a, standing)
     assert(a.missed >= 1, "without its step, it misses")
