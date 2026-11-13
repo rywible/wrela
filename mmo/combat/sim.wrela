@@ -782,6 +782,12 @@ impl World {
         World { still: true, ..self.clone() }
     }
 
+    /// `self` with its boss making its own moves again (`standing_still` undone): for a script to
+    /// let it strike once.
+    pub fn let_go(self) -> World {
+        World { still: false, ..self.clone() }
+    }
+
     pub fn players(self) -> u32 {
         self.party.len()
     }
