@@ -3,13 +3,15 @@
 // round it, not on one spot), strike it there turned to face it, chain a combo, and answer its
 // tell `react` frames into its windup (a person's reaction is some 12 to 24 frames at 60 a
 // second) with a parry timed to meet the hit, or with a dodge across its reach when no parry
-// holds it. A bot presses only when the rules read the press. For a fight to watch (this
+// holds it. It strikes only when the strike's over in time to answer the idol's soonest next
+// tell, and through a tell it neither walks in nor strikes: so what it suffers is the rules'
+// doing, not a strike it chose badly. A bot presses only when the rules read the press. For a fight to watch (this
 // program) and a measure of how readable the boss's tells are (studio/feel).
 
 use std::math::atan2
 use combat::sim::{
-    ATTACK, ATTACKS, BUTTON_BITS, DODGE, HEAVY, IDLE, MOVES, PARRY, PARRY_WINDOW, RECOVER, WEAPONS,
-    WINDUP, World,
+    ATTACK, ATTACKS, BUTTON_BITS, DODGE, HEAVY, IDLE, MOVES, NO_MOVE, PARRY, PARRY_WINDOW, RECOVER,
+    STAGGERED, Seen, WEAPONS, WINDUP, World,
 }
 
 /// The stick toward (`dx`, `dz`) (the rules' units) at speed `speed` (0 to 2): one of the 16
@@ -36,6 +38,34 @@ fn spot(i: u32, reach: i32) -> (i32, i32) {
     (sx * reach, sz * reach)
 }
 
+/// How many frames till boss `b` could land a hit at the soonest: what's left of its recovery or
+/// its stagger, and then the shortest of its tells (its windup's left, if it's winding up).
+fn soonest(b: Seen) -> u32 {
+    var tell: u32 = 1000
+    for a in ATTACKS {
+        tell = min(tell, a.windup)
+    }
+    if b.act == WINDUP {
+        return b.timer
+    }
+    if b.act == RECOVER || b.act == STAGGERED {
+        return b.timer + tell
+    }
+    // (Striking, it's landing now; idle, it may begin its tell at once.)
+    if b.act == IDLE { tell } else { 0 }
+}
+
+/// Whether move `m` (its frames committed: windup, active and recovery) is over with time to
+/// parry (`PARRY_WINDOW`) before boss `b` could land: a bot starts a strike only when it is, as a
+/// player who knows the idol's rhythm does, so a strike never leaves it unable to answer a tell.
+fn fits(m: u32, b: Seen) -> bool {
+    if m == NO_MOVE {
+        return false
+    }
+    let mv = MOVES[m]
+    mv.windup + mv.active + mv.recovery + PARRY_WINDOW <= soonest(b)
+}
+
 pub fn bot(w: World, i: u32, before: u32, weapon: u32, react: u32) -> u32 {
     let p = w.player(i)
     let b = w.boss()
@@ -60,23 +90,34 @@ pub fn bot(w: World, i: u32, before: u32, weapon: u32, react: u32) -> u32 {
                 return press(DODGE) | stick_to(-dz, dx, 2)
             }
         }
-        if near {
-            return held
-        }
+        // Through a tell, it neither walks into it nor strikes: it stands, turned to the idol.
+        return held | stick_to(dx, dz, 0)
     }
     let reach = MOVES[WEAPONS[weapon].light].reach
-    if p.act == RECOVER && reads & (ATTACK << 6) != 0 && d <= reach {
+    let next = if p.move_ != NO_MOVE { MOVES[p.move_].next } else { NO_MOVE }
+    if p.act == RECOVER && reads & (ATTACK << 6) != 0 && d <= reach && fits(next, b) {
         return press(ATTACK)
     }
     if p.act == IDLE {
         // Its own side of the boss, a little inside its reach.
         let (ox, oz) = spot(i, reach - 40)
         let (tx, tz) = (b.x + ox - p.x, b.z + oz - p.z)
-        if d <= reach - 16 && dist(tx, tz) <= 48 {
+        let arms = WEAPONS[weapon]
+        let there = d <= reach - 16 && dist(tx, tz) <= 48
+        // (An opening, the idol in reach, it takes from wherever it stands.)
+        let opening = d <= reach - 16 && fits(arms.light, b)
+        if there || opening {
             // There, it strikes turned to the boss (the slowest stick turns it, and moves it no
-            // further: it's striking); every third frame it's free, a heavy one.
+            // further: it's striking); every third frame it's free, a heavy one. Only a strike
+            // that's over in time to answer the idol's next tell.
             let turn = stick_to(dx, dz, 0)
-            return if w.frame % 3 == 0 { press(HEAVY) | turn } else { press(ATTACK) | turn }
+            if w.frame % 3 == 0 && fits(arms.heavy, b) {
+                return press(HEAVY) | turn
+            }
+            if fits(arms.light, b) {
+                return press(ATTACK) | turn
+            }
+            return held | turn
         }
         return held | stick_to(tx, tz, if dist(tx, tz) > 128 { 2 } else { 0 })
     }

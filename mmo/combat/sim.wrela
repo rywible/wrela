@@ -159,6 +159,30 @@ pub fn hold_of(damage: i32) -> u32 {
     min(2 + u32(max(damage, 0)) / 6, 8)
 }
 
+/// Knockback (a trial, Ryan's decision of 2026-11-12): a blow that lands pushes the one it lands
+/// on along the way from its striker, as far as it's heavy. `KNOCKBACK` false turns it off.
+pub const KNOCKBACK: bool = true
+/// How far the heaviest blow (held `MOST_HOLD` frames) pushes a man-sized body (units: 0.70 m).
+/// A blow held `h` frames pushes `(h - 2)²` 36ths of it: the idol's slam 0.70 m, its palm 0.31,
+/// its sweep 0.18, its stomp 0.08; a jab or a first cut, held 3, about 2 cm.
+pub const PUSH: i32 = 45
+pub const MOST_HOLD: u32 = 8
+/// What of a push the idol takes, in quarters: a stone god many times a man's weight is pushed
+/// a quarter as far.
+pub const IDOL_TAKES: i32 = 1
+/// Each frame a push carries its body a third of what's left of it (at least a unit): fast, then
+/// easing, over about a quarter of a second.
+const PUSH_EASE: i32 = 3
+
+/// How far a blow held `hold` frames pushes a man-sized body (units).
+pub fn push_of(hold: u32) -> i32 {
+    if !KNOCKBACK {
+        return 0
+    }
+    let h = max(i32(min(hold, MOST_HOLD)) - 2, 0)
+    h * h * PUSH / 36
+}
+
 /// A parry meets a blow from the half ahead of the one parrying.
 const PARRY_ARC: i32 = 0
 // A dodge: invulnerable while it lasts, moving fast.
@@ -382,6 +406,12 @@ struct Fighter: Clone + Eq {
     hold: u32,
     buffered: u32,
     kept: u32,
+    /// What's left of a push a blow gave it (units), carried out once its hold breaks (`shoved`),
+    /// and how far pushes have carried it in all (units), for a client to tell a push from a walk.
+    shove_x: i32,
+    shove_z: i32,
+    carried_x: i32,
+    carried_z: i32,
 }
 
 impl Fighter {
@@ -403,6 +433,10 @@ impl Fighter {
             hold: 0,
             buffered: 0,
             kept: 0,
+            shove_x: 0,
+            shove_z: 0,
+            carried_x: 0,
+            carried_z: 0,
         }
     }
 }
@@ -462,6 +496,38 @@ fn abs(v: i32) -> i32 {
     if v < 0 { -v } else { v }
 }
 
+/// `f` pushed `units` along the way from (`x`, `z`) to it (one of the 16 directions): added to
+/// what's left of any push it has.
+fn pushed(f: mut Fighter, x: i32, z: i32, units: i32) {
+    if units <= 0 {
+        return
+    }
+    let d = direction(f.x - x, f.z - z)
+    f.shove_x += DIR_X[d] * units / 64
+    f.shove_z += DIR_Z[d] * units / 64
+}
+
+/// A third of `v`, at least one unit its way (none of none).
+fn eased(v: i32) -> i32 {
+    let t = v / PUSH_EASE
+    if t != 0 { t } else if v > 0 { 1 } else if v < 0 { -1 } else { 0 }
+}
+
+/// `f` carried a frame on by what's left of its push, kept in the arena as a step is.
+fn shoved(f: mut Fighter) {
+    if f.shove_x == 0 && f.shove_z == 0 {
+        return
+    }
+    let (sx, sz) = (eased(f.shove_x), eased(f.shove_z))
+    let (x0, z0) = (f.x, f.z)
+    f.x = clamp(f.x + sx, -ARENA, ARENA)
+    f.z = clamp(f.z + sz, -ARENA, ARENA)
+    f.carried_x += f.x - x0
+    f.carried_z += f.z - z0
+    f.shove_x -= sx
+    f.shove_z -= sz
+}
+
 /// The distance between two points, as the larger of its two sides plus half the smaller (an
 /// octagon: close to round, and whole numbers).
 fn reach(ax: i32, az: i32, bx: i32, bz: i32) -> i32 {
@@ -492,6 +558,9 @@ pub struct World: Clone + Eq {
     /// How long a press a player can't act on yet is kept (`BUFFER`, unless a bench asks another:
     /// `World::buffered`).
     buffer: u32,
+    /// Whether the boss stands still, its own moves never made (`World::standing_still`): for a
+    /// bench to strike at.
+    still: bool,
     pub over: bool,
     pub winner: Winner,
 }
@@ -513,6 +582,10 @@ pub struct Seen: Copy {
     pub facing: u32,
     /// The frames it's held still at a contact (`hold_of`).
     pub hold: u32 = 0,
+    /// How far pushes have carried it in all (units): what of its moves is a blow's push, not a
+    /// walk.
+    pub carried_x: i32 = 0,
+    pub carried_z: i32 = 0,
 }
 
 impl World {
@@ -546,6 +619,7 @@ impl World {
             made: 0,
             before,
             buffer: BUFFER,
+            still: false,
             over: false,
             winner: Winner::Draw,
         }
@@ -554,6 +628,12 @@ impl World {
     /// `self` with presses kept `frames` long instead of `BUFFER`: for a bench to try lengths.
     pub fn buffered(self, frames: u32) -> World {
         World { buffer: frames, ..self.clone() }
+    }
+
+    /// `self` with its boss standing still (it's held and pushed, but makes no move nor step of
+    /// its own): for a bench to strike at.
+    pub fn standing_still(self) -> World {
+        World { still: true, ..self.clone() }
     }
 
     pub fn players(self) -> u32 {
@@ -641,6 +721,8 @@ fn seen(f: Fighter) -> Seen {
         move_: f.move_,
         facing: f.facing,
         hold: f.hold,
+        carried_x: f.carried_x,
+        carried_z: f.carried_z,
     }
 }
 
@@ -703,11 +785,14 @@ pub fn step(w: mut World, inputs: [u32]) {
                 if w.boss.act != WINDUP && w.boss.act != ACTIVE {
                     boss_hold = max(boss_hold, hold_of(m.damage))
                 }
+                // Pushed away from its striker, a quarter as far as a man is.
+                let (px, pz) = (p.x, p.z)
+                pushed(mut w.boss, px, pz, push_of(hold_of(m.damage)) * IDOL_TAKES / 4)
             }
         }
         w.party[i] = take p
     }
-    step_boss(BOSSES[w.foe], w.full, mut w.made, mut w.boss, mut w.party)
+    step_boss(BOSSES[w.foe], w.full, mut w.made, mut w.boss, mut w.party, w.still)
     w.boss.hold = max(w.boss.hold, boss_hold)
     w.frame += 1
     if w.boss.hp <= 0 {
@@ -797,6 +882,8 @@ fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32) {
         p.hold -= 1
         return
     }
+    // Pushed by a blow, it's carried on whatever it does: a push takes no control away.
+    shoved(mut p)
     let pressed = p.buffered
     // An action runs its frames out; a new one starts from idle, or a combo's next cut from the
     // recovery of the one before.
@@ -894,7 +981,14 @@ fn next_attack(b: Boss, hp: i32, full: i32, made: u32, d: i32) -> Option<(u32, u
 }
 
 @deterministic
-fn step_boss(b: Boss, full: i32, made: mut u32, boss: mut Fighter, party: mut Vec<Fighter>) {
+fn step_boss(
+    b: Boss,
+    full: i32,
+    made: mut u32,
+    boss: mut Fighter,
+    party: mut Vec<Fighter>,
+    still: bool,
+) {
     if boss.hp <= 0 {
         return
     }
@@ -913,6 +1007,10 @@ fn step_boss(b: Boss, full: i32, made: mut u32, boss: mut Fighter, party: mut Ve
     // Held at a contact, it's still.
     if boss.hold > 0 {
         boss.hold -= 1
+        return
+    }
+    shoved(mut boss)
+    if still {
         return
     }
     if boss.act != IDLE {
@@ -944,6 +1042,8 @@ fn step_boss(b: Boss, full: i32, made: mut u32, boss: mut Fighter, party: mut Ve
                     } else if p.act != DODGING {
                         p.hp -= attack.damage
                         p.hold = hold_of(attack.damage)
+                        // Pushed away from the idol, as far as the blow's heavy.
+                        pushed(mut p, boss.x, boss.z, push_of(hold_of(attack.damage)))
                         // Struck, what it pressed is lost.
                         p.buffered = 0
                         p.kept = 0
@@ -1520,4 +1620,106 @@ fn a_kept_press_is_lost_when_its_fighter_is_struck() {
     step(mut w, [HEAVY << 6])
     assert(w.party[0].hp == PLAYER_HP - ATTACKS[0].damage, "struck")
     assert(w.party[0].buffered == 0 && w.party[0].kept == 0, "and the press is lost")
+}
+
+/// A world with one player 2 m in front of the idol, the idol's attack `a` landing on the next
+/// step (its active frames begun, facing the player).
+fn struck_by(a: u32) -> World {
+    var w = at_the_boss(FISTS)
+    w.boss.act = ACTIVE
+    w.boss.move_ = a
+    w.boss.timer = ATTACKS[a].active
+    w.boss.landed = false
+    w.boss.facing = BACK
+    w
+}
+
+/// Knockback: a blow pushes the one it lands on away from its striker, as far as it's heavy, once
+/// its hold breaks, fast and then easing; it takes no control away.
+@test
+fn a_blow_pushes_the_one_struck_by_its_weight() {
+    // (The trial turned off, no blow pushes, and there's nothing more to hold here.)
+    if !KNOCKBACK {
+        assert(push_of(MOST_HOLD) == 0, "off, no blow pushes")
+        return
+    }
+    assert(push_of(8) == PUSH && push_of(3) < 2 && push_of(6) * 9 == PUSH * 4, "by the hold")
+    // The slam (held 8): still through its hold, then pushed back 0.7 m, half of it on its
+    // first two frames.
+    var w = struck_by(2)
+    let z0 = w.party[0].z
+    step(mut w, [0])
+    assert(w.party[0].hp < PLAYER_HP && w.party[0].hold == hold_of(40), "the slam lands")
+    for _ in 0..hold_of(40) {
+        step(mut w, [0])
+        assert(w.party[0].z == z0, "held, it's still")
+    }
+    step(mut w, [0])
+    step(mut w, [0])
+    let early = z0 - w.party[0].z
+    for _ in 0..30 {
+        step(mut w, [0])
+    }
+    let all = z0 - w.party[0].z
+    assert(all >= PUSH - 2 && all <= PUSH, f"the slam pushes it {all} units")
+    assert(early * 2 >= all, f"fast, then easing: {early} of {all} in two frames")
+    // A sweep (held 5) pushes it less; a player pushed can act at once.
+    var s = struck_by(0)
+    step(mut s, [0])
+    for _ in 0..hold_of(20) {
+        step(mut s, [0])
+    }
+    step(mut s, [ATTACK << 6])
+    assert(s.party[0].act == WINDUP, "pushed, it strikes")
+    for _ in 0..30 {
+        step(mut s, [ATTACK << 6])
+    }
+    let swept = z0 - s.party[0].z
+    assert(swept > 0 && swept < all / 2, f"the sweep pushes it {swept} units")
+}
+
+/// No hit, no push: a parry that meets a blow and a dodge that passes it take none; the arena's
+/// edge stops a push as it stops a step; the idol takes a quarter of a man's push.
+@test
+fn no_hit_no_push_and_the_edge_stops_it() {
+    // (The trial turned off, no blow pushes, and there's nothing more to hold here.)
+    if !KNOCKBACK {
+        assert(push_of(MOST_HOLD) == 0, "off, no blow pushes")
+        return
+    }
+    var p = struck_by(0)
+    p.party[0].act = PARRYING
+    p.party[0].timer = PARRY_WINDOW
+    p.party[0].facing = AHEAD
+    let z0 = p.party[0].z
+    for _ in 0..30 {
+        step(mut p, [0])
+    }
+    assert(p.boss.act == STAGGERED && p.party[0].z == z0, "a parry takes no push")
+    assert(p.boss.shove_x == 0 && p.boss.shove_z == 0, "nor does the one parried")
+    var d = struck_by(2)
+    d.party[0].act = DODGING
+    d.party[0].timer = DODGE_FRAMES
+    d.party[0].dx = 0
+    d.party[0].dz = 0
+    step(mut d, [0])
+    assert(d.party[0].hp == PLAYER_HP && d.party[0].shove_z == 0, "a dodge takes none")
+    // At the arena's edge.
+    var e = struck_by(2)
+    e.boss.z = -ARENA + 2 * UNIT
+    e.party[0].z = -ARENA + 4
+    for _ in 0..30 {
+        step(mut e, [0])
+    }
+    assert(e.party[0].z == -ARENA, f"the edge stops it at {e.party[0].z}")
+    // The idol, struck by the overhead (held 6), standing still.
+    var o = at_the_boss(LONGSWORD).standing_still()
+    let bz = o.boss.z
+    let heavy = MOVES[WEAPONS[LONGSWORD].heavy]
+    for _ in 0..heavy.windup + 40 {
+        step(mut o, [HEAVY << 6])
+    }
+    assert(o.boss.hp < o.full, "the overhead lands")
+    let moved = o.boss.z - bz
+    assert(moved == push_of(hold_of(heavy.damage)) / 4, f"the idol's pushed {moved} units")
 }
