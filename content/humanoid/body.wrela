@@ -98,6 +98,83 @@ pub const RUN_RAW: Clip = humanoid::retarget(
     Retarget { face_ahead: true, looped: true, carried: true },
 )
 
+/// 100STYLE's Neutral style stepping sideways and backing off, walking and running, and standing
+/// (assets/neutral_{sw,sr,bw,br,id}.bvh.LICENSE.txt): the lock-on gaits' sources, each the stride
+/// that loops best, faced ahead by its body (its hips' across), its travel left going the way it
+/// goes against that, then cleaned up (`engine::cleanup`: its feet planted).
+fn locked(source: Take, shortest: u32, longest: u32) -> Clip {
+    cleanup::cleaned(
+        humanoid::retarget(
+            source.looped(shortest: shortest, longest: longest),
+            HERO.rig.clone(),
+            Retarget { face_body: true, looped: true, carried: true },
+        ),
+        HERO.rig.clone(),
+        Cleanup {},
+    )
+}
+
+@fuel(2 ** 40)
+pub const SIDE_WALK: Clip = locked(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/neutral_sw.bvh")),
+        HUNDRED_STYLE,
+        HUNDRED_STYLE_ARM,
+        from: 0,
+        to: 148,
+    ),
+    shortest: 60,
+    longest: 146,
+)
+@fuel(2 ** 40)
+pub const SIDE_RUN: Clip = locked(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/neutral_sr.bvh")),
+        HUNDRED_STYLE,
+        HUNDRED_STYLE_ARM,
+        from: 0,
+        to: 75,
+    ),
+    shortest: 30,
+    longest: 74,
+)
+@fuel(2 ** 40)
+pub const BACK_WALK: Clip = locked(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/neutral_bw.bvh")),
+        HUNDRED_STYLE,
+        HUNDRED_STYLE_ARM,
+        from: 0,
+        to: 134,
+    ),
+    shortest: 60,
+    longest: 132,
+)
+@fuel(2 ** 40)
+pub const BACK_RUN: Clip = locked(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/neutral_br.bvh")),
+        HUNDRED_STYLE,
+        HUNDRED_STYLE_ARM,
+        from: 0,
+        to: 67,
+    ),
+    shortest: 30,
+    longest: 66,
+)
+@fuel(2 ** 40)
+pub const STANDING: Clip = humanoid::retarget(
+    humanoid::take_of_bvh(
+        bvh::read(embed("assets/neutral_id.bvh")),
+        HUNDRED_STYLE,
+        HUNDRED_STYLE_ARM,
+        from: 0,
+        to: 299,
+    ),
+    HERO.rig.clone(),
+    Retarget { face_body: true, looped: true, carried: true },
+)
+
 /// 100STYLE's walking turns (assets/neutral_tr1.bvh.LICENSE.txt), as they come.
 @fuel(2 ** 40)
 pub const TURNS_RAW: Clip = humanoid::retarget(

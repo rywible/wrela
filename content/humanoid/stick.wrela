@@ -18,7 +18,9 @@ pub const LENGTH: f32 = 0.9
 pub const BUTT: f32 = 0.2
 /// How far a fist's grip runs along the diagonal of its palm (radians): the hilt held from the
 /// root of the forefinger to the heel of the hand, as a hammer's is, not square across it, so the
-/// blade at rest leans that far from square to the forearm toward its line.
+/// blade at rest leans that far from square to the forearm toward its line. The 30 degrees are
+/// ours, set so the cut's long point is in the wrists' range (`downcut_spec`), not a measured
+/// figure.
 pub const DIAGONAL: f32 = 0.5236
 
 /// How far below the right fist the left holds it, held in both (m: a fist's width and a little,

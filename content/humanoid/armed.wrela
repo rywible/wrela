@@ -9,6 +9,7 @@
 use engine::humanoid::Clip
 use engine::keys
 use engine::keys::Key
+use engine::playback
 use engine::playback::{Gaits, Move}
 use engine::stance
 use engine::stride
@@ -33,9 +34,50 @@ pub const STANCE: Clip = stride::curled_hands(
 pub const GUARD: Move = in_place(STANCE.clone())
 
 /// The gaits of a body ready to fight with the longsword: standing in the armed guard, walking and
-/// running as the fight's.
+/// running as the fight's; locked on to a foe, stepping to either side and backing off at a walk
+/// and a run (100STYLE's Neutral style, written as cycles: `moves::side_walk`, `side_run`,
+/// `back_walk`, `back_run`), its upper body held in the guard over its legs as it goes.
 @fuel(2 ** 40)
-pub const ARMED_GAITS: Gaits = Gaits { idle: GUARD.clone(), ..FIGHT_GAITS.clone() }
+pub const ARMED_GAITS: Gaits = Gaits {
+    idle: GUARD.clone(),
+    locked: locked_gaits(),
+    holds: true,
+    ..FIGHT_GAITS.clone(),
+}
+
+/// A cycle's clip as a gait (looped in place, its footfalls marked), at 60 a second.
+fn gait(c: Clip) -> Move {
+    playback::with_steps(playback::moved(c, HERO.rig.clone()), HERO.rig.clone())
+}
+
+/// `c` mirrored across the body (left for right), its travel with it.
+fn mirrored(c: Clip) -> Clip {
+    borrow rig = HERO.rig
+    var out = fists::mirrored(c.clone())
+    let t = rig.base.q.rotate(c.travel_local)
+    out.travel_local = rig.base.q.inverse().rotate(vec3(-t.x, t.y, t.z))
+    out
+}
+
+/// The lock-on gaits, as `Gaits::locked` has them: back, left and right, each a walk and a run.
+/// The captures step to the body's right; its left is their mirror.
+fn locked_gaits() -> Vec<Move> {
+    borrow rig = HERO.rig
+    let (sw, sr) = (
+        moves::side_walk::SIDE_WALK.clip(rig.clone(), 60.0),
+        moves::side_run::SIDE_RUN.clip(rig.clone(), 60.0),
+    )
+    Vec::from(
+        [
+            gait(moves::back_walk::BACK_WALK.clip(rig.clone(), 60.0)),
+            gait(moves::back_run::BACK_RUN.clip(rig.clone(), 60.0)),
+            gait(mirrored(sw.clone())),
+            gait(mirrored(sr.clone())),
+            gait(sw),
+            gait(sr),
+        ],
+    )
+}
 
 // ---- tests ---------------------------------------------------------------------------------------
 
@@ -86,4 +128,25 @@ fn the_armed_stance_lives_as_its_source_does() {
         f"begun: the striking point {e * 100.0:.1} cm, the hips {h * 100.0:.1}; a frame of the stance {ge * 100.0:.1} and {gh * 100.0:.1}",
     )
     assert(e <= ge + 0.01 && h <= gh + 0.005, "a cut begun at any moment doesn't jump")
+}
+
+/// Locked on, the armed fighter goes every way about the foe on his feet (`engine::locked`'s
+/// sheet, at a walk and a run): a planted foot slides no more than 4 cm, going or through a change
+/// of way, and his hips stay within 15 degrees of the way he faces.
+@test
+fn locked_on_he_goes_every_way_on_his_feet() {
+    borrow rig = HERO.rig
+    let g = ARMED_GAITS.clone()
+    let ways = engine::locked::read(rig, g.clone(), [g.walk.speed, g.run.speed])
+    std::io::print(engine::locked::text(ways.clone()).as_str())
+    for w in ways {
+        assert(
+            w.slide <= 0.04 && w.slide_change <= 0.04,
+            f"{w.way} deg at {w.speed} m/s: a foot slides {w.slide}, {w.slide_change} through the change",
+        )
+        assert(
+            w.turn <= 15.0 && w.turn_change <= 15.0,
+            f"{w.way} deg: the hips turn {w.turn} deg off the facing",
+        )
+    }
 }

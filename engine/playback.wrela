@@ -641,6 +641,14 @@ pub struct Gaits: Clone {
     pub idle: Move,
     pub walk: Move,
     pub run: Move,
+    /// The gaits of a body facing one way and going another (locked on to a foe): going back,
+    /// to its left and to its right, each at a walk and a run (`BACK`, `LEFT`, `RIGHT` and `RUN`
+    /// index it: `locked[side + RUN]`), each looped in place with its footfalls marked as the
+    /// walk and run are. None: it only goes the way it faces.
+    pub locked: Vec<Move> = Vec::new(),
+    /// Whether its upper body holds its idle's as it goes (a body carrying something ready: a
+    /// sword held in its guard), its legs going under it.
+    pub holds: bool = false,
     /// A start from standing into the walk and a stop from it (each with its root's travel: an
     /// actor's own first steps and last), and the walk's phases they hand on at (the start's last
     /// frame) and are begun from (the stop's first).
@@ -649,6 +657,13 @@ pub struct Gaits: Clone {
     pub start_exit: f32,
     pub stop_entry: f32,
 }
+
+/// Where a lock-on gait is in `Gaits::locked`: going back, to the left, to the right; and a run's
+/// place after its walk's.
+pub const BACK: u32 = 0
+pub const LEFT: u32 = 2
+pub const RIGHT: u32 = 4
+pub const RUN: u32 = 1
 
 impl Gaits {
     /// The gaits, with the walk's phases the start ends at and the stop begins from found by
@@ -664,7 +679,14 @@ impl Gaits {
             stop: stop.clone(),
             start_exit,
             stop_entry,
+            locked: Vec::new(),
+            holds: false,
         }
+    }
+
+    /// Whether it goes other ways than it faces.
+    pub fn locks(self) -> bool {
+        self.locked.len() >= 6
     }
 }
 
@@ -775,9 +797,27 @@ pub struct Mover: Copy {
     /// `engine::contact::Knock`): drawn there, its planted feet stepping after it, but never
     /// changed here.
     pub knocked: vec3,
+    /// Whether it holds a facing (`face`, about up, the world: locked on to a foe), going where
+    /// its stick says against it; and which way (about up, against its heading) it's going.
+    pub faces: bool,
+    pub face: f32,
+    pub way: f32,
+    /// How long it's been going on (s): its held upper body's clock (`Gaits::holds`).
+    pub clock: f32,
 }
 
 impl Mover {
+    /// It holds a facing, `face` (about up, the world), from now on.
+    pub fn facing(mut self, face: f32) {
+        self.faces = true
+        self.face = face
+    }
+
+    /// It lets go of its facing, turning to face where it goes, as before.
+    pub fn unlocked(mut self) {
+        self.faces = false
+    }
+
     /// A body standing at `place`, facing `heading`, in `g`'s idle.
     pub fn standing(place: vec3, heading: f32, g: Gaits) -> Mover {
         let p = g.idle.pose(0.0)
@@ -807,8 +847,75 @@ impl Mover {
             pushed: 0.0,
             carry_in: 0.0,
             knocked: vec3(0.0),
+            faces: false,
+            face: heading,
+            way: 0.0,
+            clock: 0.0,
         }
     }
+}
+
+/// The going gaits nearest `way` (about up, against the heading: 0 ahead, a quarter turn its
+/// left, a half back), and how far between them: each a side (`AHEAD`, or `BACK`, `LEFT`,
+/// `RIGHT`), mixed `t` from the first to the second.
+const AHEAD: u32 = 6
+
+fn sides_of(way: f32) -> (u32, u32, f32) {
+    // (Round from ahead toward the left: ahead, left, back, right, ahead.)
+    let order = [AHEAD, LEFT, BACK, RIGHT, AHEAD]
+    var a = way - 6.2831853 * floor(way / 6.2831853)
+    let q = a / 1.5707963
+    let i = min(u32(q), 3)
+    (order[i], order[i + 1], q - f32(i))
+}
+
+/// Side `side`'s walk and run (`AHEAD` the gaits' own).
+fn side_moves(g: Gaits, side: u32) -> (Move, Move) {
+    if side == AHEAD { (g.walk.clone(), g.run.clone()) } else {
+        (g.locked[side].clone(), g.locked[side + RUN].clone())
+    }
+}
+
+/// How far between its walk and run a side's going at `speed` (m/s), and its stride (m).
+fn side_share(walk: Move, run: Move, speed: f32) -> (f32, f32) {
+    let r = clamp((speed - walk.speed) / max(run.speed - walk.speed, 0.1), 0.0, 1.0)
+    (r, mix(walk.stride, run.stride, r))
+}
+
+/// A locked-on body's stride going `way` at `speed`: its two nearest sides' strides mixed.
+fn locked_stride(g: Gaits, way: f32, speed: f32) -> f32 {
+    let (a, b, t) = sides_of(way)
+    let (aw, ar) = side_moves(g, a)
+    let (bw, br) = side_moves(g, b)
+    let (_, sa) = side_share(aw, ar, speed)
+    let (_, sb) = side_share(bw, br, speed)
+    mix(sa, sb, t)
+}
+
+/// A locked-on body's going pose at `phase`, going `way` at `speed`: each of its two nearest
+/// sides' walk and run mixed by speed at the phase, then the two mixed by how near the way is to
+/// each.
+pub fn locked_pose(g: Gaits, phase: f32, way: f32, speed: f32, bones: u32) -> Pose {
+    let (a, b, t) = sides_of(way)
+    let one = |side: u32| -> Pose {
+        let (w, r) = side_moves(g, side)
+        let (k, _) = side_share(w, r, speed)
+        let pw = w.at_phase(phase)
+        let pr = r.at_phase(phase)
+        var out = pw
+        for i in 0..bones {
+            out.turns[i] = pw.turns[i].nlerp(pr.turns[i], k)
+        }
+        out.hips = mix(pw.hips, pr.hips, vec3(k))
+        out
+    }
+    let (pa, pb) = (one(a), one(b))
+    var out = pa
+    for i in 0..bones {
+        out.turns[i] = pa.turns[i].nlerp(pb.turns[i], t)
+    }
+    out.hips = mix(pa.hips, pb.hips, vec3(t))
+    out
 }
 
 /// The weights of a body's walk and run at `speed` (m/s), each loop's own pace between.
@@ -881,7 +988,20 @@ pub fn step(
     let whole = m.acting != NONE && !m.upper
     // Heading and speed spring after the stick (a whole-body one-off steers itself).
     var aside = 0.0
-    if !whole {
+    // A body holding a facing turns to it, wherever it goes; the way it goes is against that.
+    let locked = m.faces && g.locks()
+    if locked && want > 0.05 {
+        m.way = wrapped(atan2(stick.x, stick.z) - m.heading)
+    }
+    if !whole && locked {
+        let d = wrapped(m.face - m.heading)
+        let (h, sp) = sprung(m.heading, m.spin, m.heading + d, how.turn_half, dt)
+        m.heading = wrapped(h)
+        m.spin = sp
+        let (v, a) = sprung(m.speed, m.accel, want, how.speed_half, dt)
+        m.speed = max(v, 0.0)
+        m.accel = a
+    } else if !whole {
         if want > 0.05 {
             let goal = atan2(stick.x, stick.z)
             let d = wrapped(goal - m.heading)
@@ -920,7 +1040,7 @@ pub fn step(
         let turning = |p: Planted| -> bool { p.step > 0.0 && p.twist > 0.5 * SETTLE_TWIST }
         let set = !turning(m.feet[0]) && !turning(m.feet[1])
         if want > 0.2 && !whole && aside < how.go_within && set {
-            next_doing = if how.clips { STARTING } else { GOING }
+            next_doing = if how.clips && !locked { STARTING } else { GOING }
             next_phase = how.start_phase
             m.through = 0.0
             m.stopping = false
@@ -978,13 +1098,16 @@ pub fn step(
         // Its feet keep pace with the ground: its phase goes a stride a cycle at its speed,
         // never slower than `slowest` of its walk's own pace.
         let r = run_share(g, m.speed)
-        let stride = mix(g.walk.stride, g.run.stride, r)
+        let stride = if locked { locked_stride(g, m.way, m.speed) } else {
+            mix(g.walk.stride, g.run.stride, r)
+        }
         let walking = run_share(g, m.speed) <= 0.0
-        m.stopping = want < 0.2 && (if how.clips { walking } else { m.speed < how.stops_under })
+        let clips = how.clips && !locked
+        m.stopping = want < 0.2 && (if clips { walking } else { m.speed < how.stops_under })
         let rate = carried(g, m.speed, how, m.stopping) / max(stride, 0.01)
         let before = m.phase
         next_phase = m.phase + rate * dt
-        if m.stopping && how.clips {
+        if m.stopping && clips {
             // It stops in the actor's own steps, begun where the walk is as they began them.
             let s = g.stop_entry
             let k = ceil(before - s)
@@ -1049,10 +1172,12 @@ pub fn step(
         m.carried = 0.0
     }
     if !whole && m.doing == GOING {
-        let q = Quat::axis_angle(vec3(0.0, 1.0, 0.0), m.heading)
+        // (Locked on, it goes its way against the way it faces.)
+        let q = Quat::axis_angle(vec3(0.0, 1.0, 0.0), m.heading + if locked { m.way } else { 0.0 })
         m.carried = carried(g, m.speed, how, m.stopping)
         m.place += q.rotate(vec3(0.0, 0.0, m.carried * dt))
     }
+    m.clock += dt
     // The pose the moves give, now and a frame ago (for the change's speeds).
     let pose_of = |doing: u32, phase: f32, time_back: f32| -> Pose {
         var base = if doing == STANDING {
@@ -1061,11 +1186,19 @@ pub fn step(
             g.start.pose(m.through - time_back)
         } else if doing == STOPPING {
             g.stop.pose(m.through - time_back)
+        } else if locked {
+            let stride = locked_stride(g, m.way, m.speed)
+            let rate = carried(g, m.speed, how, m.stopping) / max(stride, 0.01)
+            locked_pose(g, phase - rate * time_back, m.way, m.speed, bones)
         } else {
             let r = run_share(g, m.speed)
             let stride = mix(g.walk.stride, g.run.stride, r)
             let rate = carried(g, m.speed, how, m.stopping) / max(stride, 0.01)
             going_pose(g, phase - rate * time_back, m.speed, bones)
+        }
+        // A body that holds its upper body (a sword in its guard) keeps its idle's over its legs.
+        if g.holds && doing != STANDING {
+            base = layered(base, g.idle.pose(m.clock - time_back), mask, 1.0, bones)
         }
         if m.acting != NONE {
             let a = acts[m.acting].pose(m.act_time - time_back)

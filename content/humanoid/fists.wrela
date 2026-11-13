@@ -184,7 +184,7 @@ pub const SIDED: [Text; 24] = [
 
 /// `c` mirrored left for right (through the body's own middle): a right-foot-forward stance becomes
 /// left-foot-forward, each side moving as the other side did.
-fn mirrored(c: Clip) -> Clip {
+pub fn mirrored(c: Clip) -> Clip {
     borrow rig = HERO.rig
     let nb = c.bones
     var partner: Vec<u32> = Vec::with_capacity(nb)

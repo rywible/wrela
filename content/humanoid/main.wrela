@@ -69,6 +69,10 @@ pub const HAKURO: u32 = 1
 /// holding the stand-in longsword in both hands (`stick::BOTH`), and the striker cuts with it
 /// (`downcut::DOWNCUT`), its blow landing along it, drawn trailing (`--set STICK=1`).
 pub const STICK: u32 = 0
+/// Whether the exchange is the lab's lock-on scene (1): the striker circles the one struck locked
+/// on to him, backs off and comes in, then runs round him unlocked (`exchange::circling`; with
+/// `STICK=1`, armed).
+pub const CIRCLE: u32 = 0
 /// `SHOW=12`'s body: the bare body (0), or with `--set CHARTED=1` Hakuro, his arms and hands his
 /// charted forms (`engine::chart`), alone: to see how a strike's turns land on a charted arm.
 pub const CHARTED: u32 = 0
@@ -240,7 +244,7 @@ pub fn init() -> State {
     State {
         lab: Lab::new(),
         ex: Exchange::new(
-            exchange::Tune { stick: STICK == 1, ..exchange::TUNED },
+            exchange::Tune { stick: STICK == 1, circle: CIRCLE == 1, ..exchange::TUNED },
             after: if SHOW == 28 { exchange::THROW } else { -1.0 },
         ),
         ui: Ui::new(Fonts::load()),
@@ -753,7 +757,10 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         // (Between the two: the giant framed wide enough for his whole body, the striker nearer
         // the middle; kicked along the blow.)
         let between = mix(vec3(0.0), exchange::place(xt)[3].xyz, if xt.giant { 0.45 } else { 0.5 })
-        between + kick + if SHOW == 29 { lab_aside(xt, s.lab, width) } else { vec3(0.0) }
+        // (The lock-on scene: the one struck in the middle of the ring the striker goes round.)
+        if xt.circle { exchange::place(xt)[3].xyz } else {
+            between + kick + if SHOW == 29 { lab_aside(xt, s.lab, width) } else { vec3(0.0) }
+        }
     } else if SHOW == 26 { vec3(0.0, 0.0, 0.25) } else if SHOW == 19 {
         vec3(0.0, 0.0, 0.25) +
             kimodo::a_shake(time % kimodo::stance_round() - kimodo::STANCE.length())
@@ -771,7 +778,10 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     } else { -0.55 }
     let left = normalize((bones[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz)
     // (The lab frames the fighter or the giant, as far as its panel says.)
-    let (far, focus) = if SHOW != 29 { (FAR, FOCUS) } else if xt.giant {
+    // (The lock-on scene seen from high over the ring, wide enough for all of it.)
+    let (far, focus) = if exchanged && xt.circle { (9.0, 0.6) } else if SHOW != 29 {
+        (FAR, FOCUS)
+    } else if xt.giant {
         (12.0 * s.lab.zoom, 3.6)
     } else { (3.4 * s.lab.zoom, 1.05) }
     // (The hit staged close: the camera in on the contact as the cross winds up, out again as
@@ -788,6 +798,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         side,
         kinetic,
         left,
+        rise: if exchanged && xt.circle { 0.9 } else { 0.18 },
     )
     shot.force_from = vec4(force.from, if force.heavy { 1.0 } else { 0.0 })
     shot.force_to = vec4(force.to, force.by)

@@ -109,6 +109,41 @@ pub struct Tune: Copy + Eq {
     /// with it (`downcut::DOWNCUT`) in place of the cross: the blow lands where along it the head
     /// is, going the way the stick goes there, and it's drawn trailing.
     pub stick: bool = false,
+    /// Whether the striker, in place of striking, moves round the one struck (`circling`): locked
+    /// on to him, circling to each side, backing off and coming in, then unlocked, running round
+    /// him. The lab's lock-on scene (`--set CIRCLE=1`, with `STICK=1` armed).
+    pub circle: bool = false,
+}
+
+/// Where the striker's stick goes, `clock` s into the lock-on scene, standing at `me` with the one
+/// struck at `foe` (the world): which way and how fast (m/s), and whether he's locked on to him.
+/// Circling, he goes square to the line between them, a little in or out to keep `RING` m off.
+pub const RING: f32 = 1.9
+
+pub fn circling(clock: f32, me: vec3, foe: vec3) -> (vec3, bool) {
+    let d = vec3(foe.x - me.x, 0.0, foe.z - me.z)
+    let r = max(length(d), 1.0e-3)
+    let toward = d / r
+    let left = vec3(toward.z, 0.0, -toward.x)
+    let keep = toward * clamp((r - RING) * 1.5, -0.6, 0.6)
+    if clock < 1.0 {
+        (vec3(0.0), true)
+    } else if clock < 5.5 {
+        (left * 1.0 + keep, true)
+    } else if clock < 10.0 {
+        (-left * 1.0 + keep, true)
+    } else if clock < 11.5 {
+        (-toward * 1.0, true)
+    } else if clock < 13.0 {
+        (toward * 1.0, true)
+    } else if clock < 14.0 {
+        (vec3(0.0), true)
+    } else if clock < 21.0 {
+        // Unlocked: running round him, wider.
+        (left * 3.0 + toward * clamp((r - RING - 1.0) * 1.5, -1.0, 1.0), false)
+    } else {
+        (vec3(0.0), false)
+    }
 }
 
 /// What the striker holds, as `t` says.
@@ -365,13 +400,28 @@ impl Exchange {
         // Held at the blow: the one struck still, the striker driving on at `grind` of his pace.
         let holding = self.held > 0.0
         let was = self.striker.act_time
+        // (The lock-on scene: no blow, his stick going round the one struck, facing him while he's
+        // locked on.)
+        var stick = vec3(0.0)
+        if t.circle {
+            act = humanoid::NONE
+            self.then = humanoid::NONE
+            let (s, locked) = circling(self.clock, self.striker.place, self.struck.place)
+            stick = s
+            if locked {
+                let d = self.struck.place - self.striker.place
+                self.striker.facing(atan2(d.x, d.z))
+            } else {
+                self.striker.unlocked()
+            }
+        }
         let pose = playback::step(
             mut self.striker,
             GAITS[armed_of(t)],
             MOVES,
             rig,
             self.mask,
-            vec3(0.0),
+            stick,
             act,
             upper: false,
             how: Handling {},

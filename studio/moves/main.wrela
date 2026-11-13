@@ -66,7 +66,7 @@ use std::tool::args
 use std::tool::files
 use std::tool::files::rooted
 
-pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --contact | --stance [stance ...] | --stance-chart <out-dir> | --cut [cut ...] | --sheet <out-dir> [strike ...] | --solve <out-dir> <strike> | --read <out-dir> <strike> | --drawn [strike ...] | --differ <strike> <strike>"
+pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --contact | --stance [stance ...] | --stance-chart <out-dir> | --cut [cut ...] | --locked | --sheet <out-dir> [strike ...] | --solve <out-dir> <strike> | --read <out-dir> <strike> | --drawn [strike ...] | --differ <strike> <strike>"
 
 /// The cuts `--cut` reads (`engine::cut`): a strike with a held thing, its name, its clip, what's
 /// held, and its contact (s). The stand-in for now: the solved cross thrown with the lab's stick
@@ -139,6 +139,61 @@ pub fn moves() -> Vec<Move> {
                     "The run: ACCAD's Male 2 running (Open Motion Project by ACCAD/The Ohio State",
                     "University, CC BY 3.0), retargeted, looped and cleaned up (content/humanoid's",
                     "`ACCAD_M2_RUN`), then fitted as a cycle by the moves tool.",
+                ],
+            },
+            Move {
+                name: "side-walk",
+                file: "side_walk.wrela",
+                constant: "SIDE_WALK",
+                clip: humanoid::body::SIDE_WALK.clone(),
+                about: [
+                    "Stepping sideways at a walk: 100STYLE's Neutral SW (Ian Mason, CC BY 4.0), retargeted,",
+                    "faced ahead by its body, looped and cleaned up (content/humanoid's `SIDE_WALK`), then",
+                    "fitted as a cycle by the moves tool.",
+                ],
+            },
+            Move {
+                name: "side-run",
+                file: "side_run.wrela",
+                constant: "SIDE_RUN",
+                clip: humanoid::body::SIDE_RUN.clone(),
+                about: [
+                    "Stepping sideways at a run: 100STYLE's Neutral SR (Ian Mason, CC BY 4.0), retargeted,",
+                    "faced ahead by its body, looped and cleaned up (content/humanoid's `SIDE_RUN`), then",
+                    "fitted as a cycle by the moves tool.",
+                ],
+            },
+            Move {
+                name: "back-walk",
+                file: "back_walk.wrela",
+                constant: "BACK_WALK",
+                clip: humanoid::body::BACK_WALK.clone(),
+                about: [
+                    "Backing off at a walk: 100STYLE's Neutral BW (Ian Mason, CC BY 4.0), retargeted, faced",
+                    "ahead by its body, looped and cleaned up (content/humanoid's `BACK_WALK`), then fitted as",
+                    "a cycle by the moves tool.",
+                ],
+            },
+            Move {
+                name: "back-run",
+                file: "back_run.wrela",
+                constant: "BACK_RUN",
+                clip: humanoid::body::BACK_RUN.clone(),
+                about: [
+                    "Backing off at a run: 100STYLE's Neutral BR (Ian Mason, CC BY 4.0), retargeted, faced",
+                    "ahead by its body, looped and cleaned up (content/humanoid's `BACK_RUN`), then fitted as",
+                    "a cycle by the moves tool.",
+                ],
+            },
+            Move {
+                name: "standing",
+                file: "standing.wrela",
+                constant: "STANDING",
+                clip: humanoid::body::STANDING.clone(),
+                about: [
+                    "Standing: 100STYLE's Neutral ID, 5 s of it (Ian Mason, CC BY 4.0), retargeted and faced",
+                    "ahead by its body (content/humanoid's `STANDING`), then fitted as a cycle by the moves",
+                    "tool.",
                 ],
             },
             Move {
@@ -473,6 +528,13 @@ pub fn tool() -> u32 {
     if wanted.len() >= 1 && wanted[0].as_str() == "--contact" {
         // The exchange's contact: how the blow lands and how both bodies take it.
         print(exchange::sheet(exchange::TUNED).as_str())
+        return 0
+    }
+    if wanted.len() >= 1 && wanted[0].as_str() == "--locked" {
+        // The armed gaits locked on, every way about the facing at a walk and a run.
+        let g = humanoid::armed::ARMED_GAITS.clone()
+        let ways = engine::locked::read(rig, g.clone(), [g.walk.speed, g.run.speed])
+        print(engine::locked::text(ways).as_str())
         return 0
     }
     if wanted.len() >= 1 && wanted[0].as_str() == "--cut" {
