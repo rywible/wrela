@@ -283,7 +283,15 @@ fn travels(p: mut Fighter, k: u32, foe: (i32, i32)) {
 /// draws for it, not a reach and an arc typed by hand (`Move::reach`, `Move::arc`). Its foe is hit
 /// where its body (`BODY`, `IDOL_BODY`) comes within that shape. `SWEPT` false turns it off: a
 /// strike meets what's within its reach and arc, as before.
+///
+/// **It needs the travelling strike** (`TRAVELLING`): its shapes are read off strikes that step,
+/// and a strike's reach comes with its step. A striker that doesn't step in meets little of what
+/// its sweep would, from where a typed reach had it strike. So with `TRAVELLING` off it's off
+/// too, whatever `SWEPT` says (`SWEEPING`), and every trial's constant leaves the rules whole
+/// whatever the others are.
 pub const SWEPT: bool = true
+/// Whether strikes meet by their sweep: the trial on, and the strike it needs (`TRAVELLING`).
+pub const SWEEPING: bool = SWEPT && TRAVELLING
 /// How many pieces each active frame's sweep is held in: halves, so a blade going round a long
 /// way in a frame is held near its arc, not the chord across it.
 pub const PIECES: u32 = 2
@@ -466,7 +474,7 @@ pub fn reached(m: u32, across: i32, ahead: i32) -> bool {
 /// How far ahead move `m` meets a foe of `body` at most (units): the farthest its sweep goes, and
 /// the body (`SWEPT`); or its reach.
 pub fn reach_of(m: u32, body: i32) -> i32 {
-    if !SWEPT || m >= MOVES.len() {
+    if !SWEEPING || m >= MOVES.len() {
         return if m < MOVES.len() { MOVES[m].reach } else { 0 }
     }
     var far = 0
@@ -1143,7 +1151,7 @@ pub fn step(w: mut World, inputs: [u32]) {
             let (fx, fz) = (DIR_X[p.facing % 16], DIR_Z[p.facing % 16])
             let (across, ahead) = ((dx * fz - dz * fx) / 64, (dx * fx + dz * fz) / 64)
             let j = into_move(p) - m.windup
-            let met = if SWEPT { swept(p.move_, j, across, ahead, IDOL_BODY) } else {
+            let met = if SWEEPING { swept(p.move_, j, across, ahead, IDOL_BODY) } else {
                 reach(p.x, p.z, w.boss.x, w.boss.z) <= m.reach && within(p.facing, dx, dz, m.arc)
             }
             if met {
@@ -2256,7 +2264,7 @@ fn a_strike_meets_what_its_sweep_covers() {
     assert(land(far - 40), "met within its sweep")
     let beyond = far + 8
     assert(
-        land(beyond) == if SWEPT { false } else { beyond <= m.reach },
+        land(beyond) == if SWEEPING { false } else { beyond <= m.reach },
         f"stood {beyond} units off: met only by the typed reach ({m.reach})",
     )
 }
