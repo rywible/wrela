@@ -127,8 +127,8 @@ pub fn bot(w: World, i: u32, before: u32, weapon: u32, react: u32) -> u32 {
     held
 }
 
-/// A bot that takes the idol's blows: it walks to its own side of the idol and strikes it there
-/// with its light attack whenever it's free, and answers no tell but one: on `guard` (its
+/// A bot that takes the idol's blows: it walks to its own spot by the idol and strikes it from
+/// there with its light attack whenever it's free, and answers no tell but one: on `guard` (its
 /// caller's, once it's been hit and till it's parried once) it parries, so the slam that would
 /// finish it lands on it standing. So
 /// the idol's sweeps, palms and slams land on it, and what a blow does to a player (mmo/combat's
@@ -157,8 +157,11 @@ pub fn taker(w: World, i: u32, before: u32, weapon: u32, guard: bool) -> u32 {
             return press(PARRY) | stick_to(dx, dz, 0)
         }
     }
+    // It strikes from its spot, not nearer: a strike that carries its striker in (mmo/combat's
+    // `TRAVELLING`) would take it on in under the idol's feet, strike by strike, where only the
+    // stomp meets it.
     let reach = MOVES[WEAPONS[weapon].light].reach
-    if d <= reach - 16 && !guard {
+    if d <= reach - 16 && d >= reach - 48 && !guard {
         return press(ATTACK) | stick_to(dx, dz, 0)
     }
     let (ox, oz) = spot(i, reach - 40)

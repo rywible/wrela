@@ -2,9 +2,8 @@
 // feet and its travel written, so the step is in the punch. From a guard out of reach, the lead
 // foot steps through the load and lands as the throw sets off, the body going with it; the rear
 // foot drives and follows, landing with the blow; the body goes on with the fist. The feet go in
-// turn, never both off the floor. The lab's exchange throws it; the game keeps the standing cross
-// (its rules don't move a striker, so a move that steps, played in place, would walk on the
-// spot).
+// turn, never both off the floor. The lab's exchange throws it, and the game's fighters strike
+// with it where the rules carry a striker with its move (mmo/combat's `sim::TRAVELLING`).
 //
 // How a real stepping punch goes, read off the captured boxing (ACCAD's Male 2, Extended 1:
 // `accad_fists::BOXING`) by the footwork read (`engine::footwork`): in each punch thrown with a
@@ -89,6 +88,13 @@ pub fn cross() -> Written<8> {
         taste: s.taste,
         end: s.end,
     }
+}
+
+/// The stepping cross as a game plays it at `beats` (`engine::written::Written::played`): at 60 a
+/// second, fists clenched, its contact on the frame the rules hit, its root carried by its travel,
+/// which the rules carry the striker by (mmo/combat's `sim::TRAVEL`).
+pub fn cross_at(beats: Beats) -> Move {
+    cross().played(HERO.rig, CONTACT, beats, fps: 60.0, fist: 2.0)
 }
 
 /// The stepping cross at its own beats, as written (`Written::played`): its contact at `CONTACT`,

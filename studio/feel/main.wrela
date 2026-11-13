@@ -46,7 +46,6 @@ use combat::sim::{
 use mmo::bodies
 use mmo::bodies::{Bodies, Body, Shown, drawn_at, place_of, shown}
 use humanoid::body::HERO
-use humanoid::solved
 
 pub const USAGE: Text = "usage: wrela tool feel -- [<out-dir>]"
 
@@ -397,10 +396,9 @@ fn drawn_strike(boss: bool, m: u32, moved: f32) -> (u32, u32, f32) {
     }
     var idle = b
     // Where the written strike puts its fist on its contact, as written (not the played move's
-    // own pose on the hit frame, which is wherever the fist is then): every strike the game plays
-    // is the solved cross (mmo/game's `bodies`).
+    // own pose on the hit frame, which is wherever the fist is then): mmo/game's `bodies`.
     let hit = if boss { ATTACKS[m].windup + 1 } else { MOVES[m].windup }
-    let target = solved::cross().end(HERO.rig, solved::CONTACT)
+    let target = bodies::contact_of(player: !boss)
     var on_hit = 0.0
     var first: u32 = 0
     var nearest: u32 = 0

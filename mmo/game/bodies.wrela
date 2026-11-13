@@ -8,8 +8,10 @@
 // difference a rollback makes taken up as the body's drift (`Mover::drift`), which dies away
 // rather than jumping.
 //
-// The moves are stand-ins, every one hand-keyed or written in Wrela: every strike is the solved
-// cross (content/humanoid's `solved`), timed to its move's frames; the dodge is the roll
+// The moves are stand-ins, every one hand-keyed or written in Wrela: every strike is the cross
+// (content/humanoid's), timed to its move's frames: a player's thrown with a step
+// (`stepping`), as far as the rules carry it (`sim::TRAVELLING`; else the standing cross,
+// `solved`), and the idol's standing; the dodge is the roll
 // (content/moves); a parry is the step back. A blow is no clip (`engine::contact`): both bodies
 // are held still through the rules' hold, and as it breaks the one struck is knocked along the
 // blow and the blow runs back up the striker's arm, each laid into its inertia; the camera's
@@ -39,10 +41,10 @@ use humanoid::fists::{GUARD, STEP_OUT}
 use humanoid::ink::ink
 use humanoid::look::{SUN, Shot}
 use humanoid::paint::{backdrop, body, ground, paint_backdrop, paint_body, paint_ground}
-use humanoid::solved
+use humanoid::{solved, stepping}
 use combat::sim::{
     ACTIVE, ATTACKS, DODGE_FRAMES, DODGING, HZ, IDLE, MAX_PARTY, MOVES, NO_MOVE, PARRYING, PUSH,
-    RECOVER, STAGGERED, Seen, WINDUP, World,
+    RECOVER, STAGGERED, Seen, TRAVEL, TRAVELLING, WINDUP, World,
 }
 use ui::draw::Renderer
 
@@ -66,6 +68,28 @@ fn struck_at(windup: u32, active: u32, recovery: u32) -> Move {
     solved::cross_at(Beats::of_frames(windup, active, recovery, f32(HZ)))
 }
 
+/// Where a strike the game plays puts its fist on its contact, in place (the body's space, as
+/// a played move's pose has it): a player's (`player`) the stepping cross's, less the step it's
+/// taken by then, as `TRAVELLING` plays it; else the standing cross's.
+pub fn contact_of(player: bool) -> vec3 {
+    if player && TRAVELLING {
+        let s = stepping::cross()
+        s.end(HERO.rig, stepping::CONTACT) - s.root(HERO.rig, stepping::CONTACT)
+    } else {
+        solved::cross().end(HERO.rig, solved::CONTACT)
+    }
+}
+
+/// A player's strike at its move's frames: the stepping cross, whose step the rules carry it by
+/// (`sim::TRAVEL`), or with `TRAVELLING` off the standing cross.
+fn stepped_at(windup: u32, active: u32, recovery: u32) -> Move {
+    if TRAVELLING {
+        stepping::cross_at(Beats::of_frames(windup, active, recovery, f32(HZ)))
+    } else {
+        struck_at(windup, active, recovery)
+    }
+}
+
 /// The roll squeezed to the dodge's frames and as many again to get up: the rules carry the
 /// body (`DODGE_FRAMES` of them), and the body's on its feet soon after.
 fn dodged() -> Move {
@@ -79,7 +103,7 @@ pub const ACTS: [Move; 15] = acts()
 
 fn acts() -> [Move; 15] {
     let m = |i: u32| -> Move {
-        struck_at(MOVES[i].windup, MOVES[i].active, MOVES[i].recovery)
+        stepped_at(MOVES[i].windup, MOVES[i].active, MOVES[i].recovery)
     }
     let b = |i: u32| -> Move {
         struck_at(ATTACKS[i].windup + 1, ATTACKS[i].active - 1, ATTACKS[i].recovery)
@@ -821,8 +845,8 @@ fn a_strike_begins_when_the_rules_say_and_lands_when_they_hit() {
 fn every_strike_puts_its_fist_on_its_contact_on_the_frame_the_rules_hit() {
     borrow rig = HERO.rig
     let hand = rig.find("rightHand")
-    let target = solved::cross().end(rig, solved::CONTACT)
     for k in 0..(MOVES.len() + ATTACKS.len()) {
+        let target = contact_of(player: k < MOVES.len())
         let (act, hit, total) = if k < MOVES.len() {
             let m = MOVES[k]
             (k, m.windup, m.windup + m.active + m.recovery)
@@ -876,7 +900,9 @@ fn a_blow_the_rules_land_knocks_the_one_struck_and_shocks_the_striker() {
         for k in 0..2 {
             let body = b.body(k)
             off = max(off, length(body.mover.knocked))
-            drawn = max(drawn, length(drawn_at(body) - body.at))
+            // (Off the rules' place by drift: what's drawn there less the knock's drive behind
+            // its push, which `GIVE.carry` bounds above.)
+            drawn = max(drawn, length(drawn_at(body) - body.mover.knocked - body.at))
             let w0 = pose_world(HERO.rig, body.mover.shown)
             let w1 = pose_world(HERO.rig, body.knock.over(HERO.rig, body.mover.shown, GIVE))
             lean = max(lean, length(w1[head].t - w0[head].t))
@@ -885,9 +911,9 @@ fn a_blow_the_rules_land_knocks_the_one_struck_and_shocks_the_striker() {
     assert(b.blows > 3, f"blows land: {b.blows}")
     assert(off <= GIVE.carry, f"a body's drawn {off} m behind the rules' pushes")
     assert(lean <= LEAN_MOST, f"a body's head leaned {lean} m by blows")
-    // (Drawn off the rules' place at all, by blows or the drift a change of move leaves: no more
-    // than main's fight ever was, 0.535 m on `wrela tool feel`'s bench.)
-    assert(drawn < 0.6, f"a body's drawn {drawn} m off the rules' place")
+    // (Drawn off the rules' place by the drift a change of move leaves, past the knock behind a
+    // push: no more than main's fight ever was, 0.535 m on `wrela tool feel`'s bench.)
+    assert(drawn < 0.6, f"a body's drifted {drawn} m off the rules' place")
     assert(knocked > 0.02, f"the idol's head knocked {knocked} rad")
     assert(shocked > 0.02, f"the jab's arm shocked {shocked} rad")
 }
@@ -936,4 +962,48 @@ fn a_push_the_rules_give_is_drawn_as_the_knocks_drive() {
     )
     assert(!walked, "carried, not walking")
     assert(stepped, "its feet stepping after it")
+}
+
+/// The rules carry a striker as its drawn strike steps: each move's travel by each frame
+/// (`sim::TRAVEL`) is the root's of the strike the game plays for it (`ACTS`), to the nearest unit,
+/// along the way it faces, and none across it. So the body the rules place is where the strike's
+/// feet put it.
+@test
+fn the_rules_carry_a_striker_as_its_strike_steps() {
+    var table = String::from("")
+    var same = true
+    for i in 0..MOVES.len() {
+        let m = MOVES[i]
+        let total = m.windup + m.active + m.recovery
+        table.push_str("    [")
+        for k in 0..64 {
+            let f = min(k, total)
+            let r = if TRAVELLING { ACTS[i].root_at(f32(f) / f32(HZ)).0 } else { vec3(0.0) }
+            let units = i32(floor(r.z * UNIT + 0.5))
+            assert(abs(r.x) * UNIT < 0.5, f"move {i} goes {r.x} m across its way")
+            same = same && (!TRAVELLING || units == TRAVEL[i][k])
+            table.push_str(f"{units}{if k < 63 { ", " } else { "" }}".as_str())
+        }
+        table.push_str("],\n")
+    }
+    if !same {
+        std::io::print(f"sim::TRAVEL, as the strikes step:\n{table}")
+    }
+    assert(same, "each move's travel is its strike's step")
+}
+
+/// The nearest a strike carries its striker to the foe (`sim::NEAREST`) is a man and the idol
+/// side by side: each a circle as wide as its shoulders, out to the outside of its upper arms
+/// (5 cm thick, as `engine::arms` takes an arm), the idol `IDOL_SCALE` times a man.
+@test
+fn the_nearest_a_strike_goes_is_two_bodies_side_by_side() {
+    borrow rig = HERO.rig
+    let w = rig.rest_world()
+    let half = 0.5 * length(w[rig.find("leftUpperArm")].t - w[rig.find("rightUpperArm")].t) + 0.05
+    let nearest = i32(floor(half * (1.0 + IDOL_SCALE) * UNIT + 0.5))
+    std::io::print(f"a man's half-width {half} m: the nearest {nearest} units")
+    assert(
+        combat::sim::NEAREST == nearest,
+        f"sim::NEAREST is {combat::sim::NEAREST}, the bodies {nearest}",
+    )
 }
