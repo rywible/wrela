@@ -68,7 +68,9 @@ pub fn init() -> State {
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
     State {
-        truth: if SCRIPT == 1 { World::armed([LONGSWORD]).standing_still() } else if TAKER == 1 {
+        truth: if SCRIPT == 1 { World::armed([LONGSWORD]).standing_still() } else if SCRIPT == 2 {
+            World::against(combat::sim::THE_SWORDSMAN, [LONGSWORD])
+        } else if TAKER == 1 {
             World::armed([TAKER_WEAPON])
         } else if TAKER == 2 {
             World::armed([TAKER_WEAPON, WEAPONS_OF[1]])
@@ -102,6 +104,8 @@ fn play_to(s: mut State, to: u32) {
             let before = if f > 0 { input_at(s, i, f - 1) } else { 0 }
             let x = if SCRIPT == 1 && i == 0 {
                 script::input(mut s.script, s.truth, before)
+            } else if SCRIPT == 2 && i == 0 {
+                script::duel(mut s.script, s.truth, before)
             } else if TAKER != 0 && i == 0 {
                 taker(s.truth, i, before, TAKER_WEAPON, s.guard)
             } else {
@@ -125,7 +129,8 @@ fn play_to(s: mut State, to: u32) {
         // (The taker's on guard once it's been hit, till it's parried once.)
         s.parried = s.parried || (!staggered && s.truth.boss().act == combat::sim::STAGGERED)
         s.guard = now.hp < 100 && !s.parried
-        if now.hp < was.hp && attack != NO_MOVE {
+        // (The idol's blows by name; the swordsman's are a player's moves.)
+        if now.hp < was.hp && attack != NO_MOVE && !s.truth.against_man() {
             s.blow = String::from(
                 f"{ATTACKS[attack].name} landed on P1 at {f32(s.truth.frame) / 60.0:.2} s",
             )
@@ -169,11 +174,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         )
     }
     let b = shown.boss()
-    line(mut s, String::from(f"Idol  {b.hp} hp").as_str(), 74.0)
+    let foe = if s.truth.against_man() { "Swordsman" } else { "Idol" }
+    line(mut s, String::from(f"{foe}  {b.hp} hp").as_str(), 74.0)
     if TITLE != "" {
         line(mut s, TITLE, f32(height) - 40.0)
     }
-    if SCRIPT == 1 {
+    if SCRIPT != 0 {
         let said = if s.script.said == "KNOCKBACK: pushed" {
             String::from(f"KNOCKBACK: pushed {script::pushed(s.script, s.truth):.2} m")
         } else { String::from(s.script.said) }
@@ -324,4 +330,30 @@ fn the_script_does_what_it_says() {
         "the idol's blow lands and pushes",
     )
     assert(dodged, "he dodges")
+}
+
+/// The duel (`SCRIPT=2`) does what it says, through the real rules: its parry staggers the
+/// swordsman, its cut while he's open lands, and his blow later lands on it and pushes it.
+@test
+fn the_duel_does_what_it_says() {
+    var s = script()
+    var w = World::against(combat::sim::THE_SWORDSMAN, [LONGSWORD])
+    var before: u32 = 0
+    var staggered = false
+    var cut_open = false
+    for _ in 0..3000 {
+        let x = script::duel(mut s, w, before)
+        before = x
+        let hp = w.boss().hp
+        let open = w.boss().act == combat::sim::STAGGERED
+        step(mut w, [x])
+        staggered = staggered || w.boss().act == combat::sim::STAGGERED
+        cut_open = cut_open || (open && w.boss().hp < hp)
+        if w.player(0).hp < 100 && script::pushed(s, w) > 0.2 {
+            break
+        }
+    }
+    assert(staggered, "its parry staggers him")
+    assert(cut_open, "its cut lands while he's open")
+    assert(w.player(0).hp < 100 && script::pushed(s, w) > 0.2, "his blow lands and pushes it")
 }

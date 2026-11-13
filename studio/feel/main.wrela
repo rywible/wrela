@@ -45,8 +45,8 @@ use watch::bots::{bot, dist, stick_to}
 use combat::codec::{Encoder, LOOK_AHEAD, Link, Pad}
 use combat::sim::{
     ACTIVE, ATTACK, ATTACKS, BUTTON_BITS, DODGE, DODGING, PARRYING, FISTS, HEAVY, HZ, IDLE,
-    LONGSWORD, MOVES, NO_MOVE, PARRY, RECOVER, STAGGERED, STICK_BITS, Seen, WEAPONS, WINDUP, World,
-    step,
+    LONGSWORD, MOVES, NO_MOVE, PARRY, RECOVER, STAGGERED, STICK_BITS, SWORD, Seen, THE_IDOL,
+    THE_SWORDSMAN, WEAPONS, WINDUP, World, step,
 }
 use mmo::bodies
 use mmo::bodies::{Bodies, Body, Shown, drawn_at, place_of, shown}
@@ -486,9 +486,9 @@ fn contacts() -> String {
 
 // ---- drift ---------------------------------------------------------------------------------------
 
-fn drift() -> String {
+fn drift(foe: u32) -> String {
     let weapons = [FISTS, LONGSWORD]
-    var truth = World::armed(weapons)
+    var truth = World::against(foe, weapons)
     var past: Vec<World> = Vec::new()
     var inputs: Vec<Vec<u32>> = Vec::from([Vec::new(), Vec::new()])
     var b = Bodies::new()
@@ -535,9 +535,11 @@ fn drift() -> String {
         n += 1
     }
     var t = String::from(
-        f"## Drift\n\nTwo bots against the idol for {n} frames, the second heard {LATE} frames late (the first's client predicts it, and corrects): how far each drawn body is from the place the rules give it (m). A dodge carries a body 3.75 m in 12 frames.\n\n| Body | From the client's rules: most | mean | From the true rules: most |\n|---|---|---|---|\n",
+        f"## Drift{against(foe)}\n\nTwo bots against {the(foe)} for {n} frames, the second heard {LATE} frames late (the first's client predicts it, and corrects): how far each drawn body is from the place the rules give it (m). A dodge carries a body 3.75 m in 12 frames.\n\n| Body | From the client's rules: most | mean | From the true rules: most |\n|---|---|---|---|\n",
     )
-    let names: [Text; 3] = ["The idol", "P1 (this client's)", "P2 (heard late)"]
+    let names: [Text; 3] = [if foe == THE_SWORDSMAN { "The swordsman" } else {
+        "The idol"
+    }, "P1 (this client's)", "P2 (heard late)"]
     for k in 0..3 {
         t.push_str(
             f"| {names[k]} | {most[k]:.3} | {sum[k] / f32(max(n, 1)):.3} | {most_true[k]:.3} |\n".as_str(),
@@ -553,21 +555,20 @@ fn drift() -> String {
 /// each hit lands, and how far the idol is at each (its pushes, `sim::push_of`, carry it off).
 /// Its last column is how far it would be had each strike before pushed it as far as a man (the
 /// idol takes a quarter, `sim::IDOL_TAKES`), against the move's reach.
-fn chains() -> String {
+fn chains(foe: u32) -> String {
     var t = String::from(
-        "## Each weapon's chain against a foe standing still\n\nThe chain pressed every frame at the idol standing still, from 16 units inside the first strike's reach: each strike, whether it landed, the idol's distance as it struck (m), how far it had been pushed (m), and the distance had each strike before pushed it as far as a man (m), against the strike's reach (m).\n\n| Weapon | Strike | Landed | Distance | Pushed so far | Had it been a man | Reach |\n|---|---|---|---|---|---|---|\n",
+        f"## Each weapon's chain against a foe standing still{against(foe)}\n\nThe chain pressed every frame at {the(foe)} standing still, from 16 units inside the first strike's reach: each strike, whether it landed, {the(foe)}'s distance as it struck (m), how far it had been pushed (m), and the distance had each strike before pushed it as far as a man (m), against the strike's reach (m).\n\n| Weapon | Strike | Landed | Distance | Pushed so far | Had it been a man | Reach |\n|---|---|---|---|---|---|---|\n",
     )
     let names = ["Fists", "Longsword"]
     for weapon in [FISTS, LONGSWORD] {
-        var w = World::armed([weapon]).standing_still()
+        var w = World::against(foe, [weapon]).standing_still()
         var input: u32 = 0
         // Walk in, to just inside the first strike's reach.
         for _ in 0..900 {
             let p = w.player(0)
             let b = w.boss()
             let (dx, dz) = (b.x - p.x, b.z - p.z)
-            if dist(dx, dz) <=
-                combat::sim::reach_of(WEAPONS[weapon].light, combat::sim::IDOL_BODY) - 16 {
+            if dist(dx, dz) <= combat::sim::reach_of(WEAPONS[weapon].light, body_of(foe)) - 16 {
                 break
             }
             input = (input & BUTTON_BITS) | stick_to(dx, dz, 1)
@@ -593,7 +594,7 @@ fn chains() -> String {
                 if begun {
                     // (A strike begun that never landed.)
                     t.push_str(
-                        f"| {names[weapon]} | {k + 1} | no | | | | {f32(combat::sim::reach_of(m, combat::sim::IDOL_BODY)) / bodies::UNIT:.2} |\n".as_str(),
+                        f"| {names[weapon]} | {k + 1} | no | | | | {f32(combat::sim::reach_of(m, body_of(foe))) / bodies::UNIT:.2} |\n".as_str(),
                     )
                     k += 1
                 }
@@ -605,7 +606,7 @@ fn chains() -> String {
                 let d = f32(dist(b.x - now.x, b.z - now.z)) / bodies::UNIT
                 let pushed = f32(dist(b.x - start.x, b.z - start.z)) / bodies::UNIT
                 t.push_str(
-                    f"| {names[weapon]} | {k + 1} | yes | {d:.2} | {pushed:.3} | {d - pushed + f32(man) / bodies::UNIT:.2} | {f32(combat::sim::reach_of(m, combat::sim::IDOL_BODY)) / bodies::UNIT:.2} |\n".as_str(),
+                    f"| {names[weapon]} | {k + 1} | yes | {d:.2} | {pushed:.3} | {d - pushed + f32(man) / bodies::UNIT:.2} | {f32(combat::sim::reach_of(m, body_of(foe))) / bodies::UNIT:.2} |\n".as_str(),
                 )
                 man += combat::sim::push_of(combat::sim::hold_of(MOVES[m].damage))
                 k += 1
@@ -615,6 +616,12 @@ fn chains() -> String {
             if was.act != IDLE && now.act == IDLE && MOVES[m].next == NO_MOVE {
                 break
             }
+        }
+        if begun {
+            // (The chain's last, begun and never landed.)
+            t.push_str(
+                f"| {names[weapon]} | {k + 1} | no | | | | {f32(combat::sim::reach_of(m, body_of(foe))) / bodies::UNIT:.2} |\n".as_str(),
+            )
         }
     }
     t
@@ -697,14 +704,109 @@ fn meets() -> String {
     t
 }
 
+// ---- the foes -------------------------------------------------------------------------------------
+
+/// What a section says of `foe` (`THE_IDOL`, `THE_SWORDSMAN`), and after its heading: nothing for
+/// the idol, as the bench always has.
+fn the(foe: u32) -> Text {
+    if foe == THE_SWORDSMAN { "the swordsman" } else { "the idol" }
+}
+
+fn against(foe: u32) -> Text {
+    if foe == THE_SWORDSMAN { " (against the swordsman)" } else { "" }
+}
+
+/// How wide `foe`'s body is to the rules (`sim::BODY`, `sim::IDOL_BODY`).
+fn body_of(foe: u32) -> i32 {
+    if foe == THE_SWORDSMAN { combat::sim::BODY } else { combat::sim::IDOL_BODY }
+}
+
+/// The warning the swordsman gives before each of his hits, as the idol's (`warnings`): frames
+/// from the first drawing in which he's moved toward it to the frame the rules hit.
+fn man_warnings() -> String {
+    var t = String::from(
+        "## Warning before the swordsman's hits\n\nFrames from the first drawing in which the swordsman has moved toward his hit to the frame the rules hit (target at least 14). His strikes are a player's: drawn as the slash at his beats.\n\n| Strike | Tell | Warning |\n|---|---|---|\n",
+    )
+    let names = ["Cut", "Second cut", "Overhead"]
+    let s = WEAPONS[SWORD]
+    let ms = [s.light, MOVES[s.light].next, s.heavy]
+    for i in 0..3 {
+        let m = ms[i]
+        let (first, _, _) = drawn_strike(boss: false, m: m, moved: TELL_MOVED)
+        let hit = MOVES[m].windup
+        t.push_str(f"| {names[i]} | {hit} | {hit - first} |\n".as_str())
+    }
+    t
+}
+
+/// How much a party's holds lengthen its foe's openings (the planner's, since the hold went in):
+/// a party of one bot and of four (each with the longsword, answering at 15 frames) against
+/// `foe`, `BOT_FRAMES` at most. An opening is a stretch the foe recovers or reels (its recovery,
+/// its stagger); a hold stops its clock, so each frame of it held is a frame the opening's
+/// lengthened.
+fn openings(foe: u32) -> String {
+    var t = String::from(
+        f"## A party's holds and {the(foe)}'s openings\n\nOne bot and four, each with the longsword, answering at 15 frames, against {the(foe)} ({BOT_FRAMES} frames at most): each stretch {the(foe)} recovers or reels (an opening), how long, and how many of its frames it was held by the party's blows (each a frame its clock stood still: what the holds lengthened it by).\n\n| Party | Openings | Mean length (frames) | Mean lengthened by | Most lengthened | Openings lengthened |\n|---|---|---|---|---|---|\n".as_str(),
+    )
+    for size in [1, 4] {
+        var weapons: Vec<u32> = Vec::new()
+        for _ in 0..size {
+            weapons.push(LONGSWORD)
+        }
+        var w = World::against(foe, weapons)
+        var before: Vec<u32> = Vec::filled(size, 0)
+        var open = false
+        var length = 0
+        var held = 0
+        var count = 0
+        var total = 0
+        var total_held = 0
+        var most = 0
+        var some = 0
+        for _ in 0..BOT_FRAMES {
+            if w.over {
+                break
+            }
+            var ins: Vec<u32> = Vec::new()
+            for i in 0..size {
+                let x = bot(w, i, before[i], LONGSWORD, 15)
+                before[i] = x
+                ins.push(x)
+            }
+            step(mut w, ins)
+            let b = w.boss()
+            let now = b.act == RECOVER || b.act == STAGGERED
+            if now {
+                length += 1
+                held += if b.hold > 0 { 1 } else { 0 }
+            }
+            if open && !now {
+                count += 1
+                total += length
+                total_held += held
+                most = max(most, held)
+                some += if held > 0 { 1 } else { 0 }
+                length = 0
+                held = 0
+            }
+            open = now
+        }
+        let n = max(count, 1)
+        t.push_str(
+            f"| {size} | {count} | {f32(total) / f32(n):.1} | {f32(total_held) / f32(n):.1} | {most} | {some} |\n".as_str(),
+        )
+    }
+    t
+}
+
 // ---- bots ----------------------------------------------------------------------------------------
 
-fn bots() -> String {
+fn bots(foe: u32) -> String {
     var t = String::from(
-        "## Bots answering the tell\n\nOne bot with the longsword, alone against the idol, answering its tell this many frames in: what came of the idol's attacks that met it.\n\n| Reaction | Outcome | Frames | Its health | Hit | Parried | Passed by |\n|---|---|---|---|---|---|---|\n",
+        f"## Bots answering the tell{against(foe)}\n\nOne bot with the longsword, alone against {the(foe)}, answering its tell this many frames in: what came of {the(foe)}'s attacks that met it.\n\n| Reaction | Outcome | Frames | Its health | Hit | Parried | Passed by |\n|---|---|---|---|---|---|---|\n",
     )
     for react in REACTIONS {
-        var w = World::armed([LONGSWORD])
+        var w = World::against(foe, [LONGSWORD])
         var before: u32 = 0
         var hit = 0
         var parried = 0
@@ -736,7 +838,9 @@ fn bots() -> String {
         let outcome = if !w.over { "still going" } else {
             match w.winner {
                 combat::sim::Winner::Party => "the bot wins",
-                combat::sim::Winner::Boss => "the idol wins",
+                combat::sim::Winner::Boss => if foe == THE_SWORDSMAN { "the swordsman wins" } else {
+                    "the idol wins"
+                },
                 combat::sim::Winner::Draw => "a draw",
             }
         }
@@ -759,10 +863,16 @@ pub fn sheet() -> String {
         windows(),
         warnings(),
         contacts(),
-        drift(),
-        chains(),
+        drift(THE_IDOL),
+        chains(THE_IDOL),
         meets(),
-        bots(),
+        bots(THE_IDOL),
+        openings(THE_IDOL),
+        man_warnings(),
+        drift(THE_SWORDSMAN),
+        chains(THE_SWORDSMAN),
+        bots(THE_SWORDSMAN),
+        openings(THE_SWORDSMAN),
     ] {
         t.push_str(part.as_str())
         t.push_str("\n")
