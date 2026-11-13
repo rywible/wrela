@@ -466,6 +466,38 @@ pub const LOCKING: bool = true
 /// comes.
 pub const LOCKED_SPEED: [i32; 3] = [1, 1, 2]
 
+/// The turn window (a trial, as knockback is): through the first `TURN_WINDOW` frames of a strike's
+/// windup a player's facing may still turn, toward its stick or, locked on, toward the foe, one of
+/// the 16 ways every `TURN_EVERY` frames at most; after the window it's committed. `TURNING` false
+/// turns it off: the facing a strike begins with is the one it lands with.
+///
+/// The window is 6 frames (0.1 s): the shortest windup is 10 (the jab, the second cut), and the
+/// window ends 4 frames before that strike, so what's turned to is seen turning before it lands.
+/// (The idol stops turning `LOCK` frames before its blow, for the same reason.) A press made with
+/// the stick still coming round, or at a foe who steps aside as it's pressed, is put right in it.
+/// The rate, a way every 2 frames (675 degrees a second), turns 3 ways (67.5 degrees) at most
+/// over the window: enough for a press aimed a way or two off, not enough to turn round and strike
+/// behind, which would make every strike all-round.
+pub const TURNING: bool = true
+pub const TURN_WINDOW: u32 = 6
+pub const TURN_EVERY: u32 = 2
+
+/// How many frames into its windup `p` is.
+fn into_windup(p: Fighter) -> u32 {
+    if p.act != WINDUP || p.move_ == NO_MOVE { 0 } else { MOVES[p.move_].windup - p.timer }
+}
+
+/// Whether `p`'s facing may still turn: in its turn window.
+fn turning(p: Fighter) -> bool {
+    TURNING && p.act == WINDUP && p.move_ != NO_MOVE && into_windup(p) < TURN_WINDOW
+}
+
+/// `from` (one of the 16 ways) a way nearer `to` round the shorter side (none at `to`).
+fn toward(from: u32, to: u32) -> u32 {
+    let d = (to + 16 - from) % 16
+    if d == 0 { from } else if d <= 8 { (from + 1) % 16 } else { (from + 15) % 16 }
+}
+
 /// The directions the party and the boss face as a fight begins: toward each other (+z, -z).
 const AHEAD: u32 = 4
 const BACK: u32 = 12
@@ -695,9 +727,12 @@ impl World {
         if p.act == IDLE && p.hold == 0 {
             return STICK_BITS | BUTTON_BITS
         }
-        // A button it can act on within the buffer's frames, kept till then; and locking on,
-        // whatever it's doing.
+        // A button it can act on within the buffer's frames, kept till then; locking on, whatever
+        // it's doing; and its stick through a strike's turn window.
         var read: u32 = LOCK_ON << 6
+        if turning(p) && p.hold == 0 {
+            read |= STICK_BITS
+        }
         for b in [ATTACK, PARRY, DODGE, HEAVY] {
             if until(p, b) <= self.buffer {
                 read |= b << 6
@@ -915,6 +950,13 @@ fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32, foe: (i32, i
     // An action runs its frames out; a new one starts from idle, or a combo's next cut from the
     // recovery of the one before.
     if p.act != IDLE {
+        // In its turn window it may still turn, toward its stick, or the foe locked on.
+        if turning(p) && into_windup(p) % TURN_EVERY == 0 {
+            let goal = if p.locked { direction(foe.0 - p.x, foe.1 - p.z) } else if stick != 0 {
+                (stick - 1) / 3
+            } else { p.facing }
+            p.facing = toward(p.facing, goal)
+        }
         if chains(p) && pressed & ATTACK != 0 {
             let next = MOVES[p.move_].next
             if begin(mut p, next) {
@@ -1793,4 +1835,26 @@ fn locked_on_a_fighter_faces_the_foe_and_goes_any_way() {
     step(mut w, [aside])
     step(mut w, [aside])
     assert(!w.party[0].locked && w.party[0].facing == 0, "a second press lets go")
+}
+
+/// A strike's facing may still turn through its turn window, toward the stick, a way every
+/// `TURN_EVERY` frames at most, and is committed after it: pressed facing ahead with the stick
+/// held a quarter round, the overhead turns three ways in its first 6 frames and no more.
+@test
+fn a_strike_turns_in_its_window_and_is_committed_after() {
+    var w = at_the_boss(LONGSWORD).standing_still()
+    // Facing ahead (+z, way 4), then the heavy pressed with the stick a quarter round (way 0).
+    w.party[0].facing = AHEAD
+    let aside = 1 + 0 * 3
+    step(mut w, [HEAVY << 6])
+    assert(w.party[0].act == WINDUP && w.party[0].facing == AHEAD, "the strike begins as it faced")
+    for _ in 0..20 {
+        step(mut w, [(HEAVY << 6) | aside])
+    }
+    let turned = (AHEAD + 16 - w.party[0].facing) % 16
+    if !TURNING {
+        assert(turned == 0, "off, it's committed as it begins")
+        return
+    }
+    assert(turned == 3, f"it turned {turned} ways toward its stick, in its window and no more")
 }
