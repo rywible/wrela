@@ -50,10 +50,10 @@ pub fn hook() -> Written<8> {
     let sets_off = 0.205
     // How far the hips have turned on contact (degrees toward the left: the hook turns them
     // to the right).
-    let hips_yaw = -33.9
+    let hips_yaw = -22.5
     // Where the contact key puts the fist: not the target, since the arm gets there late.
-    let spot_x = 0.046
-    let spot_y = 1.522
+    let spot_x = 0.045
+    let spot_y = 1.474
     let spot_z = 0.476
     // How far up out to the left the striking elbow points on contact (degrees from straight
     // down): a hook's elbow comes up near level with its fist.

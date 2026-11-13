@@ -252,3 +252,39 @@ pub fn chart(clip: Clip, rig: Rig, t: Timing, name: str) -> Image {
     )
     img
 }
+
+/// A stance's chart: over its loop, four strips (the hips' height over their mean, the left heel's
+/// height, the right heel's, where the weight is across the feet), each with `a`'s line (white) and
+/// `b`'s over it (blue): the guard against the take it stands in (`engine::stance::series`).
+pub fn stance_chart(a: Vec<[f32; 4]>, b: Vec<[f32; 4]>, name: str) -> Image {
+    var img = Image::new(WIDTH, HEIGHT)
+    img.text(x: 20, y: 12, s: name, scale: 2, c: LABEL)
+    let titles = [
+        "HIPS' HEIGHT OVER THEIR MEAN (-6 TO +6 CM)",
+        "LEFT HEEL OVER ITS REST (0 TO 12 CM)",
+        "RIGHT HEEL OVER ITS REST (0 TO 12 CM)",
+        "WEIGHT ACROSS THE FEET (RIGHT FOOT 0 TO LEFT FOOT 1)",
+    ]
+    let ranges = [vec2(-0.06, 0.06), vec2(0.0, 0.12), vec2(0.0, 0.12), vec2(0.0, 1.0)]
+    let (left, w) = (60.0, f64(WIDTH) - 80.0)
+    let h = 190.0
+    for s in 0..4 {
+        let top = 60.0 + f64(s) * (h + 40.0)
+        img.text(x: 60, y: u32(top) - 18, s: titles[s], scale: 1, c: LABEL)
+        img.line(left, top + h, left + w, top + h, FRAME)
+        img.line(left, top, left, top + h, FRAME)
+        for (series, c) in [(a.clone(), HIT), (b.clone(), SET)] {
+            let n = series.len()
+            for k in 1..n {
+                let y = |v: f32| -> f64 {
+                    let u = (v - ranges[s].x) / (ranges[s].y - ranges[s].x)
+                    top + h * (1.0 - f64(clamp(u, 0.0, 1.0)))
+                }
+                let x0 = left + w * f64(k - 1) / f64(n - 1)
+                let x1 = left + w * f64(k) / f64(n - 1)
+                stroke(mut img, (x0, y(series[k - 1][s])), (x1, y(series[k][s])), c)
+            }
+        }
+    }
+    img
+}

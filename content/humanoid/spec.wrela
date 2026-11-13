@@ -149,32 +149,48 @@ pub fn spec<C: Checks>(c: mut C) {
     guard_spec(mut c)
 }
 
-/// The captured boxer's guard (`accad_fists::GUARD`, ACCAD's Male 2) as its stance sheet reads
-/// it (`wrela tool moves -- --stance accad`): the shape the fight's guard is solved to.
-pub const BOXER: stance::Shape = stance::Shape {
-    feet_fore: 0.40,
-    feet_across: 0.33,
-    sunk: 0.043,
-    knees: 149.0,
-    lean: -0.6,
-    turn: 28.0,
-    hand_y: [1.46, 1.50],
-    hand_face: [0.36, 0.21],
-    hand_ahead: [0.31, 0.13],
-    elbows: [61.0, 65.0],
+/// The fight's bounce (`fists::BOUNCE`: ACCAD Male 2 bouncing in his guard, E8) as its stance
+/// sheet reads it (`wrela tool moves -- --stance bounce`): the shape the guard's key is solved to,
+/// so every strike sets off from the stance the fight stands in.
+pub const TAKE: stance::Shape = stance::Shape {
+    feet_fore: 0.49,
+    feet_across: 0.39,
+    sunk: 0.040,
+    knees: 136.0,
+    lean: 1.5,
+    turn: 37.0,
+    hand_y: [1.29, 1.42],
+    hand_face: [0.56, 0.27],
+    hand_ahead: [0.44, 0.16],
+    elbows: [95.0, 78.0],
     head_y: 1.56,
-    head_lean: 11.0,
+    head_lean: 16.0,
 }
 
-/// What the fight's guard (`fists::guard`) should measure: the captured boxer's shape (`BOXER`)
-/// on this body. Its height, its legs and its arms are its own, so what a key asks for isn't what
+/// Which way the bounce faces, on average over its loop (`engine::stance::facing`, level): the
+/// guard's shape is read facing this way, so the solve can't turn "ahead" by moving the hands it's
+/// read off.
+@fuel(2 ** 40)
+pub const TAKE_FACING: vec3 = take_facing()
+
+fn take_facing() -> vec3 {
+    let c = fists::BOUNCE.clone()
+    var sum = vec3(0.0)
+    for f in 0..c.frames {
+        sum += stance::facing(HERO.rig, pose_world(HERO.rig, c.pose(f32(f) / c.fps)))
+    }
+    normalize(sum)
+}
+
+/// What the fight's guard (`fists::guard`) should measure: the bounce's shape (`TAKE`) on this
+/// body. Its height, its legs and its arms are its own, so what a key asks for isn't what
 /// it gets: the feet's spread, the hips' sink (how far the knees bend), the trunk's lean and turn,
 /// each hand's height, how far it's held off the face and out ahead, and the head's lean are the
 /// numbers the body's shape decides, and solved.
 fn guard_spec<C: Checks>(c: mut C) {
     let w = pose_world(HERO.rig, keys::posed(HERO.rig, fists::guard()))
-    let s = stance::shaped(HERO.rig, w, stance::facing(HERO.rig, w))
-    let b = BOXER
+    let s = stance::shaped(HERO.rig, w, TAKE_FACING)
+    let b = TAKE
     c.near("guard: feet apart fore and aft (m)", s.feet_fore, b.feet_fore, within: 0.02)
     c.near("guard: feet apart across (m)", s.feet_across, b.feet_across, within: 0.02)
     c.near("guard: knees' bend (degrees)", s.knees, b.knees, within: 3.0)
@@ -187,6 +203,19 @@ fn guard_spec<C: Checks>(c: mut C) {
     c.near("guard: rear hand off the face (m)", s.hand_face[1], b.hand_face[1], within: 0.02)
     c.near("guard: rear hand ahead of the hips (m)", s.hand_ahead[1], b.hand_ahead[1], within: 0.02)
     c.near("guard: head's lean forward (degrees)", s.head_lean, b.head_lean, within: 3.0)
+    // The shoulders turned as the bounce's with the hips under them, not the chest twisted round
+    // against still hips: a solve left free turned the chest 77 degrees off the hips to reach the
+    // shoulders' turn (a body standing in a guard keeps them within some 20 degrees).
+    let flat = |q: Quat| -> vec3 {
+        let v = q.rotate(vec3(1.0, 0.0, 0.0))
+        normalize(vec3(v.x, 0.0, v.z) + vec3(1.0e-6, 0.0, 0.0))
+    }
+    let rw = HERO.rig.rest_frames()
+    let (hb, cb) = (HERO.rig.find("hips"), HERO.rig.find("upperChest"))
+    let hl = flat(w[hb].q.mul(rw[hb].q.inverse()))
+    let cl = flat(w[cb].q.mul(rw[cb].q.inverse()))
+    let twist = acos(clamp(dot(hl, cl), -1.0, 1.0)) * 57.29578
+    c.at_most("guard: chest's twist against the hips (degrees)", twist, 18.0, within: 2.0)
 }
 
 /// What the solved lead hook (hook.wrela) should measure. Each bound is set past the brief's

@@ -64,7 +64,7 @@ use std::tool::args
 use std::tool::files
 use std::tool::files::rooted
 
-pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --contact | --stance [stance ...] | --cut [cut ...] | --sheet <out-dir> [strike ...] | --solve <out-dir> <strike> | --read <out-dir> <strike> | --drawn [strike ...] | --differ <strike> <strike>"
+pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --contact | --stance [stance ...] | --stance-chart <out-dir> | --cut [cut ...] | --sheet <out-dir> [strike ...] | --solve <out-dir> <strike> | --read <out-dir> <strike> | --drawn [strike ...] | --differ <strike> <strike>"
 
 /// The cuts `--cut` reads (`engine::cut`): a strike with a held thing, its name, its clip, what's
 /// held, and its contact (s). The stand-in for now: the solved cross thrown with the lab's stick
@@ -83,6 +83,7 @@ pub fn stances() -> Vec<(Text, Clip)> {
         [
             ("guard", fists::GUARD.clip.clone()),
             ("accad", accad_fists::GUARD.clip.clone()),
+            ("bounce", fists::BOUNCE.clone()),
         ],
     )
 }
@@ -459,6 +460,32 @@ pub fn tool() -> u32 {
         }
         return if done == 0 { 2 } else { 0 }
     }
+    if wanted.len() >= 2 && wanted[0].as_str() == "--stance-chart" {
+        // The guard's life against the take it stands in, as a chart.
+        let img = chart::stance_chart(
+            engine::stance::series(rig, fists::BOUNCE.clone()),
+            engine::stance::series(rig, fists::GUARD.clip.clone()),
+            "THE GUARD (BLUE) OVER THE BOUNCE IT STANDS IN (WHITE), OVER ITS LOOP",
+        )
+        let rgba = match img.rgba() {
+            Ok(b) => take b,
+            Err(e) => {
+                print(f"moves: {e.message()}")
+                return 1
+            },
+        }
+        let Some(out) = rooted("ws", wanted[1].as_str()) else {
+            print(f"moves: {wanted[1]} isn't a path in the workspace")
+            return 2
+        }
+        return match write_png(take rgba, f"{out}/stance.png".as_str()) {
+            Ok(_) => 0,
+            Err(e) => {
+                print(f"moves: {e.message()}")
+                1
+            },
+        }
+    }
     if wanted.len() >= 1 && wanted[0].as_str() == "--stance" {
         // Each stance's sheet: its shape and its life.
         var done = 0
@@ -471,6 +498,24 @@ pub fn tool() -> u32 {
             }
             if chosen {
                 print(engine::stance::read(rig, c).text(name).as_str())
+                if name == "guard" {
+                    // A strike begun out of it at any moment round its loop.
+                    let acts = [solved::CROSS.clone(), hook::HOOK.clone()]
+                    let ends = [RIGHT_FIST, LEFT_FIST]
+                    let names = ["the cross", "the hook"]
+                    for k in 0..2 {
+                        let (e, h, ge, gh) = engine::stance::begun(
+                            rig,
+                            fists::FIGHT_GAITS,
+                            acts,
+                            k,
+                            ends[k],
+                        )
+                        print(
+                            f"  begun at any moment, {names[k]}: its fist moves {e * 100.0:.1} cm at most on its first frame, its hips {h * 100.0:.1} (a frame of the guard alone: {ge * 100.0:.1} and {gh * 100.0:.1})",
+                        )
+                    }
+                }
                 done += 1
             }
         }

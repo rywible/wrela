@@ -77,11 +77,15 @@ pub const X_PIN: f32 = 0.05
 pub const X_GIVE: f32 = 0.5
 pub const X_RECOIL: f32 = 0.1
 
+/// How many steps in the striker takes to throw, and back out after: the two stand that far out
+/// of reach, so their lead fists, held well out in the guard, are never near each other.
+pub const X_STEPS: u32 = 2
+
 /// When the scripted exchange (`SHOW=28`) steps in to throw its cross (s): the cross lands 6.8 s
 /// in, frame 204 at the judge's 30 a second (studio/judge's `exchange` scene and `arms` shots),
-/// after the step in and a frame's settle.
+/// after the steps in and a frame's settle.
 @fuel(2 ** 40)
-pub const THROW: f32 = 6.43 - fists::STEP_IN.length() - 1.0 / 60.0
+pub const THROW: f32 = 6.43 - f32(X_STEPS) * fists::STEP_IN.length() - 1.0 / 60.0
 
 /// What the combat lab (`lab`) tunes live: the hit-stop, the impact frame, the camera's kick and
 /// push, the blast's size, how hard the one struck gives, whether the striker's drawn on twos,
@@ -137,7 +141,7 @@ fn turned(p: vec3, heading: f32) -> vec3 {
 /// reach, and steps in (`fists::STEP_IN`, `fists::STEP` along the blow) to throw it.
 @fuel(2 ** 40)
 pub const KNUCKLES: vec3 = turned(solved::cross().end(HERO.rig, solved::CONTACT), HEADING) +
-    BLOW * fists::STEP
+    BLOW * (fists::STEP * f32(X_STEPS))
 
 /// Where bone `name` of the guard is (the body's space).
 fn in_guard(name: str) -> vec3 {
@@ -213,6 +217,8 @@ pub struct Exchange: Clone {
     /// What the striker does once he's done with what he's doing (`STEP`, `CROSS`, `BACK`;
     /// `humanoid::NONE` nothing).
     then: u32,
+    /// How many steps in (or back out) he's taken.
+    steps: u32,
     striker: Mover,
     struck: Mover,
     drawer: Drawer,
@@ -259,6 +265,7 @@ impl Exchange {
             clock: -after,
             throw: after >= 0.0,
             then: humanoid::NONE,
+            steps: 0,
             striker: Mover::standing(vec3(0.0), HEADING, FIGHT_GAITS),
             struck: Mover::standing(if t.giant { GIANT_AT } else {
                 FOE_AT
@@ -318,11 +325,21 @@ impl Exchange {
         var act = humanoid::NONE
         if self.throw && self.clock >= 0.0 {
             act = STEP
-            self.then = CROSS
+            self.steps = 1
+            self.then = if X_STEPS > 1 { STEP } else { CROSS }
             self.throw = false
         } else if self.then != humanoid::NONE && self.striker.acting == humanoid::NONE {
             act = self.then
-            self.then = if act == CROSS { BACK } else { humanoid::NONE }
+            if act == STEP {
+                self.steps += 1
+                self.then = if self.steps < X_STEPS { STEP } else { CROSS }
+            } else if act == CROSS {
+                self.steps = 0
+                self.then = BACK
+            } else {
+                self.steps += 1
+                self.then = if self.steps < X_STEPS { BACK } else { humanoid::NONE }
+            }
         }
         // Held at the blow: the one struck still, the striker driving on at `grind` of his pace.
         let holding = self.held > 0.0
@@ -828,8 +845,25 @@ fn the_cross_lands_and_the_one_struck_gives_and_comes_back() {
         head1 >= 0.632 && hips1 >= 0.65,
         f"weight 1 throws his head {head1} m, his hips {hips1} m",
     )
-    assert(steps1 >= 2 && steps1 <= 4, f"his feet step to catch him and back: {steps1} steps")
+    // (Over the bounce's own: it settles its feet now and then, struck or not, one to three times
+    // in the window as the blow finds it in its loop, so the count over it wanders by one.)
+    let (_, _, steps0, _, _) = thrown(0.0)
+    let more = steps1 - steps0
+    assert(
+        more >= 2 && more <= 5,
+        f"his feet step to catch him and back: {more} steps more than the bounce's own {steps0}",
+    )
     assert(home1 > 0.5 && home1 < 1.5, f"and he's home {home1} s after the hold breaks")
+    // Stood out of reach in their guards, their lead fists (held well out) are never near: a
+    // hand's width and more between them all through the idle.
+    var near = 9.0
+    for x in played(TUNED, after: 1.0, seconds: 0.95) {
+        let a = (x.shown_place * vec4(pose_world(rig, x.shown)[rig.find("leftHand")].t, 1.0)).xyz
+        let b = (playback::placed(x.struck) *
+            vec4(pose_world(rig, x.struck_shown)[rig.find("leftHand")].t, 1.0)).xyz
+        near = min(near, length(a - b))
+    }
+    assert(near >= 0.25, f"the lead fists come {near} m apart at the nearest through the idle")
     let (head4, _, _, _, _) = thrown(0.25)
     assert(head4 < 0.25 * head1, f"a quarter's a touch: his head {head4} m")
 }
@@ -889,7 +923,8 @@ fn the_guard_holds_its_feet_and_a_walk_swings_its_own() {
             last_bare[k] = b[k]
         }
     }
-    assert(down > 2 * 149 * 8 / 10, f"the guard's feet are down {down} of {2 * 149} foot-frames")
+    // (Down most of the time: the free foot taps off the floor at the top of each bounce.)
+    assert(down > 2 * 149 * 6 / 10, f"the guard's feet are down {down} of {2 * 149} foot-frames")
     assert(held < 0.5 * bare, f"planted, its ankles go {held} m along the floor; bare, {bare} m")
     // A walk: each foot swings clear (not down) for a good part of each stride.
     var w = Mover::standing(vec3(0.0), 0.0, FIGHT_GAITS)
@@ -923,7 +958,7 @@ fn the_guard_holds_its_feet_and_a_walk_swings_its_own() {
 fn the_fist_is_drawn_big_on_the_blow_and_the_stick_trails() {
     var most = 1.0
     var after = 1.0
-    for x in played(TUNED, after: 0.2, seconds: 1.0) {
+    for x in played(TUNED, after: 0.2, seconds: 2.0) {
         if x.since >= 0.0 && x.since < TUNED.hold {
             most = max(most, x.drawn_big().0)
         }
@@ -934,7 +969,7 @@ fn the_fist_is_drawn_big_on_the_blow_and_the_stick_trails() {
     assert(abs(most - (1.0 + X_FIST)) < 1.0e-3, f"drawn {most} times its size on the blow")
     assert(after == 1.0, f"and its own size after: {after}")
     var trailed = 0.0
-    for x in played(Tune { stick: true, ..TUNED }, after: 0.2, seconds: 1.0) {
+    for x in played(Tune { stick: true, ..TUNED }, after: 0.2, seconds: 2.0) {
         if x.since < 0.0 && x.trail.on {
             trailed = max(trailed, length(x.trail.back))
         }

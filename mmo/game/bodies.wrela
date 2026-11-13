@@ -123,9 +123,9 @@ pub const LOOKS: [Look; 15] = [
     PLAIN,
 ]
 
-/// The gaits a fighter stands, walks and runs with: its guard (hand-keyed), and the walk, run,
-/// start and stop written in Wrela (content/moves). Nothing a model made, and no sampled take,
-/// is played in the game (docs/citations.md, "The rules").
+/// The gaits a fighter stands, walks and runs with: its guard (`fists::GUARD`, a captured
+/// boxer's bounce written as Wrela code), and the walk, run, start and stop written in Wrela
+/// (content/moves). Nothing a model made is played in the game (docs/citations.md, "The rules").
 @fuel(2 ** 40)
 pub const GAITS: Gaits = Gaits {
     idle: GUARD.clone(),

@@ -16,12 +16,19 @@
 //   the head travel (the most each goes from where it is on average, and how far a second); how
 //   still it ever is (the longest it holds with the hips, hands and head all slower than
 //   `STILL`); how far a foot slides along the floor while it's down.
+// - Its feet: how far each heel rises and drops (its ankle's highest over its lowest), how far
+//   each foot comes off the floor (its lowest point, toe or heel, over where it is at rest), and
+//   how often a second the weight changes feet (the hips crossing the middle of the way from the
+//   rear foot to the lead).
 //
 // `Stance::text` is the sheet.
 
 use std::collections::Vec
 use std::string::String
-use humanoid::{Clip, NONE, Rig, Rigid, pose_world}
+use humanoid::{Clip, NONE, Pose, Rig, Rigid, pose_world}
+use humanoid
+use end::End
+use playback::{Gaits, Handling, Move, Mover, placed, step, upper_body}
 
 const DEG: f32 = 57.29578
 
@@ -61,6 +68,11 @@ pub struct Stance: Copy {
     pub head_speed: f32,
     pub stillest: f32,
     pub slide: f32,
+    /// Each foot (0 the left, 1 the right): how far its heel rises and drops (m), how far it comes
+    /// off the floor at most (m); and how often a second the weight changes feet.
+    pub heel: [f32; 2],
+    pub lift: [f32; 2],
+    pub shifts: f32,
     pub length: f32,
 }
 
@@ -137,6 +149,7 @@ struct Parts {
     thighs: [u32; 2],
     knees: [u32; 2],
     ankles: [u32; 2],
+    toes: [u32; 2],
     shoulders: [u32; 2],
     elbows: [u32; 2],
     hands: [u32; 2],
@@ -154,6 +167,12 @@ fn parts(rig: Rig) -> Parts {
         thighs: [rig.find("leftUpperLeg"), rig.find("rightUpperLeg")],
         knees: [rig.find("leftLowerLeg"), rig.find("rightLowerLeg")],
         ankles: [rig.find("leftFoot"), rig.find("rightFoot")],
+        toes: [
+            if rig.find("leftToes") != NONE { rig.find("leftToes") } else { rig.find("leftFoot") },
+            if rig.find("rightToes") != NONE { rig.find("rightToes") } else {
+                rig.find("rightFoot")
+            },
+        ],
         shoulders: [rig.find("leftUpperArm"), rig.find("rightUpperArm")],
         elbows: [rig.find("leftLowerArm"), rig.find("rightLowerArm")],
         hands: [rig.find("leftHand"), rig.find("rightHand")],
@@ -214,12 +233,18 @@ pub fn read(rig: Rig, c: Clip) -> Stance {
         head_speed: 0.0,
         stillest: 0.0,
         slide: 0.0,
+        heel: [0.0; 2],
+        lift: [0.0; 2],
+        shifts: 0.0,
         length: span,
     }
     var hands_mean = [vec3(0.0); 2]
     var head_mean = vec3(0.0)
     var hips_y: Vec<f32> = Vec::with_capacity(n)
     var weight: Vec<vec2> = Vec::with_capacity(n)
+    var shares: Vec<f32> = Vec::with_capacity(n)
+    var heel_lo = [1.0e6; 2]
+    var heel_hi = [-1.0e6; 2]
     for w in ws {
         let sh = shaped(rig, w, fore)
         s.feet_fore += sh.feet_fore * inv
@@ -242,7 +267,36 @@ pub fn read(rig: Rig, c: Clip) -> Stance {
         let mid = 0.5 * (w[p.ankles[0]].t + w[p.ankles[1]].t)
         let off = w[p.hips].t - mid
         weight.push(vec2(dot(off, across), dot(off, fore)))
+        // The feet: each heel's height, each foot's lowest point off the floor, and where the
+        // weight is between them (the share of the way from the right foot to the left).
+        let span_feet = flat(w[p.ankles[0]].t - w[p.ankles[1]].t)
+        let d2 = max(dot(span_feet, span_feet), 1.0e-6)
+        shares.push(dot(flat(w[p.hips].t - w[p.ankles[1]].t), span_feet) / d2)
+        for i in 0..2 {
+            let heel = w[p.ankles[i]].t.y - rest[p.ankles[i]].t.y
+            heel_lo[i] = min(heel_lo[i], heel)
+            heel_hi[i] = max(heel_hi[i], heel)
+            let toe = w[p.toes[i]].t.y - rest[p.toes[i]].t.y
+            s.lift[i] = max(s.lift[i], min(heel, toe))
+        }
     }
+    for i in 0..2 {
+        s.heel[i] = heel_hi[i] - heel_lo[i]
+    }
+    // How often the weight changes feet: the share crossing the middle, by more than a tenth
+    // either side, round the loop.
+    var on_left = shares[n - 1] > 0.5
+    var changes = 0
+    for k in 0..n {
+        if on_left && shares[k] < 0.4 {
+            on_left = false
+            changes += 1
+        } else if !on_left && shares[k] > 0.6 {
+            on_left = true
+            changes += 1
+        }
+    }
+    s.shifts = f32(changes) / span
     // The bounces: the hips' dips, each a low between two highs, a centimetre at least.
     // (Round the loop from its highest, so a low on the loop's seam is counted once.)
     var from = 0
@@ -338,6 +392,109 @@ impl Stance {
         t.push_str(
             f"  travel: hands {self.hands_most * 100.0:.1} cm at most, {self.hands_speed * 100.0:.1} cm/s; head {self.head_most * 100.0:.1} cm at most, {self.head_speed * 100.0:.1} cm/s; still at most {self.stillest:.2} s; a foot down slides {self.slide * 100.0:.1} cm\n".as_str(),
         )
+        t.push_str(
+            f"  feet: heels rise and drop {self.heel[0] * 100.0:.1} cm (left) and {self.heel[1] * 100.0:.1} (right); off the floor at most {self.lift[0] * 100.0:.1} and {self.lift[1] * 100.0:.1} cm; the weight changes feet {self.shifts:.2} times a second\n".as_str(),
+        )
         t
     }
+}
+
+/// How a strike begins out of a stance that never stands still: a body standing in `gaits`' idle
+/// (`engine::playback`), struck out of at every frame round its loop by one-off `act` of `acts`.
+/// The most the striking `end` and the hips move on the frame it begins (m), and the most either
+/// moves in a frame of the stance alone, for scale. A strike begun at any moment should start from
+/// where the body is, not jump.
+pub fn begun(rig: Rig, gaits: Gaits, acts: [Move], act: u32, end: End) -> (f32, f32, f32, f32) {
+    let mask = upper_body(rig)
+    let hips = rig.find("hips")
+    let dt = 1.0 / RATE
+    var m = Mover::standing(vec3(0.0), 0.0, gaits)
+    let at = |m: Mover, pose: Pose| -> (vec3, vec3) {
+        let w = pose_world(rig, pose)
+        let place = placed(m)
+        ((place * vec4(end.in_pose(rig, w), 1.0)).xyz, (place * vec4(w[hips].t, 1.0)).xyz)
+    }
+    let none = humanoid::NONE
+    // (A loop's start up first, so the stance is under way.)
+    var pose = step(
+        mut m,
+        gaits,
+        acts,
+        rig,
+        mask,
+        vec3(0.0),
+        none,
+        upper: false,
+        how: Handling {},
+        dt: dt,
+    )
+    let n = max(u32(gaits.idle.length() * RATE), 1)
+    var out = (0.0, 0.0, 0.0, 0.0)
+    for _ in 0..n {
+        let (e0, h0) = at(m, pose)
+        var struck = m
+        let p1 = step(
+            mut struck,
+            gaits,
+            acts,
+            rig,
+            mask,
+            vec3(0.0),
+            act,
+            upper: false,
+            how: Handling {},
+            dt: dt,
+        )
+        let (e1, h1) = at(struck, p1)
+        pose = step(
+            mut m,
+            gaits,
+            acts,
+            rig,
+            mask,
+            vec3(0.0),
+            none,
+            upper: false,
+            how: Handling {},
+            dt: dt,
+        )
+        let (e2, h2) = at(m, pose)
+        out = (
+            max(out.0, length(e1 - e0)),
+            max(out.1, length(h1 - h0)),
+            max(out.2, length(e2 - e0)),
+            max(out.3, length(h2 - h0)),
+        )
+    }
+    out
+}
+
+/// A stance's life frame by frame over one loop, `RATE` a second, for a chart: the hips' height
+/// over their mean, each heel's height over its rest (the left, the right), and where the weight
+/// is across the feet (the share of the way from the right foot to the left), m and share.
+pub fn series(rig: Rig, c: Clip) -> Vec<[f32; 4]> {
+    let p = parts(rig)
+    let rest = rig.rest_frames()
+    let n = max(u32(c.length() * RATE), 2)
+    var out: Vec<[f32; 4]> = Vec::with_capacity(n)
+    var mean = 0.0
+    for k in 0..n {
+        let w = pose_world(rig, c.pose(f32(k) / RATE))
+        let span_feet = flat(w[p.ankles[0]].t - w[p.ankles[1]].t)
+        let share = dot(flat(w[p.hips].t - w[p.ankles[1]].t), span_feet) /
+            max(dot(span_feet, span_feet), 1.0e-6)
+        out.push(
+            [
+                w[p.hips].t.y,
+                w[p.ankles[0]].t.y - rest[p.ankles[0]].t.y,
+                w[p.ankles[1]].t.y - rest[p.ankles[1]].t.y,
+                share,
+            ],
+        )
+        mean += w[p.hips].t.y / f32(n)
+    }
+    for k in 0..n {
+        out[k][0] = out[k][0] - mean
+    }
+    out
 }

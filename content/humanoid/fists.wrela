@@ -9,8 +9,9 @@ use engine::humanoid
 use engine::humanoid::Clip
 use engine::keys
 use std::io::print
-use engine::keys::{Key, LINEAR, SETTLE, SMOOTH, SNAP}
+use engine::keys::{Key, SETTLE, SMOOTH, SNAP}
 use engine::playback
+use engine::stride
 use engine::playback::{ACTIVE, CANCEL, Gaits, Mark, Move, RECOVER, WINDUP}
 use body::{GAITS, HERO}
 use engine::anime::{LIGHT, Look, PLAIN, STRIKE}
@@ -23,23 +24,23 @@ use engine::anime::{LIGHT, Look, PLAIN, STRIKE}
 pub fn guard() -> Key {
     // ---- What the solve finds (spec.wrela): each number alone on its line. ----
     // How far the hips are sunk (m) and turned (degrees), and the trunk's lean and turn.
-    let sink = -0.0113
-    let hips_yaw = -30.6
-    let trunk_pitch = -1.5
-    let trunk_yaw = -3.5
+    let sink = -0.06
+    let hips_yaw = -44.9
+    let trunk_pitch = 1.0
+    let trunk_yaw = -17.9
     // Where the feet stand (m along the floor: +x the left, +z ahead).
-    let lead_x = 0.095
-    let lead_z = 0.29
-    let rear_x = -0.231
-    let rear_z = -0.176
+    let lead_x = 0.02
+    let lead_z = 0.38
+    let rear_x = -0.16
+    let rear_z = -0.26
     // Where the fists are (m, the body's space), and how high the eyes look (m, 3 m ahead).
-    let lead_fist_x = 0.105
-    let lead_fist_y = 1.46
-    let lead_fist_z = 0.281
-    let rear_fist_x = -0.172
-    let rear_fist_y = 1.50
-    let rear_fist_z = 0.07
-    let look_y = 2.1
+    let lead_fist_x = 0.074
+    let lead_fist_y = 1.28
+    let lead_fist_z = 0.48
+    let rear_fist_x = -0.25
+    let rear_fist_y = 1.42
+    let rear_fist_z = 0.02
+    let look_y = 1.7
     Key {
         at: 0.0,
         hips: vec3(-0.01, sink, 0.0),
@@ -153,63 +154,78 @@ pub const ACT_STEP_LEFT: u32 = 5
 pub const ACT_STEP_RIGHT: u32 = 6
 pub const LOOKS: [Look; 7] = [STRIKE, PLAIN, LIGHT, PLAIN, PLAIN, PLAIN, PLAIN]
 
-/// How long the guard's life takes to come round (s), and how far each part of it goes at most:
-/// the weight across and fore and aft over the feet (m), the hips' dip as it settles onto a foot
-/// (m), the fists' drift (m), the trunk's turn, nod and lean to the loaded side (degrees). The captured boxer's guard
-/// (`accad_fists::GUARD`) is the target its stance sheet reads (the_guard_stands_as_the_boxer_does).
-pub const LIFE: f32 = 3.5
-const SIDE: f32 = 0.012
-const FORE: f32 = 0.018
-const DIP: f32 = 0.017
-const DRIFT: f32 = 0.047
-const TURNS: f32 = 5.0
-const NOD: f32 = 3.5
-const ROLL: f32 = 4.0
+/// The VRM bones that come in left and right pairs (the part after "left" / "right").
+pub const SIDED: [Text; 24] = [
+    "Eye",
+    "UpperLeg",
+    "LowerLeg",
+    "Foot",
+    "Toes",
+    "Shoulder",
+    "UpperArm",
+    "LowerArm",
+    "Hand",
+    "ThumbMetacarpal",
+    "ThumbProximal",
+    "ThumbDistal",
+    "IndexProximal",
+    "IndexIntermediate",
+    "IndexDistal",
+    "MiddleProximal",
+    "MiddleIntermediate",
+    "MiddleDistal",
+    "RingProximal",
+    "RingIntermediate",
+    "RingDistal",
+    "LittleProximal",
+    "LittleIntermediate",
+    "LittleDistal",
+]
 
-/// The guard `u` of the way round its life (0 to 1): never still and never even. Its weight rolls
-/// onto the lead foot and back onto the rear twice a time round, the hips settling as it lands on
-/// each (the loaded heel down, the other up); the trunk turns and nods a little after it; each
-/// fist drifts on its own slow round, as a boxer's hands keep moving. Each is a few waves, each a
-/// whole number of times round, so it loops without a seam.
-fn living(u: f32) -> Key {
-    let g = guard()
-    var k = g
-    let a = 6.2831853 * u
-    let weight = 0.6 * cos(2.0 * a) + 0.15 * sin(3.0 * a + 0.4)
-    let settled = 0.5 + 0.5 * cos(2.0 * a)
-    k.hips = g.hips + vec3(SIDE * weight, -DIP * settled, FORE * weight)
-    k.hips_turn = g.hips_turn + vec3(0.0, 0.6 * TURNS * sin(a + 0.7), 0.0)
-    k.trunk = g.trunk + vec3(NOD * sin(2.0 * a + 1.3), TURNS * sin(a + 0.4), -ROLL * weight)
-    let lead = vec3(sin(a + 0.3), 0.8 * sin(2.0 * a + 1.9), 0.7 * sin(3.0 * a + 0.8))
-    let rear = vec3(0.8 * sin(2.0 * a + 2.6), sin(a + 0.9), 0.7 * sin(2.0 * a + 2.1))
-    k.fists = [g.fists[0] + lead * DRIFT, g.fists[1] + rear * DRIFT]
-    // The loaded foot's heel sinks, the other's rises.
-    k.feet[0].w = g.feet[0].w - 6.0 * max(weight, 0.0) + 6.0 * max(-weight, 0.0)
-    k.feet[1].w = g.feet[1].w - 6.0 * max(-weight, 0.0) + 6.0 * max(weight, 0.0)
-    k
-}
-
-/// The guard as a body stands ready to fight (`living`), a key a frame round its life.
-pub fn guard_keys() -> Vec<Key> {
-    var out: Vec<Key> = Vec::new()
-    let n = u32(LIFE * 60.0)
-    for f in 0..n + 1 {
-        var k = living(f32(f) / f32(n))
-        k.at = f32(f) / 60.0
-        k.ease = LINEAR
-        out.push(k)
+/// `c` mirrored left for right (through the body's own middle): a right-foot-forward stance becomes
+/// left-foot-forward, each side moving as the other side did.
+fn mirrored(c: Clip) -> Clip {
+    borrow rig = HERO.rig
+    let nb = c.bones
+    var partner: Vec<u32> = Vec::with_capacity(nb)
+    for b in 0..nb {
+        partner.push(b)
+    }
+    for s in SIDED {
+        let (l, r) = (rig.find(f"left{s}".as_str()), rig.find(f"right{s}".as_str()))
+        if l != humanoid::NONE && r != humanoid::NONE {
+            partner[l] = r
+            partner[r] = l
+        }
+    }
+    let base = rig.base
+    let inv = base.inverse()
+    var out = c.clone()
+    for f in 0..c.frames {
+        let w = stride::worlds(rig, c, f)
+        var m = w.clone()
+        for b in 0..nb {
+            let r = inv.then(w[partner[b]])
+            let q = Quat { v: vec4(r.q.v.x, -r.q.v.y, -r.q.v.z, r.q.v.w) }
+            m[b] = base.then(humanoid::Rigid { q: q, t: vec3(-r.t.x, r.t.y, r.t.z) })
+        }
+        stride::store(rig, m, mut out, f)
     }
     out
 }
 
+/// The fight's bounce: ACCAD's Male 2 bouncing on his toes in his guard (E8, Open Motion Project
+/// by ACCAD/The Ohio State University, CC BY 3.0: a person's capture, written as a cycle by the
+/// moves tool, `moves::stance::STANCE`), mirrored to stand orthodox (left foot forward, so the
+/// right is the rear hand that throws the cross). The fight stands in it whole, its shape and its
+/// life: the guard every body ready to fight stands in (`GUARD`), and the shape every strike sets
+/// off from and comes home to (`guard`, solved to it).
 @fuel(2 ** 40)
-pub const GUARD: Move = guard_move()
+pub const BOUNCE: Clip = mirrored(moves::stance::STANCE.clip(HERO.rig.clone(), 60.0))
 
-fn guard_move() -> Move {
-    var c = keys::keyed(HERO.rig, guard_keys(), fps: 60.0, fist: 2.0)
-    c.looped = true
-    in_place(c)
-}
+/// The guard as a body stands ready to fight: the bounce, its hands made fists.
+@fuel(2 ** 40)
+pub const GUARD: Move = in_place(stride::curled_hands(BOUNCE.clone(), HERO.rig, 2.0))
 
 /// The gaits of a body ready to fight: standing in its guard, walking and running as ever.
 @fuel(2 ** 40)
@@ -225,36 +241,38 @@ pub const FIGHT_GAITS: Gaits = Gaits {
 
 // ---- tests ---------------------------------------------------------------------------------------
 
-/// The fight's guard stands as the captured boxer's does (`accad_fists::GUARD`), read on the same
-/// sheet (`engine::stance`): its shape (solved to it, spec.wrela's `guard_spec`) and its life
-/// (how often it settles and how far, how far its weight sways, how far and how fast its hands
-/// and head go), each within a third of his; never still, and its feet held where they stand.
+/// The fight's guard is the bounce (`BOUNCE`, ACCAD Male 2's E8), read on the stance sheet
+/// (`engine::stance`) as the take itself reads, every line; its feet sliding no more than the
+/// take's own. The guard's key (`guard`), every strike's start and end, is the bounce's shape
+/// (solved to it, spec.wrela's `guard_spec`). A strike begun out of the bounce at any moment starts
+/// from where the body is: its fist and hips move no more on its first frame than a frame of the
+/// bounce alone moves them.
 @test
-fn the_guard_stands_as_the_boxer_does() {
+fn the_guard_is_the_bounce() {
     borrow rig = HERO.rig
     let g = engine::stance::read(rig, GUARD.clip.clone())
-    let b = engine::stance::read(rig, accad_fists::GUARD.clip.clone())
+    let t = engine::stance::read(rig, BOUNCE.clone())
     let near = |a: f32, want: f32, within: f32, what: str| {
-        assert(abs(a - want) <= within, f"{what}: {a} against the boxer's {want}")
+        assert(abs(a - want) <= within, f"{what}: {a} against the take's {want}")
     }
-    near(g.feet_fore, b.feet_fore, 0.02, "feet fore and aft (m)")
-    near(g.feet_across, b.feet_across, 0.02, "feet across (m)")
-    near(g.knees, b.knees, 6.0, "knees (degrees)")
-    near(g.turn, b.turn, 3.0, "trunk's turn (degrees)")
-    for i in 0..2 {
-        near(g.hand_y[i], b.hand_y[i], 0.02, "a hand's height (m)")
-        near(g.hand_face[i], b.hand_face[i], 0.02, "a hand off the face (m)")
-    }
-    let third = |a: f32, want: f32, what: str| {
-        assert(abs(a - want) <= want / 3.0, f"{what}: {a} against the boxer's {want}")
-    }
-    third(g.bounces, b.bounces, "settles a second")
-    third(g.bounce_high, b.bounce_high, "how far it settles (m)")
-    third(g.sway_across + g.sway_fore, b.sway_across + b.sway_fore, "weight's sway (m)")
-    third(g.hands_most, b.hands_most, "hands' drift (m)")
-    third(g.hands_speed, b.hands_speed, "hands' speed (m/s)")
-    third(g.head_most, b.head_most, "head's drift (m)")
-    third(g.head_speed, b.head_speed, "head's speed (m/s)")
-    assert(g.stillest < 0.1, f"never still: still for {g.stillest} s")
-    assert(g.slide <= b.slide, f"its feet slide {g.slide} m")
+    near(g.bounces, t.bounces, 0.01, "bounces a second")
+    near(g.bounce_high, t.bounce_high, 0.002, "how high (m)")
+    near(g.sway_across, t.sway_across, 0.002, "sway across (m)")
+    near(g.sway_fore, t.sway_fore, 0.002, "sway fore and aft (m)")
+    near(g.heel[0], t.heel[0], 0.002, "the left heel (m)")
+    near(g.heel[1], t.heel[1], 0.002, "the right heel (m)")
+    near(g.feet_fore, t.feet_fore, 0.005, "feet fore and aft (m)")
+    near(g.feet_across, t.feet_across, 0.005, "feet across (m)")
+    assert(g.slide <= 0.018, f"its feet slide {g.slide} m, the take's {t.slide}")
+    let (e, h, ge, gh) = engine::stance::begun(
+        rig,
+        FIGHT_GAITS,
+        [solved::CROSS.clone()],
+        0,
+        engine::end::RIGHT_FIST,
+    )
+    assert(
+        e <= ge + 0.002 && h <= gh + 0.002,
+        f"a cross begun: its fist {e} m, its hips {h} m on its first frame",
+    )
 }

@@ -1222,14 +1222,10 @@ fn span_loop(c: Clip, from: f32, to: f32, fade: f32) -> Clip {
     out
 }
 
-/// The locked fight idle: the boxer's bounce as Wrela code (content/moves, fitted from `BOUNCE`).
-@fuel(2 ** 40)
-pub const FIGHT_IDLE: Clip = moves::stance::STANCE.clip(HERO.rig.clone(), 60.0)
-
 /// How long a round of `fight_round` runs: three bounce loops, the cross thrown in the third,
 /// so the bounce runs on across the seam.
 pub fn fight_length() -> f32 {
-    FIGHT_IDLE_M.length() * 3.0 + a_end() - FT_EARLY
+    fists::BOUNCE.length() * 3.0 + a_end() - FT_EARLY
 }
 
 /// How far the hips turn into the cross before the rear foot has pivoted all the way (radians),
@@ -1247,14 +1243,14 @@ pub fn fight_round(time: f32) -> humanoid::Pose {
     let n = HERO.rig.bones.len()
     let base = HERO.rig.base
     let u = time % fight_length()
-    let bounce = FIGHT_IDLE_M.pose(u % FIGHT_IDLE_M.length())
-    let start = FIGHT_IDLE_M.length() * 2.0
+    let bounce = fists::BOUNCE.pose(u % fists::BOUNCE.length())
+    let start = fists::BOUNCE.length() * 2.0
     if u < start {
         return bounce
     }
     let v = u - start
     // The cross turned to face the way the bounce faces and stood over its hips as it starts.
-    let b0 = FIGHT_IDLE_M.pose(start % FIGHT_IDLE_M.length())
+    let b0 = fists::BOUNCE.pose(start % fists::BOUNCE.length())
     let c0 = TIMED.pose(STILL)
     let turn = Quat::axis_angle(vec3(0.0, 1.0, 0.0), guard_yaw(b0) - guard_yaw(c0))
     let from = base.t + base.q.rotate(c0.hips)
@@ -1320,7 +1316,7 @@ pub fn fight_round(time: f32) -> humanoid::Pose {
         return held
     }
     // (The bounce picked up where the cross left it, its feet where his are.)
-    let again = FIGHT_IDLE_M.pose((v - back) % FIGHT_IDLE_M.length())
+    let again = fists::BOUNCE.pose((v - back) % fists::BOUNCE.length())
     humanoid::blend(held, again, smoothstep(0.0, FT_OUT, v - back), n)
 }
 
@@ -1375,7 +1371,7 @@ fn kimodo_cross_form() {
         rig.find("rightToes"),
         rig.find("rightHand"),
     )
-    let start = FIGHT_IDLE_M.length() * 2.0
+    let start = fists::BOUNCE.length() * 2.0
     let w0 = stride::worlds(rig, one_pose(fight_round(start)), 0)
     for f in 0..90 {
         let w = stride::worlds(rig, one_pose(fight_round(start + f32(f) / 60.0)), 0)
@@ -1393,68 +1389,3 @@ fn kimodo_cross_form() {
         )
     }
 }
-
-/// The VRM bones that come in left and right pairs (the part after "left" / "right").
-pub const SIDED: [Text; 24] = [
-    "Eye",
-    "UpperLeg",
-    "LowerLeg",
-    "Foot",
-    "Toes",
-    "Shoulder",
-    "UpperArm",
-    "LowerArm",
-    "Hand",
-    "ThumbMetacarpal",
-    "ThumbProximal",
-    "ThumbDistal",
-    "IndexProximal",
-    "IndexIntermediate",
-    "IndexDistal",
-    "MiddleProximal",
-    "MiddleIntermediate",
-    "MiddleDistal",
-    "RingProximal",
-    "RingIntermediate",
-    "RingDistal",
-    "LittleProximal",
-    "LittleIntermediate",
-    "LittleDistal",
-]
-
-/// `c` mirrored left for right (through the body's own middle): a right-foot-forward stance becomes
-/// left-foot-forward, each side moving as the other side did.
-fn mirrored_clip(c: Clip) -> Clip {
-    borrow rig = HERO.rig
-    let nb = c.bones
-    var partner: Vec<u32> = Vec::with_capacity(nb)
-    for b in 0..nb {
-        partner.push(b)
-    }
-    for s in SIDED {
-        let (l, r) = (rig.find(f"left{s}".as_str()), rig.find(f"right{s}".as_str()))
-        if l != humanoid::NONE && r != humanoid::NONE {
-            partner[l] = r
-            partner[r] = l
-        }
-    }
-    let base = rig.base
-    let inv = base.inverse()
-    var out = c.clone()
-    for f in 0..c.frames {
-        let w = stride::worlds(rig, c, f)
-        var m = w.clone()
-        for b in 0..nb {
-            let r = inv.then(w[partner[b]])
-            let q = Quat { v: vec4(r.q.v.x, -r.q.v.y, -r.q.v.z, r.q.v.w) }
-            m[b] = base.then(humanoid::Rigid { q: q, t: vec3(-r.t.x, r.t.y, r.t.z) })
-        }
-        stride::store(rig, m, mut out, f)
-    }
-    out
-}
-
-/// The fight idle mirrored (`SHOW=27`): to stand orthodox, left foot forward, so the right hand is
-/// the rear hand that throws the cross.
-@fuel(2 ** 40)
-pub const FIGHT_IDLE_M: Clip = mirrored_clip(FIGHT_IDLE.clone())
