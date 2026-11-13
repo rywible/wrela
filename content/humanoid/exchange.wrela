@@ -106,13 +106,16 @@ pub struct Tune: Copy + Eq {
     /// How heavy the blow is (`engine::contact::Hit::weight`).
     pub weight: f32 = 1.0,
     /// Whether the striker holds the lab's stand-in stick (`stick::BOTH`), in both hands, and cuts
-    /// with it (`downcut::DOWNCUT`) in place of the cross: the blow lands where along it the head
+    /// with it (`slash::SLASH`, or with `source` its source itself) in place of the cross: the blow lands where along it the head
     /// is, going the way the stick goes there, and it's drawn trailing.
     pub stick: bool = false,
     /// Whether the striker, in place of striking, moves round the one struck (`circling`): locked
     /// on to him, circling to each side, backing off and coming in, then unlocked, running round
     /// him. The lab's lock-on scene (`--set CIRCLE=1`, with `STICK=1` armed).
     pub circle: bool = false,
+    /// Whether, armed, the striker cuts with the slash's source itself (`slash::SOURCE`) in place
+    /// of the written slash: the lab's look at the two side by side (`--set SOURCE=1`).
+    pub source: bool = false,
 }
 
 /// Where the striker's stick goes, `clock` s into the lock-on scene, standing at `me` with the one
@@ -198,7 +201,7 @@ pub const CUT_FOE_AT: vec3 = foe_at(giant: false, hit: CUT_POINT)
 
 /// Where the cut's striking point is on its contact (the world), thrown from the origin.
 @fuel(2 ** 40)
-pub const CUT_POINT: vec3 = turned(downcut::cut().end(HERO.rig, downcut::CONTACT), HEADING)
+pub const CUT_POINT: vec3 = turned(slash::slash().end(HERO.rig, slash::CONTACT), HEADING)
 
 fn foe_at(giant: bool, hit: vec3 = KNUCKLES) -> vec3 {
     let (p, s) = if giant {
@@ -225,7 +228,7 @@ fn armed_of(t: Tune) -> u32 {
 
 /// When the striker's strike lands (s into it), as `t` says: the cut's, or the cross's.
 fn contact_of(t: Tune) -> f32 {
-    if t.stick { downcut::CONTACT } else { stepping::CONTACT }
+    if t.stick { slash::CONTACT } else { stepping::CONTACT }
 }
 
 /// Where the one struck is drawn: turned to face the striker, the giant `X_SCALE` times as big.
@@ -310,19 +313,20 @@ pub struct Exchange: Clone {
     from_hit: f32,
 }
 
-/// What the striker does: stands out of reach, throws the cross stepping in (`CROSS`), or with the
-/// stick the cut (`CUT`), and steps back to where he stood (`BACK`, `CUT_BACK`).
+/// What the striker does: stands out of reach, throws the cross stepping in (`CROSS`) and steps
+/// back to where he stood (`BACK`); or, armed, cuts with the slash (`CUT`), or its source itself
+/// (`SOURCE_CUT`), where he stands.
 @fuel(2 ** 40)
 const MOVES: [Move; 4] = [
     stepping::CROSS.clone(),
     stepping::BACK.clone(),
-    downcut::DOWNCUT.clone(),
-    downcut::BACK.clone(),
+    slash::SLASH.clone(),
+    slash::SOURCE.clone(),
 ]
 const CROSS: u32 = 0
 const BACK: u32 = 1
 const CUT: u32 = 2
-const CUT_BACK: u32 = 3
+const SOURCE_CUT: u32 = 3
 
 impl Exchange {
     /// Both in their guards, the cross to be thrown `after` s on (below 0: none till a press).
@@ -390,8 +394,8 @@ impl Exchange {
         self.landed = false
         var act = humanoid::NONE
         if self.throw && self.clock >= 0.0 {
-            act = if t.stick { CUT } else { CROSS }
-            self.then = if t.stick { CUT_BACK } else { BACK }
+            act = if t.stick { if t.source { SOURCE_CUT } else { CUT } } else { CROSS }
+            self.then = if t.stick { humanoid::NONE } else { BACK }
             self.throw = false
         } else if self.then != humanoid::NONE && self.striker.acting == humanoid::NONE {
             act = self.then
@@ -426,9 +430,15 @@ impl Exchange {
             act,
             upper: false,
             how: Handling {},
-            dt: contact::paced(dt, held: holding, grind: contact::kept(self.hit, true, t.grind)),
+            dt: contact::paced(
+                dt,
+                held: holding,
+                grind: contact::kept(self.hit, striker: true, grind: t.grind),
+            ),
         )
-        let striking = self.striker.acting == CROSS || self.striker.acting == CUT
+        let striking = self.striker.acting == CROSS ||
+            self.striker.acting == CUT ||
+            self.striker.acting == SOURCE_CUT
         let now = self.striker.act_time
         if striking && was < contact_of(t) - 0.12 && now >= contact_of(t) - 0.12 {
             self.swing = true
@@ -497,7 +507,7 @@ impl Exchange {
             mut self.drawer,
             self.striker,
             MOVES,
-            [look, anime::PLAIN, look, anime::PLAIN],
+            [look, anime::PLAIN, look, look],
             rig,
             self.mask,
             pose,
@@ -524,7 +534,11 @@ impl Exchange {
             humanoid::NONE,
             upper: false,
             how: Handling {},
-            dt: contact::paced(dt, held: held, grind: contact::kept(self.hit, false, 0.0)),
+            dt: contact::paced(
+                dt,
+                held: held,
+                grind: contact::kept(self.hit, striker: false, grind: 0.0),
+            ),
         )
         self.struck_shown = self.knock.over(rig, moved, give)
         // The one struck with his gloves kept off the striker's arms.
@@ -1104,10 +1118,9 @@ fn the_fist_is_drawn_big_on_the_blow_and_the_stick_trails() {
     assert(trailed > 0.1, f"the stick trails {trailed} m before the contact")
 }
 
-/// A blow that comes down (the cut in both hands, on the neck, at weight 1) bows the one struck
-/// and sinks him at the knees (a weight-1 blow coming straight down sinks him `Give::sink`, this
-/// one comes 60% down: 7 cm), his hips down 6 cm and more with his trunk bowed over them, and
-/// home.
+/// A blow that comes down (the slash, at weight 1) bows the one struck and sinks him at the knees
+/// as far as its share coming down says (a weight-1 blow coming straight down sinks him
+/// `Give::sink`), his trunk bowed over them, and home.
 @test
 fn a_blow_that_comes_down_sinks_the_one_struck() {
     borrow rig = HERO.rig
@@ -1132,9 +1145,12 @@ fn a_blow_that_comes_down_sinks_the_one_struck() {
         sunk_most = max(sunk_most, steps[i].knock.sink.x.x)
     }
     let last = steps[steps.len() - 1].clone()
-    assert(-normalize(steps[landed].hit.way).y > 0.3, "the cut comes down")
-    assert(sank >= 0.06, f"his hips sink {sank} m")
-    assert(sunk_most > 0.06 && last.knock.sink.x.x < 0.01, f"sunk {sunk_most} m, and back up")
+    let down = -normalize(steps[landed].hit.way).y
+    assert(down > 0.3, "the cut comes down")
+    // (As far as its share coming down says: `Give::sink` at weight 1 straight down.)
+    let goal = Give {}.sink * down
+    assert(sank >= 0.8 * goal, f"his hips sink {sank} m, the blow's share down {down}")
+    assert(sunk_most > 0.9 * goal && last.knock.sink.x.x < 0.01, f"sunk {sunk_most} m, and back up")
 }
 
 /// A cut goes on through what it strikes (`contact::Hit::cuts`): the blade isn't held on it, it

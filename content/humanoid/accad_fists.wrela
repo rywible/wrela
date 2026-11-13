@@ -347,11 +347,14 @@ pub const BOXING: Clip = humanoid::retarget(
 /// Real arms: elbows as Male 2's bend boxing, walking and running, on the body; and the shapes
 /// his arms made in all 149 of his takes (assets/accad_male2_arm_shapes.bin).
 @fuel(2 ** 40)
-pub const REAL: arms::Real = arms::real(
-    HERO.rig.clone(),
-    [BOXING.clone(), body::ACCAD_M2_WALK_RAW.clone(), body::ACCAD_M2_RUN_RAW.clone()],
-    embed("assets/accad_male2_arm_shapes.bin"),
-)
+pub const REAL: arms::Real = arms::Real {
+    of: "Male 2's 149 takes: boxing, martial arts, walking, running; none holding a weapon",
+    ..arms::real(
+        HERO.rig.clone(),
+        [BOXING.clone(), body::ACCAD_M2_WALK_RAW.clone(), body::ACCAD_M2_RUN_RAW.clone()],
+        embed("assets/accad_male2_arm_shapes.bin"),
+    ),
+}
 
 /// The captured cross's arms, and its guard's, are arms a person makes: elbows bending the way
 /// elbows bend, hands clear of the head, shapes near a real arm's.

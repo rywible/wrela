@@ -67,12 +67,15 @@ pub const SHOW: u32 = 0
 pub const HAKURO: u32 = 1
 /// Whether the exchange is armed (1): both fighters stand in the armed guard (`armed::GUARD`)
 /// holding the stand-in longsword in both hands (`stick::BOTH`), and the striker cuts with it
-/// (`downcut::DOWNCUT`), its blow landing along it, drawn trailing (`--set STICK=1`).
+/// (`slash::SLASH`), its blow landing along it, drawn trailing (`--set STICK=1`).
 pub const STICK: u32 = 0
 /// Whether the exchange is the lab's lock-on scene (1): the striker circles the one struck locked
 /// on to him, backs off and comes in, then runs round him unlocked (`exchange::circling`; with
 /// `STICK=1`, armed).
 pub const CIRCLE: u32 = 0
+/// Whether, armed, the striker cuts with the slash's source itself (1: Quaternius's
+/// `Sword_Attack` on the body, `slash::SOURCE`) in place of the written slash.
+pub const SOURCE: u32 = 0
 /// `SHOW=12`'s body: the bare body (0), or with `--set CHARTED=1` Hakuro, his arms and hands his
 /// charted forms (`engine::chart`), alone: to see how a strike's turns land on a charted arm.
 pub const CHARTED: u32 = 0
@@ -244,7 +247,12 @@ pub fn init() -> State {
     State {
         lab: Lab::new(),
         ex: Exchange::new(
-            exchange::Tune { stick: STICK == 1, circle: CIRCLE == 1, ..exchange::TUNED },
+            exchange::Tune {
+                stick: STICK == 1,
+                circle: CIRCLE == 1,
+                source: SOURCE == 1,
+                ..exchange::TUNED,
+            },
             after: if SHOW == 28 { exchange::THROW } else { -1.0 },
         ),
         ui: Ui::new(Fonts::load()),

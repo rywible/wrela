@@ -76,6 +76,18 @@ pub fn cuts() -> Vec<(Text, Clip, engine::held::Held, f32)> {
         [
             ("cross-stick", solved::CROSS.clip.clone(), humanoid::stick::STICK, solved::CONTACT),
             (
+                "slash",
+                humanoid::slash::SLASH.clip.clone(),
+                humanoid::stick::STICK,
+                humanoid::slash::CONTACT,
+            ),
+            (
+                "slash-source",
+                humanoid::slash::SOURCE.clip.clone(),
+                humanoid::stick::STICK,
+                humanoid::slash::CONTACT,
+            ),
+            (
                 "downcut",
                 humanoid::downcut::DOWNCUT.clip.clone(),
                 humanoid::stick::BOTH.held,
@@ -331,6 +343,20 @@ pub fn strikes(rig: Rig) -> Vec<Strike> {
                 end: LEFT_FIST,
                 contact: hook::CONTACT,
                 about: "the solved lead hook (hook::HOOK, engine::written): goal poses, each part on its own clock, its numbers solved against spec.wrela",
+            },
+            Strike {
+                name: "slash",
+                clip: humanoid::slash::SLASH.clip.clone(),
+                end: humanoid::slash::STRIKE,
+                contact: humanoid::slash::CONTACT,
+                about: "the slash (slash::SLASH, engine::written): keys read off Sword_Attack at its own moments, followed through",
+            },
+            Strike {
+                name: "slash-source",
+                clip: humanoid::slash::SOURCE.clip.clone(),
+                end: humanoid::slash::STRIKE,
+                contact: humanoid::slash::CONTACT,
+                about: "Quaternius's Sword_Attack on the body (slash::SOURCE, CC0): the slash's source",
             },
             Strike {
                 name: "cross-take",
