@@ -159,6 +159,10 @@ pub fn bot(w: World, i: u32, before: u32, weapon: u32, react: u32) -> u32 {
     held
 }
 
+/// Where the idol's sweep, palm and slam all meet a player (units off it: past the palm's near
+/// edge, 96, within the sweep's far one, 160).
+const MEETS: i32 = 128
+
 /// A bot that takes the idol's blows: it walks to its own spot by the idol and strikes it from
 /// there with its light attack whenever it's free, and answers no tell but one: on `guard` (its
 /// caller's, once it's been hit and till it's parried once) it parries, so the slam that would
@@ -191,15 +195,18 @@ pub fn taker(w: World, i: u32, before: u32, weapon: u32, guard: bool) -> u32 {
     }
     // It strikes from its spot, not nearer: a strike that carries its striker in (mmo/combat's
     // `TRAVELLING`) would take it on in under the idol's feet, strike by strike, where only the
-    // stomp meets it. It stands back by its strike's step, so the step lands it at its spot.
+    // stomp meets it. Its spot's where the sweep, the palm and the slam all meet it (`MEETS`, or
+    // nearer if its reach is shorter), and it stands back by its strike's step, so the step lands
+    // it there.
     let light = WEAPONS[weapon].light
     let reach = combat::sim::reach_of(light, combat::sim::IDOL_BODY)
     let step = combat::sim::travelled(light, MOVES[light].windup)
+    let there = min(reach - 24, MEETS)
     let at = d - step
-    if at <= reach - 16 && at >= reach - 32 && !guard {
+    if at <= min(there + 8, reach - 16) && at >= there - 16 && !guard {
         return press(ATTACK) | stick_to(dx, dz, 0)
     }
-    let (ox, oz) = spot(i, reach - 24 + step)
+    let (ox, oz) = spot(i, there + step)
     let (tx, tz) = (b.x + ox - p.x, b.z + oz - p.z)
     held | stick_to(tx, tz, if dist(tx, tz) > 128 { 2 } else { 0 })
 }
