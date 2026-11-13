@@ -720,6 +720,11 @@ struct Fighter: Clone + Eq {
     /// Whether it's locked on to the foe (`LOCK_ON`): its facing the foe's way while it's free,
     /// its stick moving it without turning it.
     locked: bool,
+    /// What's left over of its steps, in 64ths of a unit, carried from frame to frame: a step
+    /// the way its stick points is its pace times the way's (`DIR_X`, `DIR_Z`) over 64, and the
+    /// whole units of it move it, the rest carried on, so every way goes at its stated pace.
+    carry_x: i32,
+    carry_z: i32,
 }
 
 impl Fighter {
@@ -746,6 +751,8 @@ impl Fighter {
             carried_x: 0,
             carried_z: 0,
             locked: false,
+            carry_x: 0,
+            carry_z: 0,
         }
     }
 }
@@ -1341,8 +1348,13 @@ fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32, foe: (i32, i
             let speed = if p.locked { LOCKED_SPEED[(stick - 1) % 3] } else {
                 SPEED[(stick - 1) % 3]
             }
-            p.x += DIR_X[dir] * speed / 64
-            p.z += DIR_Z[dir] * speed / 64
+            // (In 64ths, what's left over carried on: at the slowest stick, a unit a frame, a
+            // way off the square ones, 59 or 24 64ths, moves a whole unit only every frame or few.)
+            let (vx, vz) = (DIR_X[dir] * speed + p.carry_x, DIR_Z[dir] * speed + p.carry_z)
+            p.x += vx / 64
+            p.z += vz / 64
+            p.carry_x = vx - vx / 64 * 64
+            p.carry_z = vz - vz / 64 * 64
         }
     } else if p.act == DODGING {
         p.x += p.dx
@@ -2287,4 +2299,31 @@ fn a_boss_stood_still_and_let_go_strikes_again() {
         moved = moved || g.boss.act != IDLE
     }
     assert(moved, "let go, it strikes")
+}
+
+/// Every way the stick points goes at its stated pace, locked on (`LOCKED_SPEED`) or not
+/// (`SPEED`): over a second, each of the 16 ways at each of the stick's three sizes covers its
+/// pace times the way (`DIR_X`, `DIR_Z`, over 64), each side within a unit. (At the slowest stick,
+/// locked on, a unit a frame, 12 of the 16 ways once moved nothing: 59 and 24 64ths of a unit are
+/// none in whole units.)
+@test
+fn every_way_goes_at_its_pace() {
+    for locked in [false, true] {
+        for dir in 0..16 {
+            for size in 0..3 {
+                var p = Fighter::new(0, 0, PLAYER_HP, LONGSWORD, AHEAD)
+                p.locked = locked
+                let stick = 1 + u32(dir) * 3 + u32(size)
+                for _ in 0..60 {
+                    step_player(mut p, stick, 0, BUFFER, (0, 50 * UNIT))
+                }
+                let speed = if locked { LOCKED_SPEED[size] } else { SPEED[size] }
+                let (wx, wz) = (DIR_X[dir] * speed * 60 / 64, DIR_Z[dir] * speed * 60 / 64)
+                assert(
+                    abs(p.x - wx) <= 1 && abs(p.z - wz) <= 1,
+                    f"way {dir}, size {size}, locked {locked}: went ({p.x}, {p.z}), its pace ({wx}, {wz})",
+                )
+            }
+        }
+    }
 }
