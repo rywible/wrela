@@ -5,11 +5,12 @@
 
 use engine::held::Held
 use engine::keys::Wield
-use engine::humanoid::Rigid
+use engine::humanoid::{BodyVertex, Rigid}
 use engine::creature::{Creature, creature, hard}
 use std::field::{Bound, Surface, UNBOUNDED}
 use hakuro::hakuro::{Cloth, skeleton}
 use body::HERO
+use std::transform::inverse
 use solved
 
 /// How long the stick is past the fist (m), and how far its butt shows below it: room for the
@@ -176,6 +177,135 @@ pub fn stick_creature() -> Creature<Cloth> {
 
 /// Its paint: plain steel.
 const STEEL = Cloth { albedo: vec3(0.55, 0.56, 0.58), rough: 0.35, metal: 1.0 }
+
+/// The stand-in as the plain body holds it (`body::HERO`, painted by `paint::body`): `Sword`'s
+/// shape from its own numbers in flat facets (its blade a flat diamond narrowing to its end, its
+/// cross a bar, its grip and pommel squared), every vertex wholly its right hand's, its part
+/// `paint::HELD` so it's painted its own colour, in `STEEL`'s. What Hakuro holds is the field
+/// itself, realized (`stick_creature`); the plain body is drawn from vertices it's given, so it's
+/// given these. Its triangles number its vertices on from `first`.
+pub fn on_body(first: u32) -> (Vec<BodyVertex>, Vec<u32>) {
+    borrow rig = HERO.rig
+    let hand = rig.find("rightHand")
+    let bind = inverse(rig.bones[hand].ibm)
+    var verts: Vec<BodyVertex> = Vec::new()
+    var tris: Vec<u32> = Vec::new()
+    // The blade: a flat diamond across, from the cross to its end, narrowing to 0.3 of itself.
+    let (b0, b1) = (CROSS_AT, CROSS_AT + BLADE)
+    let (hw, ht) = (WIDE * 0.5, FLAT * 0.5)
+    let ring = |u: f32, k: f32| -> [vec3; 4] {
+        [
+            vec3(u, hw * k, 0.0),
+            vec3(u, 0.0, ht * k),
+            vec3(u, -hw * k, 0.0),
+            vec3(u, 0.0, -ht * k),
+        ]
+    }
+    let (r0, r1) = (ring(b0, 1.0), ring(b1, 0.3))
+    let mid = vec3((b0 + b1) * 0.5, 0.0, 0.0)
+    for i in 0..4 {
+        let j = (i + 1) % 4
+        facet(mut verts, mut tris, first, [r0[i], r1[i], r1[j], r0[j]], mid, bind, hand)
+    }
+    facet(mut verts, mut tris, first, r0, mid, bind, hand)
+    facet(mut verts, mut tris, first, r1, mid, bind, hand)
+    // The cross, the grip and the pommel, each a box.
+    let c = CROSS_AT * 0.5
+    boxed(
+        mut verts,
+        mut tris,
+        first,
+        vec3(c - 0.012, -CROSS, -0.014),
+        vec3(c + 0.012, CROSS, 0.014),
+        bind,
+        hand,
+    )
+    boxed(
+        mut verts,
+        mut tris,
+        first,
+        vec3(-BUTT + POMMEL, -GRIP, -GRIP),
+        vec3(c - 0.012, GRIP, GRIP),
+        bind,
+        hand,
+    )
+    let p = -BUTT + POMMEL * 0.5
+    let r = POMMEL * 0.8
+    boxed(mut verts, mut tris, first, vec3(p - r, -r, -r), vec3(p + r, r, r), bind, hand)
+    (verts, tris)
+}
+
+/// A point in the sword's own frame (along it from the hilt, toward its edge, across its flat:
+/// `Sword`'s `u`, `v`, `w`) in its hand's frame, as `STICK` holds it.
+fn in_hand(sw: vec3) -> vec3 {
+    // (`STICK`'s own frame: along it +y, its edge +x, so across its flat, along by edge, -z.)
+    STICK.grip.t + STICK.grip.q.rotate(vec3(sw.y, sw.x, -sw.z))
+}
+
+/// A box from `lo` to `hi` in the sword's own frame, as six facets.
+fn boxed(
+    verts: mut Vec<BodyVertex>,
+    tris: mut Vec<u32>,
+    first: u32,
+    lo: vec3,
+    hi: vec3,
+    bind: mat4,
+    hand: u32,
+) {
+    let c = (lo + hi) * 0.5
+    let at = |i: u32| -> vec3 {
+        vec3(if i & 1 != 0 { hi.x } else { lo.x }, if i & 2 != 0 { hi.y } else {
+            lo.y
+        }, if i & 4 != 0 { hi.z } else { lo.z })
+    }
+    for f in [[0, 1, 3, 2], [4, 5, 7, 6], [0, 1, 5, 4], [2, 3, 7, 6], [0, 2, 6, 4], [1, 3, 7, 5]] {
+        facet(mut verts, mut tris, first, [at(f[0]), at(f[1]), at(f[2]), at(f[3])], c, bind, hand)
+    }
+}
+
+/// A flat four-cornered facet (`ps`, the sword's own frame, round its edge in order), facing away
+/// from `centre`: its corners in the body's bind space (`bind`, the hand's), each wholly `hand`'s.
+fn facet(
+    verts: mut Vec<BodyVertex>,
+    tris: mut Vec<u32>,
+    first: u32,
+    ps: [vec3; 4],
+    centre: vec3,
+    bind: mat4,
+    hand: u32,
+) {
+    var q = [vec3(0.0); 4]
+    for i in 0..4 {
+        q[i] = (bind * vec4(in_hand(ps[i]), 1.0)).xyz
+    }
+    let c = (bind * vec4(in_hand(centre), 1.0)).xyz
+    var n = normalize(cross(q[1] - q[0], q[2] - q[0]))
+    // (Wound so its front faces out: counter-clockwise seen from outside.)
+    if dot(n, (q[0] + q[1] + q[2] + q[3]) * 0.25 - c) < 0.0 {
+        q = [q[0], q[3], q[2], q[1]]
+        n = -n
+    }
+    let base = first + verts.len()
+    let steel = vec3(0.55, 0.56, 0.58)
+    let s = clamp(steel, vec3(0.0), vec3(1.0)) * 255.0 + vec3(0.5)
+    for i in 0..4 {
+        verts.push(
+            BodyVertex {
+                pos: q[i],
+                bones: hand,
+                normal: n,
+                weights: 255,
+                colour: u32(s.x) | (u32(s.y) << 8) | (u32(s.z) << 16) | (255 << 24),
+                part: paint::HELD,
+                pad0: 0,
+                pad1: 0,
+            },
+        )
+    }
+    for k in [0, 1, 2, 0, 2, 3] {
+        tris.push(base + k)
+    }
+}
 
 /// Where along it a point is, and which way a blow by it goes: the hilt 0 and the tip 1; turned
 /// about the wrist, its tip goes square to its length, and a blow there goes that way.

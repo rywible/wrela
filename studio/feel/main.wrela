@@ -21,8 +21,8 @@
 // - **Each move's windows**: its frames as the rules have them.
 // - **Warning before the idol's hits**: from the first drawing in which its body has moved
 //   (2 cm) toward its hit to the frame the rules hit. The target is at least 14.
-// - **Hit to drawn contact**: from the frame the rules hit to the drawing whose fist is nearest
-//   where the move puts it on its contact. The target is 0.
+// - **Hit to drawn contact**: from the frame the rules hit to the drawing whose fist (a
+//   longsword's striking point) is nearest where the move puts it on its contact. The target is 0.
 // - **Drift**: how far the drawn bodies are from the rules' places in a fight whose second
 //   player is heard `LATE` frames late, so the first's client predicts and corrects.
 // - **Chains**: each weapon's chain struck at the idol standing still: whether each strike lands
@@ -89,9 +89,10 @@ fn apart(a: Shown, b: Shown) -> f32 {
     most
 }
 
-/// The right fist of `pose`, in the pose's own space (where it's drawn left out).
-fn fist_of(pose: engine::humanoid::Pose) -> vec3 {
-    pose_world(HERO.rig, pose)[HERO.rig.find("rightHand")].t
+/// What strikes with `weapon` in `pose` (its right fist, or the longsword's striking point:
+/// mmo/game's `bodies::strikes_with`), in the pose's own space (where it's drawn left out).
+fn fist_of(pose: engine::humanoid::Pose, weapon: u32) -> vec3 {
+    bodies::strikes_with(weapon).in_pose(HERO.rig, pose_world(HERO.rig, pose))
 }
 
 // ---- press to drawing ----------------------------------------------------------------------------
@@ -376,29 +377,45 @@ fn striking(boss: bool, m: u32, k: u32) -> Seen {
     let (act, timer, move_) = if k < w { (WINDUP, w - k, m) } else if k < w + a {
         (ACTIVE, w + a - k, m)
     } else if k < w + a + r { (RECOVER, w + a + r - k, m) } else { (IDLE, 0, NO_MOVE) }
-    Seen { x: 0, z: 0, hp: 100, stamina: 100, act, timer, move_, facing: 4 }
+    Seen { act, timer, move_, ..still(weapon_for(boss, m)) }
 }
 
-fn still() -> Seen {
-    Seen { x: 0, z: 0, hp: 100, stamina: 100, act: IDLE, timer: 0, move_: NO_MOVE, facing: 4 }
+/// The weapon that makes the player's move `m` (`bodies::weapon_of`); the idol's fists.
+fn weapon_for(boss: bool, m: u32) -> u32 {
+    if boss { FISTS } else { bodies::weapon_of(m) }
+}
+
+fn still(weapon: u32) -> Seen {
+    Seen {
+        x: 0,
+        z: 0,
+        hp: 100,
+        stamina: 100,
+        act: IDLE,
+        timer: 0,
+        move_: NO_MOVE,
+        facing: 4,
+        weapon,
+    }
 }
 
 /// A strike drawn as the rules time it, from a body that stood a second: the frame (from when the
 /// rules began it) of its first drawing that moved `moved` from where it'd stand, and of the
 /// drawing whose fist was nearest where the move puts it on its contact.
 fn drawn_strike(boss: bool, m: u32, moved: f32) -> (u32, u32, f32) {
-    var b = Body::new(still(), boss: boss)
+    let weapon = weapon_for(boss, m)
+    var b = Body::new(still(weapon), boss: boss)
     let mask = Bodies::new().mask()
     var frame: u32 = 1
     for _ in 0..60 {
-        let _ = shown(mut b, still(), frame, mask, DT)
+        let _ = shown(mut b, still(weapon), frame, mask, DT)
         frame += 1
     }
     var idle = b
-    // Where the written strike puts its fist on its contact, as written (not the played move's
-    // own pose on the hit frame, which is wherever the fist is then): mmo/game's `bodies`.
+    // Where the written strike puts what strikes on its contact, as written (not the played
+    // move's own pose on the hit frame, which is wherever it is then): mmo/game's `bodies`.
     let hit = if boss { ATTACKS[m].windup + 1 } else { MOVES[m].windup }
-    let target = bodies::contact_of(player: !boss)
+    let target = bodies::contact_of(weapon, boss: boss)
     var on_hit = 0.0
     var first: u32 = 0
     var nearest: u32 = 0
@@ -408,12 +425,12 @@ fn drawn_strike(boss: bool, m: u32, moved: f32) -> (u32, u32, f32) {
     } else { (MOVES[m].windup, MOVES[m].active, MOVES[m].recovery) }
     for k in 0..(w + a + r) {
         let s = shown(mut b, striking(boss, m, k), frame, mask, DT)
-        let i = shown(mut idle, still(), frame, mask, DT)
+        let i = shown(mut idle, still(weapon), frame, mask, DT)
         frame += 1
         if first == 0 && apart(s, i) > moved {
             first = k
         }
-        let d = length(fist_of(s.pose) - target)
+        let d = length(fist_of(s.pose, weapon) - target)
         if k == hit {
             on_hit = d
         }
@@ -440,7 +457,7 @@ fn warnings() -> String {
 
 fn contacts() -> String {
     var t = String::from(
-        "## Hit to drawn contact\n\nFrames from the rules' hit to the drawing whose fist is nearest where the written cross puts it on its contact, and how far it is from there on the hit frame (target 0; negative: drawn before the hit). The fight draws a strike on twos, a drawing every 5 frames.\n\n| Strike | Rules hit (frame) | Drawn contact (frame) | Off by | Fist from its contact on the hit frame (cm) |\n|---|---|---|---|---|\n",
+        "## Hit to drawn contact\n\nFrames from the rules' hit to the drawing whose fist (the longsword's: its blade's striking point) is nearest where the written strike puts it on its contact, and how far it is from there on the hit frame (target 0; negative: drawn before the hit). The fight draws a strike on twos, a drawing every 5 frames.\n\n| Strike | Rules hit (frame) | Drawn contact (frame) | Off by | Fist from its contact on the hit frame (cm) |\n|---|---|---|---|---|\n",
     )
     for i in 0..MOVES.len() {
         let (_, near, off) = drawn_strike(boss: false, m: i, moved: MOVED)

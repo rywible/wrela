@@ -141,6 +141,11 @@ pub const BELT = vec3(0.11, 0.085, 0.075)
 pub const SHOES = vec3(0.28, 0.18, 0.12)
 pub const WRAPS = vec3(0.90, 0.86, 0.76)
 
+/// The part a thing the body holds is (`BodyVertex::part`; the body's own are 0 to 5,
+/// `engine::humanoid::part_of`): painted its own colour, not by what the body wears where it is
+/// at rest, and inked as a part of its own.
+pub const HELD: u32 = 6
+
 /// What the body wears where, by its point at rest (the bind T-pose, metres, +y up, +x its left,
 /// +z ahead): the colour (sRGB; none for its own skin) and the side of the line field it's on, the
 /// sign flipping across each edge of a garment so the ink draws it. Arms (out along x at rest):
@@ -226,7 +231,7 @@ pub fn paint_body(b: BodyOut, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     let n = normalize(b.normal)
     let v = normalize(shot.cam.eye - b.world)
     let l = shot.sun
-    let (worn, field) = outfit(b.rest)
+    let (worn, field) = if b.part.value == HELD { (None, 1.0) } else { outfit(b.rest) }
     let albedo = match worn {
         Some(c) => c * c,
         None => b.albedo,

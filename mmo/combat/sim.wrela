@@ -729,6 +729,8 @@ pub struct Seen: Copy {
     pub carried_z: i32 = 0,
     /// Whether it's locked on to the foe (`LOCK_ON`).
     pub locked: bool = false,
+    /// Its weapon (`WEAPONS`: `FISTS`, `LONGSWORD`), so a client draws what it holds.
+    pub weapon: u32 = 0,
 }
 
 impl World {
@@ -871,6 +873,7 @@ fn seen(f: Fighter) -> Seen {
         carried_x: f.carried_x,
         carried_z: f.carried_z,
         locked: f.locked,
+        weapon: f.weapon,
     }
 }
 

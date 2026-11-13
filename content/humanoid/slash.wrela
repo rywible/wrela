@@ -138,13 +138,16 @@ pub fn slash() -> Written<KEYS> {
 /// The slash as the fight plays it at its own beats: its contact at `CONTACT`, its follow-through
 /// and finish the active frames' and the recovery's.
 @fuel(2 ** 40)
-pub const SLASH: Move = slash().played(
-    HERO.rig,
-    CONTACT,
+pub const SLASH: Move = slash_at(
     Beats { windup: CONTACT, active: 0.1, recovery: slash().length() - CONTACT - 0.1 },
-    fps: 60.0,
-    fist: 2.0,
 )
+
+/// The slash as a game plays it at `beats` (`engine::written::Written::played`): at 60 a second,
+/// the sword hand closed on its grip, its blade through its target on the frame the rules hit.
+/// The one way the slash is played: the lab's (`SLASH`), the game's (mmo/game's `bodies`).
+pub fn slash_at(beats: Beats) -> Move {
+    slash().played(HERO.rig, CONTACT, beats, fps: 60.0, fist: 2.0)
+}
 
 /// The source itself on the body, held in place, its hands made fists: what the slash is judged
 /// against.
