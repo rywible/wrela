@@ -53,24 +53,24 @@ pub fn cross() -> Written<8> {
     let rest = guard()
     // ---- What the solve finds (spec.wrela): each number alone on its line. ----
     // When the throw sets off (the beat's end, s).
-    let sets_off = 0.2767
+    let sets_off = 0.2768
     // How far ahead the hips are on contact (m), and how far the hips and the chest above
     // them have turned (degrees toward the left).
-    let drive = 0.029
-    let hips_yaw = 19.69
-    let chest_yaw = 34.78
+    let drive = 0.069
+    let hips_yaw = 19.82
+    let chest_yaw = 34.88
     // Where the contact key puts the fist: not the target, since the arm gets there late.
-    let spot_x = -0.0470
-    let spot_y = 1.5324
-    let spot_z = 0.6953
+    let spot_x = -0.0455
+    let spot_y = 1.4833
+    let spot_z = 0.6954
     // How far out to the side the striking elbow points on contact (degrees from straight
     // down). An elbow's hinge is kept by twisting its upper arm (`keys::posed`), so the way
     // it points is found: the one its arm bends about its hinge for.
     let elbow_out = 74.90
     // Where the load draws the fist to, off the guard's (m, out to the side and back): the
     // throw's whole way out, which its snap is read against.
-    let draw_x = 0.01
-    let draw_z = -0.10
+    let draw_x = 0.15
+    let draw_z = -0.09
     // How the body follows the hips: the fighter's (`taste`), as every move of his is.
     let chain = taste().chain
     // The load: sunk and coiled onto the rear foot, the rear fist drawn back a hand's width,
@@ -109,7 +109,8 @@ pub fn cross() -> Written<8> {
     contact.hips_turn = vec3(0.0, hips_yaw, 0.0)
     contact.trunk = vec3(12.0, chest_yaw, 0.0)
     contact.collars = [vec3(0.0), vec3(0.0, 10.0, -8.0)]
-    contact.fists = [rest.fists[0] + vec3(0.02, -0.04, -0.08), vec3(spot_x, spot_y, spot_z)]
+    // (The lead fist pulled back to the face, wherever the guard holds it.)
+    contact.fists = [vec3(0.12, 1.36, 0.22), vec3(spot_x, spot_y, spot_z)]
     let out = elbow_out * 0.017453292
     contact.elbows = [vec3(0.3, -1.0, -0.3), vec3(-sin(out), -cos(out), 0.0)]
     contact.feet[1] = keys::turned_foot(rest.feet[1], yaw: -5.0, heel: 32.0)

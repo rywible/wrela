@@ -23,6 +23,8 @@ use ui::text::{Face, Fonts}
 pub const LATE: u32 = 6
 /// How many frames into the idol's windup the bots answer it.
 pub const REACT: u32 = 15
+/// A line drawn over the fight to say which it is (`--set TITLE="..."`; none by default).
+pub const TITLE: Text = ""
 /// Whether the first player is a bot that takes the idol's blows (`bots::taker`): 0 not, 1 alone
 /// against the idol, 2 beside the fight's bot.
 pub const TAKER: u32 = 0
@@ -44,6 +46,9 @@ pub struct State {
     /// rules pushed it (m).
     blow: String,
     blow_from: vec2,
+    /// Whether the taker's on guard, and whether it's parried once.
+    guard: bool,
+    parried: bool,
 }
 
 pub fn init() -> State {
@@ -60,6 +65,8 @@ pub fn init() -> State {
         last: 0.0,
         blow: String::new(),
         blow_from: vec2(0.0),
+        guard: false,
+        parried: false,
     }
 }
 
@@ -75,7 +82,9 @@ fn play_to(s: mut State, to: u32) {
         var ins: Vec<u32> = Vec::new()
         for i in 0..s.truth.players() {
             let before = if f > 0 { input_at(s, i, f - 1) } else { 0 }
-            let x = if TAKER != 0 && i == 0 { taker(s.truth, i, before, WEAPONS_OF[i]) } else {
+            let x = if TAKER != 0 && i == 0 {
+                taker(s.truth, i, before, WEAPONS_OF[i], s.guard)
+            } else {
                 bot(s.truth, i, before, WEAPONS_OF[i], REACT)
             }
             s.inputs[i].push(x)
@@ -86,8 +95,12 @@ fn play_to(s: mut State, to: u32) {
             s.past.remove(0)
         }
         let (was, attack) = (s.truth.player(0), s.truth.boss().move_)
+        let staggered = s.truth.boss().act == combat::sim::STAGGERED
         step(mut s.truth, ins)
         let now = s.truth.player(0)
+        // (The taker's on guard once it's been hit, till it's parried once.)
+        s.parried = s.parried || (!staggered && s.truth.boss().act == combat::sim::STAGGERED)
+        s.guard = now.hp < 100 && !s.parried
         if now.hp < was.hp && attack != NO_MOVE {
             s.blow = String::from(
                 f"{ATTACKS[attack].name} landed on P1 at {f32(s.truth.frame) / 60.0:.2} s",
@@ -133,6 +146,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     }
     let b = shown.boss()
     line(mut s, String::from(f"Idol  {b.hp} hp").as_str(), 74.0)
+    if TITLE != "" {
+        line(mut s, TITLE, f32(height) - 40.0)
+    }
     if s.blow.len() > 0 {
         let p = s.truth.player(0)
         let pushed = length(vec2(f32(p.carried_x), f32(p.carried_z)) - s.blow_from) / 64.0
@@ -169,17 +185,22 @@ fn takers_blows(frames: u32, alone: bool) -> Vec<(u32, Text, f32)> {
     var before = [u32(0), 0]
     var out: Vec<(u32, Text, f32)> = Vec::new()
     var open: Vec<(u32, Text, vec2)> = Vec::new()
+    var guard = false
+    var parried = false
     for _ in 0..frames {
         let second = if alone { 0 } else { bot(w, 1, before[1], WEAPONS_OF[1], REACT) }
-        let ins = [taker(w, 0, before[0], WEAPONS_OF[0]), second]
+        let ins = [taker(w, 0, before[0], WEAPONS_OF[0], guard), second]
         before = ins
         let (was, attack) = (w.player(0), w.boss().move_)
+        let staggered = w.boss().act == combat::sim::STAGGERED
         if alone {
             step(mut w, [ins[0]])
         } else {
             step(mut w, ins)
         }
         let now = w.player(0)
+        parried = parried || (!staggered && w.boss().act == combat::sim::STAGGERED)
+        guard = now.hp < 100 && !parried
         let carried = vec2(f32(now.carried_x), f32(now.carried_z))
         if now.hp < was.hp && attack != NO_MOVE {
             open.push((w.frame, ATTACKS[attack].name, carried))
@@ -194,24 +215,20 @@ fn takers_blows(frames: u32, alone: bool) -> Vec<(u32, Text, f32)> {
 }
 
 /// The taker takes the idol's blows, so a clip shows what knockback does (mmo/combat's
-/// `push_of`): alone, a sweep and a palm land on it, pushing it 0.52 and 0.94 m; beside the
-/// fight's bot, a slam does, pushing it 2.11 m (alone, the slam comes last and the dead aren't
-/// pushed). Each lands in the clip's 12 s.
+/// `push_of`): alone against it, a sweep, the palm and the slam each land on it, each pushing it as
+/// far as its weight says (0.52, 0.94 and 2.11 m), all in the clip's 12 s.
 @test
 fn the_taker_takes_the_idols_blows() {
     if !combat::sim::KNOCKBACK {
         return
     }
-    for (alone, name, push) in [
-        (true, "Sweep", 0.52),
-        (true, "Palm", 0.94),
-        (false, "Slam", 2.11),
-    ] {
+    let blows = takers_blows(720, alone: true)
+    for (f, n, pushed) in blows.clone() {
+        std::io::print(f"  frame {f} ({f32(f) / 60.0:.2} s): {n}, pushed {pushed:.2} m")
+    }
+    for (name, push) in [("Sweep", 0.52), ("Palm", 0.94), ("Slam", 2.11)] {
         var seen = false
-        for (f, n, pushed) in takers_blows(720, alone) {
-            std::io::print(
-                f"  {if alone { "alone" } else { "beside" }}: frame {f} ({f32(f) / 60.0:.2} s): {n}, pushed {pushed:.2} m",
-            )
+        for (_, n, pushed) in blows.clone() {
             if n == name && abs(pushed - push) < 0.05 {
                 seen = true
             }

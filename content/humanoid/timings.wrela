@@ -148,8 +148,7 @@ fn timing_is_part_of_a_strikes_review() {
 @test
 fn timing_names_keys_out_of_reach() {
     borrow rig = HERO.rig
-    let guard = fists::guard_keys()
-    assert(keys::misses(rig, guard, 60.0).len() == 0, "the guard is within reach")
+    assert(keys::misses(rig, [fists::guard()], 60.0).len() == 0, "the guard is within reach")
     var far = fists::guard()
     far.at = 0.2
     far.fists[1] = far.fists[1] + vec3(0.0, 0.0, 1.5)

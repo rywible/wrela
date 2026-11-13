@@ -125,22 +125,37 @@ pub fn bot(w: World, i: u32, before: u32, weapon: u32, react: u32) -> u32 {
 }
 
 /// A bot that takes the idol's blows: it walks to its own side of the idol and strikes it there
-/// with its light attack whenever it's free, and never answers a tell (no parry, no dodge). So
+/// with its light attack whenever it's free, and answers no tell but one: on `guard` (its
+/// caller's, once it's been hit and till it's parried once) it parries, so the slam that would
+/// finish it lands on it standing. So
 /// the idol's sweeps, palms and slams land on it, and what a blow does to a player (mmo/combat's
 /// knockback) is there to see; pushed off, it walks straight back in and strikes. For a clip
 /// (`TAKER` in this program), not a fighter's measure: the bench's bots are `bot`'s.
-pub fn taker(w: World, i: u32, before: u32, weapon: u32) -> u32 {
+pub fn taker(w: World, i: u32, before: u32, weapon: u32, guard: bool) -> u32 {
     let p = w.player(i)
     let b = w.boss()
     let held = before & BUTTON_BITS
     let press = |button: u32| -> u32 { held ^ (button << 6) }
     let (dx, dz) = (b.x - p.x, b.z - p.z)
     let d = dist(dx, dz)
-    if p.hp <= 0 || w.over || p.act != IDLE {
+    if p.hp <= 0 || w.over {
         return held
     }
+    if p.act != IDLE {
+        return held
+    }
+    // On guard (`guard`: its caller's say, once it's been hit), it strikes no more, keeps to its
+    // own side of the idol, and parries the next tell a parry meets.
+    if guard {
+        if b.act == WINDUP &&
+            b.move_ < ATTACKS.len() &&
+            ATTACKS[b.move_].parried &&
+            b.timer < PARRY_WINDOW {
+            return press(PARRY) | stick_to(dx, dz, 0)
+        }
+    }
     let reach = MOVES[WEAPONS[weapon].light].reach
-    if d <= reach - 16 {
+    if d <= reach - 16 && !guard {
         return press(ATTACK) | stick_to(dx, dz, 0)
     }
     let (ox, oz) = spot(i, reach - 40)

@@ -427,7 +427,7 @@ fn pose_at(time: f32) -> Pose {
         24 => kimodo::SHRUG_D.pose(time % kimodo::SHRUG_D.length()),
         25 => kimodo::SHRUG_N.pose(time % kimodo::SHRUG_N.length()),
         26 => kimodo::fight_round(time),
-        27 => kimodo::FIGHT_IDLE_M.pose(time % kimodo::FIGHT_IDLE_M.length()),
+        27 => fists::BOUNCE.pose(time % fists::BOUNCE.length()),
         _ => if time < IDLE_AT {
             T_POSE.pose(0.0)
         } else if time < WALK_AT {
