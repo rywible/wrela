@@ -349,11 +349,16 @@ fn the_duel_does_what_it_says() {
         step(mut w, [x])
         staggered = staggered || w.boss().act == combat::sim::STAGGERED
         cut_open = cut_open || (open && w.boss().hp < hp)
-        if w.player(0).hp < 100 && script::pushed(s, w) > 0.2 {
+        // (His blow pushes it, if blows push, `KNOCKBACK`.)
+        let pushes = script::pushed(s, w) > 0.2 || !combat::sim::KNOCKBACK
+        if w.player(0).hp < 100 && pushes {
             break
         }
     }
     assert(staggered, "its parry staggers him")
     assert(cut_open, "its cut lands while he's open")
-    assert(w.player(0).hp < 100 && script::pushed(s, w) > 0.2, "his blow lands and pushes it")
+    assert(
+        w.player(0).hp < 100 && (script::pushed(s, w) > 0.2 || !combat::sim::KNOCKBACK),
+        "his blow lands and pushes it",
+    )
 }

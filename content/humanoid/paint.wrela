@@ -238,9 +238,10 @@ pub fn paint_body(b: BodyOut, shot: Shot) -> Targets3<vec4, vec4, vec4> {
     }
     // (A tint above 1 is stone: the clothes' colour gone, their value kept, in the tint's hue.)
     let grey = dot(albedo, vec3(0.3, 0.55, 0.15))
-    let albedo = if b.tint.w > 1.5 { b.tint.rgb * (0.12 + 0.6 * sqrt(grey)) } else {
-        mix(albedo, albedo * b.tint.rgb, vec3(saturate(b.tint.w)))
-    }
+    // (What it holds keeps its own colour: a body's tint is its own, not its sword's.)
+    let albedo = if b.part.value == HELD { albedo } else if b.tint.w > 1.5 {
+        b.tint.rgb * (0.12 + 0.6 * sqrt(grey))
+    } else { mix(albedo, albedo * b.tint.rgb, vec3(saturate(b.tint.w))) }
     let ndl = dot(n, l)
     let lit_side = band(ndl, edge: 0.02, soft: 0.035)
     let full = band(ndl, edge: 0.45, soft: 0.035)

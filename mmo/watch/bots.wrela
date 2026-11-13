@@ -75,10 +75,10 @@ fn fits(m: u32, b: Seen) -> bool {
 
 /// How near the boss is under its feet (the rules' units): as far as its attacks reach that meet
 /// only who's there, the ones it doesn't walk in for (the stomp's). The swordsman, a man, has no
-/// such blow: no nearer than two bodies (`sim::BODY` twice), where the rules stop a step.
+/// such blow: nowhere's under his feet.
 fn underfoot(b: Seen) -> i32 {
     if b.man {
-        return combat::sim::BODY * 2
+        return 0
     }
     var far = 0
     for a in ATTACKS {
@@ -98,7 +98,14 @@ fn lands_in(m: u32, d: i32, reach: i32, b: Seen) -> bool {
     if m == NO_MOVE {
         return false
     }
-    let at = d - combat::sim::travelled(m, MOVES[m].windup)
+    // (Where its step leaves it: the swordsman, a man, stops it where its sweep still meets him,
+    // `sim::met_from`, as the rules do, and no nearer than it stands.)
+    let stepped = d - combat::sim::travelled(m, MOVES[m].windup)
+    let at = if b.man {
+        min(d, max(stepped, combat::sim::met_from(m, 0, combat::sim::BODY)))
+    } else {
+        stepped
+    }
     // (A weapon too short to strike from outside the boss's feet, the fists' sweep, strikes from as
     // far off as it can.)
     at <= reach && at >= min(d, min(underfoot(b) + 1, reach - 32))
@@ -163,6 +170,11 @@ pub fn bot(w: World, i: u32, before: u32, weapon: u32, react: u32) -> u32 {
         lands_in(next, d, reach, b) &&
         fits(next, b) {
         return press(ATTACK)
+    }
+    // (Against the swordsman: stood too close for its cut to meet him, its blade passing beyond
+    // him, it backs off at once, at a run, a frame or two.)
+    if p.act == IDLE && b.man && d < combat::sim::met_from(arms.light, 0, combat::sim::BODY) {
+        return held | stick_to(-dx, -dz, 2)
     }
     if p.act == IDLE {
         // Its own side of the boss, a little inside its reach once its step's carried it.
