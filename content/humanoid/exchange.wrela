@@ -672,6 +672,9 @@ pub fn sheet(t: Tune) -> String {
     for weight in [0.25, 0.5, 1.0] {
         out.push_str(read(Tune { weight, ..t }).as_str())
     }
+    // And a blow that comes down: the cut in both hands (`downcut`), at weight 1.
+    out.push_str("the cut in both hands, coming down on the neck:\n")
+    out.push_str(read(Tune { weight: 1.0, stick: true, ..t }).as_str())
     out
 }
 
@@ -679,7 +682,7 @@ pub fn sheet(t: Tune) -> String {
 fn read(t: Tune) -> String {
     borrow rig = HERO.rig
     let steps = played(t, after: 0.2, seconds: 6.0)
-    let (head, hand, hips) = (rig.find("head"), rig.find("rightHand"), rig.find("hips"))
+    let (head, hips) = (rig.find("head"), rig.find("hips"))
     let world = |m: Mover, p: Pose, b: u32| -> vec3 {
         (playback::placed(m) * vec4(pose_world(rig, p)[b].t, 1.0)).xyz
     }
@@ -721,12 +724,20 @@ fn read(t: Tune) -> String {
     var trunk = 0.0
     var kick = 0.0
     var push = 0.0
+    // How far the struck head and hips go down under a blow that comes down, and when.
+    var dropped = 0.0
+    var dropped_at = 0.0
+    var sank = 0.0
+    var sank_at = 0.0
     for i in landed..steps.len() {
         borrow x = steps[i]
         let u = x.since
         if u < t.hold {
             let (p, place) = x.striker_pose()
-            let fist = (place * vec4(pose_world(rig, p)[hand].t, 1.0)).xyz
+            // (What struck: the fist, or the point along what he holds that met the head.)
+            let held = held_of(t)
+            let end = if held.held() { held.at(x.along) } else { RIGHT_FIST }
+            let fist = (place * vec4(end.in_pose(rig, pose_world(rig, p)), 1.0)).xyz
             stray = max(stray, length(fist - at))
             drove = max(drove, dot(world(x.striker, x.shown, hips) - drove0, BLOW))
             continue
@@ -748,6 +759,16 @@ fn read(t: Tune) -> String {
         if h > hips_far {
             hips_far = h
             hips_at = after
+        }
+        let dh = head0.y - world(x.struck, x.struck_shown, head).y
+        let dp = hips0.y - world(x.struck, x.struck_shown, hips).y
+        if dh > dropped {
+            dropped = dh
+            dropped_at = after
+        }
+        if dp > sank {
+            sank = dp
+            sank_at = after
         }
         // (Home: his body back on its mark and his head on his neck, whatever his guard's bounce
         // does.)
@@ -799,6 +820,13 @@ fn read(t: Tune) -> String {
     out.push_str(
         f"  camera: kicked {kick * 100.0:.1} cm at most, pushed in {push * 100.0:.1} cm\n".as_str(),
     )
+    // (A blow that comes down: how much of its way does, and how far it bows and sinks him.)
+    let down = -normalize(first.hit.way).y
+    if down > 0.1 {
+        out.push_str(
+            f"  down: {down * 100.0:.0}% of the blow's way comes down; his head down {dropped * 100.0:.1} cm at most ({dropped_at:.0} ms), his hips {sank * 100.0:.1} cm ({sank_at:.0} ms)\n".as_str(),
+        )
+    }
     out
 }
 
@@ -1000,4 +1028,36 @@ fn the_fist_is_drawn_big_on_the_blow_and_the_stick_trails() {
         }
     }
     assert(trailed > 0.1, f"the stick trails {trailed} m before the contact")
+}
+
+/// A blow that comes down (the cut in both hands, on the neck, at weight 1) bows the one struck
+/// and sinks him at the knees (a weight-1 blow coming straight down sinks him `Give::sink`, this
+/// one comes 60% down), his hips down 8 cm and more with his trunk bowed over them, and home.
+@test
+fn a_blow_that_comes_down_sinks_the_one_struck() {
+    borrow rig = HERO.rig
+    let t = Tune { weight: 1.0, stick: true, ..TUNED }
+    let steps = played(t, after: 0.2, seconds: 4.0)
+    var landed = 0
+    for i in 0..steps.len() {
+        if steps[i].since >= 0.0 {
+            landed = i
+            break
+        }
+    }
+    let hips = rig.find("hips")
+    let at = |x: Exchange| -> vec3 {
+        (playback::placed(x.struck) * vec4(pose_world(rig, x.struck_shown)[hips].t, 1.0)).xyz
+    }
+    let y0 = at(steps[landed].clone()).y
+    var sank = 0.0
+    var sunk_most = 0.0
+    for i in landed..steps.len() {
+        sank = max(sank, y0 - at(steps[i].clone()).y)
+        sunk_most = max(sunk_most, steps[i].knock.sink.x.x)
+    }
+    let last = steps[steps.len() - 1].clone()
+    assert(-normalize(steps[landed].hit.way).y > 0.3, "the cut comes down")
+    assert(sank >= 0.08, f"his hips sink {sank} m")
+    assert(sunk_most > 0.06 && last.knock.sink.x.x < 0.01, f"sunk {sunk_most} m, and back up")
 }
