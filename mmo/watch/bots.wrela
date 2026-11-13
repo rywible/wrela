@@ -11,7 +11,7 @@
 use std::math::atan2
 use combat::sim::{
     ATTACK, ATTACKS, BUTTON_BITS, DODGE, HEAVY, IDLE, LOCKING, LOCK_ON, MOVES, NO_MOVE, PARRY,
-    PARRY_WINDOW, RECOVER, STAGGERED, Seen, WEAPONS, WINDUP, World,
+    PARRY_WINDOW, RECOVER, STAGGERED, SWORD, Seen, WEAPONS, WINDUP, World,
 }
 
 /// The stick toward (`dx`, `dz`) (the rules' units) at speed `speed` (0 to 2): one of the 16
@@ -42,8 +42,15 @@ fn spot(i: u32, reach: i32) -> (i32, i32) {
 /// its stagger, and then the shortest of its tells (its windup's left, if it's winding up).
 fn soonest(b: Seen) -> u32 {
     var tell: u32 = 1000
-    for a in ATTACKS {
-        tell = min(tell, a.windup)
+    if b.man {
+        let s = WEAPONS[SWORD]
+        for m in [s.light, MOVES[s.light].next, s.heavy] {
+            tell = min(tell, MOVES[m].windup)
+        }
+    } else {
+        for a in ATTACKS {
+            tell = min(tell, a.windup)
+        }
     }
     if b.act == WINDUP {
         return b.timer
@@ -67,8 +74,12 @@ fn fits(m: u32, b: Seen) -> bool {
 }
 
 /// How near the boss is under its feet (the rules' units): as far as its attacks reach that meet
-/// only who's there, the ones it doesn't walk in for (the stomp's).
-fn underfoot() -> i32 {
+/// only who's there, the ones it doesn't walk in for (the stomp's). The swordsman, a man, has no
+/// such blow: nowhere's under his feet.
+fn underfoot(b: Seen) -> i32 {
+    if b.man {
+        return 0
+    }
     var far = 0
     for a in ATTACKS {
         if !a.walks_in {
@@ -83,14 +94,21 @@ fn underfoot() -> i32 {
 /// boss's feet (`underfoot`; unless it's there already: then it carries it no nearer; or its reach
 /// is too short to strike from outside them). A bot strikes from where its step leaves it in
 /// reach, not nearer.
-fn lands_in(m: u32, d: i32, reach: i32) -> bool {
+fn lands_in(m: u32, d: i32, reach: i32, b: Seen) -> bool {
     if m == NO_MOVE {
         return false
     }
-    let at = d - combat::sim::travelled(m, MOVES[m].windup)
+    // (Where its step leaves it: the swordsman, a man, stops it where its sweep still meets him,
+    // `sim::met_from`, as the rules do, and no nearer than it stands.)
+    let stepped = d - combat::sim::travelled(m, MOVES[m].windup)
+    let at = if b.man {
+        min(d, max(stepped, combat::sim::met_from(m, 0, combat::sim::BODY)))
+    } else {
+        stepped
+    }
     // (A weapon too short to strike from outside the boss's feet, the fists' sweep, strikes from as
     // far off as it can.)
-    at <= reach && at >= min(d, min(underfoot() + 1, reach - 32))
+    at <= reach && at >= min(d, min(underfoot(b) + 1, reach - 32))
 }
 
 pub fn bot(w: World, i: u32, before: u32, weapon: u32, react: u32) -> u32 {
@@ -107,37 +125,62 @@ pub fn bot(w: World, i: u32, before: u32, weapon: u32, react: u32) -> u32 {
     if p.hp <= 0 || w.over {
         return held
     }
-    if b.act == WINDUP && b.move_ < ATTACKS.len() {
-        let a = ATTACKS[b.move_]
-        let into = a.windup - min(b.timer, a.windup)
-        let near = a.near - 32 <= d && d <= a.far + 64
+    // (The tell it answers: the idol's attack, or the swordsman's strike, which a parry meets,
+    // from as far as its step and sweep reach.)
+    let telling = b.act == WINDUP && b.move_ != NO_MOVE && if b.man { b.move_ < MOVES.len() } else {
+        b.move_ < ATTACKS.len()
+    }
+    if telling {
+        let (windup, near, parried) = if b.man {
+            let m = MOVES[b.move_]
+            let far = combat::sim::reach_of(b.move_, combat::sim::BODY) +
+                combat::sim::travelled(b.move_, m.windup)
+            (m.windup, d <= far + 64, true)
+        } else {
+            let a = ATTACKS[b.move_]
+            (a.windup, a.near - 32 <= d && d <= a.far + 64, a.parried)
+        }
+        let into = windup - min(b.timer, windup)
+        // (The parry's window held over the hit: the idol's lands on its hit frame; the
+        // swordsman's sweeps in, meeting what's straight ahead a frame or three into its active
+        // frames, `sim::SWEPT`, so it's held over those as well.)
+        let lead = if b.man { PARRY_WINDOW / 2 + 1 } else { PARRY_WINDOW }
         if near && into >= react && reads & (PARRY << 6) != 0 {
             // A parry's window held over the hit; a dodge at once.
-            if a.parried && b.timer < PARRY_WINDOW {
+            if parried && b.timer < lead {
                 return press(PARRY) | stick_to(dx, dz, 0)
             }
-            if !a.parried {
+            if !parried {
                 return press(DODGE) | stick_to(-dz, dx, 2)
             }
         }
         // Through a tell, it neither walks into it nor strikes: it stands, turned to the idol.
         return held | stick_to(dx, dz, 0)
     }
-    let reach = combat::sim::reach_of(WEAPONS[weapon].light, combat::sim::IDOL_BODY)
+    let body = if b.man { combat::sim::BODY } else { combat::sim::IDOL_BODY }
+    let reach = combat::sim::reach_of(WEAPONS[weapon].light, body)
     let arms = WEAPONS[weapon]
     // (Its strike's step, which carries it in as it strikes: it stands back by it, so the step
     // lands it where it'd stand, a little inside its reach; and no strike of it, a combo's next
     // as much as its first, carries it in under the idol's feet.)
     let step = combat::sim::travelled(arms.light, MOVES[arms.light].windup)
     let next = if p.move_ != NO_MOVE { MOVES[p.move_].next } else { NO_MOVE }
-    if p.act == RECOVER && reads & (ATTACK << 6) != 0 && lands_in(next, d, reach) && fits(next, b) {
+    if p.act == RECOVER &&
+        reads & (ATTACK << 6) != 0 &&
+        lands_in(next, d, reach, b) &&
+        fits(next, b) {
         return press(ATTACK)
+    }
+    // (Against the swordsman: stood too close for its cut to meet him, its blade passing beyond
+    // him, it backs off at once, at a run, a frame or two.)
+    if p.act == IDLE && b.man && d < combat::sim::met_from(arms.light, 0, combat::sim::BODY) {
+        return held | stick_to(-dx, -dz, 2)
     }
     if p.act == IDLE {
         // Its own side of the boss, a little inside its reach once its step's carried it.
         let (ox, oz) = spot(i, reach - 40 + step)
         let (tx, tz) = (b.x + ox - p.x, b.z + oz - p.z)
-        let in_reach = lands_in(arms.light, d, reach - 16)
+        let in_reach = lands_in(arms.light, d, reach - 16, b)
         let there = in_reach && dist(tx, tz) <= 48
         // (An opening, the idol in reach, it takes from wherever it stands.)
         let opening = in_reach && fits(arms.light, b)

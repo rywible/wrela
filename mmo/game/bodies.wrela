@@ -55,6 +55,11 @@ use ui::draw::Renderer
 /// A metre is this many of the rules' units.
 pub const UNIT: f32 = 64.0
 
+/// The swordsman's tint (`Shot::tint`, its last slot): his clothes taken to a red, as the lab's
+/// foe is, so he stands apart from the party (in blue, but this player) as the idol does in
+/// stone.
+pub const MAN_TINT: vec4 = vec4(0.95, 0.16, 0.12, 0.95)
+
 /// How much larger than a man the idol is drawn.
 pub const IDOL_SCALE: f32 = 1.6
 
@@ -647,7 +652,8 @@ impl Bodies {
         let n = w.players() + 1
         if self.bodies.len() != n || w.frame < self.bodies[0].frame {
             self.bodies.clear()
-            self.bodies.push(Body::new(w.boss(), boss: true))
+            // (The idol drawn as the idol; the swordsman, a man, as a player is.)
+            self.bodies.push(Body::new(w.boss(), boss: !w.against_man()))
             for i in 0..w.players() {
                 self.bodies.push(Body::new(w.player(i), boss: false))
             }
@@ -688,7 +694,9 @@ impl Bodies {
                 }
                 let s = if j == 0 { w.boss() } else { w.player(j - 1) }
                 let d = length(drawn_at(self.bodies[j]) - drawn_at(b))
-                if (s.act == ACTIVE || s.act == RECOVER) && d < best {
+                // (A player staggered by the swordsman's parry: he's what struck it back.)
+                let parrying = seen.act == STAGGERED && s.act == PARRYING
+                if (s.act == ACTIVE || s.act == RECOVER || parrying) && d < best {
                     best = d
                     from = j
                 }
@@ -890,11 +898,14 @@ impl Ring {
             pair_a: vec4(my_at.x, 0.0, my_at.z, 2.0),
             pair_b: vec4(boss_at.x, 0.0, boss_at.z, 2.0),
         }
+        let shown_man = w.against_man()
         for k in 0..shown.len() {
             var m = shown[k].palette
             // (Its tint and its own left in the palette's last slot: the idol in stone, the
             // others' bodies in blue, this player's as it is.)
-            let tint = if k == 0 { X_STONE } else if k == mine + 1 { vec4(0.0) } else { X_TINT }
+            let tint = if k == 0 {
+                if shown_man { MAN_TINT } else { X_STONE }
+            } else if k == mine + 1 { vec4(0.0) } else { X_TINT }
             m[63] = mat4(
                 tint,
                 vec4(normalize((m[0] * vec4(1.0, 0.0, 0.0, 0.0)).xyz), 1.0),
@@ -1259,4 +1270,73 @@ fn a_body_is_as_wide_as_its_shoulders() {
         combat::sim::BODY == man && combat::sim::IDOL_BODY == idol,
         f"the rules' bodies {combat::sim::BODY} and {combat::sim::IDOL_BODY}, the drawn {man} and {idol}",
     )
+}
+
+/// The swordsman (`sim::THE_SWORDSMAN`) is drawn as a man: at a man's size, armed, his strikes
+/// the slash. Parried, he reels for as long as the rules stagger him, his guard knocked open and
+/// held out (`Knock::reeling`), his hands knocked off it; and a player his cut lands on takes its
+/// hands off its guard with the blow, as a struck man does (#453's: they don't stay where the
+/// guard holds them).
+@test
+fn the_swordsman_parried_reels_his_guard_open() {
+    borrow rig = HERO.rig
+    var w = World::against(combat::sim::THE_SWORDSMAN, [LONGSWORD])
+    var b = Bodies::new()
+    let dt = 1.0 / 60.0
+    let hands = [rig.find("leftHand"), rig.find("rightHand")]
+    // How far the knock takes each body's hands off where its guard holds them, as it's drawn
+    // (the most of the two).
+    let off_guard = |body: Body| -> f32 {
+        let (g, k) = (
+            pose_world(rig, body.mover.shown),
+            pose_world(rig, body.knock.over(rig, body.mover.shown, GIVE)),
+        )
+        max(length(k[hands[0]].t - g[hands[0]].t), length(k[hands[1]].t - g[hands[1]].t))
+    }
+    let _ = b.follow(w, dt)
+    var input: u32 = 0
+    var staggered = 0
+    var open_at_end = 0.0
+    var off_reeling = 0.0
+    for _ in 0..1200 {
+        let to = combat::sim::direction(w.boss().x - w.player(0).x, w.boss().z - w.player(0).z)
+        let man = w.boss()
+        if man.act == WINDUP && man.timer == 4 && w.player(0).act == IDLE {
+            input = input ^ (combat::sim::PARRY << 6)
+        }
+        combat::sim::step(mut w, [(input & combat::sim::BUTTON_BITS) | (1 + to * 3)])
+        let _ = b.follow(w, dt)
+        if w.boss().act == STAGGERED {
+            staggered += 1
+            open_at_end = length(b.body(0).knock.guard.x)
+            off_reeling = max(off_reeling, off_guard(b.body(0)))
+        } else if staggered > 0 {
+            break
+        }
+    }
+    assert(b.body(0).boss == false, "drawn as a man, not the idol")
+    assert(staggered >= combat::sim::SWORDSMAN_STAGGER, f"staggered {staggered} frames")
+    assert(open_at_end > 0.1, f"his guard's still knocked open as he reels: {open_at_end} rad")
+    assert(off_reeling > 0.05, f"his hands knocked {off_reeling} m off his guard")
+    // His cut landing on a player who doesn't answer: its hands come off its guard.
+    var v = World::against(combat::sim::THE_SWORDSMAN, [LONGSWORD])
+    var c = Bodies::new()
+    var after = 0.0
+    var struck = false
+    let _ = c.follow(v, dt)
+    for _ in 0..1500 {
+        combat::sim::step(mut v, [0])
+        let _ = c.follow(v, dt)
+        if v.player(0).hp < 100 {
+            struck = true
+        }
+        if struck {
+            after = max(after, off_guard(c.body(1)))
+            if v.player(0).hold == 0 && length(c.body(1).knock.guard.x) < 0.01 {
+                break
+            }
+        }
+    }
+    assert(struck, "his cut lands")
+    assert(after > 0.05, f"a struck man's hands come off his guard: {after} m")
 }

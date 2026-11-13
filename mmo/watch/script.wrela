@@ -17,7 +17,7 @@
 //    a second.
 
 use bots::{dist, stick_to}
-use combat::sim::{ATTACK, BUTTON_BITS, DODGE, IDLE, LOCK_ON, World}
+use combat::sim::{ATTACK, BUTTON_BITS, DODGE, IDLE, LOCK_ON, PARRY, STAGGERED, WINDUP, World}
 
 /// Where the script's at: what's said in the corner, the frame the idol's blow landed (0 none
 /// yet), how far the pushes had carried the player before it (units), and whether the idol's
@@ -28,6 +28,9 @@ pub struct Script: Clone {
     from: vec2,
     pub let_go: bool,
     pub still: bool,
+    /// The duel's (`duel`): how far through it, and whether it's cut while he's open (1).
+    stage: u32 = 0,
+    mark: u32 = 0,
 }
 
 pub fn script() -> Script {
@@ -59,7 +62,6 @@ pub fn input(s: mut Script, w: World, before: u32) -> u32 {
     let p = w.player(0)
     let b = w.boss()
     let (dx, dz) = (b.x - p.x, b.z - p.z)
-    let d = dist(dx, dz)
     // (How far as the rules measure a strike's reach: the larger side and half the smaller.)
     let r = if abs(dx) > abs(dz) { abs(dx) + abs(dz) / 2 } else { abs(dz) + abs(dx) / 2 }
     // (Where its cut meets the idol from, its step taken: as far off as the rules have the cut
@@ -172,5 +174,78 @@ pub fn input(s: mut Script, w: World, before: u32) -> u32 {
         return held | stick_to(-dz * 2 - dx, dx * 2 - dz, 2)
     }
     s.said = "UNLOCKED"
+    held
+}
+
+/// The duel (`SCRIPT=2`): the player, with the longsword, against the swordsman
+/// (`sim::THE_SWORDSMAN`), its inputs at `w`'s frame, its last `before`. Said in the corner as
+/// each thing happens:
+///
+/// - unlocked, it closes on him (he's coming in too), and locks on 5.6 m off;
+/// - he comes in and cuts: it parries, the window held over where his cut sweeps (pressed 4
+///   frames before his hit), and he's staggered;
+/// - while he's open, it cuts: the cut lands, and pushes him;
+/// - then it stands, locked on: he backs off, stands on guard, comes in again and cuts twice,
+///   and his blow lands and pushes it back (`sim::KNOCKBACK`).
+pub fn duel(s: mut Script, w: World, before: u32) -> u32 {
+    let f = w.frame
+    let held = before & BUTTON_BITS
+    let press = |button: u32| -> u32 { held ^ (button << 6) }
+    let p = w.player(0)
+    let b = w.boss()
+    let (dx, dz) = (b.x - p.x, b.z - p.z)
+    let d = dist(dx, dz)
+    let face = stick_to(dx, dz, 0)
+    if s.stage == 0 {
+        if d > 360 {
+            s.said = "UNLOCKED: closing on the swordsman"
+            return held | stick_to(dx, dz, 2)
+        }
+        s.stage = 1
+        s.said = "LOCKED ON: he comes in"
+        return press(LOCK_ON)
+    }
+    if s.stage == 1 {
+        if b.act == WINDUP && b.timer == 4 && p.act == IDLE {
+            s.stage = 2
+            s.said = "PARRY: his cut met"
+            return press(PARRY) | face
+        }
+        return held
+    }
+    if s.stage == 2 {
+        if b.act == STAGGERED {
+            s.stage = 3
+            s.mark = 0
+            s.said = "STAGGERED: he's open"
+        }
+        return held
+    }
+    if s.stage == 3 {
+        // (Its parry's recovery over, it's free: it cuts.)
+        if p.act == IDLE && s.mark != 1 {
+            s.mark = 1
+            s.said = "CUT WHILE HE'S OPEN"
+            return press(ATTACK) | face
+        }
+        if s.mark == 1 && p.act == IDLE && b.act != STAGGERED {
+            s.stage = 4
+        }
+        return held
+    }
+    if s.stage == 4 {
+        s.said = "LOCKED ON: he backs off, on guard, then comes in again"
+        if p.hp < 100 {
+            s.stage = 5
+            s.hit_at = f
+            s.said = "KNOCKBACK: pushed"
+            return held
+        }
+        s.from = vec2(f32(p.carried_x), f32(p.carried_z))
+        return held
+    }
+    if f > s.hit_at + 150 {
+        s.said = "LOCKED ON"
+    }
     held
 }

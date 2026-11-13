@@ -310,26 +310,57 @@ fn into_move(p: Fighter) -> u32 {
 }
 
 /// `p` carried a frame on by its move, from `k` frames into it to the next, along the way it
-/// faces: no nearer `foe` than `nearest` (`NEAREST`, a man and the idol; two men, `BODY` twice).
-fn travels(p: mut Fighter, k: u32, foe: (i32, i32), nearest: i32) {
+/// faces: no nearer `foe` (its body `body` wide) than `nearest` (`NEAREST`, a man and the idol;
+/// two men, `BODY` twice), nor, with the sweep (`SWEPT`), than where its own sweep still meets
+/// that body, as far across as it stands (`met_from`): a step that takes a striker in past where
+/// its blade passes would carry the blow beyond what it was struck at.
+fn travels(p: mut Fighter, k: u32, foe: (i32, i32), nearest: i32, body: i32) {
     let (a, b) = (travelled(p.move_, k), travelled(p.move_, k + 1))
     if a == b {
         return
     }
     let f = p.facing % 16
-    let (sx, sz) = (DIR_X[f] * b / 64 - DIR_X[f] * a / 64, DIR_Z[f] * b / 64 - DIR_Z[f] * a / 64)
-    // (The foe's body stops it: as far as keeps it `nearest` off, a unit at a time.)
+    let (fx, fz) = (DIR_X[f], DIR_Z[f])
+    // (How far ahead of a place the foe is, along the way it faces; and where its sweep still
+    // meets him, as far across as he stands: 0 where it meets him nowhere ahead (he's behind, or
+    // far to the side), or without the sweep, and then it holds nothing.)
+    let ahead = |x: i32, z: i32| -> i32 { ((foe.0 - x) * fx + (foe.1 - z) * fz) / 64 }
+    let across = ((foe.0 - p.x) * fz - (foe.1 - p.z) * fx) / 64
+    let meets = if SWEPT { met_from(p.move_, across, body) } else { 0 }
+    let (sx, sz) = (fx * b / 64 - fx * a / 64, fz * b / 64 - fz * a / 64)
+    // (The foe's body stops it, as far as keeps it `nearest` off, and its sweep, as far as keeps
+    // him where it meets him, ahead: each in its own measure, a unit at a time. Neither holds it
+    // where it already is.)
     let steps = max(abs(sx), abs(sz))
     for i in 0..steps {
         let j = steps - i
         let (x, z) = (p.x + sx * j / steps, p.z + sz * j / steps)
-        if reach(x, z, foe.0, foe.1) >= nearest ||
-            reach(x, z, foe.0, foe.1) >= reach(p.x, p.z, foe.0, foe.1) {
+        let off = reach(x, z, foe.0, foe.1) >= nearest ||
+            reach(x, z, foe.0, foe.1) >= reach(p.x, p.z, foe.0, foe.1)
+        let met = meets == 0 || ahead(x, z) >= meets || ahead(x, z) >= ahead(p.x, p.z)
+        if off && met {
             p.x = x
             p.z = z
             return
         }
     }
+}
+
+/// The nearest ahead of its striker (units) that move `m`'s sweep meets a body `body` wide,
+/// `across` to its left, on some active frame (`swept`): nearer, its blade (or fist) passes
+/// beyond it. 0 where it meets one at the striker's own place, or none.
+pub fn met_from(m: u32, across: i32, body: i32) -> i32 {
+    if m >= MOVES.len() {
+        return 0
+    }
+    for ahead in 0..256 {
+        for j in 0..min(MOVES[m].active, 12 / PIECES) {
+            if swept(m, j, across, ahead, body) {
+                return ahead
+            }
+        }
+    }
+    0
 }
 
 /// Hit shapes from the sweep (a trial, as knockback is): a strike meets what's in the floor's
@@ -1274,7 +1305,15 @@ pub fn step(w: mut World, inputs: [u32]) {
         let foe = (w.boss.x, w.boss.z)
         // (Against the swordsman, two men: their bodies stop a strike's step as a man's do.)
         let nearest = if w.man { BODY * 2 } else { NEAREST }
-        step_player(mut p, stick, pressed & !LOCK_ON, w.buffer, foe, nearest)
+        step_player(
+            mut p,
+            stick,
+            pressed & !LOCK_ON,
+            w.buffer,
+            foe,
+            nearest,
+            if w.man { BODY } else { IDOL_BODY },
+        )
         if p.act == ACTIVE && !p.landed && w.boss.hp > 0 {
             let m = MOVES[p.move_]
             let (dx, dz) = (w.boss.x - p.x, w.boss.z - p.z)
@@ -1433,7 +1472,7 @@ fn step_swordsman(w: mut World) {
     let (stick, pressed) = swordsman_says(w, t)
     let foe = (t.x, t.z)
     let was = w.boss.act
-    step_player(mut w.boss, stick, pressed, 0, foe, BODY * 2)
+    step_player(mut w.boss, stick, pressed, 0, foe, BODY * 2, BODY)
     if w.boss.act == IDLE {
         w.rested += 1
     } else {
@@ -1575,7 +1614,15 @@ fn begin(p: mut Fighter, m: u32) -> bool {
 }
 
 @deterministic
-fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32, foe: (i32, i32), nearest: i32) {
+fn step_player(
+    p: mut Fighter,
+    stick: u32,
+    fresh: u32,
+    buffer: u32,
+    foe: (i32, i32),
+    nearest: i32,
+    body: i32,
+) {
     // A press it can't act on yet is kept (`buffer` frames), the latest over any before it: one
     // slot, which a combo's next cut is taken from as any other press is.
     if fresh != 0 {
@@ -1616,7 +1663,7 @@ fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32, foe: (i32, i
         // Striking, it's carried on by its move.
         if p.move_ != NO_MOVE && (p.act == WINDUP || p.act == ACTIVE || p.act == RECOVER) {
             let k = into_move(p)
-            travels(mut p, k, foe, nearest)
+            travels(mut p, k, foe, nearest, body)
         }
         if p.timer > 0 {
             p.timer -= 1
@@ -2639,7 +2686,7 @@ fn every_way_goes_at_its_pace() {
                 p.locked = locked
                 let stick = 1 + u32(dir) * 3 + u32(size)
                 for _ in 0..60 {
-                    step_player(mut p, stick, 0, BUFFER, (0, 50 * UNIT), NEAREST)
+                    step_player(mut p, stick, 0, BUFFER, (0, 50 * UNIT), NEAREST, IDOL_BODY)
                 }
                 let speed = if locked { LOCKED_SPEED[size] } else { SPEED[size] }
                 let (wx, wz) = (DIR_X[dir] * speed * 60 / 64, DIR_Z[dir] * speed * 60 / 64)
