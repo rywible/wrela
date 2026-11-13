@@ -1,0 +1,158 @@
+// The cross thrown with a step (`engine::written`): the standing cross (solved.wrela) with its
+// feet and its travel written, so the step is in the punch. From a guard out of reach, the lead
+// foot steps through the load and lands as the throw sets off, the body going with it; the rear
+// foot drives and follows, landing with the blow; the body goes on with the fist. The feet go in
+// turn, never both off the floor. The lab's exchange throws it; the game keeps the standing cross
+// (its rules don't move a striker, so a move that steps, played in place, would walk on the
+// spot).
+//
+// How a real stepping punch goes, read off the captured boxing (ACCAD's Male 2, Extended 1:
+// `accad_fists::BOXING`) by the footwork read (`engine::footwork`): in each punch thrown with a
+// step the hips go 30 to 80 cm in the 0.6 s before the contact; in the one he steps furthest
+// into, the lead foot lands 0.3 s before it and the rear follows; where the rear foot steps in,
+// it lands with the blow. A lunge this long can't keep the rear foot where it stood till the
+// blow: the leg runs out of reach.
+//
+// What's solved (`wrela solve content/humanoid --spec --free stepping.wrela:<names>`): how far
+// the step goes and how much of it's done as each foot lands, how far the rear foot comes in,
+// when the throw sets off, and where the contact key puts the fist, so the fist is on its target
+// (the standing cross's, a step on) when the fight says it lands.
+
+use engine::keys
+use engine::keys::{Key, SETTLE}
+use engine::playback::Move
+use engine::written::{Beats, Written}
+use body::HERO
+use solved
+
+/// When the stepping cross lands as written (s from its start): the standing cross's.
+pub const CONTACT: f32 = solved::CONTACT
+
+/// How far ahead of where it stood (m) the fist lands: the standing cross's target, a step on.
+@fuel(2 ** 40)
+pub const TARGET: vec3 = solved::TARGET + vec3(0.0, 0.0, REACH)
+
+/// How far the step is written to carry the fist past the standing cross's target (m): what the
+/// exchange stands its fighters further apart by.
+pub const REACH: f32 = 0.55
+
+/// The stepping cross's goal poses, in the hips' time.
+pub fn cross() -> Written<8> {
+    let s = solved::cross()
+    // ---- What the solve finds (spec.wrela): each number alone on its line. ----
+    // How far the body travels with the step (m).
+    let step = 0.507
+    // How far ahead the contact key puts the fist, off the standing cross's (m).
+    let fist_z = 0.043
+    // How much of the travel's done by the contact (the rest is the drive past it: the body
+    // goes on through the blow, as the boxer's hips do).
+    let share = 1.00
+    // How much of the travel's done as the lead foot lands (the beat's end, when the throw sets
+    // off), and how far the rear foot's come in behind it by the contact (m).
+    let early = 0.53
+    let rear_in = 0.44
+    // When the throw sets off (s): its own, since a step carries the fist as well as the arm.
+    let sets_off = 0.2476
+    let by = vec3(0.0, 0.0, step)
+    let rest = s.keys[0]
+    let load = s.keys[1]
+    // The lead foot steps through the load, lifted on its way, and lands as the throw sets off,
+    // the body going with it.
+    var beat = keys::shifted(s.keys[2], by * early)
+    beat.at = sets_off
+    beat.feet[0] = s.keys[2].feet[0] + vec4(0.0, step, 0.0, 0.0)
+    beat.feet[1] = s.keys[2].feet[1]
+    beat.swing = 0.05
+    // The contact and what follows it, carried a step on, the lead foot a step on and the rear
+    // foot, driving, come in behind it with the blow.
+    let on = |k: Key, part: f32| -> Key {
+        var out = keys::shifted(k, by * part)
+        out.feet[0] = k.feet[0] + vec4(0.0, step, 0.0, 0.0)
+        out.feet[1] = k.feet[1] + vec4(0.0, rear_in, 0.0, 0.0)
+        out
+    }
+    var contact = on(s.keys[3], share)
+    contact.fists[1] = contact.fists[1] + vec3(0.0, 0.0, fist_z)
+    var driven = on(s.keys[4], 1.0)
+    driven.fists[1] = contact.fists[1] + (s.keys[4].fists[1] - s.keys[3].fists[1])
+    var held = on(s.keys[5], 1.0)
+    held.fists[1] = driven.fists[1]
+    // The rear foot lifted on its way in.
+    contact.swing = 0.04
+    // The rear foot follows as the fist comes home, lifted on its way, down a step on.
+    var home = keys::shifted(s.keys[6], by)
+    home.swing = 0.04
+    var back = keys::shifted(s.keys[7], by)
+    back.ease = SETTLE
+    Written {
+        keys: [rest, load, beat, contact, driven, held, home, back],
+        taste: s.taste,
+        end: s.end,
+    }
+}
+
+/// The stepping cross at its own beats, as written (`Written::played`): its contact at `CONTACT`,
+/// active as the standing cross is, its root carried by its travel.
+@fuel(2 ** 40)
+pub const CROSS: Move = cross().played(
+    HERO.rig,
+    CONTACT,
+    Beats {
+        windup: CONTACT,
+        active: solved::CONTACT_TILL - CONTACT,
+        recovery: cross().length() - solved::CONTACT_TILL,
+    },
+    fps: 60.0,
+    fist: 2.0,
+)
+
+/// How far the stepping cross carries the body in all (m, ahead).
+@fuel(2 ** 40)
+pub const TRAVEL: f32 = cross().root(HERO.rig, cross().length()).z
+
+/// A step back as far as the stepping cross carried him: home to where he threw it from.
+@fuel(2 ** 40)
+pub const BACK: Move = fists::step_move(vec3(0.0, 0.0, -TRAVEL))
+
+/// The stepping cross reads on the sheet as the standing cross does, with the step in it: nothing
+/// flagged, the hips going before the arm; the body travels with it; the feet go in turn, the lead
+/// down before the rear leaves and the rear down with the blow; and neither slides more while down
+/// than the captured boxer's do (1.8 cm, `accad_fists::CROSS_TAKE` read by `engine::footwork`).
+@test
+fn the_stepping_cross_steps_into_its_punch() {
+    borrow rig = HERO.rig
+    let t = engine::timing::timing(CROSS.clip, rig, engine::end::RIGHT_FIST, CONTACT)
+    let f = engine::footwork::footwork(
+        CROSS.clip,
+        CROSS.root,
+        rig,
+        CONTACT,
+        0.0,
+        CROSS.clip.length(),
+    )
+    std::io::print(t.text("the stepping cross").as_str())
+    std::io::print(f.text().as_str())
+    assert(t.found && t.flags().len() == 0, f"the sheet flags {t.flags().len()}")
+    assert(t.lead() >= 0.06 && t.lead() <= 0.12, f"the hips go {t.lead()} s before the arm")
+    assert(f.travel >= 0.3 && f.travel <= 0.8, f"the body travels {f.travel} m to the contact")
+    assert(
+        f.down[0] && f.lands[0] <= 0.0 && f.leaves[0] < f.lands[0],
+        "the lead foot down by the contact",
+    )
+    assert(
+        f.stepped[0] > 0.3 && f.stepped[1] > 0.3,
+        f"the feet step {f.stepped[0]} and {f.stepped[1]} m",
+    )
+    assert(
+        f.leaves[1] >= f.lands[0],
+        "the rear foot leaves once the lead's down: never both off the floor",
+    )
+    assert(
+        f.down[1] && f.lands[1] <= 0.02,
+        f"the rear foot down with the blow, {f.lands[1]} s after it",
+    )
+    assert(
+        f.slide[0] <= 0.018 && f.slide[1] <= 0.018,
+        f"the feet slide {f.slide[0]} and {f.slide[1]} m while down",
+    )
+}

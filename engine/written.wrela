@@ -226,6 +226,24 @@ impl<const N: u32> Written<N> {
         out
     }
 
+    /// Where the move has carried its root along the floor by `time` (s from its start): its
+    /// keys' travel on the body's clock. A move that steps carries it; gameplay carries it as the
+    /// played move's root (`played`).
+    pub fn root(self, rig: Rig, time: f32) -> vec3 {
+        key_in(self.keys, time, self.snap()[BODY]).travel
+    }
+
+    /// The body's bones at `time` (s from its start) in the move's own space, where it stood as
+    /// it began: posed about its root, and carried by it.
+    pub fn world(self, rig: Rig, time: f32) -> [humanoid::Rigid; 64] {
+        var w = pose_world(rig, self.pose(rig, time))
+        let r = self.root(rig, time)
+        for b in 0..rig.bones.len() {
+            w[b].t += r
+        }
+        w
+    }
+
     /// The move as a clip at `fps`, its hands made fists (`fist`, as `stride::curled_hands`).
     pub fn clip(self, rig: Rig, fps: f32, fist: f32) -> Clip {
         let nb = rig.bones.len()
@@ -283,8 +301,13 @@ impl<const N: u32> Written<N> {
     /// place, and marked with its windows (`WINDUP` to the hit, `ACTIVE`, `RECOVER`, and
     /// `CANCEL` over the last third of the recovery).
     pub fn played(self, rig: Rig, contact: f32, beats: Beats, fps: f32, fist: f32) -> Move {
-        let c = self.at_beats(rig, contact, beats).clip(rig, fps, fist)
+        let m = self.at_beats(rig, contact, beats)
+        let c = m.clip(rig, fps, fist)
         let n = c.frames
+        var root: Vec<vec3> = Vec::with_capacity(n)
+        for f in 0..n {
+            root.push(m.root(rig, f32(f) / fps))
+        }
         let (w, a, total) = (beats.windup, beats.active, beats.length())
         var marks: Vec<Mark> = Vec::new()
         marks.push(Mark { kind: WINDUP, from: 0.0, till: w })
@@ -293,7 +316,7 @@ impl<const N: u32> Written<N> {
         marks.push(Mark { kind: CANCEL, from: total - beats.recovery / 3.0, till: total })
         Move {
             clip: c,
-            root: Vec::filled(n, vec3(0.0)),
+            root,
             heading: Vec::filled(n, 0.0),
             marks,
             speed: 0.0,
@@ -339,7 +362,7 @@ impl<const N: u32> Written<N> {
 
     /// Where the striking end is at `time` (the body's space, m).
     pub fn end(self, rig: Rig, time: f32) -> vec3 {
-        self.end.in_pose(rig, pose_world(rig, self.pose(rig, time)))
+        self.end.in_pose(rig, self.world(rig, time))
     }
 
     /// Which way the hips face at `time` (degrees about up, toward the left; by where their
@@ -431,7 +454,7 @@ impl<const N: u32> Written<N> {
         var next = self.end(rig, contact + 1.0 / RATE)
         var later = 0.0
         for i in 0..steps + 1 {
-            let w = pose_world(rig, self.pose(rig, contact - f32(i) / RATE))
+            let w = self.world(rig, contact - f32(i) / RATE)
             let p = self.end.in_pose(rig, w)
             // The hips between the feet, along the floor.
             let (lf, rf, h) = (w[left].t, w[right].t, w[hips].t)

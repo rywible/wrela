@@ -1,0 +1,145 @@
+// A strike's footwork, read: how far the body travels with it, when each foot leaves the floor and
+// lands against the contact, how far it steps, and how far a foot slides while it's down. A punch
+// thrown with a step lands as its lead foot plants: the step is in the punch.
+//
+// A foot is up while its ball moves along the floor faster than `MOVING` or stands higher than
+// `LIFTED` off the lowest it gets over the read; down otherwise. What it moves along the floor
+// while it's down is slide.
+//
+// `Footwork::text` is its lines on the sheet.
+
+use std::collections::Vec
+use std::string::String
+use humanoid::{Clip, NONE, Rig}
+use stride::leg_of
+use timing::{RATE, read}
+
+/// How fast a foot's ball moves along the floor before it's taken as stepping (m/s), and how high
+/// it lifts before it's taken as off the floor (m).
+pub const MOVING: f32 = 0.35
+pub const LIFTED: f32 = 0.02
+
+/// No time: a foot that never leaves the floor.
+pub const NEVER: f32 = 99.0
+
+/// A strike's footwork, read over a stretch of it (`footwork`).
+pub struct Footwork: Copy {
+    /// How far the hips go along the floor, from the stretch's start to the contact (m), and
+    /// how far after it to the stretch's end.
+    pub travel: f32,
+    pub after: f32,
+    /// Each foot (the left, the right): when it last leaves the floor before it's down at the
+    /// contact, and when it lands (s against the contact, before it negative; `NEVER` for one
+    /// that stays down), and how far it goes along the floor in that step (m).
+    pub leaves: [f32; 2],
+    pub lands: [f32; 2],
+    pub stepped: [f32; 2],
+    /// Each foot's most slide (m along the floor) over a stretch it's down.
+    pub slide: [f32; 2],
+    /// Whether each foot's down on the contact.
+    pub down: [bool; 2],
+}
+
+/// The footwork of `clip` on `rig` from `from` to `to` (s), its contact at `contact`, the clip's
+/// root at each of its frames carried by `root` (empty for a clip whose hips carry it).
+pub fn footwork(clip: Clip, root: [vec3], rig: Rig, contact: f32, from: f32, to: f32) -> Footwork {
+    let legs = [leg_of(rig, 1.0), leg_of(rig, -1.0)]
+    var balls = [NONE; 2]
+    for i in 0..2 {
+        balls[i] = if legs[i].toes != NONE { legs[i].toes } else { legs[i].ankle }
+    }
+    let r = read(clip, rig, [balls[0], balls[1], rig.find("hips")])
+    // Each sample's ball of each foot and hips, the root carried.
+    var at: Vec<vec3> = Vec::with_capacity(r.m * 3)
+    for i in 0..r.m {
+        var c = vec3(0.0)
+        if root.len() > 0 {
+            let x = min(f32(i) / RATE * clip.fps, f32(root.len() - 1))
+            let f0 = min(u32(x), root.len() - 1)
+            let f1 = min(f0 + 1, root.len() - 1)
+            c = root[f0] + (root[f1] - root[f0]) * (x - f32(f0))
+        }
+        for j in 0..3 {
+            at.push(r.at[i * r.k + j] + c)
+        }
+    }
+    let last = r.m - 1
+    let i0 = min(u32(max(from, 0.0) * RATE + 0.5), last)
+    let i1 = max(min(u32(to * RATE + 0.5), last), i0)
+    let ic = max(min(u32(contact * RATE + 0.5), i1), i0)
+    var out = Footwork {
+        travel: length(flat(at[ic * 3 + 2] - at[i0 * 3 + 2])),
+        after: length(flat(at[i1 * 3 + 2] - at[ic * 3 + 2])),
+        leaves: [NEVER; 2],
+        lands: [NEVER; 2],
+        stepped: [0.0; 2],
+        slide: [0.0; 2],
+        down: [true; 2],
+    }
+    for j in 0..2 {
+        var low = at[i0 * 3 + j].y
+        for i in i0..i1 + 1 {
+            low = min(low, at[i * 3 + j].y)
+        }
+        var was = false
+        var left_at = i0
+        var slid = 0.0
+        var down_from = flat(at[i0 * 3 + j])
+        for i in i0..i1 + 1 {
+            let moving = i > i0 && length(flat(at[i * 3 + j] - at[(i - 1) * 3 + j])) * RATE > MOVING
+            let now = moving || at[i * 3 + j].y > low + LIFTED
+            if now && !was {
+                left_at = i
+                slid = 0.0
+            }
+            if !now && was && i <= ic + u32(0.15 * RATE) {
+                // A landing: the last before the contact (or just after it) is the step's.
+                out.leaves[j] = (f32(left_at) - f32(ic)) / RATE
+                out.lands[j] = (f32(i) - f32(ic)) / RATE
+                out.stepped[j] = length(flat(at[i * 3 + j] - at[left_at * 3 + j]))
+                down_from = flat(at[i * 3 + j])
+            }
+            if !now {
+                if was {
+                    down_from = flat(at[i * 3 + j])
+                }
+                slid = max(slid, length(flat(at[i * 3 + j]) - down_from))
+                out.slide[j] = max(out.slide[j], slid)
+            } else {
+                slid = 0.0
+            }
+            if i == ic {
+                out.down[j] = !now
+            }
+            was = now
+        }
+    }
+    out
+}
+
+/// `v` along the floor.
+fn flat(v: vec3) -> vec3 {
+    vec3(v.x, 0.0, v.z)
+}
+
+impl Footwork {
+    /// Its lines on the sheet.
+    pub fn text(self) -> String {
+        let names = ["left", "right"]
+        var s = String::from(
+            f"footwork: the hips travel {self.travel * 100.0:.1} cm to the contact, {self.after * 100.0:.1} cm after\n".as_str(),
+        )
+        for j in 0..2 {
+            if self.leaves[j] == NEVER {
+                s.push_str(
+                    f"  the {names[j]} foot stays down; it slides {self.slide[j] * 100.0:.1} cm at most\n".as_str(),
+                )
+            } else {
+                s.push_str(
+                    f"  the {names[j]} foot leaves {self.leaves[j]:.3} s and lands {self.lands[j]:.3} s against the contact, {self.stepped[j] * 100.0:.1} cm; {if self.down[j] { "down" } else { "up" }} on it; it slides {self.slide[j] * 100.0:.1} cm at most while down\n".as_str(),
+                )
+            }
+        }
+        s
+    }
+}

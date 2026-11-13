@@ -147,6 +147,7 @@ pub fn spec<C: Checks>(c: mut C) {
     )
     hook_spec(mut c)
     guard_spec(mut c)
+    stepping_spec(mut c)
 }
 
 /// The fight's bounce (`fists::BOUNCE`: ACCAD Male 2 bouncing in his guard, E8) as its stance
@@ -304,6 +305,118 @@ fn hook_spec<C: Checks>(c: mut C) {
         "hook: the hips' lead on the striking upper arm, half way round (s)",
         upper - hips,
         0.035,
+        within: 0.005,
+    )
+}
+
+/// What the stepping cross (stepping.wrela) should measure: the standing cross's checks, a step
+/// on, and its footwork. The step in the punch as a captured boxer's is (`accad_fists::BOXING`
+/// read by `engine::footwork`: in each punch he steps into, the hips go 30 to 80 cm in the 0.6 s
+/// before the contact, and the lead foot is down by it), and no foot sliding.
+fn stepping_spec<C: Checks>(c: mut C) {
+    borrow rig = HERO.rig
+    let m = stepping::cross()
+    let at = stepping::CONTACT
+    let t = m.thrown(rig, at, STEPS)
+    c.near(
+        "stepping cross: fist on its target, across (m)",
+        t.at.x,
+        stepping::TARGET.x,
+        within: 0.005,
+    )
+    c.near("stepping cross: fist on its target, up (m)", t.at.y, stepping::TARGET.y, within: 0.005)
+    c.near(
+        "stepping cross: fist on its target, ahead (m)",
+        t.at.z,
+        stepping::TARGET.z,
+        within: 0.005,
+    )
+    c.at_least("stepping cross: fist's fastest (m/s)", t.fastest, 12.0, within: 0.5)
+    c.at_most("stepping cross: fist's fastest (m/s)", t.fastest, 26.0, within: 0.5)
+    c.at_least(
+        "stepping cross: fist's speed into contact, of its fastest",
+        t.into / t.fastest,
+        0.95,
+        within: 0.02,
+    )
+    // It may slow a little as the step lands, as the boxer's does: in the punches he steps into
+    // (Extended 1, read in the 0.3 s before each contact) his fist slows by 0.2 to 1.1 m/s and
+    // goes again; his standing cross's, 0.01.
+    c.at_most("stepping cross: fist slows on its way in (m/s)", t.slows, 1.0, within: 0.1)
+    c.at_most(
+        "stepping cross: fist's speed after contact, of its fastest",
+        t.after / t.fastest,
+        0.34,
+        within: 0.02,
+    )
+    c.at_most(
+        "stepping cross: contact key's spot, of the arm's reach",
+        m.asked(rig, 3),
+        0.97,
+        within: 0.01,
+    )
+    let off = m.hinge(rig, at, REAL.hinge[1])
+    c.at_most(
+        "stepping cross: elbow's bend off its hinge on contact (degrees)",
+        off,
+        25.0,
+        within: 5.0,
+    )
+    c.at_most("stepping cross: arm's reach used on contact", t.out, 0.95, within: 0.01)
+    c.at_least("stepping cross: arm's reach used on contact", t.out, 0.85, within: 0.01)
+    c.at_most("stepping cross: hips outside the feet (m)", t.outside, 0.0, within: 0.01)
+    c.at_least("stepping cross: weight toward the lead foot on contact", t.left, 0.45, within: 0.03)
+    c.at_most("stepping cross: weight toward the lead foot on contact", t.left, 0.70, within: 0.03)
+    let (b, e) = (m.keys[2].at, at)
+    c.at_least(
+        "stepping cross: the hips' lead on the striking upper arm, half way round (s)",
+        m.halfway(rig, "rightUpperArm", b, e) - m.halfway(rig, "hips", b, e),
+        0.035,
+        within: 0.005,
+    )
+    // The load held a beat before it sets off, as the standing cross's is.
+    let still = m.keys[2].at - (m.keys[1].at + m.taste.chain.wrist)
+    c.at_least("stepping cross: the fist still before the throw (s)", still, 0.03, within: 0.005)
+    // The step: the body travels as far as the boxer's does into his.
+    let travel = length(m.root(rig, at) - m.root(rig, at - 0.6))
+    c.at_least("stepping cross: the body's travel to the contact (m)", travel, 0.32, within: 0.02)
+    c.at_most("stepping cross: the body's travel to the contact (m)", travel, 0.78, within: 0.02)
+    // And on through the blow, not back: left free, a solve carries the body past its step by the
+    // contact and draws it back through the drive.
+    let on = m.root(rig, m.keys[4].at).z - m.root(rig, m.keys[3].at).z
+    c.at_least("stepping cross: the body's travel on through the blow (m)", on, 0.0, within: 0.005)
+    // Each foot where its keys put it, all through the step: a leg asked past its reach drags its
+    // foot along the floor.
+    var off = 0.0
+    var time = m.keys[2].at
+    while time <= m.keys[6].at {
+        let w = m.world(rig, time)
+        let k = keys::key_in(m.keys, time, m.taste.chain.body_snap)
+        let feet = [rig.find("leftToes"), rig.find("rightToes")]
+        for j in 0..2 {
+            let p = w[feet[j]].t
+            off = max(off, length(vec2(p.x - k.feet[j].x, p.z - k.feet[j].y)))
+        }
+        time += 1.0 / 60.0
+    }
+    c.at_most("stepping cross: a foot off where its keys put it (m)", off, 0.0, within: 0.01)
+    // The lead foot planted by the contact: not moving over the step that ends on it, nor off
+    // the floor.
+    // (The rear foot pivots on its ball as it drives, as the standing cross's does: the tests read
+    // that it doesn't slide.)
+    let toes = [rig.find("leftToes"), rig.find("rightToes")]
+    let (w0, w1) = (m.world(rig, at - 1.0 / 60.0), m.world(rig, at))
+    let rest = rig.rest_frames()
+    c.at_most(
+        "stepping cross: lead foot moving on the contact (m/s)",
+        length(w1[toes[0]].t - w0[toes[0]].t) * 60.0,
+        0.0,
+        within: 0.05,
+    )
+    c.at_most(
+        "stepping cross: lead foot off the floor on the contact (m)",
+        w1[toes[0]].t.y - rest[toes[0]].t.y,
+        0.0,
         within: 0.005,
     )
 }

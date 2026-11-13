@@ -123,7 +123,7 @@ pub fn step_keys(by: vec3) -> Vec<Key> {
 }
 
 /// A step `by` as a move: its keys at 60 a second about its root, which carries the body.
-fn step_move(by: vec3) -> Move {
+pub fn step_move(by: vec3) -> Move {
     let keys = step_keys(by)
     let c = keys::keyed(HERO.rig, keys, fps: 60.0, fist: 2.0)
     let n = c.frames
