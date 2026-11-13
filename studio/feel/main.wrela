@@ -27,6 +27,11 @@
 //   player is heard `LATE` frames late, so the first's client predicts and corrects.
 // - **Chains**: each weapon's chain struck at the idol standing still: whether each strike lands
 //   after the one before pushed it (`sim::push_of`), and whether it would had it been a man.
+// - **Where a strike meets a man**: a man-sized foe stood at many bearings and distances about a
+//   striker, each move: how often the rules' hit agrees with the drawn strike's striking part
+//   passing through his body in its active frames, by the reach and arc typed for it and by its
+//   sweep (`sim::SWEPT`); and of those that don't, the hits it never touched and the touches the
+//   rules missed.
 // - **Bots**: a bot that answers the idol's tell 12, 15, 18 and 24 frames in, alone against it.
 
 use std::collections::Vec
@@ -150,7 +155,7 @@ fn script_pad(w: World, f: u32) -> Pad {
     let b = w.boss()
     let (dx, dz) = (b.x - p.x, b.z - p.z)
     let d = max(dist(dx, dz), 1)
-    let reach = MOVES[WEAPONS[LONGSWORD].light].reach
+    let reach = combat::sim::reach_of(WEAPONS[LONGSWORD].light, combat::sim::IDOL_BODY)
     var pad = Pad { x: 0.0, z: 0.0, held: 0 }
     if d > reach - 16 {
         pad.x = f32(dx) / f32(d) * 0.6
@@ -351,7 +356,7 @@ fn windows() -> String {
         let m = MOVES[i]
         let combo = if m.next != NO_MOVE { m.recovery } else { 0 }
         t.push_str(
-            f"| {names[i]} | {m.windup} | {m.active} | {m.recovery} | {combo} | {f32(m.reach) / bodies::UNIT:.2} | {m.damage} |\n".as_str(),
+            f"| {names[i]} | {m.windup} | {m.active} | {m.recovery} | {combo} | {f32(combat::sim::reach_of(i, combat::sim::IDOL_BODY)) / bodies::UNIT:.2} | {m.damage} |\n".as_str(),
         )
     }
     t.push_str(
@@ -552,14 +557,14 @@ fn chains() -> String {
     let names = ["Fists", "Longsword"]
     for weapon in [FISTS, LONGSWORD] {
         var w = World::armed([weapon]).standing_still()
-        let first = MOVES[WEAPONS[weapon].light]
         var input: u32 = 0
         // Walk in, to just inside the first strike's reach.
         for _ in 0..900 {
             let p = w.player(0)
             let b = w.boss()
             let (dx, dz) = (b.x - p.x, b.z - p.z)
-            if dist(dx, dz) <= first.reach - 16 {
+            if dist(dx, dz) <=
+                combat::sim::reach_of(WEAPONS[weapon].light, combat::sim::IDOL_BODY) - 16 {
                 break
             }
             input = (input & BUTTON_BITS) | stick_to(dx, dz, 1)
@@ -585,7 +590,7 @@ fn chains() -> String {
                 if begun {
                     // (A strike begun that never landed.)
                     t.push_str(
-                        f"| {names[weapon]} | {k + 1} | no | | | | {f32(MOVES[m].reach) / bodies::UNIT:.2} |\n".as_str(),
+                        f"| {names[weapon]} | {k + 1} | no | | | | {f32(combat::sim::reach_of(m, combat::sim::IDOL_BODY)) / bodies::UNIT:.2} |\n".as_str(),
                     )
                     k += 1
                 }
@@ -597,7 +602,7 @@ fn chains() -> String {
                 let d = f32(dist(b.x - now.x, b.z - now.z)) / bodies::UNIT
                 let pushed = f32(dist(b.x - start.x, b.z - start.z)) / bodies::UNIT
                 t.push_str(
-                    f"| {names[weapon]} | {k + 1} | yes | {d:.2} | {pushed:.3} | {d - pushed + f32(man) / bodies::UNIT:.2} | {f32(MOVES[m].reach) / bodies::UNIT:.2} |\n".as_str(),
+                    f"| {names[weapon]} | {k + 1} | yes | {d:.2} | {pushed:.3} | {d - pushed + f32(man) / bodies::UNIT:.2} | {f32(combat::sim::reach_of(m, combat::sim::IDOL_BODY)) / bodies::UNIT:.2} |\n".as_str(),
                 )
                 man += combat::sim::push_of(combat::sim::hold_of(MOVES[m].damage))
                 k += 1
@@ -607,6 +612,80 @@ fn chains() -> String {
             if was.act != IDLE && now.act == IDLE && MOVES[m].next == NO_MOVE {
                 break
             }
+        }
+    }
+    t
+}
+
+// ---- where a strike meets a man -------------------------------------------------------------------
+
+/// Each player move against a man stood about its striker (48 bearings, 23 distances from 0.25 to
+/// 3 m): whether the rules hit him, by the reach and arc typed for it (`sim::reached`) and by its
+/// sweep (`sim::swept`, a man's `sim::BODY`), against whether the drawn strike's striking part,
+/// within his height, passes through his body (a circle as the rules take it) on any active frame,
+/// sampled 8 times a frame (mmo/game's `bodies::part_at`).
+fn meets() -> String {
+    var t = String::from(
+        "## Where a strike meets a man\n\nA man-sized foe stood about the striker, where it is on its active frames, at 48 bearings and 23 distances (0.25 to 3 m), 1104 places a move: whether the rules hit him, against whether the drawn strike's striking part (the blade from its cross to its point, or the fist), within his height, passes through his body on an active frame. By the reach and arc typed for each move, and by its sweep (`sim::SWEPT`).\n\n| Move | Rule | Hit | Touched | Agree | Hit, never touched | Touched, missed |\n|---|---|---|---|---|---|---|\n",
+    )
+    let names = [
+        "Fists, jab",
+        "Fists, straight",
+        "Longsword, cut 1",
+        "Longsword, cut 2",
+        "Longsword, cut 3",
+        "Longsword, overhead",
+    ]
+    let r = f32(combat::sim::BODY) / bodies::UNIT
+    for i in 0..MOVES.len() {
+        let m = MOVES[i]
+        // The striking part on the floor through the active frames, 8 times a frame.
+        var parts: Vec<(vec2, vec2)> = Vec::new()
+        for j in 0..m.active {
+            let k = m.windup + j
+            for s in 0..9 {
+                let time = (f32(k) - 1.0 + f32(s) / 8.0) / f32(HZ)
+                if let Some((a, b)) = bodies::part_at(i, time, k) {
+                    parts.push((vec2(a.x, a.z), vec2(b.x, b.z)))
+                }
+            }
+        }
+        var counts = [[0; 4]; 2]
+        for b in 0..48 {
+            let bearing = f32(b) * 0.1308997
+            for d in 0..23 {
+                let far = 0.25 + f32(d) * 0.125
+                let at = vec2(sin(bearing), cos(bearing)) * far
+                var touched = false
+                for (a, c) in parts.clone() {
+                    let u = c - a
+                    let x = clamp(dot(at - a, u) / max(dot(u, u), 1.0e-8), 0.0, 1.0)
+                    touched = touched || length(at - (a + u * x)) <= r
+                }
+                let (across, ahead) = (
+                    i32(floor(at.x * bodies::UNIT + 0.5)),
+                    i32(floor(at.y * bodies::UNIT + 0.5)),
+                )
+                var swept = false
+                for j in 0..m.active {
+                    swept = swept || combat::sim::swept(i, j, across, ahead, combat::sim::BODY)
+                }
+                let hits = [combat::sim::reached(i, across, ahead), swept]
+                for h in 0..2 {
+                    counts[h][0] += if hits[h] { 1 } else { 0 }
+                    counts[h][1] += if touched { 1 } else { 0 }
+                    counts[h][2] += if hits[h] && !touched { 1 } else { 0 }
+                    counts[h][3] += if touched && !hits[h] { 1 } else { 0 }
+                }
+            }
+        }
+        let rules = ["reach and arc", "sweep"]
+        for h in 0..2 {
+            let c = counts[h]
+            let agree = 1104 - c[2] - c[3]
+            t.push_str(
+                f"| {names[i]} | {rules[h]} | {c[0]} | {c[1]} | {agree} ({f32(agree) / 11.04:.1}%) | {c[2]} | {c[3]} |\n".as_str(),
+            )
         }
     }
     t
@@ -676,6 +755,7 @@ pub fn sheet() -> String {
         contacts(),
         drift(),
         chains(),
+        meets(),
         bots(),
     ] {
         t.push_str(part.as_str())

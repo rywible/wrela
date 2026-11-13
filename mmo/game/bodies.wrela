@@ -116,6 +116,96 @@ pub fn strikes_with(weapon: u32) -> End {
     if weapon == LONGSWORD { slash::STRIKE } else { RIGHT_FIST }
 }
 
+/// The part that strikes with `weapon` in a body posed `w` (its bones, the body's space): the
+/// longsword's blade, from its cross to its point (`stick::CROSS_AT`); the fists' fist, a point.
+pub fn striking_part(weapon: u32, w: [engine::humanoid::Rigid; 64]) -> (vec3, vec3) {
+    if weapon == LONGSWORD {
+        let h = held_of(weapon)
+        (h.at(stick::CROSS_AT / stick::LENGTH).in_pose(HERO.rig, w), h.at(1.0).in_pose(HERO.rig, w))
+    } else {
+        let f = RIGHT_FIST.in_pose(HERO.rig, w)
+        (f, f)
+    }
+}
+
+/// How tall a man stands (m): the top of the head at rest (the head bone, and a hand's width
+/// over it). A blade higher passes over him.
+pub fn man_top() -> f32 {
+    borrow rig = HERO.rig
+    rig.rest_world()[rig.find("head")].t.y + 0.12
+}
+
+/// The part of the line from `a` to `b` within a man's height (`man_top`), if any.
+pub fn within_height(a: vec3, b: vec3) -> Option<(vec3, vec3)> {
+    let top = man_top()
+    var t0 = 0.0
+    var t1 = 1.0
+    let d = b.y - a.y
+    if abs(d) < 1.0e-6 {
+        if a.y < 0.0 || a.y > top {
+            return None
+        }
+    } else {
+        let (u, v) = ((0.0 - a.y) / d, (top - a.y) / d)
+        t0 = max(t0, min(u, v))
+        t1 = min(t1, max(u, v))
+        if t0 > t1 {
+            return None
+        }
+    }
+    Some((a + (b - a) * t0, a + (b - a) * t1))
+}
+
+/// The striking part of player move `i` (`MOVES`) at `time` (s into it), about where the rules
+/// have its striker on frame `frame` (its root's travel taken off there): within a man's height.
+pub fn part_at(i: u32, time: f32, frame: u32) -> Option<(vec3, vec3)> {
+    borrow mv = ACTS[i]
+    let w = engine::humanoid::pose_world(HERO.rig, mv.pose(time))
+    let r = mv.root_at(time).0 - mv.root_at(f32(frame) / f32(HZ)).0
+    let (a, b) = striking_part(weapon_of(i), w)
+    within_height(a + r, b + r)
+}
+
+/// Player move `i`'s sweep, as the rules hold it (`sim::SWEPT_SHAPES`): through each of its
+/// active frames (the rules' frames into it, `windup` on), in `sim::PIECES` pieces from the frame
+/// before to it, the four corners of what its striking part covers on the floor, across (to the
+/// striker's left, the body's +x) and ahead (+z) of where the rules have the striker on that frame,
+/// to the nearest unit; and whether any of it is within a man's height.
+pub fn sweep_of(i: u32) -> [[i32; 9]; 12] {
+    let m = MOVES[i]
+    var out = [[0; 9]; 12]
+    let n = f32(combat::sim::PIECES)
+    let unit = |v: f32| -> i32 { i32(floor(v * UNIT + 0.5)) }
+    for j in 0..min(m.active, 6) {
+        let k = m.windup + j
+        for p in 0..combat::sim::PIECES {
+            let at = j * combat::sim::PIECES + p
+            let t0 = (f32(k) - 1.0 + f32(p) / n) / f32(HZ)
+            let t1 = t0 + 1.0 / (n * f32(HZ))
+            let (s0, s1) = (part_at(i, t0, k), part_at(i, t1, k))
+            // (A part out of a man's height at one end of the piece: the piece is the other's.)
+            let (a, b) = match (s0, s1) {
+                (Some(x), Some(y)) => (x, y),
+                (Some(x), None) => (x, x),
+                (None, Some(y)) => (y, y),
+                (None, None) => continue,
+            }
+            out[at] = [
+                unit(a.0.x),
+                unit(a.0.z),
+                unit(a.1.x),
+                unit(a.1.z),
+                unit(b.1.x),
+                unit(b.1.z),
+                unit(b.0.x),
+                unit(b.0.z),
+                1,
+            ]
+        }
+    }
+    out
+}
+
 /// Where a strike with `weapon` (the idol's, `boss`) puts what strikes on its contact, in place
 /// (the body's space, as a played move's pose has it): the slash's, a player's stepping cross's
 /// as `TRAVELLING` plays it, each less the step it's taken by then; else the standing cross's.
@@ -1110,5 +1200,45 @@ fn the_nearest_a_strike_goes_is_two_bodies_side_by_side() {
     assert(
         combat::sim::NEAREST == nearest,
         f"sim::NEAREST is {combat::sim::NEAREST}, the bodies {nearest}",
+    )
+}
+
+/// The rules hit what the drawn strike sweeps: each move's sweep (`sim::SWEPT_SHAPES`) is what its
+/// striking part covers on the floor through its active frames as the game draws it
+/// (`sweep_of`), piece by piece, to the nearest unit. If the strike's written again, the test
+/// prints the new shapes.
+@test
+fn the_rules_hit_what_the_drawn_strike_sweeps() {
+    var table = String::from("")
+    var same = true
+    for i in 0..MOVES.len() {
+        let q = sweep_of(i)
+        table.push_str("    [\n")
+        for k in 0..12 {
+            same = same && q[k] == combat::sim::SWEPT_SHAPES[i][k]
+            table.push_str(
+                f"        [{q[k][0]}, {q[k][1]}, {q[k][2]}, {q[k][3]}, {q[k][4]}, {q[k][5]}, {q[k][6]}, {q[k][7]}, {q[k][8]}],\n".as_str(),
+            )
+        }
+        table.push_str("    ],\n")
+    }
+    if !same {
+        std::io::print(f"sim::SWEPT_SHAPES, as the strikes sweep:\n{table}")
+    }
+    assert(same, "each move's sweep is its drawn strike's")
+}
+
+/// A body as the rules take it (`sim::BODY`, `sim::IDOL_BODY`): a circle as wide as a man's
+/// shoulders out to the outside of his upper arms, as `the_nearest_a_strike_goes_is_two_bodies_
+/// side_by_side` measures it, and the idol `IDOL_SCALE` times that.
+@test
+fn a_body_is_as_wide_as_its_shoulders() {
+    borrow rig = HERO.rig
+    let w = rig.rest_world()
+    let half = 0.5 * length(w[rig.find("leftUpperArm")].t - w[rig.find("rightUpperArm")].t) + 0.05
+    let (man, idol) = (i32(floor(half * UNIT + 0.5)), i32(floor(half * IDOL_SCALE * UNIT + 0.5)))
+    assert(
+        combat::sim::BODY == man && combat::sim::IDOL_BODY == idol,
+        f"the rules' bodies {combat::sim::BODY} and {combat::sim::IDOL_BODY}, the drawn {man} and {idol}",
     )
 }

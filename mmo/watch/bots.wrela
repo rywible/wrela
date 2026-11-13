@@ -80,14 +80,17 @@ fn underfoot() -> i32 {
 
 /// Whether move `m`, struck from `d` off the boss, lands in `reach` once its step's carried its
 /// striker in (the rules' `travelled`; none with the rule off), and doesn't carry it in under the
-/// boss's feet (`underfoot`; unless it's there already: then it carries it no nearer). A bot
-/// strikes from where its step leaves it in reach, not nearer.
+/// boss's feet (`underfoot`; unless it's there already: then it carries it no nearer; or its reach
+/// is too short to strike from outside them). A bot strikes from where its step leaves it in
+/// reach, not nearer.
 fn lands_in(m: u32, d: i32, reach: i32) -> bool {
     if m == NO_MOVE {
         return false
     }
     let at = d - combat::sim::travelled(m, MOVES[m].windup)
-    at <= reach && at >= min(d, underfoot() + 1)
+    // (A weapon too short to strike from outside the boss's feet, the fists' sweep, strikes from as
+    // far off as it can.)
+    at <= reach && at >= min(d, min(underfoot() + 1, reach - 32))
 }
 
 pub fn bot(w: World, i: u32, before: u32, weapon: u32, react: u32) -> u32 {
@@ -120,7 +123,7 @@ pub fn bot(w: World, i: u32, before: u32, weapon: u32, react: u32) -> u32 {
         // Through a tell, it neither walks into it nor strikes: it stands, turned to the idol.
         return held | stick_to(dx, dz, 0)
     }
-    let reach = MOVES[WEAPONS[weapon].light].reach
+    let reach = combat::sim::reach_of(WEAPONS[weapon].light, combat::sim::IDOL_BODY)
     let arms = WEAPONS[weapon]
     // (Its strike's step, which carries it in as it strikes: it stands back by it, so the step
     // lands it where it'd stand, a little inside its reach; and no strike of it, a combo's next
@@ -188,12 +191,15 @@ pub fn taker(w: World, i: u32, before: u32, weapon: u32, guard: bool) -> u32 {
     }
     // It strikes from its spot, not nearer: a strike that carries its striker in (mmo/combat's
     // `TRAVELLING`) would take it on in under the idol's feet, strike by strike, where only the
-    // stomp meets it.
-    let reach = MOVES[WEAPONS[weapon].light].reach
-    if d <= reach - 16 && d >= reach - 48 && !guard {
+    // stomp meets it. It stands back by its strike's step, so the step lands it at its spot.
+    let light = WEAPONS[weapon].light
+    let reach = combat::sim::reach_of(light, combat::sim::IDOL_BODY)
+    let step = combat::sim::travelled(light, MOVES[light].windup)
+    let at = d - step
+    if at <= reach - 16 && at >= reach - 32 && !guard {
         return press(ATTACK) | stick_to(dx, dz, 0)
     }
-    let (ox, oz) = spot(i, reach - 40)
+    let (ox, oz) = spot(i, reach - 24 + step)
     let (tx, tz) = (b.x + ox - p.x, b.z + oz - p.z)
     held | stick_to(tx, tz, if dist(tx, tz) > 128 { 2 } else { 0 })
 }
