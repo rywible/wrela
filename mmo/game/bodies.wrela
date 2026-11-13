@@ -384,10 +384,25 @@ pub const STRIKER: u32 = 2
 
 /// How the fight's bodies take blows and give them (`engine::contact::Give`). A blow drives a body
 /// no further than the rules push it (mmo/combat's knockback): a body is drawn where they put it,
-/// its whole body's drive the rules' push (`Knock::carried`; drawn behind it at most two of the
-/// heaviest pushes, `carry`) and none of its own (`back`), its head, trunk and guard giving as the
-/// blow says, its lean at most a hand's width (`LEAN_MOST`) however many blows land.
-pub const GIVE: Give = Give { back: 0.0, lean: 0.1, most: 1.0, carry: 2.0 * f32(PUSH) / UNIT }
+/// its whole body's drive the rules' push (`Knock::carried`), after it at a pace of its own
+/// (`CARRY_HALF`; drawn behind it at most two of the heaviest pushes, `carry`) and none of its own
+/// (`back`), its head, trunk and guard giving as the blow says, its lean at most a hand's width
+/// (`LEAN_MOST`) however many blows land.
+pub const GIVE: Give = Give {
+    back: 0.0,
+    lean: 0.1,
+    most: 1.0,
+    carry: 2.0 * f32(PUSH) / UNIT,
+    carry_half: CARRY_HALF,
+}
+
+/// How fast a body's drawn after the place the rules push it to (a half-life, s): the rules' push
+/// is itself eased (a third of what's left of it each frame, `sim::push_of`), so a body drawn a
+/// hundredth of a second after it is never 0.3 m off its place, even through the slam's 2.11 m,
+/// and never moves faster than the rules move it. At the knock's own drive's pace (0.07 s, then
+/// 0.21 s for a heavy blow) the slam's push was drawn up to 1.25 m behind, and a player who'd
+/// begun to act a frame into it was drawn a metre off where it acted.
+pub const CARRY_HALF: f32 = 0.01
 
 /// How far a blow may lean a drawn body's head off where its moves have it (m): a hand's width.
 pub const LEAN_MOST: f32 = 0.1
@@ -536,7 +551,7 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
     // (The push moves its place and is held back by its drive at once, so it's drawn where it was
     // and goes there at the drive's pace.)
     b.mover.place += pushed
-    b.knock.carried(pushed)
+    b.knock.carried(pushed, GIVE)
     let still = if held { 0.0 } else { dt }
     b.knock.step(mut b.mover, GIVE, still)
     b.shock.step(GIVE, still)
@@ -1139,7 +1154,9 @@ fn a_blow_the_rules_land_knocks_the_one_struck_and_shocks_the_striker() {
 /// A player the idol's slam lands on is pushed by the rules (mmo/combat's knockback), and drawn
 /// so: held where it stood through the hold, then carried to where the rules put it by the knock's
 /// drive, its feet stepping after it; it doesn't walk there (its push isn't read as a stick), and
-/// it ends on the rules' place.
+/// it ends on the rules' place. All the way, it's drawn within 0.3 m of where the rules have it
+/// (the rules let a pushed player act at once), and never a frame much faster than the rules
+/// push it (a quarter more at most, a spring catching up): close behind, not jumping.
 @test
 fn a_push_the_rules_give_is_drawn_as_the_knocks_drive() {
     // (The trial turned off, the rules push nothing, and there's nothing to draw.)
@@ -1153,6 +1170,11 @@ fn a_push_the_rules_give_is_drawn_as_the_knocks_drive() {
     var pushed = 0.0
     var walked = false
     var stepped = false
+    var behind = 0.0
+    var drawn_step = 0.0
+    var rules_step = 0.0
+    var drawn_was = vec3(0.0)
+    var place_was = vec3(0.0)
     // (The player stands; the idol walks in and makes its pattern till a slam lands.)
     for _ in 0..2400 {
         combat::sim::step(mut w, [input])
@@ -1165,7 +1187,12 @@ fn a_push_the_rules_give_is_drawn_as_the_knocks_drive() {
         if pushed > 0.0 {
             walked = walked || body.mover.doing != playback::STANDING
             stepped = stepped || body.mover.feet[0].step > 0.0 || body.mover.feet[1].step > 0.0
+            behind = max(behind, length(drawn_at(body) - place_of(p)))
+            drawn_step = max(drawn_step, length(drawn_at(body) - drawn_was))
+            rules_step = max(rules_step, length(place_of(p) - place_was))
         }
+        drawn_was = drawn_at(body)
+        place_was = place_of(p)
         if pushed > 0.0 && body.knock.still() && length(body.mover.knocked) < 0.01 {
             break
         }
@@ -1179,6 +1206,11 @@ fn a_push_the_rules_give_is_drawn_as_the_knocks_drive() {
         "and it's drawn on the rules' place",
     )
     assert(!walked, "carried, not walking")
+    assert(behind <= 0.3, f"drawn {behind} m off its place, at most, as it's pushed")
+    assert(
+        drawn_step <= rules_step * 1.25,
+        f"drawn {drawn_step} m in a frame, the rules' push {rules_step} at most",
+    )
     assert(stepped, "its feet stepping after it")
 }
 
