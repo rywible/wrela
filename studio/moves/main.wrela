@@ -12,6 +12,13 @@
 // follows the clip: the farthest any joint strays (cm), and how many harmonics or keys it took.
 //
 // ```text
+// wrela tool moves -- --cut [cut ...]
+// ```
+//
+// Writes no move: each held strike's cut sheet (`engine::cut`: the timing sheet read by the held
+// thing's tip, the tip against the hand, the edge against its way, the cut's plane).
+//
+// ```text
 // wrela tool moves -- --stance [stance ...]
 // ```
 //
@@ -57,7 +64,16 @@ use std::tool::args
 use std::tool::files
 use std::tool::files::rooted
 
-pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --contact | --stance [stance ...] | --sheet <out-dir> [strike ...] | --solve <out-dir> <strike> | --read <out-dir> <strike> | --drawn [strike ...] | --differ <strike> <strike>"
+pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --contact | --stance [stance ...] | --cut [cut ...] | --sheet <out-dir> [strike ...] | --solve <out-dir> <strike> | --read <out-dir> <strike> | --drawn [strike ...] | --differ <strike> <strike>"
+
+/// The cuts `--cut` reads (`engine::cut`): a strike with a held thing, its name, its clip, what's
+/// held, and its contact (s). The stand-in for now: the solved cross thrown with the lab's stick
+/// (content/humanoid's `stick`), until the longsword's cuts are written (8c, piece 11).
+pub fn cuts() -> Vec<(Text, Clip, engine::held::Held, f32)> {
+    Vec::from(
+        [("cross-stick", solved::CROSS.clip.clone(), humanoid::stick::STICK, solved::CONTACT)],
+    )
+}
 
 /// The stances `--stance` reads (`engine::stance`): the fight's guard, the captured boxer's (ACCAD
 /// Male 2's, its target). (Read off where it holds its hands, a stance reads which way it faces:
@@ -203,6 +219,7 @@ pub fn played() -> Vec<(Text, Played, End)> {
         [
             ("cross-solved", solved::CROSS.clone(), RIGHT_FIST),
             ("hook-solved", hook::HOOK.clone(), LEFT_FIST),
+            ("cross-stick", solved::CROSS.clone(), humanoid::stick::STICK.tip_end()),
         ],
     )
 }
@@ -425,6 +442,23 @@ pub fn tool() -> u32 {
         print(exchange::sheet(exchange::TUNED).as_str())
         return 0
     }
+    if wanted.len() >= 1 && wanted[0].as_str() == "--cut" {
+        // Each cut's sheet: the timing sheet read by its tip, and its edge, order and plane.
+        var done = 0
+        for (name, c, held, contact) in cuts() {
+            var chosen = wanted.len() == 1
+            for i in 1..wanted.len() {
+                if wanted[i].as_str() == name {
+                    chosen = true
+                }
+            }
+            if chosen {
+                print(engine::cut::cut(c, rig, held, contact).text(name).as_str())
+                done += 1
+            }
+        }
+        return if done == 0 { 2 } else { 0 }
+    }
     if wanted.len() >= 1 && wanted[0].as_str() == "--stance" {
         // Each stance's sheet: its shape and its life.
         var done = 0
@@ -454,7 +488,7 @@ pub fn tool() -> u32 {
             }
             if chosen {
                 let s = drawn::shown(rig, fists::FIGHT_GAITS, m, LIGHT)
-                print(drawn::drawings(rig, s, end.bone_of(rig), name).as_str())
+                print(drawn::drawings(rig, s, end, name).as_str())
                 done += 1
             }
         }

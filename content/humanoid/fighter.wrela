@@ -52,6 +52,9 @@ pub struct Fighters {
     body: Mesh,
     head: Mesh,
     coat: Mesh,
+    /// The lab's stand-in stick (`stick::stick_creature`), and which of them holds it.
+    stick: Mesh,
+    holds: [bool; FIGHTERS],
     palettes: GpuBuffer<mat4>,
     drape: Drape,
     /// Each fighter's charted parts as his bones pose them this frame (`hakuro::Charted`), and
@@ -77,6 +80,8 @@ pub fn fighters(shown: u32) -> Fighters {
         body: realize_once(hero(), HOW_BODY),
         head: rooted_hair(realize_once(head(), HOW_HEAD)),
         coat: follow_legs(realize_once(coat(), HOW_COAT)),
+        stick: realize_once(stick::stick_creature(), HOW_HEAD),
+        holds: [false; FIGHTERS],
         palettes: buffer(2 * FIGHTERS * MAX_BONES),
         drape: drape_room(FIGHTERS),
         charted: [charted_at_rest(); FIGHTERS],
@@ -93,42 +98,6 @@ pub fn fighters(shown: u32) -> Fighters {
 /// his mask (the captures hold no fingers, and his snout stands out where their face doesn't).
 pub fn hakuro_palette(rig_m: [mat4; 64]) -> [mat4; 64] {
     fists_off_mask(curled(hakuro::manner::on_rig(rig_m), FIST_CURL))
-}
-
-/// His palette with his punching fist (at `fist`, going `going`) drawn `big` times its size, and
-/// smeared: drawn out behind itself along its way by `by` (0 none; 1 twice as long), back over
-/// his forearm, its knuckles kept where they are: the one drawing between the cocked fist and
-/// the contact, as an animator stretches it into a stroke aimed at the face.
-pub fn smeared(m: [mat4; 64], fist: vec3, going: vec3, by: f32, big: f32) -> [mat4; 64] {
-    if (by <= 0.0 && big <= 1.0) || length(going) < 1.0e-5 {
-        return m
-    }
-    let d = normalize(going)
-    // (About his knuckles, a little on from his wrist.)
-    let e = fist + d * 0.09
-    // x -> big (x + by (x - e)·d d): a stretch along `d` about his knuckles, then grown there.
-    let c0 = (vec3(1.0, 0.0, 0.0) + d * (by * d.x)) * big
-    let c1 = (vec3(0.0, 1.0, 0.0) + d * (by * d.y)) * big
-    let c2 = (vec3(0.0, 0.0, 1.0) + d * (by * d.z)) * big
-    let shift = e - (c0 * e.x + c1 * e.y + c2 * e.z)
-    let stretch = mat4(vec4(c0, 0.0), vec4(c1, 0.0), vec4(c2, 0.0), vec4(shift, 1.0))
-    var out = m
-    // (His fingers alone are drawn out: the hand's own bone also carries his cuff, which drew
-    // out as a spike. His hand's grown with them, about his knuckles.)
-    let grow = mat4(
-        vec4(big, 0.0, 0.0, 0.0),
-        vec4(0.0, big, 0.0, 0.0),
-        vec4(0.0, 0.0, big, 0.0),
-        vec4(e * (1.0 - big), 1.0),
-    )
-    out[13] = grow * m[13]
-    for j in 0..15 {
-        // (His thumb goes with his hand: drawn out with his fingers, its form came away from
-        // his palm and hung under his fist.)
-        let with_hand = j >= 12
-        out[27 + 2 * j] = (if with_hand { grow } else { stretch }) * m[27 + 2 * j]
-    }
-    out
 }
 
 /// His palette with his head squashed by `by` (0 to 1 of its depth) along `along` about
@@ -151,6 +120,11 @@ pub fn squashed(m: [mat4; 64], about: vec3, along: vec3, by: f32) -> [mat4; 64] 
 }
 
 impl Fighters {
+    /// Whether fighter `who` holds the lab's stick in his right hand.
+    pub fn hold(mut self, who: u32, holds: bool) {
+        self.holds[who] = holds
+    }
+
     /// Fighter `who`'s palette set, and his cloth's.
     pub fn pose(mut self, who: u32, bare: [mat4; 64]) {
         let swayed = self.hair[who].step(
@@ -197,11 +171,15 @@ impl Fighters {
         let hb = hero()
         let hh = head()
         let hc = coat()
+        let hs = stick::stick_creature()
         // Their shadows first: each mesh laid flat on the ground along the sun.
         for who in 0..self.shown {
             let first = who * MAX_BONES
             shadow_of(p, self.body, self.palettes, first, shot)
             shadow_of(p, self.head, self.palettes, first, shot)
+            if self.holds[who] {
+                shadow_of(p, self.stick, self.palettes, first, shot)
+            }
             let parts = charts()
             for k in 0..CHARTS {
                 chart_shadow(p, self.grids, self.charted[who].limbs[k], parts[k].band, shot)
@@ -258,6 +236,22 @@ impl Fighters {
                 cull: Cull::Back,
                 depth: engine::view::NEAREST,
             )
+            if self.holds[who] {
+                draw(
+                    p,
+                    fighter_vertex.bind(
+                        verts: self.stick.verts.items(),
+                        palettes: self.palettes.items(),
+                        first: who * MAX_BONES,
+                        shot: shot,
+                    ),
+                    fighter_pixel.bind(field: hs.field(), shot: shot, who: who, own: 3),
+                    indices: self.stick.quads.items(),
+                    indirect: self.stick.draw.items(),
+                    cull: Cull::Back,
+                    depth: engine::view::NEAREST,
+                )
+            }
             draw(
                 p,
                 coat_vertex.bind(

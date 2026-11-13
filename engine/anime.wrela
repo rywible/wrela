@@ -12,13 +12,18 @@
 
 use humanoid::{NONE, Pose, Rig, Rigid}
 use end::{End, LIMB_ENDS}
+use held::{Held, NOTHING}
 use playback::{ACTIVE, Move, Mover, layered}
 
 /// How the fight's moves are drawn: drawings a second for a move on twos (twelve); how long (s)
 /// the picture flashes on a strike's contact and how hard (the frame's kinetic, 0 to 1); and
 /// how far back a smear trails (`smear` of the travel since the last drawing, the limb stretched
 /// at most `smear_most` times its length), from how fast (m/s, against the body) a fist or foot
-/// must go to smear.
+/// must go to smear; what the body holds (`engine::held`), whose trail is drawn as its limbs'
+/// smears are; and how much bigger its striking end is drawn on the blow (`big` of its size,
+/// added: 0 none), for how long after its contact (`big_for`, s, then let go over a tenth of a
+/// second), about a point `big_ahead` (m) on from its end along its forearm or shin (a fist's
+/// knuckles).
 pub struct Anime: Copy {
     pub drawings: f32 = 12.0,
     pub impact: f32 = 0.05,
@@ -26,6 +31,30 @@ pub struct Anime: Copy {
     pub smear: f32 = 0.6,
     pub smear_most: f32 = 1.8,
     pub smear_from: f32 = 2.5,
+    pub held: Held = NOTHING,
+    pub big: f32 = 0.0,
+    pub big_for: f32 = 0.0,
+    pub big_ahead: f32 = 0.09,
+}
+
+/// A held thing's trail: drawn back along the way it came since the last drawing, its tip
+/// furthest and its hilt not at all (a blade's sweep, on twos). Where its hilt is (the world),
+/// the unit way from hilt to tip, its length (m), and how far back its tip is drawn (the world).
+pub struct Trail: Copy {
+    pub on: bool,
+    pub hilt: vec3,
+    pub along: vec3,
+    pub length: f32,
+    pub back: vec3,
+}
+
+/// The striking end drawn bigger: about where (the world), by how much (1 none), and the bone
+/// under which every part grows (the end's).
+pub struct Grown: Copy {
+    pub on: bool,
+    pub about: vec3,
+    pub by: f32,
+    pub bone: u32,
 }
 
 /// When the last drawing before a contact is put down (s into a move drawn on twos, its
@@ -98,6 +127,11 @@ pub struct Drawer: Copy {
     pub impact_left: f32,
     pub ends: [vec3; 4],
     pub smears: [Smear; 4],
+    /// Where what it holds had its hilt and its tip at the last drawing (against the body), its
+    /// trail now, and how long since its strike's contact (s; below 0, not yet).
+    pub held_at: [vec3; 2],
+    pub trail: Trail,
+    pub since_contact: f32,
     /// The limb that came furthest since the drawing before (`STRIKING`'s; 4 none).
     pub fastest: u32,
 }
@@ -114,6 +148,9 @@ impl Drawer {
             impact_left: 0.0,
             ends: [vec3(0.0); 4],
             smears: [Smear::none(); 4],
+            held_at: [vec3(0.0); 2],
+            trail: no_trail(),
+            since_contact: -1.0,
             fastest: 4,
         }
     }
@@ -127,6 +164,29 @@ pub struct Drawn: Copy {
     pub impact: f32,
     pub smears: [Smear; 4],
     pub force: Force,
+    pub trail: Trail,
+    pub grown: Grown,
+}
+
+fn no_trail() -> Trail {
+    Trail { on: false, hilt: vec3(0.0), along: vec3(0.0, 1.0, 0.0), length: 0.0, back: vec3(0.0) }
+}
+
+fn not_grown() -> Grown {
+    Grown { on: false, about: vec3(0.0), by: 1.0, bone: NONE }
+}
+
+/// `pose` at `place` drawn as itself: nothing smeared, trailed or grown.
+fn plain(pose: Pose, place: mat4) -> Drawn {
+    Drawn {
+        pose,
+        place,
+        impact: 0.0,
+        smears: [Smear::none(); 4],
+        force: Force::none(),
+        trail: no_trail(),
+        grown: not_grown(),
+    }
 }
 
 /// Where a strike's force runs and how hard (0 to 1): from the limb's root (a shoulder, a hip)
@@ -273,6 +333,24 @@ fn draw_new(d: mut Drawer, rig: Rig, pose: Pose, place: mat4, how: Anime, smear:
         }
     }
     d.ends = ends
+    // What it holds: trailed from where it was at the last drawing, its tip's way back.
+    d.trail = no_trail()
+    if how.held.held() {
+        let id = std::transform::identity()
+        let (h, t) = held_ends(rig, pose, id, how.held)
+        let travel = d.held_at[1] - t
+        if smear && d.on && length(travel) * how.drawings > how.smear_from {
+            let (wh, wt) = held_ends(rig, pose, place, how.held)
+            d.trail = Trail {
+                on: true,
+                hilt: wh,
+                along: normalize(wt - wh + vec3(1.0e-6)),
+                length: how.held.length(),
+                back: (place * vec4(travel, 0.0)).xyz * how.smear,
+            }
+        }
+        d.held_at = [h, t]
+    }
     d.drawing = pose
     d.place = place
 }
@@ -297,13 +375,13 @@ pub fn drawn(
     if m.acting == NONE || m.acting >= acts.len() || m.acting >= looks.len() {
         d.on = false
         d.acting = NONE
-        return Drawn { pose, place, impact: 0.0, smears: [Smear::none(); 4], force: Force::none() }
+        return plain(pose, place)
     }
     let look = looks[m.acting]
     if !look.twos && !look.flash && !look.smear {
         d.on = false
         d.acting = NONE
-        return Drawn { pose, place, impact: 0.0, smears: [Smear::none(); 4], force: Force::none() }
+        return plain(pose, place)
     }
     let period = if look.twos { 1.0 / max(how.drawings, 1.0) } else { 0.0 }
     borrow mv = acts[m.acting]
@@ -320,21 +398,27 @@ pub fn drawn(
         d.since = 0.0
         d.impact_left = 0.0
         d.fastest = 4
+        d.since_contact = -1.0
     } else if !d.struck && contact >= 0.0 && m.act_time >= contact {
         // Its contact: drawn now, whatever the count, and flashed.
         d.struck = true
+        d.since_contact = 0.0
         d.impact_left = if look.flash { how.impact } else { 0.0 }
         draw_new(mut d, rig, pose, place, how, smear: look.smear, arms: m.upper)
         d.since = 0.0
     } else {
         d.impact_left -= dt
         d.since += dt
+        if d.since_contact >= 0.0 {
+            d.since_contact += dt
+        }
         if d.since >= period {
             d.since = if period > 0.0 { d.since - period } else { 0.0 }
             draw_new(mut d, rig, pose, place, how, smear: look.smear, arms: m.upper)
         } else if d.since >= 0.5 * period {
             // A smear's an in-between: half a drawing, then the limb's whole.
             d.smears = [Smear::none(); 4]
+            d.trail = no_trail()
         }
     }
     let impact = if d.impact_left > 1.0e-3 { how.flash } else { 0.0 }
@@ -360,7 +444,80 @@ pub fn drawn(
         }
     }
     let force = force_of(rig, shown, at, look, d.fastest, m.act_time, contact)
-    Drawn { pose: shown, place: at, impact, smears, force }
+    // The held thing's trail from where it's shown now; the striking end grown on the blow.
+    var trail = d.trail
+    if trail.on {
+        let (h, t) = held_ends(rig, shown, at, how.held)
+        trail.hilt = h
+        trail.along = normalize(t - h + vec3(1.0e-6))
+    }
+    var grown = not_grown()
+    if how.big > 0.0 && d.since_contact >= 0.0 && d.fastest < 4 {
+        let on = 1.0 - smoothstep(how.big_for, how.big_for + 0.1, d.since_contact)
+        let end = LIMB_ENDS[d.fastest]
+        let e = end.bone_of(rig)
+        let from = rig.find(FROM[d.fastest])
+        if on > 0.0 && e != NONE && from != NONE {
+            let tip = point_at(rig, shown, at, e, end.at)
+            let way = normalize(tip - bone_at(rig, shown, at, from) + vec3(1.0e-6))
+            grown = Grown {
+                on: true,
+                about: tip + way * how.big_ahead,
+                by: 1.0 + how.big * on,
+                bone: e,
+            }
+        }
+    }
+    Drawn { pose: shown, place: at, impact, smears, force, trail, grown }
+}
+
+/// Where what's held (`held`) has its hilt and tip, drawn as `pose` at `place` (the world).
+fn held_ends(rig: Rig, pose: Pose, place: mat4, held: Held) -> (vec3, vec3) {
+    let b = held.hand_of(rig)
+    if b == NONE {
+        return (vec3(0.0), vec3(0.0))
+    }
+    let (h, t) = (held.hilt_end(), held.tip_end())
+    (point_at(rig, pose, place, b, h.at), point_at(rig, pose, place, b, t.at))
+}
+
+/// A palette (`humanoid::palette`) as `d` draws it: its limbs' smears (`smeared`), what it holds
+/// trailed back along its way, its striking end grown. The one way a drawn body's palette is made.
+pub fn drawn_palette(palette: [mat4; 64], rig: Rig, d: Drawn, held: Held) -> [mat4; 64] {
+    var out = smeared(palette, rig, d.smears)
+    let hand = held.hand_of(rig)
+    if d.trail.on && hand != NONE && d.trail.length > 1.0e-4 {
+        // x + ((x - hilt)·along / length) back: the tip drawn back by `back`, the hilt not at all.
+        let u = d.trail.along / d.trail.length
+        let b = d.trail.back
+        let c0 = vec3(1.0, 0.0, 0.0) + b * u.x
+        let c1 = vec3(0.0, 1.0, 0.0) + b * u.y
+        let c2 = vec3(0.0, 0.0, 1.0) + b * u.z
+        let shift = -b * dot(d.trail.hilt, u)
+        let shear = mat4(vec4(c0, 0.0), vec4(c1, 0.0), vec4(c2, 0.0), vec4(shift, 1.0))
+        for slot in 0..63 {
+            let s = humanoid::slot_bone(rig, slot)
+            if s != NONE && descends(rig, s, hand) {
+                out[slot] = shear * out[slot]
+            }
+        }
+    }
+    let g = d.grown
+    if g.on && g.bone != NONE {
+        let grow = mat4(
+            vec4(g.by, 0.0, 0.0, 0.0),
+            vec4(0.0, g.by, 0.0, 0.0),
+            vec4(0.0, 0.0, g.by, 0.0),
+            vec4(g.about * (1.0 - g.by), 1.0),
+        )
+        for slot in 0..63 {
+            let s = humanoid::slot_bone(rig, slot)
+            if s != NONE && descends(rig, s, g.bone) {
+                out[slot] = grow * out[slot]
+            }
+        }
+    }
+    out
 }
 
 /// A palette (`humanoid::palette`) with its smears: each smearing limb's bones, from the one it

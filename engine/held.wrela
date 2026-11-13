@@ -1,0 +1,100 @@
+// A held thing: a blade, a stick, a club, gripped in a hand and moving as one with it. It's
+// rigid in the hand's frame, so each of its points is a striking end hung from the hand
+// (`engine::end::End`), and every reader of a strike reads it as it reads a fist: its tip's path
+// and speed (`engine::timing`), a written move's end (`engine::written`), where it lands
+// (`engine::contact`), how it's drawn (`engine::anime`). What a held thing adds is its length and
+// its edge: which way its edge faces, read against the way it goes (`engine::cut`).
+//
+// Its shape (a longsword's, a stand-in's) is content's: a field on the hand's bone, drawn where
+// the hand is.
+
+use humanoid::{NONE, Rig, Rigid}
+use end::End
+
+/// A thing held: the hand bone it's held in (a VRM name), its frame in the hand's (`grip`), its
+/// hilt and its tip in its own frame (m: the hilt the end of the grip the striking part goes
+/// from), and which way its edge faces in its own frame (a unit way, square to its length; a
+/// stick's any).
+pub struct Held: Copy {
+    pub hand: Text,
+    pub grip: Rigid,
+    pub hilt: vec3,
+    pub tip: vec3,
+    pub edge: vec3,
+}
+
+/// Nothing held.
+pub const NOTHING: Held = Held {
+    hand: "",
+    grip: Rigid { q: Quat { v: vec4(0.0, 0.0, 0.0, 1.0) }, t: vec3(0.0) },
+    hilt: vec3(0.0),
+    tip: vec3(0.0),
+    edge: vec3(1.0, 0.0, 0.0),
+}
+
+impl Held {
+    /// Whether anything's held.
+    pub fn held(self) -> bool {
+        self.hand != ""
+    }
+
+    /// How long it is from hilt to tip (m).
+    pub fn length(self) -> f32 {
+        length(self.tip - self.hilt)
+    }
+
+    /// The point `along` its length (0 the hilt, 1 the tip) as a striking end: a point in the
+    /// hand's frame.
+    pub fn at(self, along: f32) -> End {
+        let p = self.hilt + (self.tip - self.hilt) * along
+        End { bone: self.hand, at: self.grip.t + self.grip.q.rotate(p) }
+    }
+
+    /// Its tip, as a striking end.
+    pub fn tip_end(self) -> End {
+        self.at(1.0)
+    }
+
+    /// Its hilt, as an end.
+    pub fn hilt_end(self) -> End {
+        self.at(0.0)
+    }
+
+    /// Its frame where its hand is `hand` (the hand bone's place and turn, in any space).
+    pub fn frame(self, hand: Rigid) -> Rigid {
+        hand.then(self.grip)
+    }
+
+    /// Which way its edge faces, its hand at `hand` (unit, in `hand`'s space).
+    pub fn edge_at(self, hand: Rigid) -> vec3 {
+        normalize(self.frame(hand).q.rotate(self.edge))
+    }
+
+    /// Its hilt and tip, its hand at `hand` (in `hand`'s space).
+    pub fn ends_at(self, hand: Rigid) -> (vec3, vec3) {
+        let f = self.frame(hand)
+        (f.t + f.q.rotate(self.hilt), f.t + f.q.rotate(self.tip))
+    }
+
+    /// Its hand bone on `rig` (`NONE` for none).
+    pub fn hand_of(self, rig: Rig) -> u32 {
+        rig.find(self.hand)
+    }
+
+    /// How far along its length (0 the hilt, 1 the tip) the point nearest `p` is, its hand at
+    /// `hand` (`p` in `hand`'s space): where along it a blow meets what it struck.
+    pub fn along(self, hand: Rigid, p: vec3) -> f32 {
+        let (a, b) = self.ends_at(hand)
+        let d = b - a
+        clamp(dot(p - a, d) / max(dot(d, d), 1.0e-8), 0.0, 1.0)
+    }
+}
+
+/// The way a blow by a held thing goes: the way its point `along` its length is going, its hand
+/// at `hand` now and at `before` a moment earlier (both in one space). A blade's blow goes the
+/// way the blade does, not along the line from the one who swung it to the one it struck.
+pub fn swung(held: Held, along: f32, hand: Rigid, before: Rigid) -> vec3 {
+    let e = held.at(along)
+    let v = e.on(hand) - e.on(before)
+    if length(v) > 1.0e-6 { normalize(v) } else { vec3(0.0) }
+}

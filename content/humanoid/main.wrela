@@ -65,6 +65,9 @@ pub const SHOW: u32 = 0
 /// Who fights in the exchange and the lab (`SHOW=28`, `29`) and who a game plays (`SHOW=11`):
 /// 1 Hakuro (`fighter`), in a fight against his double; 0 the bare body (`--set HAKURO=0`).
 pub const HAKURO: u32 = 1
+/// Whether the exchange's striker holds the lab's stand-in stick (`stick::STICK`, 1): read on the
+/// cut sheet, drawn trailing, its blow landing along it (`--set STICK=1`).
+pub const STICK: u32 = 0
 /// `SHOW=12`'s body: the bare body (0), or with `--set CHARTED=1` Hakuro, his arms and hands his
 /// charted forms (`engine::chart`), alone: to see how a strike's turns land on a charted arm.
 pub const CHARTED: u32 = 0
@@ -235,7 +238,10 @@ pub fn init() -> State {
     }
     State {
         lab: Lab::new(),
-        ex: Exchange::new(exchange::TUNED, after: if SHOW == 28 { exchange::THROW } else { -1.0 }),
+        ex: Exchange::new(
+            exchange::Tune { stick: STICK == 1, ..exchange::TUNED },
+            after: if SHOW == 28 { exchange::THROW } else { -1.0 },
+        ),
         ui: Ui::new(Fonts::load()),
         renderer: Renderer::new(Fonts::load()),
         cues,
@@ -690,7 +696,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                 dt,
             )
         }
-        bones = anime::smeared(palette(HERO.rig, carry(d.pose), d.place), HERO.rig, d.smears)
+        bones = anime::drawn_palette(
+            palette(HERO.rig, carry(d.pose), d.place),
+            HERO.rig,
+            d,
+            engine::held::NOTHING,
+        )
         kinetic = max(kinetic, d.impact)
         force = d.force
     }
@@ -715,13 +726,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         write(mut s.palette2, 0, foe)
         if fight {
             // (His fist drawn big on the blow; the head it struck squashed along it.)
+            // (His fist's drawn big by `anime`, in his palette already: his charted hand grown
+            // with it.)
             let (big, squash) = x.drawn_big()
             let rw = HERO.rig.rest_world()
-            let fist = bone_at(bones, rw, "rightHand")
-            s.fighters.pose(
-                0,
-                fighter::smeared(hakuro_palette(bones), fist, exchange::BLOW, 0.0, big),
-            )
+            s.fighters.pose(0, hakuro_palette(bones))
+            s.fighters.hold(0, STICK == 1)
             s.fighters.fist_grown(0, 1, big)
             let head = bone_at(foe, rw, "head") + vec3(0.0, 0.07, 0.0)
             s.fighters.pose(1, fighter::squashed(hakuro_palette(foe), head, exchange::BLOW, squash))

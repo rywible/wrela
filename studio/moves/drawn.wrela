@@ -113,9 +113,9 @@ fn same(a: Pose, b: Pose, bones: u32) -> bool {
 
 /// The strike's drawings, as lines: how many there are and how many come before its contact,
 /// then each one's frame by the move's clock (its first frame shows it a step on, so the
-/// frame its contact is drawn on is its contact's), how long it's held, and how far the fist (bone `end`) has come
-/// since the one before.
-pub fn drawings(rig: Rig, s: Shown, end: u32, name: str) -> String {
+/// frame its contact is drawn on is its contact's), how long it's held, and how far its striking
+/// end (`engine::end::End`: a fist, a held thing's tip) has come since the one before.
+pub fn drawings(rig: Rig, s: Shown, end: engine::end::End, name: str) -> String {
     let nb = rig.bones.len()
     var starts: Vec<u32> = Vec::new()
     for f in 0..s.drawn.len() {
@@ -135,9 +135,9 @@ pub fn drawings(rig: Rig, s: Shown, end: u32, name: str) -> String {
     for i in 0..starts.len() {
         let f = starts[i]
         let till = if i + 1 < starts.len() { starts[i + 1] } else { s.drawn.len() }
-        let at = pose_world(rig, s.drawn[f])[end].t
+        let at = end.in_pose(rig, pose_world(rig, s.drawn[f]))
         let moved = if i == 0 { 0.0 } else {
-            length(at - pose_world(rig, s.drawn[starts[i - 1]])[end].t)
+            length(at - end.in_pose(rig, pose_world(rig, s.drawn[starts[i - 1]])))
         }
         let what = if i == landed { " (its contact)" } else if s.impact[f] { " (impact)" } else {
             ""

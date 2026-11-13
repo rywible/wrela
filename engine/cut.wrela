@@ -1,0 +1,131 @@
+// A cut's sheet: a strike with a held thing (`engine::held`), read as its tip. It's the timing
+// sheet (`engine::timing`) read by the tip's end, and what a held thing adds to it:
+//
+// - The tip against the hand: the tip outruns the hand that swings it (a lever), and the chain
+//   goes from the hips out to the tip, the tip's fastest last of all.
+// - The edge against its path: how far (degrees) the edge's way is off the way the tip goes, on
+//   contact and at worst over the swing. A cut lands edge first (0); a blade turned flat to its
+//   path lands flat (90).
+// - The cut's plane: how far the tip's path from setting off to its contact strays from the plane
+//   it best lies in (m, and of its path's length). A cut swung on one plane is flat (0).
+// - The sweep: where the hilt and the tip are each sample from setting off to the contact (the
+//   body's space): the volume the blade sweeps, which the rules' hit shapes are made from.
+//
+// `Cut::text` is the sheet.
+
+use std::collections::Vec
+use std::string::String
+use humanoid::{Clip, NONE, Rig, Rigid}
+use held::Held
+use timing::{END, RATE, Timing, read, timing}
+
+const DEG: f32 = 57.29578
+
+/// A cut, read (`cut`).
+pub struct Cut: Clone {
+    /// The timing sheet, read by the tip.
+    pub timing: Timing,
+    /// The hand's fastest over the strike (m/s), and whether the chain goes from the hips out to
+    /// the tip with the tip's fastest last.
+    pub hand_fastest: f32,
+    pub tip_last: bool,
+    /// How far the edge is off the tip's way on contact, and at worst from setting off to it
+    /// (degrees).
+    pub edge_on: f32,
+    pub edge_worst: f32,
+    /// How far the tip's path strays from its plane at most (m), and of its path's length.
+    pub plane_off: f32,
+    pub plane_share: f32,
+    /// The hilt and the tip each sample from setting off to the contact (the body's space).
+    pub sweep: Vec<[vec3; 2]>,
+}
+
+/// The cut `clip` makes on `rig` with `held`, its contact at `contact` s (negative to find it).
+pub fn cut(clip: Clip, rig: Rig, held: Held, contact: f32) -> Cut {
+    let t = timing(clip, rig, held.tip_end(), contact)
+    var out = Cut {
+        timing: t.clone(),
+        hand_fastest: 0.0,
+        tip_last: false,
+        edge_on: 0.0,
+        edge_worst: 0.0,
+        plane_off: 0.0,
+        plane_share: 0.0,
+        sweep: Vec::new(),
+    }
+    let hand = held.hand_of(rig)
+    if !t.found || hand == NONE {
+        return out
+    }
+    let r = read(clip, rig, [hand])
+    let frame = |i: u32| -> Rigid { Rigid { q: r.q[i], t: r.at[i] } }
+    let last = r.m - 1
+    let i_s = min(u32(t.sets_off * RATE + 0.5), last)
+    let i_c = max(min(u32(t.contact * RATE + 0.5), last), i_s)
+    // The tip last and fastest: the chain in order, no part fastest after it.
+    var latest = true
+    for part in 0..END {
+        if t.chain.len() > END && t.chain[part].at > t.chain[END].at {
+            latest = false
+        }
+    }
+    out.tip_last = t.in_order() && latest
+    var path = 0.0
+    var centre = vec3(0.0)
+    for i in i_s..i_c + 1 {
+        let (h, p) = held.ends_at(frame(i))
+        out.sweep.push([h, p])
+        centre += p
+        if i > 0 {
+            let (_, q) = held.ends_at(frame(i - 1))
+            let step = p - q
+            path += length(step)
+            out.hand_fastest = max(out.hand_fastest, length(r.at[i] - r.at[i - 1]) * RATE)
+            if length(step) > 1.0e-5 {
+                let off = acos(clamp(abs(dot(held.edge_at(frame(i)), normalize(step))), 0.0, 1.0))
+                // (0 edge first: the edge along the way it goes.)
+                let a = 90.0 - off * DEG
+                out.edge_worst = max(out.edge_worst, abs(a))
+                if i == i_c {
+                    out.edge_on = abs(a)
+                }
+            }
+        }
+    }
+    // The plane the tip's path best lies in: through its middle, square to the turn its path
+    // sweeps about it.
+    let n = out.sweep.len()
+    if n >= 3 {
+        centre = centre / f32(n)
+        var turn = vec3(0.0)
+        for k in 0..n - 1 {
+            turn += cross(out.sweep[k][1] - centre, out.sweep[k + 1][1] - centre)
+        }
+        if length(turn) > 1.0e-8 {
+            let normal = normalize(turn)
+            for k in 0..n {
+                out.plane_off = max(out.plane_off, abs(dot(out.sweep[k][1] - centre, normal)))
+            }
+        }
+        out.plane_share = out.plane_off / max(path, 1.0e-4)
+    }
+    out
+}
+
+impl Cut {
+    /// The sheet, headed `name`: the timing sheet read by the tip, and the cut's own reads.
+    pub fn text(self, name: str) -> String {
+        var s = self.timing.text(name)
+        borrow t = self.timing
+        s.push_str(
+            f"\ncut: the tip fastest {t.fastest:.1} m/s at {t.fastest_at:.3} s, the hand {self.hand_fastest:.1} m/s; the chain from the hips out to the tip {if self.tip_last { "in order, the tip last" } else { "out of order" }}\n".as_str(),
+        )
+        s.push_str(
+            f"  the edge {self.edge_on:.0} deg off its way on contact, {self.edge_worst:.0} at worst over the swing (0 edge first, 90 flat)\n".as_str(),
+        )
+        s.push_str(
+            f"  its plane: the tip strays {self.plane_off * 100.0:.1} cm off it at most, {self.plane_share * 100.0:.1}% of its path; {self.sweep.len()} samples swept\n".as_str(),
+        )
+        s
+    }
+}
