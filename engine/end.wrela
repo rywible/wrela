@@ -1,0 +1,65 @@
+// A striking end: the point a strike is read and landed by, as a point in a bone's frame (a
+// fist's, a foot's, and so a held thing's tip, hung from a hand). Every reader of a strike reads
+// it the same way: its sheet (`engine::timing`), a written move (`engine::written`'s `end`,
+// `thrown`, `fastest`), how it's drawn (`engine::anime`'s striking limb) and how it lands
+// (`engine::contact`). A fist and a foot are their bones' own points: the wrist and the ankle.
+
+use humanoid::{NONE, Rig, Rigid}
+
+/// A point (`at`, m, in the bone's own frame) of bone `bone` (a VRM name; none for no end).
+pub struct End: Copy {
+    pub bone: Text,
+    pub at: vec3,
+}
+
+/// The fists and the feet: each its bone's own point.
+pub const LEFT_FIST: End = End { bone: "leftHand", at: vec3(0.0) }
+pub const RIGHT_FIST: End = End { bone: "rightHand", at: vec3(0.0) }
+pub const LEFT_FOOT: End = End { bone: "leftFoot", at: vec3(0.0) }
+pub const RIGHT_FOOT: End = End { bone: "rightFoot", at: vec3(0.0) }
+
+/// No end: a reader that finds the striking limb itself (`engine::timing::ANY`).
+pub const NO_END: End = End { bone: "", at: vec3(0.0) }
+
+/// Each limb's own end, as `engine::timing` counts limbs (the left arm, the right, the left leg,
+/// the right).
+pub const LIMB_ENDS: [End; 4] = [LEFT_FIST, RIGHT_FIST, LEFT_FOOT, RIGHT_FOOT]
+
+/// Each limb's end bone, by which a held end is found to hang from its limb.
+const LIMB_BONES: [Text; 4] = ["leftHand", "rightHand", "leftFoot", "rightFoot"]
+
+impl End {
+    /// Where it is, its bone where `b` puts it (the bone's place and turn, in whatever space `b`
+    /// is in).
+    pub fn on(self, b: Rigid) -> vec3 {
+        b.t + b.q.rotate(self.at)
+    }
+
+    /// Its bone on `rig` (`NONE` for none, or one the rig lacks).
+    pub fn bone_of(self, rig: Rig) -> u32 {
+        rig.find(self.bone)
+    }
+
+    /// Where it is in `w` (a pose's bones, `humanoid::pose_world`'s), on `rig`.
+    pub fn in_pose(self, rig: Rig, w: [Rigid; 64]) -> vec3 {
+        let b = self.bone_of(rig)
+        if b == NONE { vec3(0.0) } else { self.on(w[b]) }
+    }
+
+    /// The limb it's carried by (0 the left arm, 1 the right, 2 the left leg, 3 the right; 4
+    /// none): the limb whose end bone is its bone or one it hangs from.
+    pub fn limb(self, rig: Rig) -> u32 {
+        var b = self.bone_of(rig)
+        var steps = 0
+        while b != NONE && steps < 64 {
+            for l in 0..4 {
+                if rig.find(LIMB_BONES[l]) == b {
+                    return l
+                }
+            }
+            b = rig.bones[b].parent
+            steps += 1
+        }
+        4
+    }
+}

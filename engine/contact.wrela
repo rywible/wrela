@@ -16,6 +16,7 @@
 // them. What content/humanoid's exchange did by hand for one punch, for any blow on any body.
 
 use humanoid::{NONE, Pose, Rig, Rigid, pose_world}
+use end::{End, RIGHT_FIST}
 use keys::arm_to
 use playback::{Mover, decayed}
 use std::collections::Vec
@@ -280,13 +281,13 @@ impl Knock {
 /// The joints a shock runs up, in turn: the forearm, the upper arm, the collar, the chest.
 const SHOCKED: u32 = 4
 
-/// A blow running back up the arm that struck it, a joint at a time: the blow, the arm (0 the
-/// left, 1 the right), how long since the hold broke (s; below 0, none), how many of the arm's
+/// A blow running back up the arm that struck it, a joint at a time: the blow, the end it struck
+/// with (`engine::end::End`: its arm the one the shock runs up), how long since the hold broke (s; below 0, none), how many of the arm's
 /// joints it's reached, and each joint's turn back against the blow (rad, in `x.x`), each its own
 /// spring.
 pub struct Shock: Copy {
     pub hit: Hit,
-    pub arm: u32,
+    pub end: End,
     pub since: f32,
     pub laid: u32,
     pub joints: [Part; 4],
@@ -296,16 +297,16 @@ impl Shock {
     pub fn none() -> Shock {
         Shock {
             hit: Hit { at: vec3(0.0), way: vec3(0.0, 0.0, 1.0), weight: 0.0, hold: 0.0 },
-            arm: 1,
+            end: RIGHT_FIST,
             since: -1.0,
             laid: SHOCKED,
             joints: [Part::none(); 4],
         }
     }
 
-    /// Blow `hit`, struck with `arm`, its hold broken now: to run up the arm.
-    pub fn struck(hit: Hit, arm: u32) -> Shock {
-        Shock { hit, arm, since: 0.0, laid: 0, joints: [Part::none(); 4] }
+    /// Blow `hit`, struck with `end`, its hold broken now: to run up its arm.
+    pub fn struck(hit: Hit, end: End) -> Shock {
+        Shock { hit, end, since: 0.0, laid: 0, joints: [Part::none(); 4] }
     }
 
     /// `dt` (s) on, as `give` says: each joint the shock's reached set going, the forearm first,
@@ -344,7 +345,7 @@ impl Shock {
         var out = pose
         let w = pose_world(rig, pose)
         let back = -normalize(into_body(m, self.hit.way))
-        let side = if self.arm == 0 { "left" } else { "right" }
+        let side = if self.end.limb(rig) == 0 { "left" } else { "right" }
         let parts = [
             (f"{side}LowerArm", f"{side}Hand"),
             (f"{side}UpperArm", f"{side}LowerArm"),
@@ -372,16 +373,22 @@ impl Shock {
     }
 }
 
-/// `pose` (drawn at `place`) with its `arm`'s fist on `at` (the world): what it struck, held
-/// there while the blow's held, whatever the rest of the body does.
-pub fn pinned(rig: Rig, pose: Pose, place: mat4, arm: u32, at: vec3) -> Pose {
+/// `pose` (drawn at `place`) with its striking `end` on `at` (the world): what it struck, held
+/// there while the blow's held, whatever the rest of the body does. (Its arm reaches its wrist to
+/// where the end's on `at`, the hand turned as it is.)
+pub fn pinned(rig: Rig, pose: Pose, place: mat4, end: End, at: vec3) -> Pose {
     let a = pose_world(rig, pose)
+    let arm = if end.limb(rig) == 0 { 0 } else { 1 }
+    let wrist = rig.find(if arm == 0 { "leftHand" } else { "rightHand" })
+    let off = if end.bone_of(rig) == NONE || wrist == NONE { vec3(0.0) } else {
+        end.in_pose(rig, a) - a[wrist].t
+    }
     let nb = rig.bones.len()
     var w: Vec<Rigid> = Vec::with_capacity(nb)
     for b in 0..nb {
         w.push(a[b])
     }
-    arm_to(rig, mut w, arm, (inverse(place) * vec4(at, 1.0)).xyz)
+    arm_to(rig, mut w, arm, (inverse(place) * vec4(at, 1.0)).xyz - off)
     var out = pose
     for b in 0..nb {
         let up = rig.bones[b].parent

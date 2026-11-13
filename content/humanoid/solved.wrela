@@ -23,7 +23,8 @@ use engine::keys
 use engine::keys::{Key, SETTLE, SMOOTH, SNAP}
 use engine::playback::Move
 use engine::review
-use engine::timing::{RIGHT_ARM, timing}
+use engine::timing::timing
+use engine::end::RIGHT_FIST
 use engine::written::{Beats, Chain, Taste, Written}
 use taste::taste
 use body::HERO
@@ -124,7 +125,11 @@ pub fn cross() -> Written<8> {
     var back = rest
     back.at = 0.86
     back.ease = SMOOTH
-    Written { keys: [rest, load, beat, contact, driven, held, home, back], taste: taste(), arm: 1 }
+    Written {
+        keys: [rest, load, beat, contact, driven, held, home, back],
+        taste: taste(),
+        end: RIGHT_FIST,
+    }
 }
 
 /// The solved cross as a game plays it at `beats` (`engine::written::Written::played`): at 60
@@ -163,7 +168,7 @@ fn the_solved_cross_holds_its_spec() {
 @test
 fn the_solved_cross_reads_as_a_strike() {
     borrow rig = HERO.rig
-    let t = timing(CROSS.clip, rig, RIGHT_ARM, CONTACT)
+    let t = timing(CROSS.clip, rig, RIGHT_FIST, CONTACT)
     print(t.text("the solved cross"))
     assert(t.found && t.flags().len() == 0, "the sheet flags nothing")
     assert(t.lead() >= 0.06 && t.lead() <= 0.12, f"the hips go {t.lead()} s before the arm")
