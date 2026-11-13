@@ -58,9 +58,10 @@ pub fn shot_at(
     side: f32,
     kinetic: f32,
     left: vec3,
+    rise: f32 = 0.18,
 ) -> Shot {
     let at = feet + vec3(0.0, focus, 0.0)
-    let eye = at + normalize(vec3(side, 0.18, 1.0)) * far
+    let eye = at + normalize(vec3(side, rise, 1.0)) * far
     Shot {
         resolution: vec2(f32(width), f32(height)),
         held: floor(time * 12.0) / 12.0,

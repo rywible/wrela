@@ -1,0 +1,20 @@
+neutral_id.bvh: from "The 100STYLE Dataset - Ian Mason", licensed under Creative Commons
+Attribution 4.0 International (https://creativecommons.org/licenses/by/4.0/).
+
+Ian Mason, Sebastian Starke and Taku Komura, "Real-Time Style Modelling of Human Locomotion via
+Feature-Wise Transformations and Local Motion Phases", Proceedings of the ACM on Computer Graphics
+and Interactive Techniques 5(1), 2022, doi:10.1145/3522618. Dataset: https://www.ianxmason.com/100style/,
+Zenodo record 8127870 (100STYLE.zip, md5 3cf627852fd8192024c04a8d0ef49583).
+
+What this file is: frames 890 to 1189 (from 0) of 100STYLE/Neutral/Neutral_ID.bvh, 5 s of standing
+idle (the stretch of the take's standing, between its coming to a stand and its walking off, whose
+hips move least, 0.5 cm, and whose ends differ least), Xsens inertial capture at 60 frames a second
+in centimetres; the skeleton and the frames exactly as the dataset has them. Cut here from the whole
+take as github.com/aether-lang-dev/ae3d holds it (tests/fixtures/people/100style/whole/
+Neutral_ID.bvh.gz, sha256 7c9596f10386c80813eef363908c8851e389ce3022d92acda8b787617bbc5fb7, its
+README.md records it as the dataset's), fetched 2026-11-12:
+
+sha256 5c0d2518a8f6e1830348d603d98ee55516aea458cc3d9f4b5d3743e96559fea6
+
+Changes made here: cut, nothing else changed. engine::humanoid retargets it onto the Quaternius
+body at build time.

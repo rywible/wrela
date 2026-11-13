@@ -208,7 +208,7 @@ impl Cut {
             f"  its plane: the tip strays {self.plane_off * 100.0:.1} cm off it at most, {self.plane_share * 100.0:.1}% of its path; {self.sweep.len()} samples swept\n".as_str(),
         )
         s.push_str(
-            f"  the hands on contact: {self.hand_y * 100.0:.0} cm up, {self.hand_ahead * 100.0:.0} cm ahead of the chest, the arm {self.reach * 100.0:.0}% out; the blade {self.blade_down:.0} deg below level\n".as_str(),
+            f"  the hands on contact: {self.hand_y * 100.0:.0} cm up, {self.hand_ahead * 100.0:.0} cm ahead of the chest, the arm {self.reach * 100.0:.0}% out; the blade {abs(self.blade_down):.0} deg {if self.blade_down >= 0.0 { "below" } else { "above" }} level\n".as_str(),
         )
         s.push_str(
             f"  on the way over: the blade most upright {self.upright:.0} deg above level, the hand {self.upright_hand_y * 100.0:.0} cm up then; the hand {self.lead * 1000.0:.0} ms ahead of the blade, half way\n".as_str(),

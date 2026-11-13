@@ -1044,6 +1044,9 @@ impl Take {
 /// are planted afterwards (`stride::humanised`).
 pub struct Retarget: Copy {
     pub face_ahead: bool = false,
+    /// Whether the way its body faces on average (across its hips) is turned to face +z, its
+    /// travel left as it goes against that: a take that steps sideways or backs off.
+    pub face_body: bool = false,
     pub looped: bool = false,
     /// Whether its neck and head are set to the rig's own carriage on average, keeping only how
     /// they move: a take whose rest has a straight neck (100STYLE's) holds a real neck's forward
@@ -1158,6 +1161,16 @@ pub fn retarget(src: Take, rig: Rig, how: Retarget) -> Clip {
     if how.face_ahead {
         let d = last[hips].t - first[hips].t
         yaw = Quat::axis_angle(vec3(0.0, 1.0, 0.0), -atan2(d.x, d.z))
+    }
+    if how.face_body {
+        let (lu, ru) = (src.of[bone("leftUpperLeg")], src.of[bone("rightUpperLeg")])
+        var across = vec3(0.0)
+        for f in 0..src.frames {
+            let w = src.world(f)
+            across += w[lu].t - w[ru].t
+        }
+        let ahead = cross(vec3(across.x, 0.0, across.z), vec3(0.0, 1.0, 0.0))
+        yaw = Quat::axis_angle(vec3(0.0, 1.0, 0.0), -atan2(ahead.x, ahead.z))
     }
     // Its feet's lowest, set on the rig's ground: the rig's feet's height at rest.
     var low = 1.0e9

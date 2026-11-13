@@ -1,0 +1,151 @@
+// A lock-on sheet: how a body holding a facing goes every way about it (`playback::Gaits::locked`,
+// `Mover::facing`). For each of the eight ways (ahead, its left ahead, its left, back and so round)
+// at a walk's speed and a run's, a body facing ahead is stepped going that way for `GO` s, then
+// its way turned a quarter round for `CHANGE` s; read every frame, as it's drawn (`placed`):
+//
+// - how far a foot slides along the floor while it's down (from where it came down);
+// - whether the feet cross: how far the left foot gets to the right of the right foot, across the
+//   way it faces (0 for feet that never cross);
+// - how far the hips turn off the way it faces (degrees, about up).
+//
+// Each as it goes that way, and the worst of each through the change of way.
+
+use std::collections::Vec
+use std::string::String
+use humanoid::{Pose, Rig, pose_world}
+use playback::{Gaits, Handling, Move, Mover, placed, step, upper_body}
+use stride::leg_of
+
+const DEG: f32 = 57.29578
+
+/// How long (s) each way's gone, and then how long after its way's turned.
+pub const GO: f32 = 3.0
+pub const CHANGE: f32 = 1.5
+
+/// One way at one speed, read.
+pub struct Way: Copy {
+    /// The way (degrees about up from ahead, toward the left) and the speed (m/s).
+    pub way: f32,
+    pub speed: f32,
+    /// Going: a foot's most slide while down (m), the feet's most crossing (m), the hips' most
+    /// turn off the facing (degrees).
+    pub slide: f32,
+    pub cross: f32,
+    pub turn: f32,
+    /// The same, at worst through its way's turning a quarter round.
+    pub slide_change: f32,
+    pub cross_change: f32,
+    pub turn_change: f32,
+}
+
+/// Each way at `speeds`, a body stood in `g` (on `rig`) holding a facing.
+pub fn read(rig: Rig, g: Gaits, speeds: [f32]) -> Vec<Way> {
+    var out: Vec<Way> = Vec::new()
+    for speed in speeds {
+        for k in 0..8 {
+            let way = f32(k) * 45.0
+            out.push(one(rig, g, way, speed))
+        }
+    }
+    out
+}
+
+/// What a frame's world has: each foot's ball, and the hips' heading off the facing.
+fn frame_of(rig: Rig, m: Mover, pose: Pose) -> ([vec3; 2], f32) {
+    let w = pose_world(rig, pose)
+    let at = placed(m)
+    let legs = [leg_of(rig, 1.0), leg_of(rig, -1.0)]
+    var feet = [vec3(0.0); 2]
+    for i in 0..2 {
+        let b = if legs[i].toes != humanoid::NONE { legs[i].toes } else { legs[i].ankle }
+        feet[i] = (at * vec4(w[b].t, 1.0)).xyz
+    }
+    // The hips' left, across them, against the body's: how far they turn off its facing.
+    let hips = rig.find("hips")
+    let rest = rig.rest_frames()
+    let left = w[hips].q.rotate(rest[hips].q.inverse().rotate(vec3(1.0, 0.0, 0.0)))
+    (feet, atan2(-left.z, left.x) * DEG)
+}
+
+fn one(rig: Rig, g: Gaits, way: f32, speed: f32) -> Way {
+    let mask = upper_body(rig)
+    let dt = 1.0 / 60.0
+    var m = Mover::standing(vec3(0.0), 0.0, g.clone())
+    m.facing(0.0)
+    var out = Way {
+        way,
+        speed,
+        slide: 0.0,
+        cross: 0.0,
+        turn: 0.0,
+        slide_change: 0.0,
+        cross_change: 0.0,
+        turn_change: 0.0,
+    }
+    var down_at = [vec3(0.0); 2]
+    var was_down = [false; 2]
+    let acts: Vec<Move> = Vec::new()
+    let n = u32((GO + CHANGE) * 60.0)
+    for f in 0..n {
+        let t = f32(f) * dt
+        let changing = t >= GO
+        let w = (way + if changing { 90.0 } else { 0.0 }) / DEG
+        let stick = vec3(sin(w), 0.0, cos(w)) * speed
+        let pose = step(
+            mut m,
+            g,
+            acts,
+            rig,
+            mask,
+            stick,
+            humanoid::NONE,
+            upper: false,
+            how: Handling {},
+            dt: dt,
+        )
+        // (Read once it's going: its first second is setting off.)
+        if t < 1.0 {
+            continue
+        }
+        let (feet, hips) = frame_of(rig, m, pose)
+        var slide = 0.0
+        for i in 0..2 {
+            let down = m.feet[i].down
+            if down && !was_down[i] {
+                down_at[i] = feet[i]
+            }
+            if down {
+                slide = max(slide, length(vec2(feet[i].x - down_at[i].x, feet[i].z - down_at[i].z)))
+            }
+            was_down[i] = down
+        }
+        // Across the way it faces (its left, the world's +x turned by its heading).
+        let left = vec3(cos(m.heading), 0.0, -sin(m.heading))
+        let cross = max(dot(feet[1] - feet[0], left), 0.0)
+        let turn = abs(hips - m.heading * DEG)
+        let turn = min(turn, 360.0 - turn)
+        if changing {
+            out.slide_change = max(out.slide_change, slide)
+            out.cross_change = max(out.cross_change, cross)
+            out.turn_change = max(out.turn_change, turn)
+        } else {
+            out.slide = max(out.slide, slide)
+            out.cross = max(out.cross, cross)
+            out.turn = max(out.turn, turn)
+        }
+    }
+    out
+}
+
+/// The sheet: a line for each way at each speed.
+pub fn text(ways: [Way]) -> String {
+    var s = String::from(
+        "lock-on: each way about a body facing ahead (degrees toward its left), going, and through its way's turning a quarter round\n",
+    )
+    for w in ways {
+        s.push_str(
+            f"  {w.way:.0} deg at {w.speed:.2} m/s: a foot slides {w.slide * 100.0:.1} cm, the feet cross {w.cross * 100.0:.1} cm, the hips turn {w.turn:.0} deg off the facing; through the change {w.slide_change * 100.0:.1} cm, {w.cross_change * 100.0:.1} cm, {w.turn_change:.0} deg\n".as_str(),
+        )
+    }
+    s
+}
