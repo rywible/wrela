@@ -187,6 +187,96 @@ pub fn push_of(hold: u32) -> i32 {
     h * h * PUSH / 36
 }
 
+/// A strike that travels (a trial, as knockback is): each move carries its striker along the way
+/// it faces as it's made, as far by each of its frames as the strike the game draws for it goes
+/// (`TRAVEL`), so the step in the drawn strike is the rules' and the drawn feet keep their place.
+/// The arena's edge stops it, as it does a step, and so does the foe's body: no strike carries
+/// its striker nearer the foe than `NEAREST`. `TRAVELLING` false turns it off: a striker stands
+/// where it began.
+pub const TRAVELLING: bool = true
+/// How far each of `MOVES` has carried its striker by each frame into it (units, along its
+/// facing; frame 0 as it begins, its last as its recovery ends, and as far as that after). Read
+/// off the stepping cross at each move's beats (content/humanoid's `stepping::cross_at`), its
+/// root's travel to the nearest unit: 32 (0.50 m) by the contact in each, the step done as the
+/// blow lands; mmo/game's `the_rules_carry_a_striker_as_its_strike_steps`
+/// holds them equal.
+pub const TRAVEL: [[i32; 64]; 6] = [
+    [
+        0, 0, 5, 12, 16, 17, 18, 24, 31, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+    ],
+    [
+        0, 0, 0, 0, 3, 8, 11, 14, 15, 16, 17, 17, 17, 18, 20, 24, 27, 30, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+    ],
+    [
+        0, 0, 0, 9, 14, 16, 17, 17, 20, 27, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+    ],
+    [
+        0, 0, 5, 12, 16, 17, 18, 24, 31, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+    ],
+    [
+        0, 0, 0, 5, 11, 14, 16, 17, 17, 18, 23, 28, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+    ],
+    [
+        0, 0, 0, 0, 0, 2, 6, 9, 11, 13, 15, 16, 16, 17, 17, 17, 17, 18, 19, 21, 24, 27, 29, 31, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+    ],
+]
+/// The nearest a strike carries its striker to the foe (units, between their places: 0.69 m): a
+/// man's body and the idol's side by side, each a circle as wide as its shoulders (mmo/game's
+/// `the_nearest_a_strike_goes_is_two_bodies_side_by_side` measures it off the body).
+pub const NEAREST: i32 = 44
+
+/// How far move `m` has carried its striker `k` frames into it (units; none with `TRAVELLING`
+/// off).
+pub fn travelled(m: u32, k: u32) -> i32 {
+    if !TRAVELLING || m >= MOVES.len() { 0 } else { TRAVEL[m][min(k, 63)] }
+}
+
+/// How many frames into its move `p` is (0 where it's making none).
+fn into_move(p: Fighter) -> u32 {
+    if p.move_ == NO_MOVE {
+        return 0
+    }
+    let m = MOVES[p.move_]
+    if p.act == WINDUP { m.windup - p.timer } else if p.act == ACTIVE {
+        m.windup + m.active - p.timer
+    } else if p.act == RECOVER { m.windup + m.active + m.recovery - p.timer } else { 0 }
+}
+
+/// `p` carried a frame on by its move, from `k` frames into it to the next, along the way it
+/// faces: no nearer `foe` than `NEAREST`.
+fn travels(p: mut Fighter, k: u32, foe: (i32, i32)) {
+    let (a, b) = (travelled(p.move_, k), travelled(p.move_, k + 1))
+    if a == b {
+        return
+    }
+    let f = p.facing % 16
+    let (sx, sz) = (DIR_X[f] * b / 64 - DIR_X[f] * a / 64, DIR_Z[f] * b / 64 - DIR_Z[f] * a / 64)
+    // (The foe's body stops it: as far as keeps it `NEAREST` off, a unit at a time.)
+    let steps = max(abs(sx), abs(sz))
+    for i in 0..steps {
+        let j = steps - i
+        let (x, z) = (p.x + sx * j / steps, p.z + sz * j / steps)
+        if reach(x, z, foe.0, foe.1) >= NEAREST ||
+            reach(x, z, foe.0, foe.1) >= reach(p.x, p.z, foe.0, foe.1) {
+            p.x = x
+            p.z = z
+            return
+        }
+    }
+}
+
 /// A parry meets a blow from the half ahead of the one parrying.
 const PARRY_ARC: i32 = 0
 // A dodge: invulnerable while it lasts, moving fast.
@@ -964,6 +1054,11 @@ fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32, foe: (i32, i
                 p.kept = 0
                 return
             }
+        }
+        // Striking, it's carried on by its move.
+        if p.move_ != NO_MOVE && (p.act == WINDUP || p.act == ACTIVE || p.act == RECOVER) {
+            let k = into_move(p)
+            travels(mut p, k, foe)
         }
         if p.timer > 0 {
             p.timer -= 1
@@ -1857,4 +1952,52 @@ fn a_strike_turns_in_its_window_and_is_committed_after() {
         return
     }
     assert(turned == 3, f"it turned {turned} ways toward its stick, in its window and no more")
+}
+
+/// A strike carries its striker along the way it faces, as far by each frame as its move's
+/// `TRAVEL`, and none across it; the foe's body stops it `NEAREST` off, and the arena's edge
+/// stops it as it stops a step. With `TRAVELLING` off a striker stands where it began.
+@test
+fn a_strike_carries_its_striker_and_the_foe_and_the_edge_stop_it() {
+    let jab = MOVES[WEAPONS[FISTS].light]
+    let total = jab.windup + jab.active + jab.recovery
+    // Far from the idol, facing it: carried frame by frame as its move goes.
+    var w = World::armed([FISTS]).standing_still()
+    let (x0, z0) = (w.party[0].x, w.party[0].z)
+    step(mut w, [ATTACK << 6])
+    for k in 0..total + 4 {
+        assert(w.party[0].x == x0, "none across its way")
+        let want = z0 + travelled(WEAPONS[FISTS].light, k)
+        assert(w.party[0].z == want, f"frame {k}: at {w.party[0].z - z0}, its move {want - z0}")
+        step(mut w, [ATTACK << 6])
+    }
+    let went = w.party[0].z - z0
+    assert(if TRAVELLING { went == 32 } else { went == 0 }, f"the jab carried it {went} units")
+    // Close by the idol: no nearer than `NEAREST`, and on to it when it travels.
+    var n = World::armed([FISTS]).standing_still()
+    n.party[0].x = n.boss.x
+    n.party[0].z = n.boss.z - (NEAREST + 10)
+    let start = reach(n.party[0].x, n.party[0].z, n.boss.x, n.boss.z)
+    var nearest = start
+    step(mut n, [ATTACK << 6])
+    for _ in 0..total + 4 {
+        nearest = min(nearest, reach(n.party[0].x, n.party[0].z, n.boss.x, n.boss.z))
+        step(mut n, [ATTACK << 6])
+    }
+    assert(nearest >= NEAREST, f"it came {nearest} units from the idol")
+    assert(if TRAVELLING { nearest == NEAREST } else {
+        nearest == start
+    }, f"the idol stops it {nearest} units off, from {start}")
+    // At the arena's edge, facing out: no further.
+    var e = World::armed([FISTS]).standing_still()
+    e.boss.x = -ARENA
+    e.boss.z = 0
+    e.party[0].x = ARENA - 4 * UNIT
+    e.party[0].z = ARENA - 4
+    step(mut e, [ATTACK << 6])
+    for _ in 0..total + 4 {
+        assert(e.party[0].z <= ARENA, "within the arena")
+        step(mut e, [ATTACK << 6])
+    }
+    assert(e.party[0].z == if TRAVELLING { ARENA } else { ARENA - 4 }, "the edge stops it")
 }
