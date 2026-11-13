@@ -6,11 +6,15 @@
 // what a rollback's correction looks like.
 //
 // The bots (`bots`) stand round the idol, each on its own side, and answer its tell `REACT` frames in.
+// With `TAKER` (`wrela build mmo/watch --set TAKER=1`, or `=2`) the first player is a bot that takes
+// the idol's blows (`bots::taker`): what a blow does to a player is there to see, and each one
+// that lands on it is named on screen with how far the rules pushed it. Alone (1), the idol's
+// sweeps and its palm land on it; beside the fight's bot (2), its slam does.
 
 use std::collections::Vec
 use std::string::String
-use bots::bot
-use combat::sim::{FISTS, LONGSWORD, Seen, World, step}
+use bots::{bot, taker}
+use combat::sim::{ATTACKS, FISTS, LONGSWORD, NO_MOVE, Seen, World, step}
 use mmo::bodies::Ring
 use ui::draw::{DrawList, Renderer}
 use ui::text::{Face, Fonts}
@@ -19,6 +23,9 @@ use ui::text::{Face, Fonts}
 pub const LATE: u32 = 6
 /// How many frames into the idol's windup the bots answer it.
 pub const REACT: u32 = 15
+/// Whether the first player is a bot that takes the idol's blows (`bots::taker`): 0 not, 1 alone
+/// against the idol, 2 beside the fight's bot.
+pub const TAKER: u32 = 0
 /// What each bot fights with.
 const WEAPONS_OF: [u32; 2] = [FISTS, LONGSWORD]
 
@@ -33,13 +40,17 @@ pub struct State {
     renderer: Renderer,
     list: DrawList,
     last: f32,
+    /// The last blow that landed on the first player: what it was, when (s), and how far the
+    /// rules pushed it (m).
+    blow: String,
+    blow_from: vec2,
 }
 
 pub fn init() -> State {
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
     State {
-        truth: World::armed(WEAPONS_OF),
+        truth: if TAKER == 1 { World::armed([WEAPONS_OF[0]]) } else { World::armed(WEAPONS_OF) },
         past: Vec::new(),
         inputs: Vec::from([Vec::new(), Vec::new()]),
         ring: Ring::new(),
@@ -47,6 +58,8 @@ pub fn init() -> State {
         renderer,
         list: DrawList::new(),
         last: 0.0,
+        blow: String::new(),
+        blow_from: vec2(0.0),
     }
 }
 
@@ -60,9 +73,11 @@ fn play_to(s: mut State, to: u32) {
     while s.truth.frame < to && !s.truth.over {
         let f = s.truth.frame
         var ins: Vec<u32> = Vec::new()
-        for i in 0..2 {
+        for i in 0..s.truth.players() {
             let before = if f > 0 { input_at(s, i, f - 1) } else { 0 }
-            let x = bot(s.truth, i, before, WEAPONS_OF[i], REACT)
+            let x = if TAKER != 0 && i == 0 { taker(s.truth, i, before, WEAPONS_OF[i]) } else {
+                bot(s.truth, i, before, WEAPONS_OF[i], REACT)
+            }
             s.inputs[i].push(x)
             ins.push(x)
         }
@@ -70,14 +85,22 @@ fn play_to(s: mut State, to: u32) {
         if s.past.len() > LATE {
             s.past.remove(0)
         }
+        let (was, attack) = (s.truth.player(0), s.truth.boss().move_)
         step(mut s.truth, ins)
+        let now = s.truth.player(0)
+        if now.hp < was.hp && attack != NO_MOVE {
+            s.blow = String::from(
+                f"{ATTACKS[attack].name} landed on P1 at {f32(s.truth.frame) / 60.0:.2} s",
+            )
+            s.blow_from = vec2(f32(now.carried_x), f32(now.carried_z))
+        }
     }
 }
 
 /// What the first player's client shows: the fight from `LATE` frames back, the second's input
 /// held at the last it heard.
 fn predicted(s: State) -> World {
-    if s.past.len() < LATE {
+    if s.past.len() < LATE || s.truth.players() < 2 {
         return s.truth.clone()
     }
     var w = s.past[0].clone()
@@ -110,6 +133,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     }
     let b = shown.boss()
     line(mut s, String::from(f"Idol  {b.hp} hp").as_str(), 74.0)
+    if s.blow.len() > 0 {
+        let p = s.truth.player(0)
+        let pushed = length(vec2(f32(p.carried_x), f32(p.carried_z)) - s.blow_from) / 64.0
+        let said = String::from(f"{s.blow}: pushed {pushed:.2} m")
+        line(mut s, said.as_str(), 94.0)
+    }
     s.renderer.fetch(mut s.fonts, s.list)
     s.renderer.upload(s.list)
     s.ring.draw(shown, 0, time, dt, width, height, s.renderer)
@@ -130,4 +159,63 @@ fn the_bots_fight_the_idol() {
     }
     let o = w.outcome()
     assert(o.dealt[0] > 0 && o.dealt[1] > 0, "both bots land blows")
+}
+
+/// The blows that land on the taker (`bots::taker`, the first player) in `frames` of the fight
+/// `TAKER` plays: each one's frame, its name, and how far the rules pushed the taker for it (m,
+/// read half a second on).
+fn takers_blows(frames: u32, alone: bool) -> Vec<(u32, Text, f32)> {
+    var w = if alone { World::armed([WEAPONS_OF[0]]) } else { World::armed(WEAPONS_OF) }
+    var before = [u32(0), 0]
+    var out: Vec<(u32, Text, f32)> = Vec::new()
+    var open: Vec<(u32, Text, vec2)> = Vec::new()
+    for _ in 0..frames {
+        let second = if alone { 0 } else { bot(w, 1, before[1], WEAPONS_OF[1], REACT) }
+        let ins = [taker(w, 0, before[0], WEAPONS_OF[0]), second]
+        before = ins
+        let (was, attack) = (w.player(0), w.boss().move_)
+        if alone {
+            step(mut w, [ins[0]])
+        } else {
+            step(mut w, ins)
+        }
+        let now = w.player(0)
+        let carried = vec2(f32(now.carried_x), f32(now.carried_z))
+        if now.hp < was.hp && attack != NO_MOVE {
+            open.push((w.frame, ATTACKS[attack].name, carried))
+        }
+        while open.len() > 0 && w.frame >= open[0].0 + 30 {
+            let (f, name, from) = open[0]
+            out.push((f, name, length(carried - from) / 64.0))
+            let _ = open.remove(0)
+        }
+    }
+    out
+}
+
+/// The taker takes the idol's blows, so a clip shows what knockback does (mmo/combat's
+/// `push_of`): alone, a sweep and a palm land on it, pushing it 0.18 and 0.31 m; beside the
+/// fight's bot, a slam does, pushing it 0.70 m (alone, the slam comes last and the dead aren't
+/// pushed). Each lands in the clip's 12 s.
+@test
+fn the_taker_takes_the_idols_blows() {
+    if !combat::sim::KNOCKBACK {
+        return
+    }
+    for (alone, name, push) in [
+        (true, "Sweep", 0.18),
+        (true, "Palm", 0.31),
+        (false, "Slam", 0.70),
+    ] {
+        var seen = false
+        for (f, n, pushed) in takers_blows(720, alone) {
+            std::io::print(
+                f"  {if alone { "alone" } else { "beside" }}: frame {f} ({f32(f) / 60.0:.2} s): {n}, pushed {pushed:.2} m",
+            )
+            if n == name && abs(pushed - push) < 0.05 {
+                seen = true
+            }
+        }
+        assert(seen, f"a {name} lands on the taker and pushes it {push} m")
+    }
 }
