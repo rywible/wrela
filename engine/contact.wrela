@@ -18,6 +18,7 @@
 use humanoid::{NONE, Pose, Rig, Rigid, pose_world}
 use end::{End, RIGHT_FIST}
 use keys::arm_to
+use stride
 use playback::{Mover, decayed}
 use std::collections::Vec
 use std::transform::inverse
@@ -77,6 +78,8 @@ pub struct Give: Copy {
     pub shock_half: f32 = 0.12,
     pub kick: f32 = 0.9,
     pub kick_half: f32 = 0.28,
+    /// How far a blow of weight 1 coming straight down sinks the body at the knees (m).
+    pub sink: f32 = 0.12,
 }
 
 /// How far a blow of `weight` knocks the one it struck, of how far one of weight 1 does: light
@@ -146,6 +149,8 @@ pub struct Knock: Copy {
     pub trunk: Part,
     pub guard: Part,
     pub drive: Part,
+    /// How far it's sunk at the knees (m, in `x.x`).
+    pub sink: Part,
     pub beat: f32,
     pub held: bool,
     pub weight: f32,
@@ -158,6 +163,7 @@ impl Knock {
             trunk: Part::none(),
             guard: Part::none(),
             drive: Part::none(),
+            sink: Part::none(),
             beat: 0.0,
             held: false,
             weight: 0.0,
@@ -165,22 +171,49 @@ impl Knock {
     }
 
     /// Struck by `hit`, body `m` giving as `give` says: each part sent further out (up to its
-    /// most), held out its beat again.
+    /// most), held out its beat again. A blow's way is taken in two: what of it goes along the
+    /// floor snaps the head and bends the trunk back along it, flings the guard open and drives
+    /// the body; what of it comes down (a cut from above, a blow from a giant) bows the head and
+    /// trunk down and forward under it and sinks the body at the knees. Each as far as the blow's
+    /// heavy, and as much of its way as goes that way.
     pub fn struck(mut self, m: Mover, hit: Hit, give: Give) {
         let way = into_body(m, hit.way)
-        let flat = vec3(way.x, 0.0, way.z)
-        if length(flat) < 1.0e-6 {
+        if length(way) < 1.0e-6 {
             return
         }
-        let along = normalize(flat)
+        let u = normalize(way)
         let s = size_of(hit.weight)
-        // (About this, a bone's top goes the way the blow does.)
-        let tip = cross(UP, along)
-        self.head.goal = bounded(self.head.goal + tip * give.tip * s, give.tip * give.most)
-        self.trunk.goal = bounded(self.trunk.goal + tip * give.lean * s, give.lean * give.most)
-        self.guard.goal = bounded(self.guard.goal + along * give.open * s, give.open * give.most)
-        let world = normalize(vec3(hit.way.x, 0.0, hit.way.z))
-        self.drive.goal = bounded(self.drive.goal + world * give.back * s, give.back * give.most)
+        let flat = vec3(u.x, 0.0, u.z)
+        let along_floor = length(flat)
+        if along_floor > 1.0e-6 {
+            let along = flat / along_floor
+            let k = s * along_floor
+            // (About this, a bone's top goes the way the blow does.)
+            let tip = cross(UP, along)
+            self.head.goal = bounded(self.head.goal + tip * give.tip * k, give.tip * give.most)
+            self.trunk.goal = bounded(self.trunk.goal + tip * give.lean * k, give.lean * give.most)
+            self.guard.goal = bounded(
+                self.guard.goal + along * give.open * k,
+                give.open * give.most,
+            )
+            let world = normalize(vec3(hit.way.x, 0.0, hit.way.z))
+            self.drive.goal = bounded(
+                self.drive.goal + world * give.back * k,
+                give.back * give.most,
+            )
+        }
+        let down = max(-u.y, 0.0)
+        if down > 1.0e-6 {
+            let k = s * down
+            // (About the body's left, a bone's top goes forward: the body's ahead is +z.)
+            let bow = cross(UP, vec3(0.0, 0.0, 1.0))
+            self.head.goal = bounded(self.head.goal + bow * give.tip * k, give.tip * give.most)
+            self.trunk.goal = bounded(self.trunk.goal + bow * give.lean * k, give.lean * give.most)
+            self.sink.goal = bounded(
+                self.sink.goal + vec3(give.sink * k, 0.0, 0.0),
+                give.sink * give.most,
+            )
+        }
         self.weight = max(self.weight, clamp(hit.weight, 0.0, 1.0))
         self.beat = max(self.beat, give.beat + give.beat_heavy * self.weight)
     }
@@ -209,12 +242,14 @@ impl Knock {
             self.trunk.goal = vec3(0.0)
             self.guard.goal = vec3(0.0)
             self.drive.goal = vec3(0.0)
+            self.sink.goal = vec3(0.0)
         }
         let slow = 1.0 + (give.heavy - 1.0) * self.weight
         let home = give.home * slow
         self.head.step(self.head.goal, if out { give.snap } else { home }, dt)
         self.trunk.step(self.trunk.goal, if out { give.bend } else { home }, dt)
         self.guard.step(self.guard.goal, if out { give.fling } else { home }, dt)
+        self.sink.step(self.sink.goal, if out { give.bend } else { home }, dt)
         self.drive.step(self.drive.goal, if out { give.drive } else { give.home_drive * slow }, dt)
         // (Bounded as it goes, too: a spring under way doesn't carry past the most.)
         self.drive.x = bounded(self.drive.x, max(give.back * give.most, give.carry))
@@ -235,13 +270,19 @@ impl Knock {
         length(self.drive.x) < 0.01 &&
             length(self.head.x) < 0.0175 &&
             length(self.trunk.x) < 0.0175 &&
-            length(self.guard.x) < 0.0175
+            length(self.guard.x) < 0.0175 &&
+            abs(self.sink.x.x) < 0.01
     }
 
     /// `pose` (on `rig`) as knocked: its head and neck snapped back, its spine, chest and upper
     /// chest bent back, each arm flung open, out to its side, back along the blow and down, its
     /// forearm after it (`give.fore` of it).
     pub fn over(self, rig: Rig, pose: Pose, give: Give) -> Pose {
+        sunk(rig, self.opened(rig, pose, give), self.sink.x.x)
+    }
+
+    /// `over` but for the sink.
+    fn opened(self, rig: Rig, pose: Pose, give: Give) -> Pose {
         var out = pose
         let w = pose_world(rig, pose)
         turned_by(rig, w, mut out, rig.find("head"), self.head.x)
@@ -276,6 +317,33 @@ impl Knock {
         }
         out
     }
+}
+
+/// `pose` (on `rig`) sunk `by` (m) at the knees: its hips lowered, each leg bent to keep its
+/// foot where it stood.
+fn sunk(rig: Rig, pose: Pose, by: f32) -> Pose {
+    if by < 1.0e-5 {
+        return pose
+    }
+    let was = pose_world(rig, pose)
+    var p = pose
+    p.hips = p.hips - rig.base.q.inverse().rotate(vec3(0.0, by, 0.0))
+    let w = pose_world(rig, p)
+    let rw = rig.rest_frames()
+    for side in [1.0, -1.0] {
+        let l = stride::leg_of(rig, side)
+        if l.hip == NONE || l.knee == NONE || l.ankle == NONE {
+            continue
+        }
+        let hinge = rw[l.knee].q.inverse().rotate(vec3(1.0, 0.0, 0.0))
+        let (qu, ql) = stride::reach(w[l.hip], w[l.knee], w[l.ankle].t, was[l.ankle].t, hinge)
+        let up = rig.bones[l.hip].parent
+        let pq = if up == NONE { rig.base.q } else { w[up].q }
+        p.turns[l.hip] = pq.inverse().mul(qu)
+        p.turns[l.knee] = qu.inverse().mul(ql)
+        p.turns[l.ankle] = ql.inverse().mul(was[l.ankle].q)
+    }
+    p
 }
 
 /// The joints a shock runs up, in turn: the forearm, the upper arm, the collar, the chest.
