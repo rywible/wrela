@@ -881,6 +881,10 @@ fn a_blow_the_rules_land_knocks_the_one_struck_and_shocks_the_striker() {
 /// it ends on the rules' place.
 @test
 fn a_push_the_rules_give_is_drawn_as_the_knocks_drive() {
+    // (The trial turned off, the rules push nothing, and there's nothing to draw.)
+    if !combat::sim::KNOCKBACK {
+        return
+    }
     var w = World::armed([combat::sim::FISTS])
     var b = Bodies::new()
     let dt = 1.0 / 60.0

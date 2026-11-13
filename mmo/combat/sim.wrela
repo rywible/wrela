@@ -1638,6 +1638,11 @@ fn struck_by(a: u32) -> World {
 /// its hold breaks, fast and then easing; it takes no control away.
 @test
 fn a_blow_pushes_the_one_struck_by_its_weight() {
+    // (The trial turned off, no blow pushes, and there's nothing more to hold here.)
+    if !KNOCKBACK {
+        assert(push_of(MOST_HOLD) == 0, "off, no blow pushes")
+        return
+    }
     assert(push_of(8) == PUSH && push_of(3) < 2 && push_of(6) * 9 == PUSH * 4, "by the hold")
     // The slam (held 8): still through its hold, then pushed back 0.7 m, half of it on its
     // first two frames.
@@ -1677,6 +1682,11 @@ fn a_blow_pushes_the_one_struck_by_its_weight() {
 /// edge stops a push as it stops a step; the idol takes a quarter of a man's push.
 @test
 fn no_hit_no_push_and_the_edge_stops_it() {
+    // (The trial turned off, no blow pushes, and there's nothing more to hold here.)
+    if !KNOCKBACK {
+        assert(push_of(MOST_HOLD) == 0, "off, no blow pushes")
+        return
+    }
     var p = struck_by(0)
     p.party[0].act = PARRYING
     p.party[0].timer = PARRY_WINDOW
