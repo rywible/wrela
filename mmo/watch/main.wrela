@@ -10,10 +10,15 @@
 // the idol's blows (`bots::taker`): what a blow does to a player is there to see, and each one
 // that lands on it is named on screen with how far the rules pushed it. Alone (1), the idol's
 // sweeps and its palm land on it; beside the fight's bot (2), its slam does.
+//
+// With `SCRIPT=1` the first player is alone with the longsword and plays a script (`script`): the
+// fight's movement, each rule in turn (locked on and not, a strike that steps in, the turn window,
+// knockback, a dodge), what's acting said small in the lower left corner.
 
 use std::collections::Vec
 use std::string::String
 use bots::{bot, taker}
+use script::{Script, script}
 use combat::sim::{ATTACKS, FISTS, LONGSWORD, NO_MOVE, Seen, World, step}
 use mmo::bodies::Ring
 use ui::draw::{DrawList, Renderer}
@@ -28,6 +33,9 @@ pub const TITLE: Text = ""
 /// Whether the first player is a bot that takes the idol's blows (`bots::taker`): 0 not, 1 alone
 /// against the idol, 2 beside the fight's bot.
 pub const TAKER: u32 = 0
+/// Whether the first player plays the movement script (`script`), alone with the longsword: 0
+/// not, 1 so.
+pub const SCRIPT: u32 = 0
 /// What each bot fights with.
 const WEAPONS_OF: [u32; 2] = [FISTS, LONGSWORD]
 
@@ -49,13 +57,17 @@ pub struct State {
     /// Whether the taker's on guard, and whether it's parried once.
     guard: bool,
     parried: bool,
+    /// The movement script, where it's at (`SCRIPT`).
+    script: Script,
 }
 
 pub fn init() -> State {
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
     State {
-        truth: if TAKER == 1 { World::armed([WEAPONS_OF[0]]) } else { World::armed(WEAPONS_OF) },
+        truth: if SCRIPT == 1 { World::armed([LONGSWORD]).standing_still() } else if TAKER == 1 {
+            World::armed([WEAPONS_OF[0]])
+        } else { World::armed(WEAPONS_OF) },
         past: Vec::new(),
         inputs: Vec::from([Vec::new(), Vec::new()]),
         ring: Ring::new(),
@@ -67,6 +79,7 @@ pub fn init() -> State {
         blow_from: vec2(0.0),
         guard: false,
         parried: false,
+        script: script(),
     }
 }
 
@@ -82,13 +95,19 @@ fn play_to(s: mut State, to: u32) {
         var ins: Vec<u32> = Vec::new()
         for i in 0..s.truth.players() {
             let before = if f > 0 { input_at(s, i, f - 1) } else { 0 }
-            let x = if TAKER != 0 && i == 0 {
+            let x = if SCRIPT == 1 && i == 0 {
+                script::input(mut s.script, s.truth, before)
+            } else if TAKER != 0 && i == 0 {
                 taker(s.truth, i, before, WEAPONS_OF[i], s.guard)
             } else {
                 bot(s.truth, i, before, WEAPONS_OF[i], REACT)
             }
             s.inputs[i].push(x)
             ins.push(x)
+        }
+        // (The script lets the idol go for its one blow, and holds it still again.)
+        if SCRIPT == 1 {
+            s.truth = if s.script.still { s.truth.standing_still() } else { s.truth.let_go() }
         }
         s.past.push(s.truth.clone())
         if s.past.len() > LATE {
@@ -148,6 +167,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     line(mut s, String::from(f"Idol  {b.hp} hp").as_str(), 74.0)
     if TITLE != "" {
         line(mut s, TITLE, f32(height) - 40.0)
+    }
+    if SCRIPT == 1 {
+        let said = if s.script.said == "KNOCKBACK: pushed" {
+            String::from(f"KNOCKBACK: pushed {script::pushed(s.script, s.truth):.2} m")
+        } else { String::from(s.script.said) }
+        line(mut s, said.as_str(), f32(height) - 30.0)
     }
     if s.blow.len() > 0 {
         let p = s.truth.player(0)
@@ -235,4 +260,35 @@ fn the_taker_takes_the_idols_blows() {
         }
         assert(seen, f"a {name} lands on the taker and pushes it {push} m")
     }
+}
+
+/// The movement script (`SCRIPT=1`) shows what it says it does, through the real rules: locked on
+/// as it says, its two slashes land (the first stepping in, the second turned by the turn window),
+/// the idol's one blow lands on him and pushes him, and he dodges.
+@test
+fn the_script_does_what_it_says() {
+    var s = script()
+    var w = World::armed([LONGSWORD]).standing_still()
+    var before: u32 = 0
+    var landed = 0
+    var dodged = false
+    var turned = false
+    for _ in 0..1420 {
+        let x = script::input(mut s, w, before)
+        before = x
+        w = if s.still { w.standing_still() } else { w.let_go() }
+        let (was, idol) = (w.player(0), w.boss().hp)
+        step(mut w, [x])
+        let p = w.player(0)
+        if s.said == "LOCKED ON: circling left, facing the idol" {
+            assert(p.locked, "locked on as it says")
+        }
+        landed += if w.boss().hp < idol { 1 } else { 0 }
+        dodged = dodged || p.act == combat::sim::DODGING
+        turned = turned || (was.act == combat::sim::WINDUP && p.facing != was.facing && !p.locked)
+    }
+    assert(landed == 2, f"its slashes land: {landed}")
+    assert(turned, "the turn window turns the second")
+    assert(w.player(0).hp < 100 && script::pushed(s, w) > 0.3, "the idol's blow lands and pushes")
+    assert(dodged, "he dodges")
 }

@@ -782,6 +782,12 @@ impl World {
         World { still: true, ..self.clone() }
     }
 
+    /// `self` with its boss making its own moves again (`standing_still` undone): for a script to
+    /// let it strike once.
+    pub fn let_go(self) -> World {
+        World { still: false, ..self.clone() }
+    }
+
     pub fn players(self) -> u32 {
         self.party.len()
     }
@@ -2004,4 +2010,24 @@ fn a_strike_carries_its_striker_and_the_foe_and_the_edge_stop_it() {
         step(mut e, [ATTACK << 6])
     }
     assert(e.party[0].z == if TRAVELLING { ARENA } else { ARENA - 4 }, "the edge stops it")
+}
+
+/// A boss stood still (`World::standing_still`) makes no move of its own, however near a player
+/// stands; let go (`World::let_go`), it makes its pattern's next again.
+@test
+fn a_boss_stood_still_and_let_go_strikes_again() {
+    var w = World::armed([LONGSWORD]).standing_still()
+    w.party[0].x = 0
+    w.party[0].z = w.boss.z - 2 * UNIT
+    for _ in 0..120 {
+        step(mut w, [0])
+    }
+    assert(w.boss.act == IDLE && w.party[0].hp == PLAYER_HP, "still, it makes no move")
+    var g = w.let_go()
+    var moved = false
+    for _ in 0..120 {
+        step(mut g, [0])
+        moved = moved || g.boss.act != IDLE
+    }
+    assert(moved, "let go, it strikes")
 }

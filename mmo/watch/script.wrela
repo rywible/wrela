@@ -1,0 +1,170 @@
+// A player's inputs scripted for a look at the fight's movement (`SCRIPT=1`), alone with the
+// longsword against the idol, the idol standing still but for one blow: each thing done plainly
+// in turn, and said, small, in a corner, so a viewer can tell which rule is acting.
+//
+//  0 to 1 s: standing, unlocked.
+//  1 to 5 s: unlocked, running round the idol, turned the way he goes.
+//  5 s: locks on (`LOCK_ON`); to 7.5 s circling left, to 10 s circling right, to 11.5 s backing
+//    off, to 14 s coming in to striking distance; facing the idol throughout.
+//  14 s: a slash, locked on: it steps in (`sim::TRAVELLING`) and lands.
+//  15 s: lets go of the lock; turns a quarter off the idol; 15.33 s presses a slash with the stick
+//    still off, then brings the stick round to the idol: the turn window (`sim::TURNING`) turns
+//    the cut toward it, and it lands.
+//  16.33 s: locks on again; 16.67 s the idol's let go and strikes, and he takes it: knocked back
+//    (`sim::KNOCKBACK`). Once the idol's done, it stands still again, and 1.5 s after the blow he
+//    steps back in.
+//  Then, 4 s after the blow: a dodge to the side; 0.67 s on, lets go of the lock and runs away for
+//    a second.
+
+use bots::{dist, stick_to}
+use combat::sim::{ATTACK, BUTTON_BITS, DODGE, IDLE, LOCK_ON, World}
+
+/// Where the script's at: what's said in the corner, the frame the idol's blow landed (0 none
+/// yet), how far the pushes had carried the player before it (units), and whether the idol's
+/// been let go.
+pub struct Script: Clone {
+    pub said: Text,
+    hit_at: u32,
+    from: vec2,
+    pub let_go: bool,
+    pub still: bool,
+}
+
+pub fn script() -> Script {
+    Script { said: "UNLOCKED", hit_at: 0, from: vec2(0.0), let_go: false, still: true }
+}
+
+/// How far the rules' pushes had carried the player once the blow had pushed it (m).
+pub fn pushed(s: Script, w: World) -> f32 {
+    let p = w.player(0)
+    length(vec2(f32(p.carried_x), f32(p.carried_z)) - s.from) / 64.0
+}
+
+/// Going round the idol `r` units off it, the way `turn` says (1 its left, -1 its right): along
+/// the circle, a little in or out to keep to it.
+fn circling(dx: i32, dz: i32, r: i32, turn: f32, speed: u32) -> u32 {
+    let d = max(f32(dist(dx, dz)), 1.0)
+    let to = vec2(f32(dx), f32(dz)) / d
+    let along = vec2(-to.y, to.x) * turn
+    let keep = to * clamp((d - f32(r)) / 64.0, -0.6, 0.6)
+    let g = (along + keep) * 1000.0
+    stick_to(i32(g.x), i32(g.y), speed)
+}
+
+/// The player's input at `w`'s frame, its last `before`.
+pub fn input(s: mut Script, w: World, before: u32) -> u32 {
+    let f = w.frame
+    let held = before & BUTTON_BITS
+    let press = |button: u32| -> u32 { held ^ (button << 6) }
+    let p = w.player(0)
+    let b = w.boss()
+    let (dx, dz) = (b.x - p.x, b.z - p.z)
+    let d = dist(dx, dz)
+    // (How far as the rules measure a strike's reach: the larger side and half the smaller.)
+    let r = if abs(dx) > abs(dz) { abs(dx) + abs(dz) / 2 } else { abs(dz) + abs(dx) / 2 }
+    // The blow: once it's landed, its frame and how far it pushed.
+    if s.let_go && s.hit_at == 0 && p.hp < 100 {
+        s.hit_at = f
+    }
+    if f < 60 {
+        s.said = "UNLOCKED"
+        return held
+    }
+    if f < 300 {
+        s.said = "UNLOCKED: running round, turned the way he goes"
+        return held | circling(dx, dz, 224, 1.0, 2)
+    }
+    if f == 300 {
+        s.said = "LOCKED ON"
+        return press(LOCK_ON)
+    }
+    if f < 450 {
+        s.said = "LOCKED ON: circling left, facing the idol"
+        return held | circling(dx, dz, 224, 1.0, 2)
+    }
+    if f < 600 {
+        s.said = "LOCKED ON: circling right, facing the idol"
+        return held | circling(dx, dz, 224, -1.0, 2)
+    }
+    if f < 690 {
+        s.said = "LOCKED ON: backing off, facing the idol"
+        return held | stick_to(-dx, -dz, 2)
+    }
+    if f < 840 {
+        s.said = "LOCKED ON: coming in"
+        // (To a step outside the cut's reach: the slash's step takes him in.)
+        return if r > 200 { held | stick_to(dx, dz, 2) } else { held }
+    }
+    if f == 840 {
+        s.said = "STRIKE TRAVELS: the slash steps in 0.50 m"
+        return press(ATTACK)
+    }
+    if f < 900 {
+        return held
+    }
+    if f == 900 {
+        s.said = "UNLOCKED"
+        return press(LOCK_ON)
+    }
+    if f == 905 {
+        // A quarter turn off the idol, the slowest stick: turned, hardly moved.
+        s.said = "UNLOCKED: turned a quarter off the idol"
+        return held | stick_to(-dz, dx, 0)
+    }
+    if f < 920 {
+        return held
+    }
+    if f == 920 {
+        s.said = "TURN WINDOW: pressed a quarter off, turned toward the idol"
+        return press(ATTACK)
+    }
+    if f < 932 {
+        return held | stick_to(dx, dz, 0)
+    }
+    if f < 980 {
+        return held
+    }
+    if f == 980 {
+        s.said = "LOCKED ON"
+        return press(LOCK_ON)
+    }
+    if s.hit_at == 0 {
+        if f >= 1000 && !s.let_go {
+            s.let_go = true
+            s.still = false
+            s.from = vec2(f32(p.carried_x), f32(p.carried_z))
+            s.said = "KNOCKBACK: the idol strikes, and he takes it"
+        }
+        return held
+    }
+    // Once the idol's done, it stands still again.
+    if !s.still && b.act == IDLE {
+        s.still = true
+    }
+    let since = f - s.hit_at
+    if since < 90 {
+        s.said = "KNOCKBACK: pushed"
+        return held
+    }
+    if since < 240 {
+        s.said = "LOCKED ON: stepping back in"
+        return if r > 150 { held | stick_to(dx, dz, 2) } else { held }
+    }
+    if since == 240 {
+        s.said = "DODGE"
+        return press(DODGE) | stick_to(-dz, dx, 2)
+    }
+    if since < 280 {
+        return held
+    }
+    if since == 280 {
+        s.said = "UNLOCKED: away"
+        return press(LOCK_ON)
+    }
+    if since < 340 {
+        // (Away to the side and out: straight out, he'd run under the camera behind him.)
+        return held | stick_to(-dz * 2 - dx, dx * 2 - dz, 2)
+    }
+    s.said = "UNLOCKED"
+    held
+}
