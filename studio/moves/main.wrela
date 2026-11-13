@@ -81,8 +81,10 @@ pub fn cuts() -> Vec<(Text, Clip, engine::held::Held, f32)> {
                 humanoid::stick::BOTH.held,
                 humanoid::downcut::CONTACT,
             ),
-            // (Quaternius's sword cut, the stick in the hand its sword was: a reference.)
-            ("sword-take", humanoid::body::SWORD_ATTACK_RAW.clone(), humanoid::stick::STICK, -1.0),
+            // (Quaternius's sword cut, the stick in the hand its sword was: a reference, read where its
+            // tip is fastest, as a cut lands: it has no target, so the sheet's own contact is its
+            // follow-through's end.)
+            ("sword-take", humanoid::body::SWORD_ATTACK_RAW.clone(), humanoid::stick::STICK, 0.40),
         ],
     )
 }

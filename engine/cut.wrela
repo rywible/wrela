@@ -8,6 +8,12 @@
 //   path lands flat (90).
 // - The cut's plane: how far the tip's path from setting off to its contact strays from the plane
 //   it best lies in (m, and of its path's length). A cut swung on one plane is flat (0).
+// - The hands: on contact, how high the hand that holds it is, how far out ahead of the chest, how
+//   much of its arm's reach is used, and the blade's angle to the floor; and on the way over, how
+//   high that hand is when the blade stands most upright, and how far the hand leads the blade
+//   (when the hand's gone half its way, against when the blade's turned half its turn). A cut
+//   from above comes down with the hands: out in front at chest height, the arms nearly straight,
+//   the blade coming down onto what it strikes, not flicked over from the belt.
 // - The sweep: where the hilt and the tip are each sample from setting off to the contact (the
 //   body's space): the volume the blade sweeps, which the rules' hit shapes are made from.
 //
@@ -38,6 +44,19 @@ pub struct Cut: Clone {
     pub plane_share: f32,
     /// The hilt and the tip each sample from setting off to the contact (the body's space).
     pub sweep: Vec<[vec3; 2]>,
+    /// On contact: how high the holding hand is (m), how far out ahead of the chest (m, along the
+    /// body's ahead), how much of its arm's reach is used (wrist from shoulder, of the arm's
+    /// length), and the blade's angle below level (degrees; below 0, pointing up).
+    pub hand_y: f32,
+    pub hand_ahead: f32,
+    pub reach: f32,
+    pub blade_down: f32,
+    /// On the way over: how high the holding hand is when the blade stands most upright (m), how
+    /// upright it stands then (degrees above level), and how far the hand leads the blade (s: when
+    /// the blade's turned half its turn, less when the hand's gone half its way).
+    pub upright_hand_y: f32,
+    pub upright: f32,
+    pub lead: f32,
 }
 
 /// The cut `clip` makes on `rig` with `held`, its contact at `contact` s (negative to find it).
@@ -52,6 +71,13 @@ pub fn cut(clip: Clip, rig: Rig, held: Held, contact: f32) -> Cut {
         plane_off: 0.0,
         plane_share: 0.0,
         sweep: Vec::new(),
+        hand_y: 0.0,
+        hand_ahead: 0.0,
+        reach: 0.0,
+        blade_down: 0.0,
+        upright_hand_y: 0.0,
+        upright: 0.0,
+        lead: 0.0,
     }
     let hand = held.hand_of(rig)
     if !t.found || hand == NONE {
@@ -70,6 +96,61 @@ pub fn cut(clip: Clip, rig: Rig, held: Held, contact: f32) -> Cut {
         }
     }
     out.tip_last = t.in_order() && latest
+    // The hands: the holding arm's shoulder, elbow and hand, and the chest.
+    let side = if held.hand == "leftHand" { "left" } else { "right" }
+    let arm = read(
+        clip,
+        rig,
+        [
+            rig.find(f"{side}UpperArm".as_str()),
+            rig.find(f"{side}LowerArm".as_str()),
+            rig.find("upperChest"),
+        ],
+    )
+    let at = |i: u32, j: u32| -> vec3 { arm.at[i * arm.k + j] }
+    let hand_c = r.at[i_c]
+    out.hand_y = hand_c.y
+    out.hand_ahead = hand_c.z - at(i_c, 2).z
+    let whole = length(at(i_c, 1) - at(i_c, 0)) + length(hand_c - at(i_c, 1))
+    out.reach = length(hand_c - at(i_c, 0)) / max(whole, 1.0e-4)
+    var blades: Vec<vec3> = Vec::with_capacity(r.m)
+    for i in 0..r.m {
+        let (h, p) = held.ends_at(Rigid { q: r.q[i], t: r.at[i] })
+        blades.push(normalize(p - h))
+    }
+    let blade = |i: u32| -> vec3 { blades[i] }
+    out.blade_down = asin(clamp(-blade(i_c).y, -1.0, 1.0)) * DEG
+    var most_up = -2.0
+    var hand_way = 0.0
+    var turned = 0.0
+    for i in i_s + 1..i_c + 1 {
+        hand_way += length(r.at[i] - r.at[i - 1])
+        turned += acos(clamp(dot(blade(i), blade(i - 1)), -1.0, 1.0))
+        if blade(i).y > most_up {
+            most_up = blade(i).y
+            out.upright_hand_y = r.at[i].y
+        }
+    }
+    out.upright = asin(clamp(most_up, -1.0, 1.0)) * DEG
+    var gone = 0.0
+    var swung = 0.0
+    var hand_half = f32(i_c) / RATE
+    var blade_half = f32(i_c) / RATE
+    var hand_done = false
+    var blade_done = false
+    for i in i_s + 1..i_c + 1 {
+        gone += length(r.at[i] - r.at[i - 1])
+        swung += acos(clamp(dot(blade(i), blade(i - 1)), -1.0, 1.0))
+        if !hand_done && gone >= hand_way * 0.5 {
+            hand_half = f32(i) / RATE
+            hand_done = true
+        }
+        if !blade_done && swung >= turned * 0.5 {
+            blade_half = f32(i) / RATE
+            blade_done = true
+        }
+    }
+    out.lead = blade_half - hand_half
     var path = 0.0
     var centre = vec3(0.0)
     for i in i_s..i_c + 1 {
@@ -125,6 +206,12 @@ impl Cut {
         )
         s.push_str(
             f"  its plane: the tip strays {self.plane_off * 100.0:.1} cm off it at most, {self.plane_share * 100.0:.1}% of its path; {self.sweep.len()} samples swept\n".as_str(),
+        )
+        s.push_str(
+            f"  the hands on contact: {self.hand_y * 100.0:.0} cm up, {self.hand_ahead * 100.0:.0} cm ahead of the chest, the arm {self.reach * 100.0:.0}% out; the blade {self.blade_down:.0} deg below level\n".as_str(),
+        )
+        s.push_str(
+            f"  on the way over: the blade most upright {self.upright:.0} deg above level, the hand {self.upright_hand_y * 100.0:.0} cm up then; the hand {self.lead * 1000.0:.0} ms ahead of the blade, half way\n".as_str(),
         )
         s
     }
