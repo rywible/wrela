@@ -25,7 +25,8 @@ use engine::arms
 use engine::keys::{Key, SETTLE, SMOOTH, SNAP}
 use engine::playback::{ACTIVE, CANCEL, Mark, Move, RECOVER, WINDUP}
 use engine::review
-use engine::timing::{LEFT_ARM, timing}
+use engine::timing::timing
+use engine::end::LEFT_FIST
 use engine::written::{Chain, Taste, Written}
 use taste::taste
 use body::HERO
@@ -123,7 +124,11 @@ pub fn hook() -> Written<8> {
     var back = rest
     back.at = 0.75 - chain.wrist
     back.ease = SMOOTH
-    Written { keys: [rest, load, beat, contact, driven, held, home, back], taste: taste(), arm: 0 }
+    Written {
+        keys: [rest, load, beat, contact, driven, held, home, back],
+        taste: taste(),
+        end: LEFT_FIST,
+    }
 }
 
 /// A clip as a move that stays where it stands (as `fists`' keyed moves do).
@@ -164,7 +169,7 @@ fn hook_move() -> Move {
 @test
 fn the_solved_hook_reads_as_a_strike() {
     borrow rig = HERO.rig
-    let t = timing(HOOK.clip, rig, LEFT_ARM, CONTACT)
+    let t = timing(HOOK.clip, rig, LEFT_FIST, CONTACT)
     print(t.text("the solved hook"))
     assert(t.found && t.flags().len() == 0, "the sheet flags nothing")
     assert(t.in_order(), "the chain goes from the hips out")

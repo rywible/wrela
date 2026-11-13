@@ -29,6 +29,7 @@ use engine::playback
 use engine::playback::{Gaits, Handling, Move, Mover}
 use engine::contact
 use engine::contact::{Give, Hit, Kick, Knock, Shock}
+use engine::end::RIGHT_FIST
 use engine::humanoid::pose_world
 use engine::view::first_camera
 use engine::written::Beats
@@ -311,7 +312,7 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
         if b.role == STRUCK {
             b.knock.struck(b.mover, b.hit, GIVE)
         } else {
-            b.shock = Shock::struck(b.hit, arm: 1)
+            b.shock = Shock::struck(b.hit, end: RIGHT_FIST)
         }
         b.role = NOTHING
     }
@@ -456,7 +457,6 @@ impl Bodies {
     fn contacts(mut self, w: World) {
         let n = self.bodies.len()
         borrow rig = HERO.rig
-        let hand = rig.find("rightHand")
         for k in 0..n {
             let seen = if k == 0 { w.boss() } else { w.player(k - 1) }
             let b = self.bodies[k]
@@ -485,7 +485,7 @@ impl Bodies {
             let a = self.bodies[from]
             let scale = if a.boss { IDOL_SCALE } else { 1.0 }
             let fist = playback::placed(a.mover) *
-                vec4(pose_world(rig, a.mover.shown)[hand].t * scale, 1.0)
+                vec4(RIGHT_FIST.in_pose(rig, pose_world(rig, a.mover.shown)) * scale, 1.0)
             let way = drawn_at(b) - drawn_at(a)
             // (A parried blow staggers what threw it: it's struck back as hard as blows go.)
             let parried = seen.act == STAGGERED

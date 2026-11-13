@@ -11,6 +11,7 @@
 // "GuiltyGearXrd's Art Style: The X Factor Between 2D and 3D", GDC 2015.
 
 use humanoid::{NONE, Pose, Rig, Rigid}
+use end::{End, LIMB_ENDS}
 use playback::{ACTIVE, Move, Mover, layered}
 
 /// How the fight's moves are drawn: drawings a second for a move on twos (twelve); how long (s)
@@ -78,9 +79,9 @@ impl Smear {
     }
 }
 
-/// The limbs that smear, each by its end and the bones it stretches from: the forearms with the
-/// hands (and fingers), the shins with the feet (and toes).
-const ENDS = ["leftHand", "rightHand", "leftFoot", "rightFoot"]
+/// The limbs that smear, each by its end (`engine::end::LIMB_ENDS`: read as every strike's end
+/// is) and the bones it stretches from: the forearms with the hands (and fingers), the shins with
+/// the feet (and toes).
 const FROM = ["leftLowerArm", "rightLowerArm", "leftLowerLeg", "rightLowerLeg"]
 
 /// What's drawn of a body: the drawing it holds, where it was drawn (a whole-body move's drawn
@@ -153,6 +154,11 @@ const ROOTS = ["leftUpperArm", "rightUpperArm", "leftUpperLeg", "rightUpperLeg"]
 
 /// Bone `b`'s place, drawn as `pose` at `place`.
 fn bone_at(rig: Rig, pose: Pose, place: mat4, b: u32) -> vec3 {
+    point_at(rig, pose, place, b, vec3(0.0))
+}
+
+/// The point `off` of bone `b` (in its frame), drawn as `pose` at `place`.
+fn point_at(rig: Rig, pose: Pose, place: mat4, b: u32, off: vec3) -> vec3 {
     var chain: [u32; 64] = [NONE; 64]
     var n = 0
     var at = b
@@ -169,7 +175,7 @@ fn bone_at(rig: Rig, pose: Pose, place: mat4, b: u32) -> vec3 {
         let t = if rb.parent == NONE { pose.hips } else { rb.rest.t }
         w = w.then(Rigid { q: pose.turns[chain[i]], t })
     }
-    (place * vec4(w.t, 1.0)).xyz
+    (place * vec4(w.t + w.q.rotate(off), 1.0)).xyz
 }
 
 /// A strike's force at `time` (s into it), its contact at `contact`, along its look's limb
@@ -199,13 +205,14 @@ fn force_of(
     if by <= 0.0 {
         return Force::none()
     }
-    let (r, e) = (rig.find(ROOTS[limb]), rig.find(ENDS[limb]))
+    let end = LIMB_ENDS[limb]
+    let (r, e) = (rig.find(ROOTS[limb]), end.bone_of(rig))
     if r == NONE || e == NONE {
         return Force::none()
     }
     let from = bone_at(rig, pose, place, r)
-    let end = bone_at(rig, pose, place, e)
-    let to = end + normalize(end - from + vec3(1.0e-5)) * 0.12
+    let tip = point_at(rig, pose, place, e, end.at)
+    let to = tip + normalize(tip - from + vec3(1.0e-5)) * 0.12
     Force { from, to, by, heavy: look.heavy }
 }
 
@@ -220,9 +227,9 @@ fn ends_of(rig: Rig, pose: Pose, place: mat4) -> [vec3; 4] {
     }
     var out = [vec3(0.0); 4]
     for i in 0..4 {
-        let b = rig.find(ENDS[i])
+        let b = LIMB_ENDS[i].bone_of(rig)
         if b != NONE {
-            out[i] = (place * vec4(world[b].t, 1.0)).xyz
+            out[i] = (place * vec4(LIMB_ENDS[i].on(world[b]), 1.0)).xyz
         }
     }
     out
@@ -231,7 +238,7 @@ fn ends_of(rig: Rig, pose: Pose, place: mat4) -> [vec3; 4] {
 /// The length (m) of a limb at rest, from the bone it stretches from to its end.
 fn limb_length(rig: Rig, i: u32) -> f32 {
     let a = rig.find(FROM[i])
-    let e = rig.find(ENDS[i])
+    let e = LIMB_ENDS[i].bone_of(rig)
     if a == NONE || e == NONE {
         return 0.3
     }

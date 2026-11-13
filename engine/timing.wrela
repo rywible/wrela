@@ -30,19 +30,24 @@
 
 use std::collections::Vec
 use humanoid::{Clip, NONE, Pose, Rig, frame_world}
+use end::{End, LIMB_ENDS, NO_END}
 
 const DEG: f32 = 0.017453292
 
 /// How many times a second a clip is read, whatever its own frames: a game's frames.
 pub const RATE: f32 = 60.0
 
-/// The limb that strikes: an arm (its fist) or a leg (its foot); `ANY` finds the one whose end
-/// goes fastest against the hips. (As `engine::anime::Look::limb` counts them.)
+/// The limbs: an arm (its fist) or a leg (its foot), and none. (As `engine::anime::Look::limb`
+/// counts them.)
 pub const LEFT_ARM: u32 = 0
 pub const RIGHT_ARM: u32 = 1
 pub const LEFT_LEG: u32 = 2
 pub const RIGHT_LEG: u32 = 3
-pub const ANY: u32 = 4
+pub const NO_LIMB: u32 = 4
+
+/// The end a strike's read by (`engine::end::End`: a fist, a foot, a held thing's tip); `ANY`
+/// finds the limb whose end goes fastest against the hips, and reads its own end.
+pub const ANY: End = NO_END
 
 /// Each limb's bones (its root, its middle, its end), and what its end is called.
 const LIMBS: [[Text; 3]; 4] = [
@@ -269,7 +274,7 @@ fn nothing(length: f32) -> Timing {
     Timing {
         found: false,
         length,
-        limb: ANY,
+        limb: NO_LIMB,
         draws: 0.0,
         draws_from: 0.0,
         held: 0.0,
@@ -306,7 +311,7 @@ fn nothing(length: f32) -> Timing {
     }
 }
 
-/// The limb of `rig` whose end goes fastest against the hips in `clip`, or `ANY` where none
+/// The limb of `rig` whose end goes fastest against the hips in `clip`, or `NO_LIMB` where none
 /// moves.
 pub fn striking(clip: Clip, rig: Rig) -> u32 {
     let hips = rig.find("hips")
@@ -316,7 +321,7 @@ pub fn striking(clip: Clip, rig: Rig) -> u32 {
     }
     let r = read(clip, rig, bones)
     var best = SET_OFF_LEAST
-    var limb = ANY
+    var limb = NO_LIMB
     for l in 0..4 {
         if bones[l + 1] == NONE {
             continue
@@ -383,25 +388,34 @@ pub fn chain_speeds(r: Read) -> Vec<Vec<f32>> {
     speeds
 }
 
-/// The timing of `clip`'s strike on `rig`: by `limb` (`ANY` to find it), its contact at
+/// The timing of `clip`'s strike on `rig`: read by `end` (`ANY` to find the striking limb and
+/// read its own end), its chain the limb that carries it, its contact at
 /// `contact` s (the fight's, where it's known; a negative one is found: the first moment
 /// after its fastest that the end has all but stopped).
-pub fn timing(clip: Clip, rig: Rig, limb: u32, contact: f32) -> Timing {
+pub fn timing(clip: Clip, rig: Rig, end: End, contact: f32) -> Timing {
     let length_s = clip.length()
     if clip.frames < 4 {
         return nothing(length_s)
     }
-    let l = if limb >= ANY { striking(clip, rig) } else { limb }
-    if l >= ANY {
+    let found = end.bone_of(rig) == NONE
+    let l = if found { striking(clip, rig) } else { end.limb(rig) }
+    if l >= NO_LIMB {
         return nothing(length_s)
     }
-    let bones = bones_of(rig, l)
+    let e = if found { LIMB_ENDS[l] } else { end }
+    var bones = bones_of(rig, l)
+    bones[END] = e.bone_of(rig)
     for b in bones {
         if b == NONE {
             return nothing(length_s)
         }
     }
-    let r = read(clip, rig, bones)
+    var r = read(clip, rig, bones)
+    // (The end's point in its bone: a fist and a foot are their bones' own.)
+    for i in 0..r.m {
+        let j = i * r.k + END
+        r.at[j] = r.at[j] + r.q[j].rotate(e.at)
+    }
     let (m, k) = (r.m, r.k)
     let at = |part: u32, i: u32| -> vec3 { r.at[i * k + part] }
     // How far each part goes into each sample (a sample's step ends at it), as a speed.
@@ -620,7 +634,7 @@ pub fn timing(clip: Clip, rig: Rig, limb: u32, contact: f32) -> Timing {
 impl Timing {
     /// What its end is called: "right fist".
     pub fn end(self) -> Text {
-        if self.limb < ANY { ENDS[self.limb] } else { "limb" }
+        if self.limb < NO_LIMB { ENDS[self.limb] } else { "limb" }
     }
 
     /// What part `part` of its chain is called.

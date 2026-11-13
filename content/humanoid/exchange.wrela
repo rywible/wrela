@@ -13,6 +13,7 @@ use engine::anime
 use engine::anime::{Anime, Drawer, Force, Look, STRIKE}
 use engine::contact
 use engine::contact::{Give, Hit, Kick, Knock, Shock}
+use engine::end::RIGHT_FIST
 use engine::humanoid
 use engine::humanoid::{Pose, pose_world}
 use engine::playback
@@ -308,7 +309,7 @@ impl Exchange {
         // The blow lands as the cross reaches its contact.
         if striking && self.since < 0.0 && now >= solved::CONTACT {
             let place = playback::placed(self.striker)
-            let fist = (place * vec4(pose_world(rig, pose)[rig.find("rightHand")].t, 1.0)).xyz
+            let fist = (place * vec4(RIGHT_FIST.in_pose(rig, pose_world(rig, pose)), 1.0)).xyz
             self.hit = Hit { at: fist, way: BLOW, weight: t.weight, hold: t.hold }
             self.since = 0.0
             self.held = t.hold
@@ -324,7 +325,7 @@ impl Exchange {
         // As the hold breaks, each gives to it.
         if !self.given && self.held <= 0.0 {
             self.knock.struck(self.struck, self.hit, give)
-            self.shock = Shock::struck(self.hit, arm: 1)
+            self.shock = Shock::struck(self.hit, end: RIGHT_FIST)
             self.given = true
         }
         self.shock.step(give, dt)
@@ -332,7 +333,9 @@ impl Exchange {
         // His fist on what it struck while it's held, and a little after.
         let place = playback::placed(self.striker)
         let riding = self.since >= 0.0 && self.since < t.hold + t.pin && striking
-        let pose = if riding { contact::pinned(rig, pose, place, arm: 1, at: self.hit.at) } else {
+        let pose = if riding {
+            contact::pinned(rig, pose, place, end: RIGHT_FIST, at: self.hit.at)
+        } else {
             pose
         }
         let look = if t.twos { STRIKE } else { Look { twos: false, ..STRIKE } }

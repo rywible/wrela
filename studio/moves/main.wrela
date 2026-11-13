@@ -31,7 +31,8 @@ use engine::anime::LIGHT
 use engine::arms
 use engine::playback::Move as Played
 use engine::timing
-use engine::timing::{ANY, LEFT_ARM, RIGHT_ARM, Timing}
+use engine::timing::{ANY, Timing}
+use engine::end::{End, LEFT_FIST, RIGHT_FIST}
 use chart::chart
 use humanoid::exchange
 use humanoid::fists
@@ -136,12 +137,12 @@ pub fn moves() -> Vec<Move> {
     )
 }
 
-/// A strike to read: its name on the command line, its clip, the limb that strikes (`ANY` to
+/// A strike to read: its name on the command line, its clip, the end it strikes with (`ANY` to
 /// find it), its contact (s; negative to find it), and what it is.
 pub struct Strike: Clone {
     pub name: Text,
     pub clip: Clip,
-    pub limb: u32,
+    pub end: End,
     pub contact: f32,
     pub about: Text,
 }
@@ -178,11 +179,11 @@ fn exchange_cross(rig: Rig) -> Clip {
 /// among `strikes`: what `--drawn` and `--differ` play as the lab does (thrown out of the
 /// bouncing guard, drawn as an everyday strike is: `anime::LIGHT`), with the arm that strikes
 /// (whose fist `--drawn` follows). Add a line for a new one.
-pub fn played() -> Vec<(Text, Played, u32)> {
+pub fn played() -> Vec<(Text, Played, End)> {
     Vec::from(
         [
-            ("cross-solved", solved::CROSS.clone(), RIGHT_ARM),
-            ("hook-solved", hook::HOOK.clone(), LEFT_ARM),
+            ("cross-solved", solved::CROSS.clone(), RIGHT_FIST),
+            ("hook-solved", hook::HOOK.clone(), LEFT_FIST),
         ],
     )
 }
@@ -194,42 +195,42 @@ pub fn strikes(rig: Rig) -> Vec<Strike> {
             Strike {
                 name: "exchange",
                 clip: exchange_cross(rig),
-                limb: RIGHT_ARM,
+                end: RIGHT_FIST,
                 contact: X_BEFORE,
                 about: "the combat lab's cross as it's drawn, hit-stop and all (exchange::Exchange)",
             },
             Strike {
                 name: "cross-solved",
                 clip: solved::CROSS.clip.clone(),
-                limb: RIGHT_ARM,
+                end: RIGHT_FIST,
                 contact: solved::CONTACT,
                 about: "the solved cross (solved::CROSS, engine::written): goal poses, each part on its own clock, its numbers solved against spec.wrela",
             },
             Strike {
                 name: "hook-solved",
                 clip: hook::HOOK.clip.clone(),
-                limb: LEFT_ARM,
+                end: LEFT_FIST,
                 contact: hook::CONTACT,
                 about: "the solved lead hook (hook::HOOK, engine::written): goal poses, each part on its own clock, its numbers solved against spec.wrela",
             },
             Strike {
                 name: "cross-take",
                 clip: accad_fists::CROSS_TAKE.clone(),
-                limb: ANY,
+                end: ANY,
                 contact: -1.0,
                 about: "a boxer's captured cross (ACCAD, accad_fists::CROSS_TAKE): the reference",
             },
             Strike {
                 name: "cross-kimodo",
                 clip: kimodo::TIMED.clone(),
-                limb: ANY,
+                end: ANY,
                 contact: -1.0,
                 about: "Kimodo's cross, timed (kimodo::TIMED)",
             },
             Strike {
                 name: "punch",
                 clip: PUNCH_KEYED.clip.clone(),
-                limb: ANY,
+                end: ANY,
                 contact: -1.0,
                 about: "Quaternius's Punch_Cross, held to its feet (body::PUNCH_KEYED)",
             },
@@ -239,7 +240,7 @@ pub fn strikes(rig: Rig) -> Vec<Strike> {
 
 /// `s`'s sheet printed, and written with its chart under `dir` (a root path).
 fn sheet(s: Strike, rig: Rig, dir: str) -> Result<(), ToolError> {
-    let t = timing::timing(s.clip, rig, s.limb, s.contact)
+    let t = timing::timing(s.clip, rig, s.end, s.contact)
     var text = String::from(f"{t.text(s.name)}\n")
     // Its arms, a stretch at a time (`engine::arms::report`): nothing for arms a person makes.
     let faults = arms::report(rig, s.clip, accad_fists::REAL)
@@ -408,7 +409,7 @@ pub fn tool() -> u32 {
     if wanted.len() >= 1 && wanted[0].as_str() == "--drawn" {
         // Each played strike as it's drawn, drawing by drawing.
         var done = 0
-        for (name, m, arm) in played() {
+        for (name, m, end) in played() {
             var chosen = wanted.len() == 1
             for i in 1..wanted.len() {
                 if wanted[i].as_str() == name {
@@ -417,8 +418,7 @@ pub fn tool() -> u32 {
             }
             if chosen {
                 let s = drawn::shown(rig, fists::FIGHT_GAITS, m, LIGHT)
-                let hand = if arm == LEFT_ARM { "leftHand" } else { "rightHand" }
-                print(drawn::drawings(rig, s, rig.find(hand), name).as_str())
+                print(drawn::drawings(rig, s, end.bone_of(rig), name).as_str())
                 done += 1
             }
         }

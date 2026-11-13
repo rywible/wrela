@@ -10,6 +10,7 @@ use engine::humanoid::{Clip, Pose}
 use engine::keys
 use engine::review
 use engine::timing::{ANY, RIGHT_ARM, clip_of, timing}
+use engine::end::RIGHT_FIST
 use std::io::print
 
 /// Whether any of `flags` holds `what`.
@@ -98,27 +99,27 @@ fn timing_reads_a_captured_cross() {
 fn timing_flags_what_a_strike_lacks() {
     borrow rig = HERO.rig
     // Made right: wound up, the body three frames ahead of the arm.
-    let good = timing(thrown(3, 0.25), rig, RIGHT_ARM, -1.0)
+    let good = timing(thrown(3, 0.25), rig, RIGHT_FIST, -1.0)
     print(good.text("thrown, the body first"))
     assert(good.found && good.flags().len() == 0, "a strike that reads")
     assert(good.lead() >= 0.03 && good.in_order())
     assert(good.draws > 0.05, f"wound up {good.draws} m")
     // Every part on one curve.
-    let one = timing(thrown(0, 0.25), rig, RIGHT_ARM, -1.0)
+    let one = timing(thrown(0, 0.25), rig, RIGHT_FIST, -1.0)
     print(one.text("thrown, all at once"))
     assert(flagged(one.flags(), "all at once"), "one curve")
     assert(one.flags().len() == 1)
     // The arm ahead of the body.
-    let arm = timing(thrown(-5, 0.25), rig, RIGHT_ARM, -1.0)
+    let arm = timing(thrown(-5, 0.25), rig, RIGHT_FIST, -1.0)
     print(arm.text("thrown, the arm first"))
     assert(flagged(arm.flags(), "goes before the body"), "the arm first")
     // No wind-up.
-    let flat = timing(thrown(3, 0.0), rig, RIGHT_ARM, -1.0)
+    let flat = timing(thrown(3, 0.0), rig, RIGHT_FIST, -1.0)
     print(flat.text("thrown, no wind-up"))
     assert(flagged(flat.flags(), "no wind-up"), "no wind-up")
     assert(!flagged(good.flags(), "no wind-up"))
     // A contact given where the fist isn't fast.
-    let late = timing(thrown(3, 0.25), rig, RIGHT_ARM, good.contact + 0.3)
+    let late = timing(thrown(3, 0.25), rig, RIGHT_FIST, good.contact + 0.3)
     assert(flagged(late.flags(), "not near its contact"), "a contact the fist isn't fast near")
     // A clip nothing moves in.
     let still = timing(humanoid::rest_clip(rig), rig, ANY, -1.0)
@@ -156,4 +157,26 @@ fn timing_names_keys_out_of_reach() {
     assert(asked.len() == 1 && flagged(asked, "right fist"), "a fist put 1.5 m past the guard")
     let written = solved::cross().keys
     assert(keys::misses(rig, written, 60.0).len() == 0, "the solved cross's keys are within reach")
+}
+
+/// An end is a point in its bone's frame (`engine::end::End`), read the same way by every reader:
+/// hung 10 cm off the right hand, the written cross's end is 10 cm off its fist all the way
+/// through; it's carried by the right arm, as the feet are by the legs; and the sheet reads it on
+/// the right arm's chain.
+@test
+fn an_end_is_a_point_in_its_bone() {
+    borrow rig = HERO.rig
+    let held = engine::end::End { bone: "rightHand", at: vec3(0.0, 0.0, 0.1) }
+    var m = solved::cross()
+    let fists = [m.end(rig, 0.1), m.end(rig, solved::CONTACT)]
+    m.end = held
+    let ends = [m.end(rig, 0.1), m.end(rig, solved::CONTACT)]
+    for i in 0..2 {
+        let off = length(ends[i] - fists[i])
+        assert(abs(off - 0.1) < 1.0e-4, f"the end is {off} m off the fist")
+    }
+    assert(held.limb(rig) == RIGHT_ARM, "carried by the right arm")
+    assert(engine::end::LEFT_FOOT.limb(rig) == 2 && engine::end::NO_END.limb(rig) == 4)
+    let t = timing(solved::CROSS.clip, rig, held, solved::CONTACT)
+    assert(t.found && t.limb == RIGHT_ARM, "read on the right arm's chain")
 }
