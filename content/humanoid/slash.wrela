@@ -80,6 +80,12 @@ pub const SWING: [u32; 6] = [3, 4, 5, 6, 7, 8]
 /// How many keys: the source's moments, and one half way between each two through the swing.
 pub const KEYS: u32 = 21
 
+/// The keys read off the source (`source_keys`), once, as the package is built: what the slash is
+/// written from. A solve follows the slash through these, not through the source clip, which it
+/// can't (a clip's frames are in a `Vec`: docs/toolchain.md, "A solve follows arrays").
+@fuel(2 ** 40)
+pub const SOURCE_KEYS: [Key; KEYS] = source_keys()
+
 /// The keys read off the source at its moments, and the swing's half-way keys.
 pub fn source_keys() -> [Key; KEYS] {
     borrow rig = HERO.rig
@@ -137,7 +143,7 @@ pub fn stepped(k: [Key; KEYS]) -> [Key; KEYS] {
 
 /// The slash as written, the parts on `chain`'s clocks.
 pub fn slash_with(chain: Chain) -> Written<KEYS> {
-    Written { keys: stepped(source_keys()), taste: Taste { chain }, end: STRIKE }
+    Written { keys: stepped(SOURCE_KEYS), taste: Taste { chain }, end: STRIKE }
 }
 
 /// When the slash goes through its target (s): the source's frame 12, where its sword hand is
@@ -156,7 +162,7 @@ pub const STRIKE: End = STICK.at(ALONG)
 /// laid over it (the fists', `taste`) lags the arm behind its own moments (52.6 cm at the contact,
 /// `the_slash_plays_as_its_source_does`).
 pub fn slash() -> Written<KEYS> {
-    Written { keys: stepped(source_keys()), taste: Taste { chain: Chain {} }, end: STRIKE }
+    Written { keys: stepped(SOURCE_KEYS), taste: Taste { chain: Chain {} }, end: STRIKE }
 }
 
 /// The slash as the fight plays it at its own beats: its contact at `CONTACT`, its follow-through
@@ -176,13 +182,43 @@ pub fn slash_at(beats: Beats) -> Move {
 /// The slash without its step (`stepped`), as a game plays it at `beats`: cut where it stands, for
 /// a fight whose rules don't carry a striker.
 pub fn standing_at(beats: Beats) -> Move {
-    Written { keys: source_keys(), ..slash() }.played(
+    Written { keys: SOURCE_KEYS, ..slash() }.played(
         HERO.rig,
         CONTACT,
         beats,
         fps: 60.0,
         fist: 2.0,
     )
+}
+
+/// The source as the cut sheet reads it (`engine::cut`): the bands the slash's spec holds it to
+/// (spec.wrela's `slash_spec`), read once, as it's built, each a number on its own: a solve
+/// follows the spec through numbers, not through the sheet's reading, which holds its samples in
+/// `Vec`s. How high the sword hand is on contact, and how far ahead of the chest (m); how upright
+/// the blade stands at most on the way over (degrees above level).
+@fuel(2 ** 40)
+pub const SOURCE_HAND_UP: f32 = source_cut().hand_y
+@fuel(2 ** 40)
+pub const SOURCE_HAND_AHEAD: f32 = source_cut().hand_ahead
+@fuel(2 ** 40)
+pub const SOURCE_UPRIGHT: f32 = source_cut().upright
+
+fn source_cut() -> engine::cut::Cut {
+    engine::cut::cut(SOURCE.clip.clone(), HERO.rig, STICK, CONTACT)
+}
+
+/// The source's sword hand's fastest over its own frames' steps from setting off to the blow
+/// (m/s, its frames 6 to 12 at 30 a second): what the slash's spec holds its hand to, read alike.
+@fuel(2 ** 40)
+pub const SOURCE_HAND: f32 = source_hand()
+
+fn source_hand() -> f32 {
+    let hand = HERO.rig.find("rightHand")
+    var fastest = 0.0
+    for f in 7..13 {
+        fastest = max(fastest, length(source_at(f)[hand].t - source_at(f - 1)[hand].t) * 30.0)
+    }
+    fastest
 }
 
 /// The source itself on the body, held in place, its hands made fists: what the slash is judged
@@ -259,7 +295,7 @@ fn the_slash_plays_as_its_source_does() {
         "leftFoot",
         "rightFoot",
     ]
-    let m = Written { keys: source_keys(), ..slash() }
+    let m = Written { keys: SOURCE_KEYS, ..slash() }
     var worst = 0.0
     var tip = 0.0
     for f in 0..c.frames {
