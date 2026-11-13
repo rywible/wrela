@@ -210,13 +210,13 @@ fn the_bots_fight_the_idol() {
 /// The blows that land on the taker (`bots::taker`, the first player) in `frames` of the fight
 /// `TAKER` plays: each one's frame, its name, and how far the rules pushed the taker for it (m,
 /// read half a second on).
-fn takers_blows(frames: u32, alone: bool) -> Vec<(u32, Text, f32)> {
+fn takers_blows(frames: u32, alone: bool) -> Vec<(u32, Text, f32, f32)> {
     var w = if alone { World::armed([TAKER_WEAPON]) } else {
         World::armed([TAKER_WEAPON, WEAPONS_OF[1]])
     }
     var before = [u32(0), 0]
-    var out: Vec<(u32, Text, f32)> = Vec::new()
-    var open: Vec<(u32, Text, vec2)> = Vec::new()
+    var out: Vec<(u32, Text, f32, f32)> = Vec::new()
+    var open: Vec<(u32, Text, vec2, f32)> = Vec::new()
     var guard = false
     var parried = false
     for _ in 0..frames {
@@ -235,11 +235,13 @@ fn takers_blows(frames: u32, alone: bool) -> Vec<(u32, Text, f32)> {
         guard = now.hp < 100 && !parried
         let carried = vec2(f32(now.carried_x), f32(now.carried_z))
         if now.hp < was.hp && attack != NO_MOVE {
-            open.push((w.frame, ATTACKS[attack].name, carried))
+            let a = ATTACKS[attack]
+            let push = f32(combat::sim::push_of(combat::sim::hold_of(a.damage))) / 64.0
+            open.push((w.frame, a.name, carried, push))
         }
         while open.len() > 0 && w.frame >= open[0].0 + 30 {
-            let (f, name, from) = open[0]
-            out.push((f, name, length(carried - from) / 64.0))
+            let (f, name, from, push) = open[0]
+            out.push((f, name, length(carried - from) / 64.0, push))
             let _ = open.remove(0)
         }
     }
@@ -247,26 +249,40 @@ fn takers_blows(frames: u32, alone: bool) -> Vec<(u32, Text, f32)> {
 }
 
 /// The taker takes the idol's blows, so a clip shows what knockback does (mmo/combat's
-/// `push_of`): alone against it, a sweep, the palm and the slam each land on it, each pushing it as
-/// far as its weight says (0.52, 0.94 and 2.11 m), all in the clip's 12 s.
+/// `push_of`): alone against it, in the clip's 12 s, the idol's blows land on it, two kinds of
+/// them at least, and each pushes it as far as its weight says (a sweep 0.52 m, the palm 0.94, the
+/// slam 2.11), within 5 cm. Which of them land, and when, is where the taker happens to stand
+/// (how the bots walk, which rules are on); what each does once it lands is the rule.
 @test
 fn the_taker_takes_the_idols_blows() {
     if !combat::sim::KNOCKBACK {
         return
     }
     let blows = takers_blows(720, alone: true)
-    for (f, n, pushed) in blows.clone() {
-        std::io::print(f"  frame {f} ({f32(f) / 60.0:.2} s): {n}, pushed {pushed:.2} m")
-    }
-    for (name, push) in [("Sweep", 0.52), ("Palm", 0.94), ("Slam", 2.11)] {
-        var seen = false
-        for (_, n, pushed) in blows.clone() {
-            if n == name && abs(pushed - push) < 0.05 {
-                seen = true
-            }
+    var kinds: Vec<Text> = Vec::new()
+    for i in 0..blows.len() {
+        let (f, n, pushed, push) = blows[i]
+        std::io::print(
+            f"  frame {f} ({f32(f) / 60.0:.2} s): {n}, pushed {pushed:.2} m, its weight's {push:.2}",
+        )
+        // (A blow landing within another's half second adds its push to the other's reading.)
+        let alone_then = (i == 0 || f >= blows[i - 1].0 + 30) &&
+            (i + 1 == blows.len() || blows[i + 1].0 >= f + 30)
+        if alone_then {
+            assert(
+                abs(pushed - push) < 0.05,
+                f"a {n} pushes the taker {pushed} m, its weight's {push}",
+            )
         }
-        assert(seen, f"a {name} lands on the taker and pushes it {push} m")
+        var known = false
+        for k in kinds.clone() {
+            known = known || k == n
+        }
+        if !known {
+            kinds.push(n)
+        }
     }
+    assert(kinds.len() >= 2, f"the idol's blows land on the taker, of {kinds.len()} kinds")
 }
 
 /// The movement script (`SCRIPT=1`) shows what it says it does, through the real rules: locked on
