@@ -1,0 +1,343 @@
+// A stance's sheet: what an animator reads off a body standing ready (a fighter's guard, any idle
+// loop), as numbers, so a stance can be written to a real one and judged without watching it.
+// A strike has its timing sheet (`engine::timing`); a stance has this.
+//
+// From a looped clip on a humanoid rig (`read`), sampled `RATE` times a second over one loop,
+// in the body's space. Which way it faces is read off the stance itself: from the hips toward
+// its hands (a guard holds them toward what it faces), level. Fore and aft are along that,
+// across is square to it.
+//
+// - Its shape, on average over the loop: how far apart the feet are fore and aft and across;
+//   how far the hips are sunk below their height at rest; the knees' bend; the trunk's lean
+//   forward and its turn off the way it faces; each hand's height, how far it is from the face
+//   and how far out ahead of the hips; each elbow's bend; the head's height and lean.
+// - Its life: its bounces (the hips' dips: how many a second, how long and how high); how far
+//   the weight goes side to side and fore and aft (the hips over the feet); how far the hands and
+//   the head travel (the most each goes from where it is on average, and how far a second); how
+//   still it ever is (the longest it holds with the hips, hands and head all slower than
+//   `STILL`); how far a foot slides along the floor while it's down.
+//
+// `Stance::text` is the sheet.
+
+use std::collections::Vec
+use std::string::String
+use humanoid::{Clip, NONE, Rig, Rigid, pose_world}
+
+const DEG: f32 = 57.29578
+
+/// How many times a second a stance is read: a game's frames.
+pub const RATE: f32 = 60.0
+
+/// Slower than this (m/s), a part is still.
+pub const STILL: f32 = 0.03
+
+/// How near the floor (m above its height at rest) an ankle is down.
+const DOWN: f32 = 0.03
+
+/// A stance, read (`read`). Lengths in m, angles in degrees, times in s.
+pub struct Stance: Copy {
+    pub feet_fore: f32,
+    pub feet_across: f32,
+    pub sunk: f32,
+    pub knees: f32,
+    pub lean: f32,
+    pub turn: f32,
+    /// Each hand (0 the left, 1 the right): its height, how far from the face, how far ahead of
+    /// the hips; each elbow's bend (180 straight).
+    pub hand_y: [f32; 2],
+    pub hand_face: [f32; 2],
+    pub hand_ahead: [f32; 2],
+    pub elbows: [f32; 2],
+    pub head_y: f32,
+    pub head_lean: f32,
+    pub bounces: f32,
+    pub bounce_for: f32,
+    pub bounce_high: f32,
+    pub sway_across: f32,
+    pub sway_fore: f32,
+    pub hands_most: f32,
+    pub hands_speed: f32,
+    pub head_most: f32,
+    pub head_speed: f32,
+    pub stillest: f32,
+    pub slide: f32,
+    pub length: f32,
+}
+
+/// A stance's shape in one pose (`shaped`): its half of the sheet, read where the solve can follow
+/// it (in arrays, by the pose's own numbers), so a stance can be solved to one.
+pub struct Shape: Copy {
+    pub feet_fore: f32,
+    pub feet_across: f32,
+    pub sunk: f32,
+    pub knees: f32,
+    pub lean: f32,
+    pub turn: f32,
+    pub hand_y: [f32; 2],
+    pub hand_face: [f32; 2],
+    pub hand_ahead: [f32; 2],
+    pub elbows: [f32; 2],
+    pub head_y: f32,
+    pub head_lean: f32,
+}
+
+/// Which way the stance in `w` faces: from its hips toward its hands, level.
+pub fn facing(rig: Rig, w: [Rigid; 64]) -> vec3 {
+    let p = parts(rig)
+    let a = flat(0.5 * (w[p.hands[0]].t + w[p.hands[1]].t) - w[p.hips].t)
+    if length(a) > 1.0e-4 { normalize(a) } else { vec3(0.0, 0.0, 1.0) }
+}
+
+/// The shape of the pose `w` (the body's space, on `rig`), facing `fore` (level).
+pub fn shaped(rig: Rig, w: [Rigid; 64], fore: vec3) -> Shape {
+    let p = parts(rig)
+    let rest = rig.rest_frames()
+    let across = vec3(fore.z, 0.0, -fore.x)
+    let feet = w[p.ankles[0]].t - w[p.ankles[1]].t
+    let face = w[p.head].t
+    var hand_y = [0.0; 2]
+    var hand_face = [0.0; 2]
+    var hand_ahead = [0.0; 2]
+    var elbows = [0.0; 2]
+    var knees = 0.0
+    for i in 0..2 {
+        knees += 0.5 * bend(w[p.thighs[i]].t, w[p.knees[i]].t, w[p.ankles[i]].t)
+        hand_y[i] = w[p.hands[i]].t.y
+        hand_face[i] = length(w[p.hands[i]].t - face)
+        hand_ahead[i] = dot(w[p.hands[i]].t - w[p.hips].t, fore)
+        elbows[i] = bend(w[p.shoulders[i]].t, w[p.elbows[i]].t, w[p.hands[i]].t)
+    }
+    // The trunk: hips to the base of the neck. (Square, the shoulders lie across; turned, the
+    // lead one comes forward.)
+    let trunk = w[p.neck].t - w[p.hips].t
+    let shoulders = flat(w[p.shoulders[0]].t - w[p.shoulders[1]].t)
+    let neck_to_head = w[p.head].t - w[p.neck].t
+    Shape {
+        feet_fore: abs(dot(feet, fore)),
+        feet_across: abs(dot(feet, across)),
+        sunk: rest[p.hips].t.y - w[p.hips].t.y,
+        knees,
+        lean: atan2(dot(trunk, fore), trunk.y) * DEG,
+        turn: atan2(dot(shoulders, fore), dot(shoulders, across)) * DEG,
+        hand_y,
+        hand_face,
+        hand_ahead,
+        elbows,
+        head_y: w[p.head].t.y,
+        head_lean: atan2(dot(neck_to_head, fore), neck_to_head.y) * DEG,
+    }
+}
+
+/// The parts a stance is read by, on `rig` (`NONE` for one it lacks).
+struct Parts {
+    hips: u32,
+    chest: u32,
+    neck: u32,
+    head: u32,
+    thighs: [u32; 2],
+    knees: [u32; 2],
+    ankles: [u32; 2],
+    shoulders: [u32; 2],
+    elbows: [u32; 2],
+    hands: [u32; 2],
+}
+
+fn parts(rig: Rig) -> Parts {
+    let chest = if rig.find("upperChest") != NONE { rig.find("upperChest") } else {
+        rig.find("chest")
+    }
+    Parts {
+        hips: rig.find("hips"),
+        chest,
+        neck: rig.find("neck"),
+        head: rig.find("head"),
+        thighs: [rig.find("leftUpperLeg"), rig.find("rightUpperLeg")],
+        knees: [rig.find("leftLowerLeg"), rig.find("rightLowerLeg")],
+        ankles: [rig.find("leftFoot"), rig.find("rightFoot")],
+        shoulders: [rig.find("leftUpperArm"), rig.find("rightUpperArm")],
+        elbows: [rig.find("leftLowerArm"), rig.find("rightLowerArm")],
+        hands: [rig.find("leftHand"), rig.find("rightHand")],
+    }
+}
+
+/// The angle at `b` between `a` and `c` (degrees).
+fn bend(a: vec3, b: vec3, c: vec3) -> f32 {
+    let u = normalize(a - b)
+    let v = normalize(c - b)
+    acos(clamp(dot(u, v), -1.0, 1.0)) * DEG
+}
+
+fn flat(v: vec3) -> vec3 {
+    vec3(v.x, 0.0, v.z)
+}
+
+/// `c` (a looped standing clip on `rig`) read over one loop.
+pub fn read(rig: Rig, c: Clip) -> Stance {
+    let p = parts(rig)
+    let rest = rig.rest_frames()
+    let rest_ankle = 0.5 * (rest[p.ankles[0]].t.y + rest[p.ankles[1]].t.y)
+    let span = c.length()
+    let n = max(u32(span * RATE), 2)
+    var ws: Vec<[Rigid; 64]> = Vec::with_capacity(n)
+    for k in 0..n {
+        ws.push(pose_world(rig, c.pose(f32(k) / RATE)))
+    }
+    // Which way it faces: the hips toward its hands, level, on average.
+    var ahead = vec3(0.0)
+    for w in ws {
+        ahead += facing(rig, w)
+    }
+    let fore = if length(ahead) > 1.0e-4 { normalize(ahead) } else { vec3(0.0, 0.0, 1.0) }
+    let across = vec3(fore.z, 0.0, -fore.x)
+    let inv = 1.0 / f32(n)
+    var s = Stance {
+        feet_fore: 0.0,
+        feet_across: 0.0,
+        sunk: 0.0,
+        knees: 0.0,
+        lean: 0.0,
+        turn: 0.0,
+        hand_y: [0.0; 2],
+        hand_face: [0.0; 2],
+        hand_ahead: [0.0; 2],
+        elbows: [0.0; 2],
+        head_y: 0.0,
+        head_lean: 0.0,
+        bounces: 0.0,
+        bounce_for: 0.0,
+        bounce_high: 0.0,
+        sway_across: 0.0,
+        sway_fore: 0.0,
+        hands_most: 0.0,
+        hands_speed: 0.0,
+        head_most: 0.0,
+        head_speed: 0.0,
+        stillest: 0.0,
+        slide: 0.0,
+        length: span,
+    }
+    var hands_mean = [vec3(0.0); 2]
+    var head_mean = vec3(0.0)
+    var hips_y: Vec<f32> = Vec::with_capacity(n)
+    var weight: Vec<vec2> = Vec::with_capacity(n)
+    for w in ws {
+        let sh = shaped(rig, w, fore)
+        s.feet_fore += sh.feet_fore * inv
+        s.feet_across += sh.feet_across * inv
+        s.sunk += sh.sunk * inv
+        s.knees += sh.knees * inv
+        s.lean += sh.lean * inv
+        s.turn += sh.turn * inv
+        for i in 0..2 {
+            s.hand_y[i] += sh.hand_y[i] * inv
+            s.hand_face[i] += sh.hand_face[i] * inv
+            s.hand_ahead[i] += sh.hand_ahead[i] * inv
+            s.elbows[i] += sh.elbows[i] * inv
+            hands_mean[i] += w[p.hands[i]].t * inv
+        }
+        s.head_y += sh.head_y * inv
+        s.head_lean += sh.head_lean * inv
+        head_mean += w[p.head].t * inv
+        hips_y.push(w[p.hips].t.y)
+        let mid = 0.5 * (w[p.ankles[0]].t + w[p.ankles[1]].t)
+        let off = w[p.hips].t - mid
+        weight.push(vec2(dot(off, across), dot(off, fore)))
+    }
+    // The bounces: the hips' dips, each a low between two highs, a centimetre at least.
+    // (Round the loop from its highest, so a low on the loop's seam is counted once.)
+    var from = 0
+    for k in 0..n {
+        if hips_y[k] > hips_y[from] {
+            from = k
+        }
+    }
+    var lows = 0
+    var high_sum = 0.0
+    var top = hips_y[from]
+    var bottom = hips_y[from]
+    var falling = false
+    for j in 1..n + 1 {
+        let y = hips_y[(from + j) % n]
+        if !falling && y < top - 0.003 {
+            falling = true
+            bottom = y
+        } else if falling {
+            bottom = min(bottom, y)
+            if y > bottom + 0.003 {
+                lows += 1
+                high_sum += top - bottom
+                falling = false
+                top = y
+            }
+        }
+        if !falling {
+            top = max(top, y)
+        }
+    }
+    s.bounces = f32(lows) / span
+    s.bounce_for = if lows > 0 { span / f32(lows) } else { 0.0 }
+    s.bounce_high = if lows > 0 { high_sum / f32(lows) } else { 0.0 }
+    var lo = weight[0]
+    var hi = weight[0]
+    for v in weight {
+        lo = min(lo, v)
+        hi = max(hi, v)
+    }
+    s.sway_across = hi.x - lo.x
+    s.sway_fore = hi.y - lo.y
+    // How far the hands and head go, and how fast; how long it's ever all but still; how far a
+    // foot slides while it's down.
+    var run = 0.0
+    var down_at = [vec3(0.0); 2]
+    var was_down = [false; 2]
+    for k in 0..n {
+        let w = ws[k]
+        let v = ws[(k + 1) % n]
+        var fastest = 0.0
+        for i in 0..2 {
+            s.hands_most = max(s.hands_most, length(w[p.hands[i]].t - hands_mean[i]))
+            let hv = length(v[p.hands[i]].t - w[p.hands[i]].t) * RATE
+            s.hands_speed += hv * 0.5 * inv
+            fastest = max(fastest, hv)
+            let a = w[p.ankles[i]].t
+            let down = a.y - rest_ankle < DOWN
+            if down && !was_down[i] {
+                down_at[i] = a
+            }
+            if down {
+                s.slide = max(s.slide, length(flat(a - down_at[i])))
+            }
+            was_down[i] = down
+        }
+        s.head_most = max(s.head_most, length(w[p.head].t - head_mean))
+        let headv = length(v[p.head].t - w[p.head].t) * RATE
+        s.head_speed += headv * inv
+        fastest = max(fastest, max(headv, length(v[p.hips].t - w[p.hips].t) * RATE))
+        run = if fastest < STILL { run + 1.0 / RATE } else { 0.0 }
+        s.stillest = max(s.stillest, run)
+    }
+    s
+}
+
+impl Stance {
+    /// The sheet, headed `name`.
+    pub fn text(self, name: str) -> String {
+        var t = String::from(f"stance: {name} (a loop of {self.length:.2} s)\n")
+        t.push_str(
+            f"  shape: feet {self.feet_fore * 100.0:.0} cm apart fore and aft, {self.feet_across * 100.0:.0} across; hips sunk {self.sunk * 100.0:.1} cm; knees bent to {self.knees:.0} deg; trunk leaning {self.lean:.1} deg forward, turned {self.turn:.0} deg\n".as_str(),
+        )
+        t.push_str(
+            f"  hands: lead (left) {self.hand_y[0] * 100.0:.0} cm up, {self.hand_face[0] * 100.0:.0} cm from the face, {self.hand_ahead[0] * 100.0:.0} ahead of the hips, elbow {self.elbows[0]:.0} deg; rear (right) {self.hand_y[1] * 100.0:.0} cm up, {self.hand_face[1] * 100.0:.0} from the face, {self.hand_ahead[1] * 100.0:.0} ahead, elbow {self.elbows[1]:.0} deg\n".as_str(),
+        )
+        t.push_str(
+            f"  head: {self.head_y * 100.0:.0} cm up, leaning {self.head_lean:.0} deg forward\n".as_str(),
+        )
+        t.push_str(
+            f"  life: {self.bounces:.2} bounces a second ({self.bounce_for:.2} s each, {self.bounce_high * 100.0:.1} cm high); weight sways {self.sway_across * 100.0:.1} cm side to side, {self.sway_fore * 100.0:.1} fore and aft\n".as_str(),
+        )
+        t.push_str(
+            f"  travel: hands {self.hands_most * 100.0:.1} cm at most, {self.hands_speed * 100.0:.1} cm/s; head {self.head_most * 100.0:.1} cm at most, {self.head_speed * 100.0:.1} cm/s; still at most {self.stillest:.2} s; a foot down slides {self.slide * 100.0:.1} cm\n".as_str(),
+        )
+        t
+    }
+}

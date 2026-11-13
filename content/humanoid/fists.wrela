@@ -9,7 +9,7 @@ use engine::humanoid
 use engine::humanoid::Clip
 use engine::keys
 use std::io::print
-use engine::keys::{Key, SETTLE, SMOOTH, SNAP}
+use engine::keys::{Key, LINEAR, SETTLE, SMOOTH, SNAP}
 use engine::playback
 use engine::playback::{ACTIVE, CANCEL, Gaits, Mark, Move, RECOVER, WINDUP}
 use body::{GAITS, HERO}
@@ -17,19 +17,42 @@ use engine::anime::{LIGHT, Look, PLAIN, STRIKE}
 
 /// The guard: an orthodox stance, up on the balls of both feet, the lead foot ahead and turned a
 /// little in, the rear foot back and turned out; the hips sunk and turned to the right (the lead
-/// shoulder ahead), the trunk leaning in; the lead fist out at eye height, the rear at the chin,
-/// both elbows in and down.
+/// shoulder ahead); the lead fist out before the face, the rear at the chin, both elbows in and
+/// down. Its shape is the captured boxer's (`accad_fists::GUARD`, ACCAD's Male 2), read off the
+/// stance sheet (`engine::stance`) and solved for on this body (spec.wrela's `guard_spec`).
 pub fn guard() -> Key {
+    // ---- What the solve finds (spec.wrela): each number alone on its line. ----
+    // How far the hips are sunk (m) and turned (degrees), and the trunk's lean and turn.
+    let sink = -0.0113
+    let hips_yaw = -30.6
+    let trunk_pitch = -1.5
+    let trunk_yaw = -3.5
+    // Where the feet stand (m along the floor: +x the left, +z ahead).
+    let lead_x = 0.095
+    let lead_z = 0.29
+    let rear_x = -0.231
+    let rear_z = -0.176
+    // Where the fists are (m, the body's space), and how high the eyes look (m, 3 m ahead).
+    let lead_fist_x = 0.105
+    let lead_fist_y = 1.46
+    let lead_fist_z = 0.281
+    let rear_fist_x = -0.172
+    let rear_fist_y = 1.50
+    let rear_fist_z = 0.07
+    let look_y = 2.1
     Key {
         at: 0.0,
-        hips: vec3(-0.01, -0.06, 0.0),
-        hips_turn: vec3(0.0, -25.0, 0.0),
-        trunk: vec3(6.0, -5.0, 0.0),
-        look: vec3(0.0, 1.5, 3.0),
-        fists: [vec3(0.10, 1.40, 0.30), vec3(-0.11, 1.40, 0.12)],
+        hips: vec3(-0.01, sink, 0.0),
+        hips_turn: vec3(0.0, hips_yaw, 0.0),
+        trunk: vec3(trunk_pitch, trunk_yaw, 0.0),
+        look: vec3(0.0, look_y, 3.0),
+        fists: [
+            vec3(lead_fist_x, lead_fist_y, lead_fist_z),
+            vec3(rear_fist_x, rear_fist_y, rear_fist_z),
+        ],
         elbows: [vec3(0.5, -1.0, -0.2), vec3(-0.5, -1.0, -0.2)],
         rolls: [0.0, 0.0],
-        feet: [vec4(0.10, 0.22, -15.0, 12.0), vec4(-0.17, -0.20, -40.0, 18.0)],
+        feet: [vec4(lead_x, lead_z, -15.0, 12.0), vec4(rear_x, rear_z, -40.0, 18.0)],
     }
 }
 
@@ -130,65 +153,52 @@ pub const ACT_STEP_LEFT: u32 = 5
 pub const ACT_STEP_RIGHT: u32 = 6
 pub const LOOKS: [Look; 7] = [STRIKE, PLAIN, LIGHT, PLAIN, PLAIN, PLAIN, PLAIN]
 
-/// Each bounce: how long (s), how high (of the most), and where the weight is (1 on the lead
-/// foot, -1 on the rear).
-const BOUNCES: [vec3; 7] = [
-    vec3(0.46, 1.0, 0.45),
-    vec3(0.53, 0.65, -0.3),
-    vec3(0.42, 0.9, 0.7),
-    vec3(0.6, 0.5, -0.6),
-    vec3(0.47, 0.85, 0.15),
-    vec3(0.51, 0.7, -0.45),
-    vec3(0.44, 0.95, 0.35),
-]
+/// How long the guard's life takes to come round (s), and how far each part of it goes at most:
+/// the weight across and fore and aft over the feet (m), the hips' dip as it settles onto a foot
+/// (m), the fists' drift (m), the trunk's turn, nod and lean to the loaded side (degrees). The captured boxer's guard
+/// (`accad_fists::GUARD`) is the target its stance sheet reads (the_guard_stands_as_the_boxer_does).
+pub const LIFE: f32 = 3.5
+const SIDE: f32 = 0.012
+const FORE: f32 = 0.018
+const DIP: f32 = 0.017
+const DRIFT: f32 = 0.047
+const TURNS: f32 = 5.0
+const NOD: f32 = 3.5
+const ROLL: f32 = 4.0
 
-/// A bounce's key, `up` of the way to its top, `height` its height, `weight` where the weight
-/// is.
-fn bounce_key(up: f32, height: f32, weight: f32) -> Key {
-    var k = guard()
-    let lift = up * height
-    // The weight over a foot: the hips toward it and turned a hair with it.
-    k.hips = vec3(-0.01 + 0.025 * weight, -0.098 + 0.05 * lift, 0.022 * weight)
-    k.trunk = vec3(6.0 - 1.0 * lift, -5.0, -1.5 * weight)
-    let (lead, rear) = (saturate(weight), saturate(-weight))
-    // The loaded foot's heel sinks, the free one's rises; at the top it taps off the floor.
-    k.feet[0].w = 6.0 + 14.0 * lift + 14.0 * rear
-    k.feet[1].w = 10.0 + 14.0 * lift + 14.0 * lead
-    k.lifts = [0.004 * lift + 0.018 * lift * rear, 0.004 * lift + 0.018 * lift * lead]
-    // The fists ride behind: low at the top, up as it lands.
-    let ride = 0.008 * (0.5 - up) * height
-    k.fists = [vec3(0.10, 1.40 + ride, 0.30), vec3(-0.11, 1.40 + ride, 0.12)]
+/// The guard `u` of the way round its life (0 to 1): never still and never even. Its weight rolls
+/// onto the lead foot and back onto the rear twice a time round, the hips settling as it lands on
+/// each (the loaded heel down, the other up); the trunk turns and nods a little after it; each
+/// fist drifts on its own slow round, as a boxer's hands keep moving. Each is a few waves, each a
+/// whole number of times round, so it loops without a seam.
+fn living(u: f32) -> Key {
+    let g = guard()
+    var k = g
+    let a = 6.2831853 * u
+    let weight = 0.6 * cos(2.0 * a) + 0.15 * sin(3.0 * a + 0.4)
+    let settled = 0.5 + 0.5 * cos(2.0 * a)
+    k.hips = g.hips + vec3(SIDE * weight, -DIP * settled, FORE * weight)
+    k.hips_turn = g.hips_turn + vec3(0.0, 0.6 * TURNS * sin(a + 0.7), 0.0)
+    k.trunk = g.trunk + vec3(NOD * sin(2.0 * a + 1.3), TURNS * sin(a + 0.4), -ROLL * weight)
+    let lead = vec3(sin(a + 0.3), 0.8 * sin(2.0 * a + 1.9), 0.7 * sin(3.0 * a + 0.8))
+    let rear = vec3(0.8 * sin(2.0 * a + 2.6), sin(a + 0.9), 0.7 * sin(2.0 * a + 2.1))
+    k.fists = [g.fists[0] + lead * DRIFT, g.fists[1] + rear * DRIFT]
+    // The loaded foot's heel sinks, the other's rises.
+    k.feet[0].w = g.feet[0].w - 6.0 * max(weight, 0.0) + 6.0 * max(-weight, 0.0)
+    k.feet[1].w = g.feet[1].w - 6.0 * max(-weight, 0.0) + 6.0 * max(weight, 0.0)
     k
 }
 
-/// The guard as a body stands ready to fight: light on the balls of its feet, never still and
-/// never even. Each bounce its own length and height, its weight rolling onto one foot and off
-/// the other: the loaded foot's heel sinks, the other's rises and taps off the floor at the top.
-/// It drops onto its feet fast (the floor takes it) and floats off them; its fists ride a beat
-/// behind, its head steady.
+/// The guard as a body stands ready to fight (`living`), a key a frame round its life.
 pub fn guard_keys() -> Vec<Key> {
     var out: Vec<Key> = Vec::new()
-    var t = 0.0
-    let n = BOUNCES.len()
-    for i in 0..n {
-        let b = BOUNCES[i]
-        // Landed: weight already rolling to this bounce's foot.
-        var k = bounce_key(0.0, b.y, b.z)
-        k.at = t
-        k.ease = SNAP
+    let n = u32(LIFE * 60.0)
+    for f in 0..n + 1 {
+        var k = living(f32(f) / f32(n))
+        k.at = f32(f) / 60.0
+        k.ease = LINEAR
         out.push(k)
-        // Its top: off the floor and slowing, the weight on its way to the next.
-        let next = BOUNCES[(i + 1) % n]
-        k = bounce_key(1.0, b.y, mix(b.z, next.z, 0.4))
-        k.at = t + b.x * 0.55
-        k.ease = SETTLE
-        out.push(k)
-        t += b.x
     }
-    var k = bounce_key(0.0, BOUNCES[0].y, BOUNCES[0].z)
-    k.at = t
-    k.ease = SNAP
-    out.push(k)
     out
 }
 
@@ -211,4 +221,40 @@ pub const FIGHT_GAITS: Gaits = Gaits {
     stop: GAITS.stop.clone(),
     start_exit: GAITS.start_exit,
     stop_entry: GAITS.stop_entry,
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// The fight's guard stands as the captured boxer's does (`accad_fists::GUARD`), read on the same
+/// sheet (`engine::stance`): its shape (solved to it, spec.wrela's `guard_spec`) and its life
+/// (how often it settles and how far, how far its weight sways, how far and how fast its hands
+/// and head go), each within a third of his; never still, and its feet held where they stand.
+@test
+fn the_guard_stands_as_the_boxer_does() {
+    borrow rig = HERO.rig
+    let g = engine::stance::read(rig, GUARD.clip.clone())
+    let b = engine::stance::read(rig, accad_fists::GUARD.clip.clone())
+    let near = |a: f32, want: f32, within: f32, what: str| {
+        assert(abs(a - want) <= within, f"{what}: {a} against the boxer's {want}")
+    }
+    near(g.feet_fore, b.feet_fore, 0.02, "feet fore and aft (m)")
+    near(g.feet_across, b.feet_across, 0.02, "feet across (m)")
+    near(g.knees, b.knees, 6.0, "knees (degrees)")
+    near(g.turn, b.turn, 3.0, "trunk's turn (degrees)")
+    for i in 0..2 {
+        near(g.hand_y[i], b.hand_y[i], 0.02, "a hand's height (m)")
+        near(g.hand_face[i], b.hand_face[i], 0.02, "a hand off the face (m)")
+    }
+    let third = |a: f32, want: f32, what: str| {
+        assert(abs(a - want) <= want / 3.0, f"{what}: {a} against the boxer's {want}")
+    }
+    third(g.bounces, b.bounces, "settles a second")
+    third(g.bounce_high, b.bounce_high, "how far it settles (m)")
+    third(g.sway_across + g.sway_fore, b.sway_across + b.sway_fore, "weight's sway (m)")
+    third(g.hands_most, b.hands_most, "hands' drift (m)")
+    third(g.hands_speed, b.hands_speed, "hands' speed (m/s)")
+    third(g.head_most, b.head_most, "head's drift (m)")
+    third(g.head_speed, b.head_speed, "head's speed (m/s)")
+    assert(g.stillest < 0.1, f"never still: still for {g.stillest} s")
+    assert(g.slide <= b.slide, f"its feet slide {g.slide} m")
 }

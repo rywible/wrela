@@ -63,6 +63,12 @@ pub struct Key: Copy {
     pub travel: vec3 = vec3(0.0),
 }
 
+/// Foot `f` (a key's: where it stands along the floor, its turn and its heel's lift) where it
+/// stands, turned `yaw` and its heel up `heel` (degrees): a foot that pivots or rises where it is.
+pub fn turned_foot(f: vec4, yaw: f32, heel: f32) -> vec4 {
+    vec4(f.x, f.y, yaw, heel)
+}
+
 /// `k` moved along the floor by `by`: its hips, fists, feet, look and travel.
 pub fn shifted(k: Key, by: vec3) -> Key {
     var out = k

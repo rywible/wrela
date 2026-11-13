@@ -35,28 +35,42 @@ use fists::guard
 pub const CONTACT: f32 = 0.40
 pub const CONTACT_TILL: f32 = 0.46
 
-/// Where the fist lands (the body's space, m): chin height, on the centre line.
-pub const TARGET: vec3 = vec3(-0.02, 1.46, 0.72)
+/// How high a man stood in the guard holds his chin (m): his head's height less 7 cm.
+@fuel(2 ** 40)
+pub const CHIN: f32 = chin()
+
+fn chin() -> f32 {
+    let w = engine::humanoid::pose_world(HERO.rig, keys::posed(HERO.rig, guard()))
+    w[HERO.rig.find("head")].t.y - 0.07
+}
+
+/// Where the fist lands (the body's space, m): chin height (`CHIN`), on the centre line.
+@fuel(2 ** 40)
+pub const TARGET: vec3 = vec3(-0.02, CHIN, 0.72)
 
 /// The cross's goal poses, in the hips' time (s from its start).
 pub fn cross() -> Written<8> {
     let rest = guard()
     // ---- What the solve finds (spec.wrela): each number alone on its line. ----
     // When the throw sets off (the beat's end, s).
-    let sets_off = 0.2773
+    let sets_off = 0.2767
     // How far ahead the hips are on contact (m), and how far the hips and the chest above
     // them have turned (degrees toward the left).
-    let drive = 0.023
-    let hips_yaw = 19.99
-    let chest_yaw = 35.00
+    let drive = 0.029
+    let hips_yaw = 19.69
+    let chest_yaw = 34.78
     // Where the contact key puts the fist: not the target, since the arm gets there late.
-    let spot_x = -0.0472
-    let spot_y = 1.4730
-    let spot_z = 0.6955
+    let spot_x = -0.0470
+    let spot_y = 1.5324
+    let spot_z = 0.6953
     // How far out to the side the striking elbow points on contact (degrees from straight
     // down). An elbow's hinge is kept by twisting its upper arm (`keys::posed`), so the way
     // it points is found: the one its arm bends about its hinge for.
     let elbow_out = 74.90
+    // Where the load draws the fist to, off the guard's (m, out to the side and back): the
+    // throw's whole way out, which its snap is read against.
+    let draw_x = 0.01
+    let draw_z = -0.10
     // How the body follows the hips: the fighter's (`taste`), as every move of his is.
     let chain = taste().chain
     // The load: sunk and coiled onto the rear foot, the rear fist drawn back a hand's width,
@@ -64,18 +78,24 @@ pub fn cross() -> Written<8> {
     var load = rest
     load.at = 0.07
     load.ease = SMOOTH
-    load.hips = vec3(-0.05, -0.115, -0.05)
+    // (Its fists and feet are the guard's, moved, and its hips sink from the guard's: so the
+    // cross sets off from the guard and comes home to it, whatever its shape. How far the body
+    // turns and leans into the punch is its own, over its feet.)
+    load.hips = rest.hips + vec3(-0.04, -0.055, -0.05)
     load.hips_turn = vec3(0.0, -47.0, 0.0)
     load.trunk = vec3(12.0, -20.0, 0.0)
-    load.look = vec3(0.0, 1.40, 3.0)
-    load.fists = [vec3(0.13, 1.39, 0.38), vec3(-0.18, 1.34, -0.02)]
+    load.look = rest.look + vec3(0.0, -0.10, 0.0)
+    load.fists = [
+        rest.fists[0] + vec3(0.03, -0.01, 0.08),
+        rest.fists[1] + vec3(draw_x, -0.06, draw_z),
+    ]
     load.elbows = [vec3(0.5, -1.0, -0.2), vec3(-0.6, -1.0, -0.4)]
-    load.feet[1] = vec4(-0.17, -0.20, -40.0, 0.0)
+    load.feet[1] = keys::turned_foot(rest.feet[1], yaw: -40.0, heel: 0.0)
     // The beat: settling a hair further in, till the throw sets off.
     var beat = load
     beat.at = sets_off
     beat.ease = SETTLE
-    beat.hips = vec3(-0.055, -0.12, -0.055)
+    beat.hips = rest.hips + vec3(-0.045, -0.06, -0.055)
     beat.hips_turn = vec3(0.0, -49.0, 0.0)
     beat.trunk = vec3(13.0, -21.0, 0.0)
     // Contact: the hips and trunk turned square and past, the rear heel up and pivoted, the
@@ -85,14 +105,14 @@ pub fn cross() -> Written<8> {
     var contact = beat
     contact.at = CONTACT - chain.wrist
     contact.ease = SNAP
-    contact.hips = vec3(0.0, -0.08, drive)
+    contact.hips = rest.hips + vec3(0.01, -0.02, drive)
     contact.hips_turn = vec3(0.0, hips_yaw, 0.0)
     contact.trunk = vec3(12.0, chest_yaw, 0.0)
     contact.collars = [vec3(0.0), vec3(0.0, 10.0, -8.0)]
-    contact.fists = [vec3(0.12, 1.36, 0.22), vec3(spot_x, spot_y, spot_z)]
+    contact.fists = [rest.fists[0] + vec3(0.02, -0.04, -0.08), vec3(spot_x, spot_y, spot_z)]
     let out = elbow_out * 0.017453292
     contact.elbows = [vec3(0.3, -1.0, -0.3), vec3(-sin(out), -cos(out), 0.0)]
-    contact.feet[1] = vec4(-0.17, -0.20, -5.0, 32.0)
+    contact.feet[1] = keys::turned_foot(rest.feet[1], yaw: -5.0, heel: 32.0)
     // The impact: driven on along the blow a little past contact, the weight over the lead
     // foot.
     var driven = contact
@@ -114,13 +134,13 @@ pub fn cross() -> Written<8> {
     var home = held
     home.at = contact.at + 0.34
     home.ease = SETTLE
-    home.hips = vec3(-0.01, -0.07, 0.02)
+    home.hips = rest.hips + vec3(0.0, -0.01, 0.02)
     home.hips_turn = vec3(0.0, -10.0, 0.0)
     home.trunk = vec3(7.0, 5.0, 0.0)
     home.collars = [vec3(0.0), vec3(0.0, 3.0, -2.0)]
-    home.fists = [vec3(0.09, 1.41, 0.26), vec3(-0.07, 1.41, 0.20)]
+    home.fists = [rest.fists[0] + vec3(-0.01, 0.01, -0.04), rest.fists[1] + vec3(0.04, 0.01, 0.08)]
     home.elbows = [vec3(0.5, -1.0, -0.2), vec3(-0.5, -1.0, -0.2)]
-    home.feet[1] = vec4(-0.17, -0.20, -30.0, 14.0)
+    home.feet[1] = keys::turned_foot(rest.feet[1], yaw: -30.0, heel: 14.0)
     // Back in the guard.
     var back = rest
     back.at = 0.86
