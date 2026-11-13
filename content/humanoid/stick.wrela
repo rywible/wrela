@@ -88,7 +88,10 @@ fn the_stick_is_held_as_a_fist_holds_one() {
     let lfist = left.t + vec3(0.08, -0.01, 0.0)
     let at = thing.t + thing.q.rotate(vec3(0.0, -SPAN, 0.0))
     assert(length(at - lfist) < 1.0e-4, f"the left fist {lfist} on the stick at {at}")
-    assert(length(thing.q.rotate(STICK.edge) - vec3(1.0, 0.0, 0.0)) < 1.0e-3, "its edge out along the left arm")
+    assert(
+        length(thing.q.rotate(STICK.edge) - vec3(1.0, 0.0, 0.0)) < 1.0e-3,
+        "its edge out along the left arm",
+    )
 }
 
 /// The stick as Hakuro holds it (content/hakuro's skeleton, his right hand's bone): a plain
