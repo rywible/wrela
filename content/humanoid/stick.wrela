@@ -7,7 +7,7 @@ use engine::held::Held
 use engine::keys::Wield
 use engine::humanoid::Rigid
 use engine::creature::{Creature, creature, hard}
-use std::field::{Surface, round_cone}
+use std::field::{Bound, Surface, UNBOUNDED}
 use hakuro::hakuro::{Cloth, skeleton}
 use body::HERO
 use solved
@@ -24,8 +24,6 @@ pub const DIAGONAL: f32 = 0.5236
 /// How far below the right fist the left holds it, held in both (m: a fist's width and a little,
 /// as a longsword's grip is held, the one hand by the cross and the other by the pommel).
 pub const SPAN: f32 = 0.11
-/// How thick it is (m).
-pub const THICK: f32 = 0.018
 
 /// The stick in the right fist. Its own frame: along +y from the fist, its edge +x. Gripped at
 /// the middle of the fist (a hand's width out along the hand from the wrist), pointing the way the
@@ -107,9 +105,60 @@ fn the_stick_is_held_as_a_fist_holds_one() {
     )
 }
 
-/// The stick as Hakuro holds it (content/hakuro's skeleton, his right hand's bone): a plain
-/// rounded rod from its butt to its tip, where `STICK` has them at rest, for the fighters to draw
-/// (`fighter::Fighters::hold`). The longsword's own shape comes with its cuts (piece 11).
+/// A plain longsword's shape, as a field (the body's space, m): a blade with an edge, a cross, a
+/// grip and a pommel, from its own frame (`hilt` where the right fist holds it, `along` from the
+/// hilt to the point, `edge` the way its edge faces). Nothing fine: enough that its edge and its
+/// cut read by eye. Its blade's cross-section is a flat diamond, edge to edge `WIDE`, flat to flat
+/// `FLAT`, narrowing to its point.
+pub struct Sword: Copy + GpuData {
+    pub hilt: vec3,
+    pub along: vec3,
+    pub edge: vec3,
+}
+
+/// The blade's width edge to edge and its thickness at the cross (m), its length from the cross
+/// (m), the cross's half length (m), how far the cross is ahead of the hilt, the grip's radius
+/// and the pommel's.
+pub const WIDE: f32 = 0.05
+pub const FLAT: f32 = 0.012
+pub const BLADE: f32 = LENGTH - 0.05
+pub const CROSS: f32 = 0.11
+pub const CROSS_AT: f32 = 0.05
+pub const GRIP: f32 = 0.016
+pub const POMMEL: f32 = 0.026
+
+impl Surface for Sword {
+    fn bound(self) -> Bound {
+        UNBOUNDED
+    }
+
+    fn distance(self, p: vec3) -> f32 {
+        let flat_way = cross(self.along, self.edge)
+        let d = p - self.hilt
+        let (u, v, w) = (dot(d, self.along), dot(d, self.edge), dot(d, flat_way))
+        // The blade: a diamond across, narrowing to its point along it.
+        let b = u - CROSS_AT
+        let narrow = 1.0 - 0.7 * clamp(b / BLADE, 0.0, 1.0)
+        let (hw, ht) = (WIDE * 0.5 * narrow, FLAT * 0.5 * narrow)
+        let across = (abs(v) * ht + abs(w) * hw - hw * ht) / sqrt(hw * hw + ht * ht)
+        let blade = max(across, max(-b, b - BLADE))
+        // The cross: a bar along the edge's line, square in section.
+        let bar = max(abs(v) - CROSS, max(abs(u - CROSS_AT * 0.5) - 0.012, abs(w) - 0.014))
+        // The grip back to the pommel, and the pommel.
+        let g = clamp(u, -BUTT + POMMEL, 0.0)
+        let grip = length(vec3(u - g, v, w)) - GRIP
+        let pommel = length(vec3(u + BUTT - POMMEL * 0.5, v, w)) - POMMEL
+        min(min(blade, bar), min(grip, pommel))
+    }
+
+    fn lipschitz(self, near: f32) -> f32 {
+        1.0
+    }
+}
+
+/// The stand-in as Hakuro holds it (content/hakuro's skeleton, his right hand's bone): a plain
+/// longsword's shape (`Sword`), from its pommel to its point, where `STICK` has its hilt and tip
+/// at rest and its edge, for the fighters to draw (`fighter::Fighters::hold`).
 pub fn stick_creature() -> Creature<Cloth> {
     borrow rig = HERO.rig
     let s = skeleton()
@@ -117,17 +166,12 @@ pub fn stick_creature() -> Creature<Cloth> {
     let at = s.rest(bone)
     let hand = rig.rest_world()[rig.find("rightHand")]
     let (hilt, tip) = STICK.ends_at(hand)
-    let butt = hilt - normalize(tip - hilt) * BUTT
-    creature(s).join(
-        "stick",
-        bone,
-        round_cone(tip - at, butt - at, THICK * 0.8, THICK).with_at(|_p: vec3| -> Cloth { WOOD }),
-        seam: hard(),
-    )
+    let sword = Sword { hilt: hilt - at, along: normalize(tip - hilt), edge: STICK.edge_at(hand) }
+    creature(s).join("stick", bone, sword.with_at(|_p: vec3| -> Cloth { STEEL }), seam: hard())
 }
 
-/// The stick's paint: plain dark wood.
-const WOOD = Cloth { albedo: vec3(0.16, 0.09, 0.045), rough: 0.7, metal: 0.0 }
+/// Its paint: plain steel.
+const STEEL = Cloth { albedo: vec3(0.55, 0.56, 0.58), rough: 0.35, metal: 1.0 }
 
 /// Where along it a point is, and which way a blow by it goes: the hilt 0 and the tip 1; turned
 /// about the wrist, its tip goes square to its length, and a blow there goes that way.

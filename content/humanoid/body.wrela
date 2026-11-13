@@ -298,6 +298,12 @@ pub const SWORD_ATTACK_RAW: Clip = humanoid::retarget(
     Retarget {},
 )
 @fuel(2 ** 40)
+pub const SWORD_IDLE_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_gltf(embed("assets/ual1.glb"), "Sword_Idle", UNREAL, fps: 30.0),
+    HERO.rig.clone(),
+    Retarget { looped: true },
+)
+@fuel(2 ** 40)
 pub const ROLL_RAW: Clip = humanoid::retarget(
     humanoid::take_of_gltf(embed("assets/ual1.glb"), "Roll", UNREAL, fps: 30.0),
     HERO.rig.clone(),

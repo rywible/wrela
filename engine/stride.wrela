@@ -22,7 +22,7 @@
 //   while it's down. The legs reach the feet by two-bone IK.
 
 use std::collections::Vec
-use humanoid::{Clip, Frames, NONE, Rig, Rigid, arc, frame_world}
+use humanoid::{Clip, Frames, NONE, Pose, Rig, Rigid, arc, frame_world}
 
 /// How a walk is made human (`humanised`).
 pub struct Gait: Copy {
@@ -1892,3 +1892,26 @@ pub fn curled_hands(clip: Clip, rig: Rig, by: f32) -> Clip {
 /// runner's loose fists curl (the knuckles about 45°, the middle joints about 65°).
 const THUMB_IN: f32 = 35.0
 pub const FISTS: f32 = 1.75
+
+/// `p` (on `rig`) with each leg reached back so its foot stands where it does in `at` (a pose's
+/// bones, `humanoid::pose_world`'s): the ankle where it was and turned as it was, the knee bending
+/// about its own hinge. What a body laid over (a knock's sink, a stance's life) keeps its feet by.
+pub fn feet_kept(rig: Rig, p: Pose, at: [Rigid; 64]) -> Pose {
+    var out = p
+    let w = humanoid::pose_world(rig, p)
+    let rw = rig.rest_frames()
+    for side in [1.0, -1.0] {
+        let l = leg_of(rig, side)
+        if l.hip == NONE || l.knee == NONE || l.ankle == NONE {
+            continue
+        }
+        let hinge = rw[l.knee].q.inverse().rotate(vec3(1.0, 0.0, 0.0))
+        let (qu, ql) = reach(w[l.hip], w[l.knee], w[l.ankle].t, at[l.ankle].t, hinge)
+        let up = rig.bones[l.hip].parent
+        let pq = if up == NONE { rig.base.q } else { w[up].q }
+        out.turns[l.hip] = pq.inverse().mul(qu)
+        out.turns[l.knee] = qu.inverse().mul(ql)
+        out.turns[l.ankle] = ql.inverse().mul(at[l.ankle].q)
+    }
+    out
+}

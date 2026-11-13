@@ -65,8 +65,9 @@ pub const SHOW: u32 = 0
 /// Who fights in the exchange and the lab (`SHOW=28`, `29`) and who a game plays (`SHOW=11`):
 /// 1 Hakuro (`fighter`), in a fight against his double; 0 the bare body (`--set HAKURO=0`).
 pub const HAKURO: u32 = 1
-/// Whether the exchange's striker holds the lab's stand-in stick (`stick::STICK`, 1): read on the
-/// cut sheet, drawn trailing, its blow landing along it (`--set STICK=1`).
+/// Whether the exchange is armed (1): both fighters stand in the armed guard (`armed::GUARD`)
+/// holding the stand-in longsword in both hands (`stick::BOTH`), and the striker cuts with it
+/// (`downcut::DOWNCUT`), its blow landing along it, drawn trailing (`--set STICK=1`).
 pub const STICK: u32 = 0
 /// `SHOW=12`'s body: the bare body (0), or with `--set CHARTED=1` Hakuro, his arms and hands his
 /// charted forms (`engine::chart`), alone: to see how a strike's turns land on a charted arm.
@@ -731,7 +732,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             let (big, squash) = x.drawn_big()
             let rw = HERO.rig.rest_world()
             s.fighters.pose(0, hakuro_palette(bones))
+            // (Armed, both hold it: the one struck stands in the armed guard too.)
             s.fighters.hold(0, STICK == 1)
+            s.fighters.hold(1, STICK == 1)
             s.fighters.fist_grown(0, 1, big)
             let head = bone_at(foe, rw, "head") + vec3(0.0, 0.07, 0.0)
             s.fighters.pose(1, fighter::squashed(hakuro_palette(foe), head, exchange::BLOW, squash))

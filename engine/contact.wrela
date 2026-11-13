@@ -328,22 +328,7 @@ fn sunk(rig: Rig, pose: Pose, by: f32) -> Pose {
     let was = pose_world(rig, pose)
     var p = pose
     p.hips = p.hips - rig.base.q.inverse().rotate(vec3(0.0, by, 0.0))
-    let w = pose_world(rig, p)
-    let rw = rig.rest_frames()
-    for side in [1.0, -1.0] {
-        let l = stride::leg_of(rig, side)
-        if l.hip == NONE || l.knee == NONE || l.ankle == NONE {
-            continue
-        }
-        let hinge = rw[l.knee].q.inverse().rotate(vec3(1.0, 0.0, 0.0))
-        let (qu, ql) = stride::reach(w[l.hip], w[l.knee], w[l.ankle].t, was[l.ankle].t, hinge)
-        let up = rig.bones[l.hip].parent
-        let pq = if up == NONE { rig.base.q } else { w[up].q }
-        p.turns[l.hip] = pq.inverse().mul(qu)
-        p.turns[l.knee] = qu.inverse().mul(ql)
-        p.turns[l.ankle] = ql.inverse().mul(was[l.ankle].q)
-    }
-    p
+    stride::feet_kept(rig, p, was)
 }
 
 /// The joints a shock runs up, in turn: the forearm, the upper arm, the collar, the chest.

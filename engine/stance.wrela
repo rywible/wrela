@@ -29,6 +29,8 @@ use humanoid::{Clip, NONE, Pose, Rig, Rigid, pose_world}
 use humanoid
 use end::End
 use playback::{Gaits, Handling, Move, Mover, placed, step, upper_body}
+use keys::{Wield, both_hands}
+use stride::feet_kept
 
 const DEG: f32 = 57.29578
 
@@ -495,6 +497,59 @@ pub fn series(rig: Rig, c: Clip) -> Vec<[f32; 4]> {
     }
     for k in 0..n {
         out[k][0] = out[k][0] - mean
+    }
+    out
+}
+
+/// A stance's life laid over a shape: `life` (a looped clip of a body standing, a capture or a
+/// hand-made source) about its own mean, over `onto` (a pose: the shape solved for). Each bone
+/// turns off `onto`'s turn as it turns off its mean in `life`; the hips go off `onto`'s place as
+/// they go off their mean, turned to face as `onto`'s do; the feet stay where `onto` stands them
+/// (`stride::feet_kept`); and a thing held in both hands (`wield`) keeps both on its grip
+/// (`keys::both_hands`). Life read from a person moving, not written from waves.
+pub fn lived(rig: Rig, life: Clip, onto: Pose, wield: Wield) -> Clip {
+    let n = life.frames
+    let nb = rig.bones.len()
+    // Each bone's mean turn, and the hips' mean place, over the loop.
+    var mean = [Quat::identity(); 64]
+    var hips = vec3(0.0)
+    for b in 0..nb {
+        var sum = vec4(0.0)
+        let first = life.turns[b].v
+        for f in 0..n {
+            let q = life.turns[f * nb + b].v
+            sum += if dot(q, first) < 0.0 { -q } else { q }
+        }
+        mean[b] = Quat { v: normalize(sum) }
+    }
+    for f in 0..n {
+        hips += life.hips[f]
+    }
+    hips = hips / f32(max(n, 1))
+    // (The hips' way off their mean turned from the way `life`'s hips face to the way `onto`'s
+    // do, about up.)
+    let hb = rig.find("hips")
+    let ahead = |q: Quat| -> f32 {
+        let d = q.rotate(vec3(0.0, 0.0, 1.0))
+        atan2(d.x, d.z)
+    }
+    let turn = Quat::axis_angle(vec3(0.0, 1.0, 0.0), ahead(onto.turns[hb]) - ahead(mean[hb]))
+    let stands = pose_world(rig, onto)
+    var out = life.clone()
+    out.looped = true
+    out.turns = Vec::with_capacity(n * nb)
+    out.hips = Vec::with_capacity(n)
+    for f in 0..n {
+        var p = onto
+        for b in 0..nb {
+            p.turns[b] = onto.turns[b].mul(mean[b].inverse().mul(life.turns[f * nb + b]))
+        }
+        p.hips = onto.hips + turn.rotate(life.hips[f] - hips)
+        let p = both_hands(rig, feet_kept(rig, p, stands), wield)
+        for b in 0..nb {
+            out.turns.push(p.turns[b])
+        }
+        out.hips.push(p.hips)
     }
     out
 }

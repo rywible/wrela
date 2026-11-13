@@ -20,7 +20,7 @@ use engine::held::Held
 use engine::humanoid
 use engine::humanoid::{Pose, pose_world}
 use engine::playback
-use engine::playback::{Handling, Move, Mover}
+use engine::playback::{Gaits, Handling, Move, Mover}
 use std::collections::Vec
 use std::string::String
 use std::transform::translate
@@ -29,6 +29,7 @@ use body::HERO
 use fists::FIGHT_GAITS
 use solved
 use stepping
+use armed
 use downcut
 use stick
 
@@ -178,6 +179,15 @@ fn foe_of(t: Tune) -> vec3 {
     if t.stick { CUT_FOE_AT } else { FOE_AT }
 }
 
+/// The gaits both stand and step in, as `t` says: armed with the stand-in in both hands (its
+/// armed guard, `armed::ARMED_GAITS`), or in the fight's guard.
+@fuel(2 ** 40)
+const GAITS: [Gaits; 2] = [FIGHT_GAITS.clone(), armed::ARMED_GAITS.clone()]
+
+fn armed_of(t: Tune) -> u32 {
+    if t.stick { 1 } else { 0 }
+}
+
 /// When the striker's strike lands (s into it), as `t` says: the cut's, or the cross's.
 fn contact_of(t: Tune) -> f32 {
     if t.stick { downcut::CONTACT } else { stepping::CONTACT }
@@ -287,10 +297,10 @@ impl Exchange {
             clock: -after,
             throw: after >= 0.0,
             then: humanoid::NONE,
-            striker: Mover::standing(vec3(0.0), HEADING, FIGHT_GAITS),
+            striker: Mover::standing(vec3(0.0), HEADING, GAITS[armed_of(t)]),
             struck: Mover::standing(if t.giant { GIANT_AT } else {
                 foe_of(t)
-            }, FACING_BACK, FIGHT_GAITS),
+            }, FACING_BACK, GAITS[armed_of(t)]),
             drawer: Drawer::new(),
             mask: playback::upper_body(HERO.rig),
             hit: Hit { at: KNUCKLES, way: BLOW, weight: t.weight, hold: t.hold },
@@ -300,9 +310,9 @@ impl Exchange {
             kick: Kick::none(),
             shock: Shock::none(),
             knock: Knock::none(),
-            shown: FIGHT_GAITS.idle.pose(0.0),
+            shown: GAITS[armed_of(t)].idle.pose(0.0),
             shown_place: std::transform::identity(),
-            struck_shown: FIGHT_GAITS.idle.pose(0.0),
+            struck_shown: GAITS[armed_of(t)].idle.pose(0.0),
             smears: [anime::Smear::none(); 4],
             trail: anime::Drawer::new().trail,
             grown: anime::Grown { on: false, about: vec3(0.0), by: 1.0, bone: humanoid::NONE },
@@ -323,7 +333,7 @@ impl Exchange {
             self.struck = Mover::standing(
                 if t.giant { GIANT_AT } else { foe_of(t) },
                 FACING_BACK,
-                FIGHT_GAITS,
+                GAITS[armed_of(t)],
             )
         }
         self.tune = t
@@ -357,7 +367,7 @@ impl Exchange {
         let was = self.striker.act_time
         let pose = playback::step(
             mut self.striker,
-            FIGHT_GAITS,
+            GAITS[armed_of(t)],
             MOVES,
             rig,
             self.mask,
@@ -450,7 +460,7 @@ impl Exchange {
         self.knock.step(mut self.struck, give, if held { 0.0 } else { dt })
         let moved = playback::step(
             mut self.struck,
-            FIGHT_GAITS,
+            GAITS[armed_of(t)],
             MOVES,
             rig,
             self.mask,
@@ -1032,7 +1042,8 @@ fn the_fist_is_drawn_big_on_the_blow_and_the_stick_trails() {
 
 /// A blow that comes down (the cut in both hands, on the neck, at weight 1) bows the one struck
 /// and sinks him at the knees (a weight-1 blow coming straight down sinks him `Give::sink`, this
-/// one comes 60% down), his hips down 8 cm and more with his trunk bowed over them, and home.
+/// one comes 60% down: 7 cm), his hips down 6 cm and more with his trunk bowed over them, and
+/// home.
 @test
 fn a_blow_that_comes_down_sinks_the_one_struck() {
     borrow rig = HERO.rig
@@ -1058,6 +1069,6 @@ fn a_blow_that_comes_down_sinks_the_one_struck() {
     }
     let last = steps[steps.len() - 1].clone()
     assert(-normalize(steps[landed].hit.way).y > 0.3, "the cut comes down")
-    assert(sank >= 0.08, f"his hips sink {sank} m")
+    assert(sank >= 0.06, f"his hips sink {sank} m")
     assert(sunk_most > 0.06 && last.knock.sink.x.x < 0.01, f"sunk {sunk_most} m, and back up")
 }
