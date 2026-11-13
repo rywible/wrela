@@ -1,5 +1,6 @@
 // One exchange, for judging how a blow reads (`SHOW=28`, and the lab's `SHOW=29`): the fight's
-// cross (the solved one, a written move: `solved::CROSS`) thrown out of the guard at a second
+// cross (the solved one, a written move, thrown with a step: `stepping::CROSS`) thrown out of the
+// guard from out of reach at a second
 // fighter, or the stone giant, who stands where it lands. The contact is the engine's
 // (`engine::contact`): both bodies held through the hit-stop, the striker driving on in while his
 // fist stays on what it struck; as the hold breaks, the one struck knocked along the blow and the
@@ -27,6 +28,7 @@ use engine::timing::RATE
 use body::HERO
 use fists::FIGHT_GAITS
 use solved
+use stepping
 use stick
 
 /// The hit-stop: how long both bodies hold at contact (s).
@@ -77,15 +79,11 @@ pub const X_PIN: f32 = 0.05
 pub const X_GIVE: f32 = 0.5
 pub const X_RECOIL: f32 = 0.1
 
-/// How many steps in the striker takes to throw, and back out after: the two stand that far out
-/// of reach, so their lead fists, held well out in the guard, are never near each other.
-pub const X_STEPS: u32 = 2
-
-/// When the scripted exchange (`SHOW=28`) steps in to throw its cross (s): the cross lands 6.8 s
-/// in, frame 204 at the judge's 30 a second (studio/judge's `exchange` scene and `arms` shots),
-/// after the steps in and a frame's settle.
-@fuel(2 ** 40)
-pub const THROW: f32 = 6.43 - f32(X_STEPS) * fists::STEP_IN.length() - 1.0 / 60.0
+/// When the scripted exchange (`SHOW=28`) throws its cross (s): the cross, stepping in from out
+/// of reach (`stepping::CROSS`), lands 6.8 s in, frame 204 at the judge's 30 a second
+/// (studio/judge's `exchange` scene and `arms` shots): a frame before the cross's own start, which
+/// it's begun on the frame after.
+pub const THROW: f32 = 6.43 - 1.0 / 60.0
 
 /// What the combat lab (`lab`) tunes live: the hit-stop, the impact frame, the camera's kick and
 /// push, the blast's size, how hard the one struck gives, whether the striker's drawn on twos,
@@ -138,10 +136,9 @@ fn turned(p: vec3, heading: f32) -> vec3 {
 }
 
 /// Where the cross's fist is on its contact (the world): the striker stands at the origin, out of
-/// reach, and steps in (`fists::STEP_IN`, `fists::STEP` along the blow) to throw it.
+/// reach, and the cross steps in as it's thrown (`stepping::cross`, its travel in its reach).
 @fuel(2 ** 40)
-pub const KNUCKLES: vec3 = turned(solved::cross().end(HERO.rig, solved::CONTACT), HEADING) +
-    BLOW * (fists::STEP * f32(X_STEPS))
+pub const KNUCKLES: vec3 = turned(stepping::cross().end(HERO.rig, stepping::CONTACT), HEADING)
 
 /// Where bone `name` of the guard is (the body's space).
 fn in_guard(name: str) -> vec3 {
@@ -214,11 +211,9 @@ pub struct Exchange: Clone {
     tune: Tune,
     clock: f32,
     throw: bool,
-    /// What the striker does once he's done with what he's doing (`STEP`, `CROSS`, `BACK`;
+    /// What the striker does once he's done with what he's doing (`CROSS`, `BACK`;
     /// `humanoid::NONE` nothing).
     then: u32,
-    /// How many steps in (or back out) he's taken.
-    steps: u32,
     striker: Mover,
     struck: Mover,
     drawer: Drawer,
@@ -249,13 +244,12 @@ pub struct Exchange: Clone {
     from_hit: f32,
 }
 
-/// What the striker does, as the lab's fight does: stands out of reach, steps in (`STEP`), throws
-/// the cross (`CROSS`), and steps back out (`BACK`).
+/// What the striker does: stands out of reach, throws the cross stepping in (`CROSS`), and steps
+/// back to where he stood (`BACK`).
 @fuel(2 ** 40)
-const MOVES: [Move; 3] = [solved::CROSS.clone(), fists::STEP_IN.clone(), fists::STEP_OUT.clone()]
+const MOVES: [Move; 2] = [stepping::CROSS.clone(), stepping::BACK.clone()]
 const CROSS: u32 = 0
-const STEP: u32 = 1
-const BACK: u32 = 2
+const BACK: u32 = 1
 
 impl Exchange {
     /// Both in their guards, the cross to be thrown `after` s on (below 0: none till a press).
@@ -265,7 +259,6 @@ impl Exchange {
             clock: -after,
             throw: after >= 0.0,
             then: humanoid::NONE,
-            steps: 0,
             striker: Mover::standing(vec3(0.0), HEADING, FIGHT_GAITS),
             struck: Mover::standing(if t.giant { GIANT_AT } else {
                 FOE_AT
@@ -324,22 +317,12 @@ impl Exchange {
         self.landed = false
         var act = humanoid::NONE
         if self.throw && self.clock >= 0.0 {
-            act = STEP
-            self.steps = 1
-            self.then = if X_STEPS > 1 { STEP } else { CROSS }
+            act = CROSS
+            self.then = BACK
             self.throw = false
         } else if self.then != humanoid::NONE && self.striker.acting == humanoid::NONE {
             act = self.then
-            if act == STEP {
-                self.steps += 1
-                self.then = if self.steps < X_STEPS { STEP } else { CROSS }
-            } else if act == CROSS {
-                self.steps = 0
-                self.then = BACK
-            } else {
-                self.steps += 1
-                self.then = if self.steps < X_STEPS { BACK } else { humanoid::NONE }
-            }
+            self.then = humanoid::NONE
         }
         // Held at the blow: the one struck still, the striker driving on at `grind` of his pace.
         let holding = self.held > 0.0
@@ -358,14 +341,14 @@ impl Exchange {
         )
         let striking = self.striker.acting == 0
         let now = self.striker.act_time
-        if striking && was < solved::CONTACT - 0.12 && now >= solved::CONTACT - 0.12 {
+        if striking && was < stepping::CONTACT - 0.12 && now >= stepping::CONTACT - 0.12 {
             self.swing = true
         }
         // The blow lands as the cross reaches its contact.
         let holds = held_of(t)
         let w_now = pose_world(rig, pose)
         let hand_now = w_now[rig.find("rightHand")]
-        if striking && self.since < 0.0 && now >= solved::CONTACT {
+        if striking && self.since < 0.0 && now >= stepping::CONTACT {
             let place = playback::placed(self.striker)
             let fist = (place * vec4(RIGHT_FIST.in_pose(rig, w_now), 1.0)).xyz
             self.hit = Hit { at: fist, way: BLOW, weight: t.weight, hold: t.hold }
@@ -458,7 +441,7 @@ impl Exchange {
             self.shown_place,
         )
         self.from_hit = if self.since >= 0.0 { self.since } else if striking {
-            self.striker.act_time - solved::CONTACT
+            self.striker.act_time - stepping::CONTACT
         } else { -1.0e6 }
         self.kick.step(give, dt)
     }
@@ -854,16 +837,30 @@ fn the_cross_lands_and_the_one_struck_gives_and_comes_back() {
         f"his feet step to catch him and back: {more} steps more than the bounce's own {steps0}",
     )
     assert(home1 > 0.5 && home1 < 1.5, f"and he's home {home1} s after the hold breaks")
-    // Stood out of reach in their guards, their lead fists (held well out) are never near: a
-    // hand's width and more between them all through the idle.
+    // Stood out of reach in their guards, and the cross stepping in as it's thrown, neither's
+    // lead fist (held well out) comes near the other's lead fist or head but through the blow:
+    // a hand's width and more between them from the idle to the striker back on his mark, but
+    // for the blow's own stretch (from 0.3 s before it lands to 0.6 s after).
     var near = 9.0
-    for x in played(TUNED, after: 1.0, seconds: 0.95) {
-        let a = (x.shown_place * vec4(pose_world(rig, x.shown)[rig.find("leftHand")].t, 1.0)).xyz
-        let b = (playback::placed(x.struck) *
-            vec4(pose_world(rig, x.struck_shown)[rig.find("leftHand")].t, 1.0)).xyz
-        near = min(near, length(a - b))
+    for x in played(TUNED, after: 1.0, seconds: 4.0) {
+        if x.from_hit > -0.3 && x.from_hit < 0.6 {
+            continue
+        }
+        let sw = pose_world(rig, x.shown)
+        let tw = pose_world(rig, x.struck_shown)
+        let at = |p: mat4, v: vec3| -> vec3 { (p * vec4(v, 1.0)).xyz }
+        let sp = playback::placed(x.struck)
+        let (a, ah) = (
+            at(x.shown_place, sw[rig.find("leftHand")].t),
+            at(x.shown_place, sw[rig.find("head")].t),
+        )
+        let (b, bh) = (at(sp, tw[rig.find("leftHand")].t), at(sp, tw[rig.find("head")].t))
+        near = min(near, min(length(a - b), min(length(a - bh), length(b - ah))))
     }
-    assert(near >= 0.25, f"the lead fists come {near} m apart at the nearest through the idle")
+    assert(
+        near >= 0.25,
+        f"a lead fist comes {near} m from the other's lead fist or head but through the blow",
+    )
     let (head4, _, _, _, _) = thrown(0.25)
     assert(head4 < 0.25 * head1, f"a quarter's a touch: his head {head4} m")
 }

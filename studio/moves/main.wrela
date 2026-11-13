@@ -51,6 +51,8 @@ use chart::chart
 use humanoid::exchange
 use humanoid::fists
 use humanoid::solved
+use humanoid::stepping
+use engine::footwork
 use humanoid::hook
 use humanoid::accad_fists
 use humanoid::kimodo
@@ -181,6 +183,9 @@ pub struct Strike: Clone {
     pub end: End,
     pub contact: f32,
     pub about: Text,
+    /// Where its root's carried each frame, for a move that travels (empty: its hips carry it,
+    /// or it stays where it stands).
+    pub root: Vec<vec3> = Vec::new(),
 }
 
 /// How long before its contact the exchange's cross is read from, and how long after its
@@ -244,6 +249,14 @@ pub fn strikes(rig: Rig) -> Vec<Strike> {
                 about: "the solved cross (solved::CROSS, engine::written): goal poses, each part on its own clock, its numbers solved against spec.wrela",
             },
             Strike {
+                name: "cross-stepping",
+                clip: stepping::CROSS.clip.clone(),
+                end: RIGHT_FIST,
+                contact: stepping::CONTACT,
+                about: "the cross thrown with a step (stepping::CROSS, engine::written): the solved cross with its feet and travel written, its numbers solved against spec.wrela",
+                root: stepping::CROSS.root.clone(),
+            },
+            Strike {
                 name: "hook-solved",
                 clip: hook::HOOK.clip.clone(),
                 end: LEFT_FIST,
@@ -279,6 +292,11 @@ pub fn strikes(rig: Rig) -> Vec<Strike> {
 fn sheet(s: Strike, rig: Rig, dir: str) -> Result<(), ToolError> {
     let t = timing::timing(s.clip, rig, s.end, s.contact)
     var text = String::from(f"{t.text(s.name)}\n")
+    // Its footwork (`engine::footwork`): the body's travel, each foot's step against the contact.
+    if t.found {
+        let f = footwork::footwork(s.clip, s.root, rig, t.contact, 0.0, s.clip.length())
+        text.push_str(f.text().as_str())
+    }
     // Its arms, a stretch at a time (`engine::arms::report`): nothing for arms a person makes.
     let faults = arms::report(rig, s.clip, accad_fists::REAL)
     if faults.is_empty() {

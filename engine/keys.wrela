@@ -44,7 +44,8 @@ pub const STEP: u32 = 4
 ///   `rolls` each forearm's roll about itself (degrees);
 /// - `feet`: each foot's ball on the floor (x, z), its yaw (toes toward the left) and its heel
 ///   lifted (degrees, about the ball), and `lifts`, how high each ball's off the floor (m: a
-///   hop, a step's swing);
+///   hop, a step's swing); `swing`, how high a foot that moves along the floor into this key
+///   lifts on its way, at most half way (m: a step taken between two keys);
 /// - `travel`: where the body's got to along the floor since the move began (its root, which
 ///   gameplay carries; everything else is set where it is from the move's start).
 pub struct Key: Copy {
@@ -60,6 +61,7 @@ pub struct Key: Copy {
     pub rolls: [f32; 2] = [0.0; 2],
     pub feet: [vec4; 2],
     pub lifts: [f32; 2] = [0.0; 2],
+    pub swing: f32 = 0.0,
     pub travel: vec3 = vec3(0.0),
 }
 
@@ -127,11 +129,18 @@ pub fn mixed(a: Key, b: Key, t: f32) -> Key {
         ],
         feet: [m4(a.feet[0], b.feet[0]), m4(a.feet[1], b.feet[1])],
         lifts: [
-            a.lifts[0] + (b.lifts[0] - a.lifts[0]) * t,
-            a.lifts[1] + (b.lifts[1] - a.lifts[1]) * t,
+            a.lifts[0] + (b.lifts[0] - a.lifts[0]) * t + swung(a.feet[0], b.feet[0], b.swing, t),
+            a.lifts[1] + (b.lifts[1] - a.lifts[1]) * t + swung(a.feet[1], b.feet[1], b.swing, t),
         ],
+        swing: b.swing,
         travel: m(a.travel, b.travel),
     }
+}
+
+/// How high a foot going from `a` to `b` (a key's foot) is lifted `t` of its way, a key's
+/// `swing` high half way: none for a foot that stays where it is.
+fn swung(a: vec4, b: vec4, swing: f32, t: f32) -> f32 {
+    if length(b.xy - a.xy) < 0.01 { 0.0 } else { swing * 4.0 * t * (1.0 - t) }
 }
 
 /// A turn by `d` degrees: pitch (about x), then yaw (about y), then roll (about z), in the
