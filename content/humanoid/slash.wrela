@@ -185,6 +185,30 @@ pub fn standing_at(beats: Beats) -> Move {
     )
 }
 
+/// The source as the cut sheet reads it (`engine::cut`): the bands the slash's spec holds it to
+/// (spec.wrela's `slash_spec`), read once, as it's built.
+@fuel(2 ** 40)
+pub const SOURCE_CUT: engine::cut::Cut = engine::cut::cut(
+    SOURCE.clip.clone(),
+    HERO.rig,
+    STICK,
+    CONTACT,
+)
+
+/// The source's sword hand's fastest over its own frames' steps from setting off to the blow
+/// (m/s, its frames 6 to 12 at 30 a second): what the slash's spec holds its hand to, read alike.
+@fuel(2 ** 40)
+pub const SOURCE_HAND: f32 = source_hand()
+
+fn source_hand() -> f32 {
+    let hand = HERO.rig.find("rightHand")
+    var fastest = 0.0
+    for f in 7..13 {
+        fastest = max(fastest, length(source_at(f)[hand].t - source_at(f - 1)[hand].t) * 30.0)
+    }
+    fastest
+}
+
 /// The source itself on the body, held in place, its hands made fists: what the slash is judged
 /// against.
 @fuel(2 ** 40)

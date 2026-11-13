@@ -149,6 +149,7 @@ pub fn spec<C: Checks>(c: mut C) {
     guard_spec(mut c)
     stepping_spec(mut c)
     downcut_spec(mut c)
+    slash_spec(mut c)
 }
 
 /// The fight's bounce (`fists::BOUNCE`: ACCAD Male 2 bouncing in his guard, E8) as its stance
@@ -614,4 +615,115 @@ fn downcut_spec<C: Checks>(c: mut C) {
         t2 += 1.0 / 60.0
     }
     c.at_least("cut: the hands' height while the blade's still up (m)", low, 1.27, within: 0.02)
+}
+
+/// What the slash (slash.wrela) should measure: its source's bands (`slash::SOURCE_CUT`, the cut
+/// sheet's reading of `Sword_Attack` on the body), so a later change of ours, a second hand on the
+/// grip, a longer blade, a foe at a set distance, can't drift from what it was fitted to. Each as
+/// `the_slash_plays_as_its_source_does` holds it, read off the written move so a solve can follow
+/// it:
+/// - through its target when the fight says it lands: fastest as it lands;
+/// - the hand as fast as the source's, within 15% (ours goes round between the source's frames,
+///   which sample it at 30 a second and read it along the chord);
+/// - the hands where the source's are on contact, up and ahead of the chest, within 3 cm;
+/// - the blade as upright on the way over, within 5 degrees;
+/// - followed through to a finish low on the far side, held: the sword hand left of the body
+///   (over 20 cm) and low (under 70 cm), from 0.50 s to 0.75 s;
+/// - its step (`slash::STEP`): all of it by the blow, none before the feet leave the floor.
+fn slash_spec<C: Checks>(c: mut C) {
+    slash_spec_of(mut c, slash::slash())
+}
+
+/// `slash_spec`'s checks of `m`, a slash as written.
+fn slash_spec_of<C: Checks>(c: mut C, m: engine::written::Written<slash::KEYS>) {
+    borrow rig = HERO.rig
+    let at = slash::CONTACT
+    let src = slash::SOURCE_CUT.clone()
+    let hand = rig.find("rightHand")
+    let chest = rig.find("upperChest")
+    // (Fastest as it lands: the striking point, read from setting off.)
+    let t = m.thrown_from(rig, at, 0.2)
+    c.at_least(
+        "slash: striking point's speed into contact, of its fastest",
+        t.into / t.fastest,
+        0.95,
+        within: 0.02,
+    )
+    // The hand's fastest, read as the source's is: over each of its own frames' steps (30 a
+    // second), from setting off to the blow. (Read at 60, ours goes round between the source's
+    // frames and the source along the chord across them: not the same measure.)
+    var fastest = 0.0
+    for f in 7..13 {
+        let (a, b) = (
+            pose_world(rig, m.pose(rig, f32(f - 1) / 30.0))[hand].t,
+            pose_world(rig, m.pose(rig, f32(f) / 30.0))[hand].t,
+        )
+        fastest = max(fastest, length(b - a) * 30.0)
+    }
+    c.at_least("slash: hand's fastest (m/s)", fastest, slash::SOURCE_HAND * 0.85, within: 0.5)
+    c.at_most("slash: hand's fastest (m/s)", fastest, slash::SOURCE_HAND * 1.15, within: 0.5)
+    // The hands on contact.
+    let w = pose_world(rig, m.pose(rig, at))
+    c.near("slash: hand up on contact (m)", w[hand].t.y, src.hand_y, within: 0.03)
+    c.near(
+        "slash: hand ahead of the chest on contact (m)",
+        w[hand].t.z - w[chest].t.z,
+        src.hand_ahead,
+        within: 0.03,
+    )
+    // The blade most upright on the way over (from setting off to the blow, at 60 a second).
+    var most_up = -2.0
+    for k in 0..13 {
+        let time = 0.2 + f32(k) / 60.0
+        let p = pose_world(rig, m.pose(rig, time))
+        let (hilt, tip) = slash::WIELD.held.ends_at(p[hand])
+        most_up = max(most_up, normalize(tip - hilt).y)
+    }
+    c.near(
+        "slash: blade most upright on the way over (degrees)",
+        asin(clamp(most_up, -1.0, 1.0)) * 57.29578,
+        src.upright,
+        within: 5.0,
+    )
+    // The finish, low on the far side, held.
+    var left = 1.0e9
+    var low = -1.0e9
+    for k in 0..6 {
+        let p = pose_world(rig, m.pose(rig, 0.5 + f32(k) * 0.05))
+        left = min(left, p[hand].t.x)
+        low = max(low, p[hand].t.y)
+    }
+    c.at_least("slash: finish, the hand left of the body (m)", left, 0.2, within: 0.02)
+    c.at_most("slash: finish, the hand low (m)", low, 0.7, within: 0.02)
+    // Its step: all of it by the blow, none before the feet leave the floor.
+    c.near("slash: its step by the blow (m)", m.root(rig, at).z, slash::STEP, within: 0.005)
+    c.at_most(
+        "slash: its step before the feet leave the floor (m)",
+        m.root(rig, slash::LEAVES).z,
+        0.0,
+        within: 0.005,
+    )
+}
+
+/// The slash holds its spec (`slash_spec`, among the moves' in `the_solved_cross_holds_its_spec`),
+/// and the spec bites: a slash written off its source misses it. Without its step, the step's
+/// check misses; with its blow's key's hilt 10 cm higher, the hands on contact miss.
+@test
+fn the_slash_spec_holds_and_bites() {
+    var r = std::lift::Report::new()
+    slash_spec(mut r)
+    assert(r.missed == 0 && r.held >= 10, f"the slash holds its spec: {r.done()}")
+    let standing = engine::written::Written { keys: slash::source_keys(), ..slash::slash() }
+    var a = std::lift::Report::new()
+    slash_spec_of(mut a, standing)
+    assert(a.missed >= 1, "without its step, it misses")
+    var raised = slash::slash()
+    for k in 0..slash::KEYS {
+        if abs(raised.keys[k].at - slash::CONTACT) < 1.0e-4 {
+            raised.keys[k].hilt.y += 0.1
+        }
+    }
+    var b = std::lift::Report::new()
+    slash_spec_of(mut b, raised)
+    assert(b.missed >= 1, "with its blow's hilt raised, it misses")
 }
