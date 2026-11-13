@@ -14,6 +14,8 @@ use engine::anime::{Anime, Drawer, Force, Look, STRIKE}
 use engine::contact
 use engine::contact::{Give, Hit, Kick, Knock, Shock}
 use engine::end::RIGHT_FIST
+use engine::held
+use engine::held::Held
 use engine::humanoid
 use engine::humanoid::{Pose, pose_world}
 use engine::playback
@@ -25,6 +27,7 @@ use engine::timing::RATE
 use body::HERO
 use fists::FIGHT_GAITS
 use solved
+use stick
 
 /// The hit-stop: how long both bodies hold at contact (s).
 pub const X_HOLD: f32 = 0.15
@@ -98,6 +101,14 @@ pub struct Tune: Copy + Eq {
     pub recoil: f32 = X_RECOIL,
     /// How heavy the blow is (`engine::contact::Hit::weight`).
     pub weight: f32 = 1.0,
+    /// Whether the striker holds the lab's stand-in stick (`stick::STICK`): the blow lands where
+    /// along it the head is, going the way the stick goes there, and it's drawn trailing.
+    pub stick: bool = false,
+}
+
+/// What the striker holds, as `t` says.
+pub fn held_of(t: Tune) -> Held {
+    if t.stick { stick::STICK } else { engine::held::NOTHING }
 }
 
 pub const TUNED: Tune = Tune {
@@ -217,10 +228,16 @@ pub struct Exchange: Clone {
     shown_place: mat4,
     struck_shown: Pose,
     smears: [anime::Smear; 4],
+    trail: anime::Trail,
+    grown: anime::Grown,
+    /// The striker's hand (the body's space) a frame ago: the way a held thing's going.
+    hand_was: humanoid::Rigid,
     impact: f32,
     force: Force,
     swing: bool,
     landed: bool,
+    /// Where along what he holds his blow met the head (0 the hilt, 1 the tip).
+    along: f32,
     /// The striker's time from the blow (s): below 0 before it lands, by his move's clock; very
     /// far below with no blow coming.
     from_hit: f32,
@@ -259,10 +276,14 @@ impl Exchange {
             shown_place: std::transform::identity(),
             struck_shown: FIGHT_GAITS.idle.pose(0.0),
             smears: [anime::Smear::none(); 4],
+            trail: anime::Drawer::new().trail,
+            grown: anime::Grown { on: false, about: vec3(0.0), by: 1.0, bone: humanoid::NONE },
+            hand_was: humanoid::Rigid::identity(),
             impact: 0.0,
             force: Force::none(),
             swing: false,
             landed: false,
+            along: 1.0,
             from_hit: -1.0e6,
         }
     }
@@ -324,10 +345,31 @@ impl Exchange {
             self.swing = true
         }
         // The blow lands as the cross reaches its contact.
+        let holds = held_of(t)
+        let w_now = pose_world(rig, pose)
+        let hand_now = w_now[rig.find("rightHand")]
         if striking && self.since < 0.0 && now >= solved::CONTACT {
             let place = playback::placed(self.striker)
-            let fist = (place * vec4(RIGHT_FIST.in_pose(rig, pose_world(rig, pose)), 1.0)).xyz
+            let fist = (place * vec4(RIGHT_FIST.in_pose(rig, w_now), 1.0)).xyz
             self.hit = Hit { at: fist, way: BLOW, weight: t.weight, hold: t.hold }
+            if holds.held() {
+                // A held thing's blow lands where along it the head it meets is, and goes the
+                // way the thing's going there.
+                let head = (playback::placed(self.struck) *
+                    vec4(pose_world(rig, self.struck_shown)[rig.find("head")].t, 1.0)).xyz
+                let along = holds.along(
+                    hand_now,
+                    (std::transform::inverse(place) * vec4(head, 1.0)).xyz,
+                )
+                self.along = along
+                let way = held::swung(holds, along, hand_now, self.hand_was)
+                self.hit = Hit {
+                    at: (place * vec4(holds.at(along).in_pose(rig, w_now), 1.0)).xyz,
+                    way: (place * vec4(way, 0.0)).xyz,
+                    weight: t.weight,
+                    hold: t.hold,
+                }
+            }
             self.since = 0.0
             self.held = t.hold
             self.given = false
@@ -350,11 +392,12 @@ impl Exchange {
         // His fist on what it struck while it's held, and a little after.
         let place = playback::placed(self.striker)
         let riding = self.since >= 0.0 && self.since < t.hold + t.pin && striking
-        let pose = if riding {
-            contact::pinned(rig, pose, place, end: RIGHT_FIST, at: self.hit.at)
-        } else {
+        // (What struck: the fist, or the point along what it holds that met the head.)
+        let end = if holds.held() { holds.at(self.along) } else { RIGHT_FIST }
+        let pose = if riding { contact::pinned(rig, pose, place, end: end, at: self.hit.at) } else {
             pose
         }
+        self.hand_was = hand_now
         let look = if t.twos { STRIKE } else { Look { twos: false, ..STRIKE } }
         let d = anime::drawn(
             mut self.drawer,
@@ -365,12 +408,14 @@ impl Exchange {
             self.mask,
             pose,
             place,
-            Anime { impact: t.flash },
+            Anime { impact: t.flash, held: holds, big: X_FIST, big_for: t.hold },
             dt,
         )
         self.shown = d.pose
         self.shown_place = d.place
         self.smears = d.smears
+        self.trail = d.trail
+        self.grown = d.grown
         self.impact = d.impact
         self.force = d.force
         let held = self.held > 0.0
@@ -401,12 +446,23 @@ impl Exchange {
         self.kick.step(give, dt)
     }
 
-    /// The striker's palette as drawn (smeared where his fist's going in fast).
+    /// The striker's palette as drawn (`anime::drawn_palette`: smeared where his fist's going in
+    /// fast, what he holds trailed, his striking fist drawn big on the blow).
     pub fn striker_palette(self) -> [mat4; 64] {
-        anime::smeared(
+        let d = anime::Drawn {
+            pose: self.shown,
+            place: self.shown_place,
+            impact: self.impact,
+            smears: self.smears,
+            force: self.force,
+            trail: self.trail,
+            grown: self.grown,
+        }
+        anime::drawn_palette(
             humanoid::palette(HERO.rig, self.shown, self.shown_place),
             HERO.rig,
-            self.smears,
+            d,
+            held_of(self.tune),
         )
     }
 
@@ -461,7 +517,10 @@ impl Exchange {
             return (1.0, 0.0)
         }
         let on = 1.0 - smoothstep(self.tune.hold, self.tune.hold + 0.1, u)
-        (1.0 + X_FIST * on, if self.tune.giant { 0.0 } else { X_SQUASH * on })
+        // (The fist's own size is the drawing's, `anime`'s: `Anime::big`.)
+        (if self.grown.on { self.grown.by } else { 1.0 }, if self.tune.giant { 0.0 } else {
+            X_SQUASH * on
+        })
     }
 
     /// How far the hit is staged close (0 to 1; never the giant's: he's framed whole), and how far
@@ -855,4 +914,30 @@ fn the_guard_holds_its_feet_and_a_walk_swings_its_own() {
         }
     }
     assert(up[0] > 20 && up[1] > 20, f"a walk's feet swing: up {up[0]} and {up[1]} of 119 frames")
+}
+
+/// The exchange as it's drawn (`engine::anime`): the striker's fist drawn big on the blow and
+/// through its hold, as big as `X_FIST` says, and let go after; and with the stand-in stick
+/// held, the stick trailing back along its way on the drawing before the contact.
+@test
+fn the_fist_is_drawn_big_on_the_blow_and_the_stick_trails() {
+    var most = 1.0
+    var after = 1.0
+    for x in played(TUNED, after: 0.2, seconds: 1.0) {
+        if x.since >= 0.0 && x.since < TUNED.hold {
+            most = max(most, x.drawn_big().0)
+        }
+        if x.since > TUNED.hold + 0.2 {
+            after = max(after, x.drawn_big().0)
+        }
+    }
+    assert(abs(most - (1.0 + X_FIST)) < 1.0e-3, f"drawn {most} times its size on the blow")
+    assert(after == 1.0, f"and its own size after: {after}")
+    var trailed = 0.0
+    for x in played(Tune { stick: true, ..TUNED }, after: 0.2, seconds: 1.0) {
+        if x.since < 0.0 && x.trail.on {
+            trailed = max(trailed, length(x.trail.back))
+        }
+    }
+    assert(trailed > 0.1, f"the stick trails {trailed} m before the contact")
 }

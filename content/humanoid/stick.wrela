@@ -1,0 +1,116 @@
+// A plain stand-in held in the lab's right fist (`engine::held`): a stick, a metre long, so a held
+// thing has something to read and draw before the longsword's own shape (piece 11). Held as a
+// fist holds a stick: through the fist across the palm, out past the thumb, its edge (a stick
+// has none, but its reads want one) the way the knuckles face.
+
+use engine::held::Held
+use engine::humanoid::Rigid
+use engine::creature::{Creature, creature, hard}
+use std::field::{Surface, round_cone}
+use hakuro::hakuro::{Cloth, skeleton}
+use body::HERO
+use solved
+
+/// How long the stick is past the fist (m), and how far its butt shows below it.
+pub const LENGTH: f32 = 0.9
+pub const BUTT: f32 = 0.06
+/// How thick it is (m).
+pub const THICK: f32 = 0.018
+
+/// The stick in the right fist. Its own frame: along +y from the fist, its edge +x. Gripped at
+/// the middle of the fist (a hand's width out along the hand from the wrist), pointing the way the
+/// thumb does: straight ahead with the arm out at rest, palm down.
+@fuel(2 ** 40)
+pub const STICK: Held = stick()
+
+fn stick() -> Held {
+    borrow rig = HERO.rig
+    let hand = rig.rest_world()[rig.find("rightHand")]
+    // At rest (the arm out to the right, palm down): the fist's middle, its length ahead, its
+    // edge (the knuckles' way) out along the arm.
+    let fist = hand.t + vec3(-0.08, -0.01, 0.0)
+    // Its own frame (x the edge, y along it) in the world: x out along the arm (-x), y ahead
+    // (+z), z up; a half turn about (0, 1, 1).
+    let own = Quat::axis_angle(normalize(vec3(0.0, 1.0, 1.0)), 3.14159265)
+    Held {
+        hand: "rightHand",
+        grip: Rigid { q: hand.q.inverse().mul(own), t: hand.q.inverse().rotate(fist - hand.t) },
+        hilt: vec3(0.0, 0.0, 0.0),
+        tip: vec3(0.0, LENGTH, 0.0),
+        edge: vec3(1.0, 0.0, 0.0),
+    }
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// The stick sits as gripped: at rest, its hilt in the fist and its tip a stick's length straight
+/// ahead of it, its edge out along the arm.
+@test
+fn the_stick_is_held_as_a_fist_holds_one() {
+    borrow rig = HERO.rig
+    let hand = rig.rest_world()[rig.find("rightHand")]
+    let (hilt, tip) = STICK.ends_at(hand)
+    let fist = hand.t + vec3(-0.08, -0.01, 0.0)
+    assert(length(hilt - fist) < 1.0e-4, f"its hilt {hilt} in the fist {fist}")
+    assert(length(tip - (fist + vec3(0.0, 0.0, LENGTH))) < 1.0e-3, f"its tip {tip} ahead")
+    assert(
+        length(STICK.edge_at(hand) - vec3(-1.0, 0.0, 0.0)) < 1.0e-3,
+        "its edge out along the arm",
+    )
+    assert(abs(STICK.length() - LENGTH) < 1.0e-5)
+}
+
+/// The stick as Hakuro holds it (content/hakuro's skeleton, his right hand's bone): a plain
+/// rounded rod from its butt to its tip, where `STICK` has them at rest, for the fighters to draw
+/// (`fighter::Fighters::hold`). The longsword's own shape comes with its cuts (piece 11).
+pub fn stick_creature() -> Creature<Cloth> {
+    borrow rig = HERO.rig
+    let s = skeleton()
+    let bone = s.find("hand right")
+    let at = s.rest(bone)
+    let hand = rig.rest_world()[rig.find("rightHand")]
+    let (hilt, tip) = STICK.ends_at(hand)
+    let butt = hilt - normalize(tip - hilt) * BUTT
+    creature(s).join(
+        "stick",
+        bone,
+        round_cone(tip - at, butt - at, THICK * 0.8, THICK).with_at(|_p: vec3| -> Cloth { WOOD }),
+        seam: hard(),
+    )
+}
+
+/// The stick's paint: plain dark wood.
+const WOOD = Cloth { albedo: vec3(0.16, 0.09, 0.045), rough: 0.7, metal: 0.0 }
+
+/// Where along it a point is, and which way a blow by it goes: the hilt 0 and the tip 1; turned
+/// about the wrist, its tip goes square to its length, and a blow there goes that way.
+@test
+fn a_held_thing_meets_along_its_length_and_strikes_the_way_it_goes() {
+    borrow rig = HERO.rig
+    let hand = rig.rest_world()[rig.find("rightHand")]
+    let (hilt, tip) = STICK.ends_at(hand)
+    assert(STICK.along(hand, tip) > 0.999 && STICK.along(hand, hilt) < 1.0e-3)
+    assert(abs(STICK.along(hand, (hilt + tip) * 0.5 + vec3(0.0, 0.1, 0.0)) - 0.5) < 1.0e-3)
+    // Turned a little about up at the wrist: the tip goes round, square to the stick.
+    let turned = Rigid { q: Quat::axis_angle(vec3(0.0, 1.0, 0.0), 0.05).mul(hand.q), t: hand.t }
+    let way = engine::held::swung(STICK, 1.0, turned, hand)
+    assert(length(way) > 0.99 && abs(dot(way, normalize(tip - hilt))) < 0.1, f"its way {way}")
+}
+
+/// The stick, thrown with the solved cross, reads on the cut sheet (`engine::cut`): the tip
+/// outruns the fist, the chain goes from the hips out to the tip with the tip last, its edge and
+/// its plane are read, and its sweep is there for the rules' hit shapes.
+@test
+fn the_stick_is_read_as_a_cut() {
+    borrow rig = HERO.rig
+    let c = engine::cut::cut(solved::CROSS.clip, rig, STICK, solved::CONTACT)
+    assert(c.timing.found, "the tip's strike is found")
+    assert(
+        c.timing.fastest > c.hand_fastest,
+        f"the tip {c.timing.fastest} m/s, the hand {c.hand_fastest}",
+    )
+    assert(c.tip_last, "the chain from the hips out to the tip, the tip last")
+    assert(c.edge_on >= 0.0 && c.edge_on <= 90.0 && c.edge_worst >= c.edge_on)
+    assert(c.plane_off >= 0.0 && c.plane_share < 1.0)
+    assert(c.sweep.len() >= 2, "its sweep, sample by sample")
+}

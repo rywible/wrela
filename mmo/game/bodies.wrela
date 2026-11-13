@@ -401,7 +401,12 @@ pub fn shown(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> S
     Shown {
         pose: d.pose,
         place: d.place,
-        palette: anime::smeared(palette(HERO.rig, d.pose, d.place), HERO.rig, d.smears),
+        palette: anime::drawn_palette(
+            palette(HERO.rig, d.pose, d.place),
+            HERO.rig,
+            d,
+            engine::held::NOTHING,
+        ),
         impact: d.impact,
         force: d.force,
     }
