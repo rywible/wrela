@@ -13,14 +13,17 @@ use end::End
 
 /// A thing held: the hand bone it's held in (a VRM name), its frame in the hand's (`grip`), its
 /// hilt and its tip in its own frame (m: the hilt the end of the grip the striking part goes
-/// from), and which way its edge faces in its own frame (a unit way, square to its length; a
-/// stick's any).
+/// from), which way its edge faces in its own frame (a unit way, square to its length; a stick's
+/// any), and whether it cuts.
 pub struct Held: Copy {
     pub hand: Text,
     pub grip: Rigid,
     pub hilt: vec3,
     pub tip: vec3,
     pub edge: vec3,
+    /// Whether a blow by it cuts through what it strikes (a blade) or stops at it (a club, a
+    /// staff): `engine::contact::Hit::cuts`.
+    pub cuts: bool = false,
 }
 
 /// Nothing held.
