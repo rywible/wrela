@@ -12,6 +12,13 @@
 // follows the clip: the farthest any joint strays (cm), and how many harmonics or keys it took.
 //
 // ```text
+// wrela tool moves -- --stance [stance ...]
+// ```
+//
+// Writes no move: each stance's sheet (`engine::stance`: its shape and its life), the fight's
+// guard against the captured boxer's (`stances`).
+//
+// ```text
 // wrela tool moves -- --sheet <out-dir> [strike ...]
 // ```
 //
@@ -49,7 +56,19 @@ use std::tool::args
 use std::tool::files
 use std::tool::files::rooted
 
-pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --contact | --sheet <out-dir> [strike ...] | --solve <out-dir> <strike> | --read <out-dir> <strike> | --drawn [strike ...] | --differ <strike> <strike>"
+pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --contact | --stance [stance ...] | --sheet <out-dir> [strike ...] | --solve <out-dir> <strike> | --read <out-dir> <strike> | --drawn [strike ...] | --differ <strike> <strike>"
+
+/// The stances `--stance` reads (`engine::stance`): the fight's guard, the captured boxer's (ACCAD
+/// Male 2's, its target). (Read off where it holds its hands, a stance reads which way it faces:
+/// one with its hands down, the everyday idle, isn't a guard to read.)
+pub fn stances() -> Vec<(Text, Clip)> {
+    Vec::from(
+        [
+            ("guard", fists::GUARD.clip.clone()),
+            ("accad", accad_fists::GUARD.clip.clone()),
+        ],
+    )
+}
 
 /// A move: its name on the command line, its file in content/moves and its constant there, the
 /// clip it's fitted to (a looped one as a cycle, a one-off as a shot), and what the file says it
@@ -404,6 +423,23 @@ pub fn tool() -> u32 {
         // The exchange's contact: how the blow lands and how both bodies take it.
         print(exchange::sheet(exchange::TUNED).as_str())
         return 0
+    }
+    if wanted.len() >= 1 && wanted[0].as_str() == "--stance" {
+        // Each stance's sheet: its shape and its life.
+        var done = 0
+        for (name, c) in stances() {
+            var chosen = wanted.len() == 1
+            for i in 1..wanted.len() {
+                if wanted[i].as_str() == name {
+                    chosen = true
+                }
+            }
+            if chosen {
+                print(engine::stance::read(rig, c).text(name).as_str())
+                done += 1
+            }
+        }
+        return if done == 0 { 2 } else { 0 }
     }
     if wanted.len() >= 1 && wanted[0].as_str() == "--drawn" {
         // Each played strike as it's drawn, drawing by drawing.

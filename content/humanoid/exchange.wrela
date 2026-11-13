@@ -73,9 +73,11 @@ pub const X_PIN: f32 = 0.05
 pub const X_GIVE: f32 = 0.5
 pub const X_RECOIL: f32 = 0.1
 
-/// When the scripted exchange (`SHOW=28`) throws its cross (s): it lands 6.8 s in, frame 204 at
-/// the judge's 30 a second (studio/judge's `exchange` scene and `arms` shots).
-pub const THROW: f32 = 6.43
+/// When the scripted exchange (`SHOW=28`) steps in to throw its cross (s): the cross lands 6.8 s
+/// in, frame 204 at the judge's 30 a second (studio/judge's `exchange` scene and `arms` shots),
+/// after the step in and a frame's settle.
+@fuel(2 ** 40)
+pub const THROW: f32 = 6.43 - fists::STEP_IN.length() - 1.0 / 60.0
 
 /// What the combat lab (`lab`) tunes live: the hit-stop, the impact frame, the camera's kick and
 /// push, the blast's size, how hard the one struck gives, whether the striker's drawn on twos,
@@ -119,9 +121,11 @@ fn turned(p: vec3, heading: f32) -> vec3 {
     Quat::axis_angle(vec3(0.0, 1.0, 0.0), heading).rotate(p)
 }
 
-/// Where the cross's fist is on its contact (the world): the striker's at the origin.
+/// Where the cross's fist is on its contact (the world): the striker stands at the origin, out of
+/// reach, and steps in (`fists::STEP_IN`, `fists::STEP` along the blow) to throw it.
 @fuel(2 ** 40)
-pub const KNUCKLES: vec3 = turned(solved::cross().end(HERO.rig, solved::CONTACT), HEADING)
+pub const KNUCKLES: vec3 = turned(solved::cross().end(HERO.rig, solved::CONTACT), HEADING) +
+    BLOW * fists::STEP
 
 /// Where bone `name` of the guard is (the body's space).
 fn in_guard(name: str) -> vec3 {
@@ -194,6 +198,9 @@ pub struct Exchange: Clone {
     tune: Tune,
     clock: f32,
     throw: bool,
+    /// What the striker does once he's done with what he's doing (`STEP`, `CROSS`, `BACK`;
+    /// `humanoid::NONE` nothing).
+    then: u32,
     striker: Mover,
     struck: Mover,
     drawer: Drawer,
@@ -218,9 +225,13 @@ pub struct Exchange: Clone {
     from_hit: f32,
 }
 
-/// The cross as the exchange throws it, and how it's drawn.
+/// What the striker does, as the lab's fight does: stands out of reach, steps in (`STEP`), throws
+/// the cross (`CROSS`), and steps back out (`BACK`).
 @fuel(2 ** 40)
-const MOVES: [Move; 1] = [solved::CROSS.clone()]
+const MOVES: [Move; 3] = [solved::CROSS.clone(), fists::STEP_IN.clone(), fists::STEP_OUT.clone()]
+const CROSS: u32 = 0
+const STEP: u32 = 1
+const BACK: u32 = 2
 
 impl Exchange {
     /// Both in their guards, the cross to be thrown `after` s on (below 0: none till a press).
@@ -229,6 +240,7 @@ impl Exchange {
             tune: t,
             clock: -after,
             throw: after >= 0.0,
+            then: humanoid::NONE,
             striker: Mover::standing(vec3(0.0), HEADING, FIGHT_GAITS),
             struck: Mover::standing(if t.giant { GIANT_AT } else {
                 FOE_AT
@@ -267,6 +279,7 @@ impl Exchange {
         self.tune = t
         self.clock = 0.0
         self.throw = true
+        self.then = humanoid::NONE
         self.since = -1.0
         self.held = 0.0
         self.given = true
@@ -282,8 +295,12 @@ impl Exchange {
         self.landed = false
         var act = humanoid::NONE
         if self.throw && self.clock >= 0.0 {
-            act = 0
+            act = STEP
+            self.then = CROSS
             self.throw = false
+        } else if self.then != humanoid::NONE && self.striker.acting == humanoid::NONE {
+            act = self.then
+            self.then = if act == CROSS { BACK } else { humanoid::NONE }
         }
         // Held at the blow: the one struck still, the striker driving on at `grind` of his pace.
         let holding = self.held > 0.0
@@ -340,7 +357,7 @@ impl Exchange {
             mut self.drawer,
             self.striker,
             MOVES,
-            [look],
+            [look, anime::PLAIN, anime::PLAIN],
             rig,
             self.mask,
             pose,
