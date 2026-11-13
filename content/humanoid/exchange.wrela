@@ -397,7 +397,8 @@ impl Exchange {
             act = self.then
             self.then = humanoid::NONE
         }
-        // Held at the blow: the one struck still, the striker driving on at `grind` of his pace.
+        // Held at the blow: the one struck still, the striker driving on at `grind` of his pace;
+        // or, at a cut, both slowed and the blade going on through (`contact::kept`).
         let holding = self.held > 0.0
         let was = self.striker.act_time
         // (The lock-on scene: no blow, his stick going round the one struck, facing him while he's
@@ -425,7 +426,7 @@ impl Exchange {
             act,
             upper: false,
             how: Handling {},
-            dt: contact::paced(dt, held: holding, grind: t.grind),
+            dt: contact::paced(dt, held: holding, grind: contact::kept(self.hit, true, t.grind)),
         )
         let striking = self.striker.acting == CROSS || self.striker.acting == CUT
         let now = self.striker.act_time
@@ -456,6 +457,7 @@ impl Exchange {
                     way: (place * vec4(way, 0.0)).xyz,
                     weight: t.weight,
                     hold: t.hold,
+                    cuts: holds.cuts,
                 }
             }
             self.since = 0.0
@@ -472,14 +474,18 @@ impl Exchange {
         // As the hold breaks, each gives to it.
         if !self.given && self.held <= 0.0 {
             self.knock.struck(self.struck, self.hit, give)
-            self.shock = Shock::struck(self.hit, end: RIGHT_FIST)
+            // (A cut sends nothing back up the arm: it goes on through.)
+            if !self.hit.cuts {
+                self.shock = Shock::struck(self.hit, end: RIGHT_FIST)
+            }
             self.given = true
         }
         self.shock.step(give, dt)
         let pose = self.shock.over(self.striker, rig, pose)
         // His fist on what it struck while it's held, and a little after.
         let place = playback::placed(self.striker)
-        let riding = self.since >= 0.0 && self.since < t.hold + t.pin && striking
+        // (A cut isn't held on what it struck: it goes on through.)
+        let riding = self.since >= 0.0 && self.since < t.hold + t.pin && striking && !self.hit.cuts
         // (What struck: the fist, or the point along what it holds that met the head.)
         let end = if holds.held() { holds.at(self.along) } else { RIGHT_FIST }
         let pose = if riding { contact::pinned(rig, pose, place, end: end, at: self.hit.at) } else {
@@ -518,7 +524,7 @@ impl Exchange {
             humanoid::NONE,
             upper: false,
             how: Handling {},
-            dt: contact::paced(dt, held: held, grind: 0.0),
+            dt: contact::paced(dt, held: held, grind: contact::kept(self.hit, false, 0.0)),
         )
         self.struck_shown = self.knock.over(rig, moved, give)
         // The one struck with his gloves kept off the striker's arms.
@@ -859,15 +865,23 @@ fn read(t: Tune) -> String {
         push = max(push, pu)
     }
     var out = String::from(f"weight {t.weight:.2}\n")
-    out.push_str(
-        f"  hold: the fist strays {stray * 100.0:.1} cm off what it struck; the striker drives on {drove * 100.0:.1} cm\n".as_str(),
-    )
-    out.push_str("  shock (most turned, and when after the hold breaks):")
-    let parts = ["forearm", "upper arm", "collar", "chest"]
-    for k in 0..4 {
-        out.push_str(f" {parts[k]} {shock[k]:.1} deg at {shock_at[k]:.0} ms;".as_str())
+    // (A cut goes on through what it struck, and sends nothing back up the arm.)
+    if first.hit.cuts {
+        out.push_str(
+            f"  hold: a cut, both slowed to {contact::CUT_PACE:.2} of their pace; the blade goes on {stray * 100.0:.1} cm through what it struck; the striker drives on {drove * 100.0:.1} cm\n".as_str(),
+        )
+        out.push_str("  shock: none, a cut goes on through\n")
+    } else {
+        out.push_str(
+            f"  hold: the fist strays {stray * 100.0:.1} cm off what it struck; the striker drives on {drove * 100.0:.1} cm\n".as_str(),
+        )
+        out.push_str("  shock (most turned, and when after the hold breaks):")
+        let parts = ["forearm", "upper arm", "collar", "chest"]
+        for k in 0..4 {
+            out.push_str(f" {parts[k]} {shock[k]:.1} deg at {shock_at[k]:.0} ms;".as_str())
+        }
+        out.push_str("\n")
     }
-    out.push_str("\n")
     out.push_str(
         f"  struck: head {far * 100.0:.1} cm along the blow at its farthest ({far_at:.0} ms), hips {hips_far * 100.0:.1} cm ({hips_at:.0} ms); home (his knock within 1 cm and a degree) at {out_at:.0} ms{if out_at > 5.0e3 { " (not in the 6 s read)" } else { "" }}\n".as_str(),
     )
@@ -1121,4 +1135,48 @@ fn a_blow_that_comes_down_sinks_the_one_struck() {
     assert(-normalize(steps[landed].hit.way).y > 0.3, "the cut comes down")
     assert(sank >= 0.06, f"his hips sink {sank} m")
     assert(sunk_most > 0.06 && last.knock.sink.x.x < 0.01, f"sunk {sunk_most} m, and back up")
+}
+
+/// A cut goes on through what it strikes (`contact::Hit::cuts`): the blade isn't held on it, it
+/// goes on through the hold at a slowed pace, and nothing runs back up the striker's arm; a fist
+/// still stops on what it struck.
+@test
+fn a_cut_goes_on_through_and_a_fist_stops() {
+    borrow rig = HERO.rig
+    for stick in [true, false] {
+        let t = Tune { stick: stick, ..TUNED }
+        let steps = played(t, after: 0.2, seconds: 3.0)
+        var landed = 0
+        for i in 0..steps.len() {
+            if steps[i].since >= 0.0 {
+                landed = i
+                break
+            }
+        }
+        let first = steps[landed].clone()
+        let end = if stick { held_of(t).at(first.along) } else { RIGHT_FIST }
+        var gone = 0.0
+        var shocked = 0.0
+        for i in landed..steps.len() {
+            let x = steps[i].clone()
+            let (p, place) = x.striker_pose()
+            let at = (place * vec4(end.in_pose(rig, pose_world(rig, p)), 1.0)).xyz
+            if x.since < t.hold {
+                gone = max(gone, length(at - first.hit.at))
+            }
+            shocked = max(shocked, x.shock.turned(0))
+        }
+        assert(first.hit.cuts == stick, "a blade's blow cuts, a fist's doesn't")
+        if stick {
+            assert(
+                gone > 0.2 && shocked == 0.0,
+                f"the blade goes on {gone} m through the hold, the shock {shocked} deg",
+            )
+        } else {
+            assert(
+                gone < 0.03 && shocked > 1.0,
+                f"the fist stays {gone} m off, the shock {shocked} deg",
+            )
+        }
+    }
 }

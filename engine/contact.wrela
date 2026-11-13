@@ -30,12 +30,27 @@ const UP: vec3 = vec3(0.0, 1.0, 0.0)
 const STILL: f32 = 1.0e-4
 
 /// A blow: where it lands (the world), the way it goes (the world, any length), how heavy it is
-/// (0 a touch, 1 the heaviest a fight has), and how long both bodies are held at it (s).
+/// (0 a touch, 1 the heaviest a fight has), how long both bodies are held at it (s), and whether it
+/// cuts through what it strikes (a blade) or stops at it (a fist, a club).
 pub struct Hit: Copy {
     pub at: vec3,
     pub way: vec3,
     pub weight: f32,
     pub hold: f32,
+    pub cuts: bool = false,
+}
+
+/// How much of its pace each body keeps through a cut's hold: slowed, not stopped. A blow that
+/// stops at what it strikes holds the one struck still and its striker driving on at a crawl; a
+/// blade that stopped so would read as a club and spring back off what it struck. Slowed to a
+/// third, it drags through while the hold lasts and goes on to its finish, and the hold still
+/// tells the eye it met something.
+pub const CUT_PACE: f32 = 0.35
+
+/// How much of its pace a body keeps through `hit`'s hold (`paced`'s `grind`): a cut's
+/// `CUT_PACE` for both; else the striker `grind` (driving on in), the one struck none.
+pub fn kept(hit: Hit, striker: bool, grind: f32) -> f32 {
+    if hit.cuts { CUT_PACE } else if striker { grind } else { 0.0 }
 }
 
 /// How a body takes blows and gives them. Each amount is a blow of weight 1's (a lighter one gives

@@ -53,6 +53,8 @@ fn stick() -> Held {
         hilt: vec3(0.0, 0.0, 0.0),
         tip: vec3(0.0, LENGTH, 0.0),
         edge: vec3(1.0, 0.0, 0.0),
+        // (Drawn as a longsword, `Sword`: a blade, and a blade cuts through.)
+        cuts: true,
     }
 }
 
