@@ -10,8 +10,8 @@
 
 use std::math::atan2
 use combat::sim::{
-    ATTACK, ATTACKS, BUTTON_BITS, DODGE, HEAVY, IDLE, MOVES, NO_MOVE, PARRY, PARRY_WINDOW, RECOVER,
-    STAGGERED, Seen, WEAPONS, WINDUP, World,
+    ATTACK, ATTACKS, BUTTON_BITS, DODGE, HEAVY, IDLE, LOCKING, LOCK_ON, MOVES, NO_MOVE, PARRY,
+    PARRY_WINDOW, RECOVER, STAGGERED, Seen, WEAPONS, WINDUP, World,
 }
 
 /// The stick toward (`dx`, `dz`) (the rules' units) at speed `speed` (0 to 2): one of the 16
@@ -69,7 +69,10 @@ fn fits(m: u32, b: Seen) -> bool {
 pub fn bot(w: World, i: u32, before: u32, weapon: u32, react: u32) -> u32 {
     let p = w.player(i)
     let b = w.boss()
-    let held = before & BUTTON_BITS
+    // Locked on to the idol, if the rules lock on (`LOCKING`): a press of `LOCK_ON` once.
+    let held = if LOCKING && !p.locked && !w.over { (before & BUTTON_BITS) ^ (LOCK_ON << 6) } else {
+        before & BUTTON_BITS
+    }
     let reads = w.reads(i)
     let press = |button: u32| -> u32 { held ^ (button << 6) }
     let (dx, dz) = (b.x - p.x, b.z - p.z)

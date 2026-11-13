@@ -18,8 +18,8 @@ use combat::codec::{Encoder, LOOK_AHEAD, Link, Pad}
 use combat::main::{Fight, HANDING, PLAYER_CHANGES, UNCUT}
 use std::math::{cos, sin}
 use combat::sim::{
-    ATTACK, BUTTON_BITS, Change, DODGE, HEAVY, LONGSWORD, MAX_FRAMES, MAX_PARTY, PARRY, STICK_BITS,
-    Seen, Winner, World, step,
+    ATTACK, BUTTON_BITS, Change, DODGE, HEAVY, LOCK_ON, LONGSWORD, MAX_FRAMES, MAX_PARTY, PARRY,
+    STICK_BITS, Seen, Winner, World, step,
 }
 use bodies::Ring
 use character::{Character, Stage, Why}
@@ -107,6 +107,7 @@ const HIT: u32 = 16
 const GUARD: u32 = 32
 const EVADE: u32 = 64
 const STRONG: u32 = 128
+const FOCUS: u32 = 256
 
 const BG = vec4(0.06, 0.07, 0.09, 1.0)
 const SEA = vec4(0.07, 0.16, 0.24, 1.0)
@@ -590,6 +591,8 @@ fn key_bit(key: Key) -> u32 {
         HIT
     } else if key == Key::I {
         STRONG
+    } else if key == Key::Q {
+        FOCUS
     } else if key == Key::K {
         GUARD
     } else if key == Key::L || key == Key::ShiftLeft || key == Key::ShiftRight {
@@ -655,6 +658,10 @@ fn pad_of(held: u32, stick: vec2) -> Pad {
     }
     if held & STRONG != 0 {
         buttons = buttons | HEAVY
+    }
+    // (Q locks on to the foe and lets go, as the rules' `LOCK_ON` is pressed.)
+    if held & FOCUS != 0 {
+        buttons = buttons | LOCK_ON
     }
     Pad { x, z, held: buttons }
 }
