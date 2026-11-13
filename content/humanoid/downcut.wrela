@@ -46,7 +46,7 @@ pub const STRIKE: End = BOTH.held.at(ALONG)
 pub const TARGET: vec3 = vec3(0.12, 1.45, 1.05 + REACH)
 
 /// How far further off the foe stands for the cut's step in (m).
-pub const REACH: f32 = 0.4
+pub const REACH: f32 = 0.65
 
 /// A way `down` degrees below level and turned `left` degrees toward the left from ahead.
 fn way(down: f32, left: f32) -> vec3 {
@@ -69,43 +69,43 @@ pub fn cut() -> Written<7> {
     let rest = guard()
     // ---- What the solve finds (spec.wrela): each number alone on its line. ----
     // When the cut sets off (the beat's end, s).
-    let sets_off = 0.205
+    let sets_off = 0.200
     // How far the hips have turned on contact (degrees toward the left).
-    let hips_yaw = 8.1
+    let hips_yaw = 8.0
     // Where the contact key holds the hilt (m, the body's space).
-    let hilt_x = 0.059
-    let hilt_y = 1.086
-    let hilt_z = 0.4648
+    let hilt_x = 0.029
+    let hilt_y = 1.302
+    let hilt_z = 0.5934
     // Which way the stick points on contact (degrees below level, and toward the left), and its
     // edge's turn about it (degrees off facing straight down along it).
-    let point_down = -36.8
-    let point_left = -5.3
-    let edge_roll = -20.8
+    let point_down = -16.8
+    let point_left = -4.0
+    let edge_roll = -18.9
     // How far out to the side each elbow points on contact (degrees from straight down).
-    let left_elbow_out = 22.5
-    let right_elbow_out = -93.0
+    let left_elbow_out = 16.3
+    let right_elbow_out = -138.1
     // Which way it points as it goes on through (degrees below level, and toward the left).
-    let through_down = -13.1
-    let through_left = 22.1
+    let through_down = -4.6
+    let through_left = 20.8
     // Where the guard holds the hilt (m) and how far its point leans back from straight up
     // (degrees); and the load's.
-    let guard_x = 0.06
-    let guard_y = 1.48
-    let guard_z = 0.30
-    let guard_back = 28.5
-    let load_x = 0.06
-    let load_y = 1.55
-    let load_z = -0.33
-    let load_back = 90.0
+    let guard_x = -0.21
+    let guard_y = 1.85
+    let guard_z = 0.05
+    let guard_back = 27.7
+    let load_x = -0.29
+    let load_y = 1.685
+    let load_z = 0.15
+    let load_back = 38.7
     // Where it holds the hilt going through (m).
-    let through_x = 0.14
-    let through_y = 0.88
-    let through_z = 0.295
+    let through_x = 0.20
+    let through_y = 1.09
+    let through_z = 0.526
     // The step in (as the stepping cross's, stepping.wrela): how far the body travels (m), how
     // much of it's done as the lead foot lands (the beat's end) and by the contact, and how far
     // the rear foot's come in behind it by the contact (m).
-    let step = 0.43
-    let early = 0.53
+    let step = 0.443
+    let early = 0.531
     let share = 1.0
     let rear_in = 0.8
     let chain = taste().chain

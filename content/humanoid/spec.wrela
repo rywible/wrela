@@ -574,4 +574,44 @@ fn downcut_spec<C: Checks>(c: mut C) {
         0.0,
         within: 0.05,
     )
+    // The cut comes down with the hands, as the Oberhau does: it ends in the long point (Langort,
+    // Ringeck as Tobler translates him), the arms out, the hands at chest height in front, the
+    // blade coming down onto what it strikes. Read off Quaternius's sword cut where its tip is
+    // fastest (`wrela tool moves -- --cut sword-take`): its hands 112 cm up, 61 cm ahead of the
+    // chest, the arm 99% out; and 130 cm up as its blade stands upright. Left to the checks
+    // before, the solve brought the hands to the belt and flicked the blade over from there.
+    let hand = rig.find("rightHand")
+    let held = m.keys[0].wield.held
+    let w = m.world(rig, at)
+    let hc = w[hand].t
+    c.at_least("cut: the hands' height on contact (m)", hc.y, 1.27, within: 0.02)
+    c.at_most("cut: the hands' height on contact (m)", hc.y, 1.43, within: 0.02)
+    let ahead = hc.z - w[rig.find("upperChest")].t.z
+    // (Both hands on one hilt meet in front of the chest's middle, nearer the body than one hand
+    // reaching alone: a hand's width less than the one-handed reference's 61 cm, its arm out as far.)
+    c.at_least("cut: the hands ahead of the chest on contact (m)", ahead, 0.42, within: 0.02)
+    c.at_most("cut: the hands ahead of the chest on contact (m)", ahead, 0.63, within: 0.02)
+    let (sh, el) = (w[rig.find("rightUpperArm")].t, w[rig.find("rightLowerArm")].t)
+    let used = length(hc - sh) / (length(el - sh) + length(hc - el))
+    c.at_least("cut: the arm's reach used on contact", used, 0.86, within: 0.01)
+    c.at_most("cut: the arm's reach used on contact", used, 0.96, within: 0.01)
+    let (h0, p0) = held.ends_at(w[hand])
+    let up = normalize(p0 - h0).y
+    c.at_most("cut: the blade above level on contact (sine)", up, 0.38, within: 0.04)
+    let struck_at = m.end(rig, at)
+    let falling = (m.end(rig, at - 1.0 / 60.0).y - struck_at.y) * 60.0
+    c.at_least("cut: the striking point coming down on contact (m/s)", falling, 2.5, within: 0.5)
+    // On the way over, the hands up with the blade: never down at the waist while it still
+    // stands more than 30 degrees up.
+    var low = 9.0
+    var t2 = m.keys[2].at
+    while t2 <= at {
+        let wt = m.world(rig, t2)
+        let (h, p) = held.ends_at(wt[hand])
+        if normalize(p - h).y > 0.5 {
+            low = min(low, wt[hand].t.y)
+        }
+        t2 += 1.0 / 60.0
+    }
+    c.at_least("cut: the hands' height while the blade's still up (m)", low, 1.27, within: 0.02)
 }
