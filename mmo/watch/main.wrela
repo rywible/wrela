@@ -261,3 +261,34 @@ fn the_taker_takes_the_idols_blows() {
         assert(seen, f"a {name} lands on the taker and pushes it {push} m")
     }
 }
+
+/// The movement script (`SCRIPT=1`) shows what it says it does, through the real rules: locked on
+/// as it says, its two slashes land (the first stepping in, the second turned by the turn window),
+/// the idol's one blow lands on him and pushes him, and he dodges.
+@test
+fn the_script_does_what_it_says() {
+    var s = script()
+    var w = World::armed([LONGSWORD]).standing_still()
+    var before: u32 = 0
+    var landed = 0
+    var dodged = false
+    var turned = false
+    for _ in 0..1420 {
+        let x = script::input(mut s, w, before)
+        before = x
+        w = if s.still { w.standing_still() } else { w.let_go() }
+        let (was, idol) = (w.player(0), w.boss().hp)
+        step(mut w, [x])
+        let p = w.player(0)
+        if s.said == "LOCKED ON: circling left, facing the idol" {
+            assert(p.locked, "locked on as it says")
+        }
+        landed += if w.boss().hp < idol { 1 } else { 0 }
+        dodged = dodged || p.act == combat::sim::DODGING
+        turned = turned || (was.act == combat::sim::WINDUP && p.facing != was.facing && !p.locked)
+    }
+    assert(landed == 2, f"its slashes land: {landed}")
+    assert(turned, "the turn window turns the second")
+    assert(w.player(0).hp < 100 && script::pushed(s, w) > 0.3, "the idol's blow lands and pushes")
+    assert(dodged, "he dodges")
+}
