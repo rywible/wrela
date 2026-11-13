@@ -5,12 +5,19 @@
 // legs reach for their spots (two-bone IK), so a pose stays put on its feet, and a fist goes
 // where it's put between keys, not round some arc a blend of turns would draw.
 //
+// A thing held (`engine::held`: a blade, a stand-in stick) is placed by the key, not by its
+// fists: where its hilt is, which way it points and which way its edge faces (`Wield`). The hand
+// that holds it, and the other where both do, are reached to where the grip puts them and turned
+// as it holds them, the forearm taking the turn about its length as a person's does: a cut is
+// written as the blade goes, and its two fists can't disagree.
+//
 // Pose to pose, after the way hand-keyed fighting-game moves are timed: a wind-up and a tell
 // eased into, a held beat the eye reads, a strike snapped into in a few frames, a pause on
 // contact, then the follow-through and recovery settled out of.
 
 use std::collections::Vec
 use humanoid::{Clip, NONE, Pose, Rig, Rigid, arc}
+use held::Held
 use stride::{about, curled_hands, leg_of, reach, turn_below, turn_under}
 
 const DEG: f32 = 0.017453292
@@ -33,6 +40,59 @@ pub const SNAP: u32 = 2
 pub const SETTLE: u32 = 3
 pub const STEP: u32 = 4
 
+/// A thing held in the hands as keys hold it: the thing and the hand that holds it (`Held`: its
+/// grip, its frame in that hand's), and, if the other hand holds it too (`both`), the thing's
+/// frame in that hand's (`off`, as a grip is). The same through a move: a key's is the move's.
+pub struct Wield: Copy {
+    pub held: Held,
+    pub off: Rigid,
+    pub both: bool,
+}
+
+/// Nothing held: the fists go where the key puts them.
+pub const BARE: Wield = Wield {
+    held: held::NOTHING,
+    off: Rigid { q: Quat { v: vec4(0.0, 0.0, 0.0, 1.0) }, t: vec3(0.0) },
+    both: false,
+}
+
+impl Wield {
+    /// Whether anything's held.
+    pub fn held(self) -> bool {
+        self.held.held()
+    }
+
+    /// The arm that holds it (0 the left, 1 the right), and the other.
+    pub fn side(self) -> u32 {
+        if self.held.hand == "leftHand" { 0 } else { 1 }
+    }
+
+    /// The thing's own frame in the body's space, its hilt at `hilt`, pointing `point` (hilt to
+    /// tip) and its edge facing `edge` (made square to `point`).
+    pub fn placed(self, hilt: vec3, point: vec3, edge: vec3) -> Rigid {
+        let h = self.held
+        let q = aligned(h.tip - h.hilt, h.edge, point, edge)
+        Rigid { q, t: hilt - q.rotate(h.hilt) }
+    }
+
+    /// Each hand's frame (its bone's, the body's space) where the thing's at `thing`: the one
+    /// that holds it, and the other's if both do.
+    pub fn hands(self, thing: Rigid) -> (Rigid, Rigid) {
+        (thing.then(self.held.grip.inverse()), thing.then(self.off.inverse()))
+    }
+}
+
+/// The turn taking a direction `d0` and a way square to it, `e0`, onto `d1` and `e1` (`e1` made
+/// square to `d1`): `d0` along the shortest turn, then turned about `d1` till `e0` is `e1`.
+fn aligned(d0: vec3, e0: vec3, d1: vec3, e1: vec3) -> Quat {
+    let r = arc(d0, d1)
+    let a = r.rotate(e0)
+    let d = normalize(d1)
+    let flat = e1 - d * dot(e1, d)
+    let twist = atan2(dot(cross(a, flat), d), dot(a, flat))
+    about(d, twist).mul(r)
+}
+
 /// A key: when (s), how it's come into (`ease`), and the pose, in the body's space (x its
 /// left, y up, z ahead; m and degrees):
 /// - `hips`: how far the hips move from where they stand at rest (a drop, a shift of weight),
@@ -47,7 +107,10 @@ pub const STEP: u32 = 4
 ///   hop, a step's swing); `swing`, how high a foot that moves along the floor into this key
 ///   lifts on its way, at most half way (m: a step taken between two keys);
 /// - `travel`: where the body's got to along the floor since the move began (its root, which
-///   gameplay carries; everything else is set where it is from the move's start).
+///   gameplay carries; everything else is set where it is from the move's start);
+/// - `wield`: what's held, if anything (`Wield`), and where: `hilt` its hilt's place, `point`
+///   which way it points from hilt to tip, `edge` which way its edge faces. A hand that holds
+///   it goes where its grip puts it, whatever `fists` says.
 pub struct Key: Copy {
     pub at: f32,
     pub ease: u32 = SMOOTH,
@@ -63,6 +126,10 @@ pub struct Key: Copy {
     pub lifts: [f32; 2] = [0.0; 2],
     pub swing: f32 = 0.0,
     pub travel: vec3 = vec3(0.0),
+    pub wield: Wield = BARE,
+    pub hilt: vec3 = vec3(0.0),
+    pub point: vec3 = vec3(0.0, 0.0, 1.0),
+    pub edge: vec3 = vec3(1.0, 0.0, 0.0),
 }
 
 /// Foot `f` (a key's: where it stands along the floor, its turn and its heel's lift) where it
@@ -71,12 +138,13 @@ pub fn turned_foot(f: vec4, yaw: f32, heel: f32) -> vec4 {
     vec4(f.x, f.y, yaw, heel)
 }
 
-/// `k` moved along the floor by `by`: its hips, fists, feet, look and travel.
+/// `k` moved along the floor by `by`: its hips, fists, feet, look, travel and what it holds.
 pub fn shifted(k: Key, by: vec3) -> Key {
     var out = k
     out.hips += by
     out.look += by
     out.travel += by
+    out.hilt += by
     for i in 0..2 {
         out.fists[i] += by
         out.feet[i] = out.feet[i] + vec4(by.x, by.z, 0.0, 0.0)
@@ -109,6 +177,10 @@ fn pole(a: vec3, b: vec3, t: f32) -> vec3 {
 
 pub fn mixed(a: Key, b: Key, t: f32) -> Key {
     let m = |x: vec3, y: vec3| -> vec3 { x + (y - x) * t }
+    // What's held turns at an even rate from one key's turn to the other's, its point and edge
+    // together: mixed as two directions, a blade turned far between keys would turn fastest half
+    // way and slow into the key it's cut into.
+    let held = slerped(held_turn(a.point, a.edge), held_turn(b.point, b.edge), t)
     let m4 = |x: vec4, y: vec4| -> vec4 { x + (y - x) * t }
     Key {
         at: b.at,
@@ -134,6 +206,10 @@ pub fn mixed(a: Key, b: Key, t: f32) -> Key {
         ],
         swing: b.swing,
         travel: m(a.travel, b.travel),
+        wield: b.wield,
+        hilt: m(a.hilt, b.hilt),
+        point: held.rotate(vec3(0.0, 0.0, 1.0)),
+        edge: held.rotate(vec3(1.0, 0.0, 0.0)),
     }
 }
 
@@ -141,6 +217,55 @@ pub fn mixed(a: Key, b: Key, t: f32) -> Key {
 /// `swing` high half way: none for a foot that stays where it is.
 fn swung(a: vec4, b: vec4, swing: f32, t: f32) -> f32 {
     if length(b.xy - a.xy) < 0.01 { 0.0 } else { swing * 4.0 * t * (1.0 - t) }
+}
+
+/// The turn `t` of the way from `a` to `b` (0 to 1) at an even rate, the shorter way round.
+fn slerped(a: Quat, b: Quat, t: f32) -> Quat {
+    var d = a.inverse().mul(b)
+    if d.v.w < 0.0 {
+        d = Quat { v: -d.v }
+    }
+    let s = length(d.v.xyz)
+    if s < 1.0e-6 {
+        return a.nlerp(b, t)
+    }
+    let half = atan2(s, d.v.w)
+    a.mul(Quat { v: vec4(d.v.xyz / s * sin(half * t), cos(half * t)) })
+}
+
+/// The turn a key's `point` and `edge` write: ahead onto `point`, the left onto `edge`.
+fn held_turn(point: vec3, edge: vec3) -> Quat {
+    aligned(vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0), point, edge)
+}
+
+/// Each hand's frame where key `k` asks it (the body's space): a hand that holds what `k`
+/// wields where its grip puts it, else its fist's spot (its turn the rest's, unread).
+pub fn hands_of(k: Key) -> [Rigid; 2] {
+    var out = [
+        Rigid { q: Quat::identity(), t: k.fists[0] },
+        Rigid { q: Quat::identity(), t: k.fists[1] },
+    ]
+    if k.wield.held() {
+        let (main, off) = k.wield.hands(k.wield.placed(k.hilt, k.point, k.edge))
+        let s = k.wield.side()
+        out[s] = main
+        if k.wield.both {
+            out[1 - s] = off
+        }
+    }
+    out
+}
+
+/// Whether arm `i` of key `k` holds what it wields.
+fn holds(k: Key, i: u32) -> bool {
+    k.wield.held() && (i == k.wield.side() || k.wield.both)
+}
+
+/// The turn `q` makes about `axis` (unit): its twist, the rest of it a swing off `axis`.
+fn twist_of(q: Quat, axis: vec3) -> Quat {
+    let p = axis * dot(q.v.xyz, axis)
+    let v = vec4(p, q.v.w)
+    if length(v) < 1.0e-6 { Quat::identity() } else { Quat { v: normalize(v) } }
 }
 
 /// A turn by `d` degrees: pitch (about x), then yaw (about y), then roll (about z), in the
@@ -210,52 +335,11 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
         turn_under(parents, nb, mut w, neck, half)
         turn_under(parents, nb, mut w, head, arc(w[head].q.rotate(ahead), to))
     }
-    // The arms, each reaching its wrist to its fist's spot, its elbow toward its pole.
-    let arms = [
-        [find("leftUpperArm"), find("leftLowerArm"), find("leftHand")],
-        [find("rightUpperArm"), find("rightLowerArm"), find("rightHand")],
-    ]
+    // The arms, each reaching its wrist to its fist's spot, its elbow toward its pole; a hand
+    // that holds what the key wields, to where its grip puts it, turned as it holds it.
+    let hands = hands_of(k)
     for i in 0..2 {
-        let (u, l, h) = (arms[i][0], arms[i][1], arms[i][2])
-        if u != NONE && l != NONE && h != NONE {
-            let l1 = length(rw[l].t - rw[u].t)
-            let l2 = length(rw[h].t - rw[l].t)
-            let (e, t) = elbow_at(w[u].t, k.fists[i], l1, l2, k.elbows[i])
-            turn_under(parents, nb, mut w, u, arc(w[l].t - w[u].t, e - w[u].t))
-            // The forearm's turn as the plain reach leaves it (the upper arm aimed at the elbow,
-            // the forearm at the wrist), before the upper arm is twisted: the hand faces as the
-            // key wrote it, and the twist below doesn't carry down to it.
-            var plain = w
-            turn_under(parents, nb, mut plain, l, arc(plain[h].t - plain[l].t, t - plain[l].t))
-            let written = plain[l].q
-            // The upper arm turned about its own length till the elbow bends about its hinge:
-            // the reach above puts the elbow where it's asked, by the shortest turn, which
-            // leaves the upper arm's twist to chance and the elbow bent across its hinge (an
-            // arm that looks wrung). A leg's reach keeps its knee's hinge (`stride::reach`);
-            // this keeps the elbow's.
-            let along = normalize(e - w[u].t)
-            let bend = cross(along, t - e)
-            let side = if i == 0 { -1.0 } else { 1.0 }
-            let lean = ELBOW_LEAN * DEG
-            let hinge = rw[u].q.inverse().rotate(vec3(0.0, cos(lean), sin(lean)) * side)
-            let has = w[u].q.rotate(hinge)
-            let flat = has - along * dot(has, along)
-            if length(bend) > 1.0e-5 && length(flat) > 1.0e-4 {
-                let (want, now) = (normalize(bend), normalize(flat))
-                // Whole: what a body is drawn with spreads an upper arm's twist along it (a
-                // charted arm's `engine::chart::Chain::spread`, a skin's twist steps,
-                // `humanoid::SPREAD`), so the shoulder doesn't take it all and wring.
-                let twist = atan2(dot(cross(now, want), along), dot(now, want))
-                turn_under(parents, nb, mut w, u, about(along, twist))
-            }
-            turn_under(parents, nb, mut w, l, arc(w[h].t - w[l].t, t - w[l].t))
-            // The forearm turned back about its own length to the plain reach's turn (both aim
-            // it at the wrist, so only its roll differs): what the upper arm's twist would have
-            // turned the hand by is the forearm's own roll, as a person's forearm turns along its
-            // length from elbow to wrist, and the elbow still bends about its hinge.
-            turn_under(parents, nb, mut w, l, written.mul(w[l].q.inverse()))
-            turn_under(parents, nb, mut w, l, about(normalize(t - e), k.rolls[i] * DEG))
-        }
+        arm_reach(rig, parents, nb, mut w, rw, i, hands[i], k.elbows[i], k.rolls[i], holds(k, i))
     }
     // The legs: each foot set on its ball, turned and its heel up as said, the leg reaching
     // its ankle there, the knee bending about the shin's left.
@@ -278,7 +362,12 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
             turn_under(parents, nb, mut w, l.toes, yaw.mul(rw[l.toes].q).mul(w[l.toes].q.inverse()))
         }
     }
-    // Back to each bone's turn in its parent.
+    unposed(rig, parents, nb, w, hips)
+}
+
+/// A pose from its bones `w` in the body's space: each bone's turn in its parent, and where the
+/// hips (bone `hips`) are.
+fn unposed(rig: Rig, parents: [u32; 64], nb: u32, w: [Rigid; 64], hips: u32) -> Pose {
     var p = Pose { turns: [Quat::identity(); 64], hips: vec3(0.0) }
     for b in 0..nb {
         let up = parents[b]
@@ -288,6 +377,106 @@ pub fn posed(rig: Rig, k: Key) -> Pose {
     let inv = rig.base.inverse()
     p.hips = inv.t + inv.q.rotate(w[hips].t)
     p
+}
+
+/// `p` with the other hand on what `wield` has both hands hold, where the holding hand has it
+/// now: reached to its place on the grip and turned as it holds it, its elbow bending the way it
+/// bends in `p`. A move whose arms keep their own time (`engine::written`'s lags) puts the
+/// holding hand where its lag has it; the other follows it on the grip, not its own clock.
+pub fn both_hands(rig: Rig, p: Pose, wield: Wield) -> Pose {
+    if !wield.held() || !wield.both {
+        return p
+    }
+    let parents = rig.parents()
+    let nb = rig.bones.len()
+    let rw = rig.rest_frames()
+    var w = humanoid::pose_world(rig, p)
+    let s = wield.side()
+    let main = rig.find(if s == 0 { "leftHand" } else { "rightHand" })
+    let o = 1 - s
+    let (u, l, h) = if o == 0 {
+        (rig.find("leftUpperArm"), rig.find("leftLowerArm"), rig.find("leftHand"))
+    } else {
+        (rig.find("rightUpperArm"), rig.find("rightLowerArm"), rig.find("rightHand"))
+    }
+    if main == NONE || u == NONE || l == NONE || h == NONE {
+        return p
+    }
+    let (_, off) = wield.hands(w[main].then(wield.held.grip))
+    let pole = w[l].t - (w[u].t + w[h].t) * 0.5
+    arm_reach(rig, parents, nb, mut w, rw, o, off, pole, 0.0, true)
+    unposed(rig, parents, nb, w, rig.find("hips"))
+}
+
+/// Arm `i` (0 the left, 1 the right) of the bones `w` (the body's space; `rw` the rest's)
+/// reaching its wrist to `hand`'s place, its elbow toward `pole`, its forearm rolled `roll`
+/// (degrees). If it holds something (`held`), its hand is then turned to `hand`'s turn, the
+/// forearm taking the twist about its length and the wrist the rest.
+fn arm_reach(
+    rig: Rig,
+    parents: [u32; 64],
+    nb: u32,
+    w: mut [Rigid; 64],
+    rw: [Rigid; 64],
+    i: u32,
+    hand: Rigid,
+    pole: vec3,
+    roll: f32,
+    held: bool,
+) {
+    let find = |n: str| -> u32 { rig.find(n) }
+    let arms = [
+        [find("leftUpperArm"), find("leftLowerArm"), find("leftHand")],
+        [find("rightUpperArm"), find("rightLowerArm"), find("rightHand")],
+    ]
+    let (u, l, h) = (arms[i][0], arms[i][1], arms[i][2])
+    if u == NONE || l == NONE || h == NONE {
+        return
+    }
+    let l1 = length(rw[l].t - rw[u].t)
+    let l2 = length(rw[h].t - rw[l].t)
+    let (e, t) = elbow_at(w[u].t, hand.t, l1, l2, pole)
+    turn_under(parents, nb, mut w, u, arc(w[l].t - w[u].t, e - w[u].t))
+    // The forearm's turn as the plain reach leaves it (the upper arm aimed at the elbow,
+    // the forearm at the wrist), before the upper arm is twisted: the hand faces as the
+    // key wrote it, and the twist below doesn't carry down to it.
+    var plain = w
+    turn_under(parents, nb, mut plain, l, arc(plain[h].t - plain[l].t, t - plain[l].t))
+    let written = plain[l].q
+    // The upper arm turned about its own length till the elbow bends about its hinge:
+    // the reach above puts the elbow where it's asked, by the shortest turn, which
+    // leaves the upper arm's twist to chance and the elbow bent across its hinge (an
+    // arm that looks wrung). A leg's reach keeps its knee's hinge (`stride::reach`);
+    // this keeps the elbow's.
+    let along = normalize(e - w[u].t)
+    let bend = cross(along, t - e)
+    let side = if i == 0 { -1.0 } else { 1.0 }
+    let lean = ELBOW_LEAN * DEG
+    let hinge = rw[u].q.inverse().rotate(vec3(0.0, cos(lean), sin(lean)) * side)
+    let has = w[u].q.rotate(hinge)
+    let flat = has - along * dot(has, along)
+    if length(bend) > 1.0e-5 && length(flat) > 1.0e-4 {
+        let (want, now) = (normalize(bend), normalize(flat))
+        // Whole: what a body is drawn with spreads an upper arm's twist along it (a
+        // charted arm's `engine::chart::Chain::spread`, a skin's twist steps,
+        // `humanoid::SPREAD`), so the shoulder doesn't take it all and wring.
+        let twist = atan2(dot(cross(now, want), along), dot(now, want))
+        turn_under(parents, nb, mut w, u, about(along, twist))
+    }
+    turn_under(parents, nb, mut w, l, arc(w[h].t - w[l].t, t - w[l].t))
+    // The forearm turned back about its own length to the plain reach's turn (both aim
+    // it at the wrist, so only its roll differs): what the upper arm's twist would have
+    // turned the hand by is the forearm's own roll, as a person's forearm turns along its
+    // length from elbow to wrist, and the elbow still bends about its hinge.
+    turn_under(parents, nb, mut w, l, written.mul(w[l].q.inverse()))
+    turn_under(parents, nb, mut w, l, about(normalize(t - e), roll * DEG))
+
+    if held {
+        let axis = normalize(w[h].t - w[l].t)
+        let twist = twist_of(hand.q.mul(w[h].q.inverse()), axis)
+        turn_under(parents, nb, mut w, l, twist)
+        turn_under(parents, nb, mut w, h, hand.q.mul(w[h].q.inverse()))
+    }
 }
 
 /// The key `keys` set at `time` (s): the two either side mixed as the later one's ease says,
@@ -367,7 +556,8 @@ pub fn keyed(rig: Rig, keys: [Key], fps: f32, fist: f32) -> Clip {
     curled_hands(c, rig, fist)
 }
 
-/// How far (m) a fist or a foot may be from the spot its key puts it before it's a miss.
+/// How far (m) a fist or a foot may be from the spot its key puts it (a hand that holds
+/// something, where its grip puts it) before it's a miss.
 pub const MISS: f32 = 0.01
 
 /// Where `keys` ask for what the body can't do, at `fps`: each fist and each foot that ends up
@@ -405,7 +595,7 @@ pub fn misses(rig: Rig, keys: [Key], fps: f32) -> Vec<String> {
                 rig.base.t + rig.base.q.rotate(c.hips[f]),
             )
             let want = if limb < 2 {
-                k.fists[limb]
+                hands_of(k)[limb].t
             } else {
                 let foot = k.feet[limb - 2]
                 vec3(foot.x, rw[b].t.y + k.lifts[limb - 2], foot.y)

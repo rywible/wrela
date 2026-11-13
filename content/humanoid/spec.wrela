@@ -148,6 +148,7 @@ pub fn spec<C: Checks>(c: mut C) {
     hook_spec(mut c)
     guard_spec(mut c)
     stepping_spec(mut c)
+    downcut_spec(mut c)
 }
 
 /// The fight's bounce (`fists::BOUNCE`: ACCAD Male 2 bouncing in his guard, E8) as its stance
@@ -418,5 +419,159 @@ fn stepping_spec<C: Checks>(c: mut C) {
         w1[toes[0]].t.y - rest[toes[0]].t.y,
         0.0,
         within: 0.005,
+    )
+}
+
+/// What the cut in both hands (downcut.wrela) should measure: the stick's striking point on its
+/// target when the fight says it lands, fast and fastest as it lands, edge first, both hands on
+/// their grips, the wrists and elbows as a person's, the hips over the feet and leading the arms.
+fn downcut_spec<C: Checks>(c: mut C) {
+    borrow rig = HERO.rig
+    let m = downcut::cut()
+    let at = downcut::CONTACT
+    let t = m.thrown_from(rig, at, m.keys[2].at)
+    c.near("cut: striking point on its target, across (m)", t.at.x, downcut::TARGET.x, within: 0.01)
+    c.near("cut: striking point on its target, up (m)", t.at.y, downcut::TARGET.y, within: 0.01)
+    c.near("cut: striking point on its target, ahead (m)", t.at.z, downcut::TARGET.z, within: 0.01)
+    // Fast: at least as the cross's fist (12 m/s), and fastest as it lands.
+    c.at_least("cut: striking point's fastest (m/s)", t.fastest, 12.5, within: 0.5)
+    // And no faster than the cross's fist is held to (26 m/s): left free, a solve throws the
+    // stick round from behind the shoulder in a tenth of a second, at 40.
+    c.at_most("cut: striking point's fastest (m/s)", t.fastest, 25.5, within: 0.5)
+    c.at_least(
+        "cut: striking point's speed into contact, of its fastest",
+        t.into / t.fastest,
+        0.95,
+        within: 0.02,
+    )
+    c.at_most("cut: striking point slows on its way in (m/s)", t.slows, 0.0, within: 0.5)
+    // Edge first: its edge within 15 degrees of the way it goes, on contact and the frame before.
+    c.at_most(
+        "cut: edge off its way on contact (degrees)",
+        m.edge(rig, at, downcut::ALONG),
+        15.0,
+        within: 5.0,
+    )
+    c.at_most(
+        "cut: edge off its way the frame before (degrees)",
+        m.edge(rig, at - 1.0 / 60.0, downcut::ALONG),
+        15.0,
+        within: 5.0,
+    )
+    // Both hands on their grips (the left follows the right on it: `keys::both_hands`), at each
+    // key: the left arm never asked past its reach, nor the right on contact.
+    var off = 0.0
+    var bent = [0.0; 2]
+    for k in 0..6 {
+        let time = m.keys[k].at + if k >= 3 { m.taste.chain.wrist } else { 0.0 }
+        let w = pose_world(rig, m.pose(rig, time))
+        let thing = w[rig.find("rightHand")].then(m.keys[0].wield.held.grip)
+        let left = thing.then(m.keys[0].wield.off.inverse())
+        off = max(off, length(w[rig.find("leftHand")].t - left.t))
+        for a in 0..2 {
+            bent[a] = max(bent[a], m.wrist(rig, time, a))
+        }
+    }
+    c.at_most("cut: left hand off its grip at any key (m)", off, 0.0, within: 0.003)
+    c.at_most("cut: right arm's reach asked on contact", m.asked(rig, 3), 0.95, within: 0.02)
+    // The wrists as a person's: a hand bends some 70 degrees back, 80 forward, 20 toward the
+    // thumb and 30 toward the little finger from straight (American Academy of Orthopaedic
+    // Surgeons, "Joint Motion: Method of Measuring and Recording", 1965); a grip that holds a
+    // blade bends them less than that, held here within 45 degrees of straight at every key.
+    c.at_most("cut: left wrist's bend at its most at a key (degrees)", bent[0], 40.0, within: 5.0)
+    c.at_most("cut: right wrist's bend at its most at a key (degrees)", bent[1], 40.0, within: 5.0)
+    // Each elbow about its own hinge (`engine::arms` flags 40 degrees).
+    c.at_most(
+        "cut: left elbow's bend off its hinge on contact (degrees)",
+        m.hinge_of(rig, at, REAL.hinge[0], 0),
+        25.0,
+        within: 5.0,
+    )
+    c.at_most(
+        "cut: right elbow's bend off its hinge on contact (degrees)",
+        m.hinge_of(rig, at, REAL.hinge[1], 1),
+        25.0,
+        within: 5.0,
+    )
+    // On through it, down and to the left (the cut's way: Ringeck's gloss has it go on through
+    // to the ground on the other side): the striking point lower and further left as it goes
+    // through than where it struck. Left free, a solve swings it back to the right to ease the
+    // wrists.
+    let struck = m.end(rig, at)
+    let gone = m.end(rig, m.keys[4].at + m.taste.chain.wrist)
+    c.at_least("cut: goes on down through its target (m)", struck.y - gone.y, 0.25, within: 0.02)
+    c.at_least(
+        "cut: goes on to the left through its target (m)",
+        gone.x - struck.x,
+        0.10,
+        within: 0.02,
+    )
+    // A beat in the load before it sets off, as the cross has (`the fist still before the
+    // throw`): left free, a solve sets off as soon as it's loaded, to make the swing longer.
+    c.at_least(
+        "cut: the load held before it sets off (s)",
+        m.keys[2].at - m.keys[1].at,
+        0.08,
+        within: 0.01,
+    )
+    // The body behind it: the hips turned through the cut as through the cross (55 degrees at
+    // least). Left free, a solve leaves them coiled and cuts with the arms alone.
+    let turned = m.keys[3].hips_turn.y - m.keys[2].hips_turn.y
+    c.at_least("cut: hips' turn through the cut (degrees)", turned, 55.0, within: 2.0)
+    // The weight over the feet, and the hips half way round well before the striking upper arm.
+    c.at_most("cut: hips outside the feet (m)", t.outside, 0.0, within: 0.002)
+    let (b, e) = (m.keys[2].at, at)
+    c.at_least(
+        "cut: the hips' lead on the striking upper arm, half way round (s)",
+        m.halfway(rig, "rightUpperArm", b, e) - m.halfway(rig, "hips", b, e),
+        0.035,
+        within: 0.005,
+    )
+    // Each hand reaches where the grip puts it at every key, as the key poses it: a hilt placed
+    // past the arms' reach leaves the hands short of it and the stick where they got to.
+    var short = 0.0
+    for k in 0..7 {
+        let key = keys::shifted(m.keys[k], -m.keys[k].travel)
+        let w = pose_world(rig, keys::posed(rig, key))
+        let want = keys::hands_of(key)
+        short = max(short, length(w[rig.find("leftHand")].t - want[0].t))
+        short = max(short, length(w[rig.find("rightHand")].t - want[1].t))
+    }
+    c.at_most("cut: a hand short of its grip at a key (m)", short, 0.0, within: 0.005)
+    // The guard held as vom Tag is (Ringeck, as Tobler translates him: the sword at the right
+    // shoulder or above the head), the hilt by the body: left free, a solve holds it at arm's
+    // length out ahead to ease the wrists.
+    c.at_most(
+        "cut: the guard's hilt ahead of the hips (m)",
+        m.keys[0].hilt.z - m.keys[0].hips.z,
+        0.30,
+        within: 0.02,
+    )
+    // The step in, as the stepping cross's: the body travels, on through the blow and not back,
+    // each foot where its keys put it all through it, the lead foot planted by the contact.
+    let travel = m.root(rig, at).z
+    c.at_least("cut: the body's travel to the contact (m)", travel, 0.25, within: 0.02)
+    let on = m.root(rig, m.keys[4].at).z - m.root(rig, m.keys[3].at).z
+    c.at_least("cut: the body's travel on through the blow (m)", on, 0.0, within: 0.005)
+    var stray = 0.0
+    var time = m.keys[1].at
+    while time <= m.keys[5].at {
+        let w = m.world(rig, time)
+        let k = keys::key_in(m.keys, time, m.taste.chain.body_snap)
+        let feet = [rig.find("leftToes"), rig.find("rightToes")]
+        for j in 0..2 {
+            let p = w[feet[j]].t
+            stray = max(stray, length(vec2(p.x - k.feet[j].x, p.z - k.feet[j].y)))
+        }
+        time += 1.0 / 60.0
+    }
+    c.at_most("cut: a foot off where its keys put it (m)", stray, 0.0, within: 0.01)
+    let toe = rig.find("leftToes")
+    let (w0, w1) = (m.world(rig, at - 1.0 / 60.0), m.world(rig, at))
+    c.at_most(
+        "cut: lead foot moving on the contact (m/s)",
+        length(w1[toe].t - w0[toe].t) * 60.0,
+        0.0,
+        within: 0.05,
     )
 }

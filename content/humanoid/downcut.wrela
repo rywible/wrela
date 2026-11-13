@@ -1,0 +1,257 @@
+// A cut in both hands, written (`engine::written`): the first strike written as the thing held
+// goes, not as its fists do. Each key places the stand-in (`stick::BOTH`: where its hilt is,
+// which way it points, which way its edge faces), and both hands are taken from its grip
+// (`engine::keys::Wield`), so they can't disagree. It's the stand-in's, a stick a metre long:
+// the longsword's own cuts and shape come with piece 11.
+//
+// A descending cut from the right shoulder (the Oberhau of the German longsword: Sigmund
+// Ringeck's gloss on Liechtenauer, as C. H. Tobler translates it, "Secrets of German Medieval
+// Swordsmanship", 2001): from a guard with the point up over the right
+// shoulder, it's raised and turned back as the hips coil, then the hips turn through and the
+// blade comes over and down onto the foe's left of his neck, edge first, and on down to the
+// left as the body follows it.
+//
+// What's written by hand: the poses, when the hips reach each, and the fighter's taste (how each
+// part follows the hips: `taste`). What's solved (`wrela solve content/humanoid --spec --free
+// downcut.wrela:<names>`, the numbers at the top of `cut`): where the contact key holds the hilt,
+// which way it points and its edge's turn about it, how far the hips have turned, and when the
+// cut sets off, so the stick's striking point is on its target when the fight says it lands,
+// edge first, the wrists and elbows as a person's.
+
+use engine::keys
+use engine::keys::{Key, SETTLE, SMOOTH, SNAP}
+use engine::playback::Move
+use engine::written::{Beats, Written}
+use body::HERO
+use engine::end::End
+use taste::taste
+use fists::guard
+use stick::BOTH
+
+const DEG: f32 = 0.017453292
+
+/// When the cut lands as written (s from its start, at the fight's 60 frames a second).
+pub const CONTACT: f32 = 0.55
+
+/// Where along the stick it strikes (0 the hilt, 1 the tip): a blade's best place to cut with,
+/// a hand's span or so in from its point.
+pub const ALONG: f32 = 0.75
+
+/// What it strikes with: the point `ALONG` the stick.
+@fuel(2 ** 40)
+pub const STRIKE: End = BOTH.held.at(ALONG)
+
+/// Where the striking point lands (the body's space, m): by a man's neck on his left, as he
+/// stands a step and a half off, a little to the striker's left of the centre line.
+pub const TARGET: vec3 = vec3(0.12, 1.45, 1.05 + REACH)
+
+/// How far further off the foe stands for the cut's step in (m).
+pub const REACH: f32 = 0.4
+
+/// A way `down` degrees below level and turned `left` degrees toward the left from ahead.
+fn way(down: f32, left: f32) -> vec3 {
+    let (d, l) = (down * DEG, left * DEG)
+    vec3(sin(l) * cos(d), -sin(d), cos(l) * cos(d))
+}
+
+/// The way square to `point` that faces down along it, turned `roll` degrees about it (toward
+/// the left of `point` as seen from its hilt).
+fn edged(point: vec3, roll: f32) -> vec3 {
+    let p = normalize(point)
+    let down = vec3(0.0, -1.0, 0.0)
+    let d = normalize(down - p * dot(down, p))
+    let side = cross(p, d)
+    d * cos(roll * DEG) + side * sin(roll * DEG)
+}
+
+/// The cut's goal poses, in the hips' time (s from its start).
+pub fn cut() -> Written<7> {
+    let rest = guard()
+    // ---- What the solve finds (spec.wrela): each number alone on its line. ----
+    // When the cut sets off (the beat's end, s).
+    let sets_off = 0.205
+    // How far the hips have turned on contact (degrees toward the left).
+    let hips_yaw = 8.1
+    // Where the contact key holds the hilt (m, the body's space).
+    let hilt_x = 0.059
+    let hilt_y = 1.086
+    let hilt_z = 0.4648
+    // Which way the stick points on contact (degrees below level, and toward the left), and its
+    // edge's turn about it (degrees off facing straight down along it).
+    let point_down = -36.8
+    let point_left = -5.3
+    let edge_roll = -20.8
+    // How far out to the side each elbow points on contact (degrees from straight down).
+    let left_elbow_out = 22.5
+    let right_elbow_out = -93.0
+    // Which way it points as it goes on through (degrees below level, and toward the left).
+    let through_down = -13.1
+    let through_left = 22.1
+    // Where the guard holds the hilt (m) and how far its point leans back from straight up
+    // (degrees); and the load's.
+    let guard_x = 0.06
+    let guard_y = 1.48
+    let guard_z = 0.30
+    let guard_back = 28.5
+    let load_x = 0.06
+    let load_y = 1.55
+    let load_z = -0.33
+    let load_back = 90.0
+    // Where it holds the hilt going through (m).
+    let through_x = 0.14
+    let through_y = 0.88
+    let through_z = 0.295
+    // The step in (as the stepping cross's, stepping.wrela): how far the body travels (m), how
+    // much of it's done as the lead foot lands (the beat's end) and by the contact, and how far
+    // the rear foot's come in behind it by the contact (m).
+    let step = 0.43
+    let early = 0.53
+    let share = 1.0
+    let rear_in = 0.8
+    let chain = taste().chain
+    // The guard: the fighter's stance, the stick held up over the right shoulder in both
+    // hands, its point up and a little back, its edge ahead.
+    var guarded = rest
+    guarded.wield = BOTH
+    guarded.hilt = vec3(guard_x, guard_y, guard_z)
+    guarded.point = vec3(0.0, cos(guard_back * DEG), -sin(guard_back * DEG))
+    guarded.edge = vec3(0.0, 0.0, 1.0)
+    guarded.elbows = [vec3(0.3, -1.0, 0.0), vec3(-0.5, -1.0, 0.0)]
+    // The load: the hips coiled back onto the rear foot, the stick raised and its point laid
+    // back over the shoulder, its edge up the way it'll come over.
+    var load = guarded
+    load.at = 0.12
+    load.ease = SMOOTH
+    load.hips = rest.hips + vec3(-0.03, -0.04, -0.05)
+    load.hips_turn = vec3(0.0, -45.0, 0.0)
+    load.trunk = vec3(4.0, -20.0, 0.0)
+    load.hilt = vec3(load_x, load_y, load_z)
+    load.point = vec3(0.15, cos(load_back * DEG), -sin(load_back * DEG))
+    load.edge = vec3(0.0, 1.0, 0.0)
+    load.feet[1] = keys::turned_foot(rest.feet[1], yaw: -40.0, heel: 0.0)
+    // The beat: settling a hair further in, till the cut sets off.
+    var beat = load
+    beat.at = sets_off
+    beat.ease = SETTLE
+    beat.hips = rest.hips + vec3(-0.035, -0.045, -0.055)
+    beat.hips_turn = vec3(0.0, -47.0, 0.0)
+    beat.trunk = vec3(5.0, -21.0, 0.0)
+    // Contact: the hips turned through, the trunk over the lead leg, the arms out, the stick
+    // come over and down onto its target edge first, the rear heel up and pivoted. The hips are
+    // there early by the wrist's lag, so the stick is when the fight says it lands.
+    var contact = beat
+    contact.at = CONTACT - chain.wrist
+    contact.ease = SNAP
+    contact.hips = rest.hips + vec3(0.01, -0.04, 0.05)
+    contact.hips_turn = vec3(0.0, hips_yaw, 0.0)
+    contact.trunk = vec3(14.0, 22.0, 0.0)
+    contact.hilt = vec3(hilt_x, hilt_y, hilt_z)
+    contact.point = way(down: point_down, left: point_left)
+    contact.edge = edged(contact.point, roll: edge_roll)
+    let (lo, ro) = (left_elbow_out * DEG, right_elbow_out * DEG)
+    contact.elbows = [vec3(sin(lo), -cos(lo), 0.0), vec3(-sin(ro), -cos(ro), 0.0)]
+    contact.feet[1] = keys::turned_foot(rest.feet[1], yaw: -5.0, heel: 30.0)
+    // On through it, down to the left as the body follows it.
+    var through = contact
+    through.at = contact.at + 0.10
+    through.ease = SETTLE
+    through.hips = contact.hips + vec3(0.01, -0.02, 0.02)
+    through.hips_turn = contact.hips_turn + vec3(0.0, 8.0, 0.0)
+    through.trunk = contact.trunk + vec3(6.0, 6.0, 0.0)
+    through.hilt = vec3(through_x, through_y, through_z)
+    through.point = way(down: through_down, left: through_left)
+    through.edge = edged(through.point, roll: edge_roll)
+    // The way home: the stick raised back up over the right shoulder.
+    var home = through
+    home.at = contact.at + 0.38
+    home.ease = SETTLE
+    home.hips = rest.hips + vec3(0.0, -0.01, 0.02)
+    home.hips_turn = vec3(0.0, -15.0, 0.0)
+    home.trunk = vec3(5.0, 0.0, 0.0)
+    home.hilt = guarded.hilt + vec3(0.04, -0.06, 0.06)
+    home.point = guarded.point
+    home.edge = guarded.edge
+    home.feet[1] = keys::turned_foot(rest.feet[1], yaw: -30.0, heel: 14.0)
+    // Back in the guard.
+    var back = guarded
+    back.at = 1.05
+    back.ease = SMOOTH
+    // The step in: the lead foot through the load, landing as the cut sets off; the rear foot
+    // driving and following, landing with the blow; the rest of the way home.
+    let by = vec3(0.0, 0.0, step)
+    let lead = rest.feet[0] + vec4(0.0, step, 0.0, 0.0)
+    let stepped = |k: Key, part: f32, rear: f32| -> Key {
+        var out = keys::shifted(k, by * part)
+        out.feet[0] = lead
+        out.feet[1] = k.feet[1] + vec4(0.0, rear, 0.0, 0.0)
+        out
+    }
+    beat = stepped(beat, early, 0.0)
+    beat.swing = 0.05
+    contact = stepped(contact, share, rear_in)
+    contact.swing = 0.04
+    through = stepped(through, 1.0, rear_in)
+    home = stepped(home, 1.0, step)
+    home.swing = 0.04
+    back = stepped(back, 1.0, step)
+    Written {
+        keys: [guarded, load, beat, contact, through, home, back],
+        taste: taste(),
+        end: STRIKE,
+    }
+}
+
+/// The cut at its own beats, as written (`Written::played`): its contact at `CONTACT`, its root
+/// carried by its step in.
+@fuel(2 ** 40)
+pub const DOWNCUT: Move = cut().played(
+    HERO.rig,
+    CONTACT,
+    Beats { windup: CONTACT, active: 0.06, recovery: cut().length() - CONTACT - 0.06 },
+    fps: 60.0,
+    fist: 2.0,
+)
+
+/// How far the cut carries the body in all (m, ahead), and a step back as far: home to where it
+/// was thrown from.
+@fuel(2 ** 40)
+pub const TRAVEL: f32 = cut().root(HERO.rig, cut().length()).z
+@fuel(2 ** 40)
+pub const BACK: Move = fists::step_move(vec3(0.0, 0.0, -TRAVEL))
+
+/// The cut reads as a cut on the cut sheet (`engine::cut`): found, the tip outrunning the hands,
+/// the chain from the hips out to the tip with the tip last, the edge first on contact, its path
+/// near one plane (Quaternius's sword cut's strays 7.8% of its path: `wrela tool moves -- --cut
+/// sword-take`); and it steps in as the stepping cross does, its feet sliding no more than the
+/// captured boxer's (1.8 cm).
+@test
+fn the_cut_in_both_hands_reads_as_a_cut() {
+    borrow rig = HERO.rig
+    let c = engine::cut::cut(DOWNCUT.clip, rig, BOTH.held, CONTACT)
+    let f = engine::footwork::footwork(
+        DOWNCUT.clip,
+        DOWNCUT.root,
+        rig,
+        CONTACT,
+        0.0,
+        DOWNCUT.clip.length(),
+    )
+    std::io::print(c.text("the cut in both hands").as_str())
+    std::io::print(f.text().as_str())
+    assert(c.timing.found, "the tip's strike is found")
+    assert(
+        c.timing.fastest > c.hand_fastest,
+        f"the tip {c.timing.fastest} m/s, the hand {c.hand_fastest}",
+    )
+    assert(c.tip_last, "the chain from the hips out to the tip, the tip last")
+    assert(c.edge_on <= 20.0, f"the edge {c.edge_on} degrees off its way on contact")
+    assert(c.plane_share <= 0.2, f"its path strays {c.plane_share} of its length off its plane")
+    assert(
+        f.travel >= 0.25 && f.down[0],
+        f"it travels {f.travel} m, the lead foot down on the contact",
+    )
+    assert(
+        f.slide[0] <= 0.018 && f.slide[1] <= 0.018,
+        f"the feet slide {f.slide[0]} and {f.slide[1]} m",
+    )
+}

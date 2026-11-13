@@ -289,6 +289,14 @@ pub const PUNCH_RAW: Clip = humanoid::retarget(
     HERO.rig.clone(),
     Retarget {},
 )
+/// Quaternius's sword cut and sword idle (assets/ual1.glb.LICENSE.txt), retargeted: references
+/// the first cuts and the armed stance are read against (`engine::cut`, `engine::stance`).
+@fuel(2 ** 40)
+pub const SWORD_ATTACK_RAW: Clip = humanoid::retarget(
+    humanoid::take_of_gltf(embed("assets/ual1.glb"), "Sword_Attack", UNREAL, fps: 30.0),
+    HERO.rig.clone(),
+    Retarget {},
+)
 @fuel(2 ** 40)
 pub const ROLL_RAW: Clip = humanoid::retarget(
     humanoid::take_of_gltf(embed("assets/ual1.glb"), "Roll", UNREAL, fps: 30.0),
