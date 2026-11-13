@@ -8,10 +8,12 @@
 // difference a rollback makes taken up as the body's drift (`Mover::drift`), which dies away
 // rather than jumping.
 //
-// The moves are stand-ins, every one hand-keyed or written in Wrela: every strike is the cross
-// (content/humanoid's), timed to its move's frames: a player's thrown with a step
-// (`stepping`), as far as the rules carry it (`sim::TRAVELLING`; else the standing cross,
-// `solved`), and the idol's standing; the dodge is the roll
+// The moves are stand-ins, every one hand-keyed or written in Wrela, each timed to its move's
+// frames. A strike with the longsword is the slash (content/humanoid's `slash`), a fighter with it
+// standing in the armed guard with the lab's stand-in in its hand (`armed`, `stick`); a strike
+// with the fists is the cross, a player's thrown with a step (`stepping`; with
+// `sim::TRAVELLING` off the standing cross, `solved`), and the idol's standing. Each player's
+// strike steps as far as the rules carry it (`sim::TRAVEL`). The dodge is the roll
 // (content/moves); a parry is the step back. A blow is no clip (`engine::contact`): both bodies
 // are held still through the rules' hold, and as it breaks the one struck is knocked along the
 // blow and the blow runs back up the striker's arm, each laid into its inertia; the camera's
@@ -31,7 +33,9 @@ use engine::playback
 use engine::playback::{Gaits, Handling, Move, Mover}
 use engine::contact
 use engine::contact::{Give, Hit, Kick, Knock, Shock}
-use engine::end::RIGHT_FIST
+use engine::end::{End, RIGHT_FIST}
+use engine::held
+use engine::held::Held
 use engine::humanoid::pose_world
 use engine::view::first_camera
 use engine::written::Beats
@@ -41,10 +45,10 @@ use humanoid::fists::{GUARD, STEP_OUT}
 use humanoid::ink::ink
 use humanoid::look::{SUN, Shot}
 use humanoid::paint::{backdrop, body, ground, paint_backdrop, paint_body, paint_ground}
-use humanoid::{solved, stepping}
+use humanoid::{armed, slash, solved, stepping, stick}
 use combat::sim::{
-    ACTIVE, ATTACKS, DODGE_FRAMES, DODGING, HZ, IDLE, MAX_PARTY, MOVES, NO_MOVE, PARRYING, PUSH,
-    RECOVER, STAGGERED, Seen, TRAVEL, TRAVELLING, WINDUP, World,
+    ACTIVE, ATTACKS, DODGE_FRAMES, DODGING, FISTS, HZ, IDLE, LONGSWORD, MAX_PARTY, MOVES, NO_MOVE,
+    PARRYING, PUSH, RECOVER, STAGGERED, Seen, TRAVEL, TRAVELLING, WEAPONS, WINDUP, World,
 }
 use ui::draw::Renderer
 
@@ -68,11 +72,58 @@ fn struck_at(windup: u32, active: u32, recovery: u32) -> Move {
     solved::cross_at(Beats::of_frames(windup, active, recovery, f32(HZ)))
 }
 
-/// Where a strike the game plays puts its fist on its contact, in place (the body's space, as
-/// a played move's pose has it): a player's (`player`) the stepping cross's, less the step it's
-/// taken by then, as `TRAVELLING` plays it; else the standing cross's.
-pub fn contact_of(player: bool) -> vec3 {
-    if player && TRAVELLING {
+/// Which weapon (`WEAPONS`) makes move `m` (`MOVES`): the one whose light attack, its combo's
+/// next on from it, or whose heavy one it is (`FISTS` for none).
+pub fn weapon_of(m: u32) -> u32 {
+    for w in 0..WEAPONS.len() {
+        var k = WEAPONS[w].light
+        for _ in 0..MOVES.len() {
+            if k == m {
+                return w
+            }
+            if k == NO_MOVE {
+                break
+            }
+            k = MOVES[k].next
+        }
+        if WEAPONS[w].heavy == m {
+            return w
+        }
+    }
+    FISTS
+}
+
+/// Move `i` (`MOVES`) as its weapon's strike, at its frames: the longsword's the slash, the
+/// fists' the cross (`stepped_at`); each stepping as the rules carry it (`TRAVELLING`), or not.
+fn player_strike(i: u32) -> Move {
+    let m = MOVES[i]
+    if weapon_of(i) == LONGSWORD {
+        let beats = Beats::of_frames(m.windup, m.active, m.recovery, f32(HZ))
+        if TRAVELLING { slash::slash_at(beats) } else { slash::standing_at(beats) }
+    } else {
+        stepped_at(m.windup, m.active, m.recovery)
+    }
+}
+
+/// What a fighter with `weapon` holds: the longsword the stand-in, as the slash holds it.
+pub fn held_of(weapon: u32) -> Held {
+    if weapon == LONGSWORD { slash::WIELD.held } else { held::NOTHING }
+}
+
+/// What strikes with `weapon`'s blows: the longsword the striking point along its blade
+/// (`slash::STRIKE`), the fists the right fist.
+pub fn strikes_with(weapon: u32) -> End {
+    if weapon == LONGSWORD { slash::STRIKE } else { RIGHT_FIST }
+}
+
+/// Where a strike with `weapon` (the idol's, `boss`) puts what strikes on its contact, in place
+/// (the body's space, as a played move's pose has it): the slash's, a player's stepping cross's
+/// as `TRAVELLING` plays it, each less the step it's taken by then; else the standing cross's.
+pub fn contact_of(weapon: u32, boss: bool) -> vec3 {
+    if weapon == LONGSWORD && !boss {
+        let s = slash::slash()
+        s.end(HERO.rig, slash::CONTACT) - s.root(HERO.rig, slash::CONTACT)
+    } else if !boss && TRAVELLING {
         let s = stepping::cross()
         s.end(HERO.rig, stepping::CONTACT) - s.root(HERO.rig, stepping::CONTACT)
     } else {
@@ -103,7 +154,7 @@ pub const ACTS: [Move; 15] = acts()
 
 fn acts() -> [Move; 15] {
     let m = |i: u32| -> Move {
-        stepped_at(MOVES[i].windup, MOVES[i].active, MOVES[i].recovery)
+        player_strike(i)
     }
     let b = |i: u32| -> Move {
         struck_at(ATTACKS[i].windup + 1, ATTACKS[i].active - 1, ATTACKS[i].recovery)
@@ -165,6 +216,16 @@ pub const GAITS: Gaits = Gaits {
     holds: false,
 }
 
+/// The gaits a fighter with the longsword stands, walks and runs with: the armed guard
+/// (`armed::GUARD`, Quaternius's sword idle over the slash's guard), its upper body held in it as
+/// it goes, its legs the fight's walk and run.
+@fuel(2 ** 40)
+pub const ARMED: Gaits = Gaits { idle: armed::GUARD.clone(), holds: true, ..GAITS.clone() }
+
+/// Each weapon's gaits (`WEAPONS`: the fists', the longsword's).
+@fuel(2 ** 40)
+pub const GAITS_OF: [Gaits; 2] = [GAITS.clone(), ARMED.clone()]
+
 /// How a fighting body follows its stick: it sets off and stops at once (the rules do), without
 /// the actor's own first and last steps.
 const HOW: Handling = Handling { clips: false, act_half: 0.03 }
@@ -205,6 +266,8 @@ pub struct Body: Copy {
     pub shock: Shock,
     /// How far the rules' pushes had carried it as last seen (m, along the floor).
     pub carried: vec3,
+    /// Its weapon (`WEAPONS`), as the rules say: what it stands, holds and strikes with.
+    pub weapon: u32,
 }
 
 /// What a body's pending blow is to it (`Body::role`).
@@ -240,7 +303,7 @@ impl Body {
     pub fn new(seen: Seen, boss: bool) -> Body {
         let at = place_of(seen)
         Body {
-            mover: Mover::standing(at, heading_of(seen.facing), GAITS),
+            mover: Mover::standing(at, heading_of(seen.facing), GAITS_OF[weapon_kept(seen)]),
             drawer: Drawer::new(),
             act: seen.act,
             move_: seen.move_,
@@ -254,8 +317,14 @@ impl Body {
             knock: Knock::none(),
             shock: Shock::none(),
             carried: carried_of(seen),
+            weapon: weapon_kept(seen),
         }
     }
+}
+
+/// `seen`'s weapon, one the bodies draw (`GAITS_OF`): another's drawn as fists.
+fn weapon_kept(seen: Seen) -> u32 {
+    if seen.weapon < GAITS_OF.len() { seen.weapon } else { FISTS }
 }
 
 /// Where body `b` is drawn (on the floor, m): the rules' place, its drift, and how far behind a
@@ -348,7 +417,10 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
         if b.role == STRUCK {
             b.knock.struck(b.mover, b.hit, GIVE)
         } else {
-            b.shock = Shock::struck(b.hit, end: RIGHT_FIST)
+            // (A cut sends nothing back up the arm: it goes on through.)
+            if !b.hit.cuts {
+                b.shock = Shock::struck(b.hit, end: strikes_with(b.weapon))
+            }
         }
         b.role = NOTHING
     }
@@ -363,7 +435,7 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
     b.shock.step(GIVE, still)
     let moved = playback::step(
         mut b.mover,
-        GAITS,
+        GAITS_OF[b.weapon],
         ACTS,
         HERO.rig,
         mask,
@@ -431,7 +503,7 @@ pub fn shown(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> S
         mask,
         pose,
         place,
-        Anime { smear: 0.6 },
+        Anime { smear: 0.6, held: held_of(b.weapon) },
         dt,
     )
     Shown {
@@ -441,7 +513,7 @@ pub fn shown(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> S
             palette(HERO.rig, d.pose, d.place),
             HERO.rig,
             d,
-            engine::held::NOTHING,
+            held_of(b.weapon),
         ),
         impact: d.impact,
         force: d.force,
@@ -526,7 +598,10 @@ impl Bodies {
             let a = self.bodies[from]
             let scale = if a.boss { IDOL_SCALE } else { 1.0 }
             let fist = playback::placed(a.mover) *
-                vec4(RIGHT_FIST.in_pose(rig, pose_world(rig, a.mover.shown)) * scale, 1.0)
+                vec4(
+                    strikes_with(a.weapon).in_pose(rig, pose_world(rig, a.mover.shown)) * scale,
+                    1.0,
+                )
             let way = drawn_at(b) - drawn_at(a)
             // (A parried blow staggers what threw it: it's struck back as hard as blows go.)
             let parried = seen.act == STAGGERED
@@ -538,6 +613,7 @@ impl Bodies {
                     contact::weight_of(hold: f32(frames), most: f32(MOST_HOLD))
                 },
                 hold: f32(frames) / f32(HZ),
+                cuts: !parried && held_of(a.weapon).cuts,
             }
             self.bodies[k].hit = hit
             self.bodies[k].role = STRUCK
@@ -570,6 +646,10 @@ impl Bodies {
 pub struct Ring {
     verts: GpuBuffer<engine::humanoid::BodyVertex>,
     indices: GpuBuffer<u32>,
+    /// The stand-in's triangles, on after the body's vertices (`stick::on_body`): drawn with a
+    /// body that holds it.
+    held: GpuBuffer<u32>,
+    held_count: u32,
     palettes: Vec<GpuBuffer<mat4>>,
     colour: Texture<Rgba16Float>,
     marks: Texture<Rgba16Float>,
@@ -605,9 +685,16 @@ impl Ring {
         for _ in 0..(MAX_PARTY + 1) {
             palettes.push(buffer_of([identity(); 64]))
         }
+        let (sv, st) = stick::on_body(HERO.verts.len())
+        var verts = HERO.verts.clone()
+        for v in sv {
+            verts.push(v)
+        }
         Ring {
-            verts: buffer_of(HERO.verts),
+            verts: buffer_of(verts),
             indices: buffer_of(HERO.indices),
+            held: buffer_of(st.clone()),
+            held_count: st.len(),
             palettes,
             colour: texture(width: 640, height: 360),
             marks: texture(width: 640, height: 360),
@@ -746,6 +833,21 @@ impl Ring {
                 cull: Cull::Back,
                 depth: engine::view::NEAREST,
             )
+            if self.bodies.body(k).weapon == LONGSWORD {
+                draw(
+                    p,
+                    body.bind(
+                        verts: self.verts.items(),
+                        palette: self.palettes[k].items(),
+                        shot: shot,
+                    ),
+                    paint_body.bind(shot: shot),
+                    indices: self.held,
+                    index_count: self.held_count,
+                    cull: Cull::Back,
+                    depth: engine::view::NEAREST,
+                )
+            }
         }
         p.end()
         let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
@@ -844,9 +946,11 @@ fn a_strike_begins_when_the_rules_say_and_lands_when_they_hit() {
 @test
 fn every_strike_puts_its_fist_on_its_contact_on_the_frame_the_rules_hit() {
     borrow rig = HERO.rig
-    let hand = rig.find("rightHand")
     for k in 0..(MOVES.len() + ATTACKS.len()) {
-        let target = contact_of(player: k < MOVES.len())
+        // (What strikes, and where it's written to be on its contact: the longsword's point
+        // along its blade, the fists' fist.)
+        let weapon = if k < MOVES.len() { weapon_of(k) } else { FISTS }
+        let (end, target) = (strikes_with(weapon), contact_of(weapon, boss: k >= MOVES.len()))
         let (act, hit, total) = if k < MOVES.len() {
             let m = MOVES[k]
             (k, m.windup, m.windup + m.active + m.recovery)
@@ -856,7 +960,8 @@ fn every_strike_puts_its_fist_on_its_contact_on_the_frame_the_rules_hit() {
         }
         let off = |f: u32| -> f32 {
             length(
-                engine::humanoid::pose_world(rig, ACTS[act].pose(f32(f) / 60.0))[hand].t - target,
+                end.in_pose(rig, engine::humanoid::pose_world(rig, ACTS[act].pose(f32(f) / 60.0))) -
+                    target,
             )
         }
         let on = off(hit)

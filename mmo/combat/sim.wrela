@@ -196,10 +196,11 @@ pub fn push_of(hold: u32) -> i32 {
 pub const TRAVELLING: bool = true
 /// How far each of `MOVES` has carried its striker by each frame into it (units, along its
 /// facing; frame 0 as it begins, its last as its recovery ends, and as far as that after). Read
-/// off the stepping cross at each move's beats (content/humanoid's `stepping::cross_at`), its
-/// root's travel to the nearest unit: 32 (0.50 m) by the contact in each, the step done as the
-/// blow lands; mmo/game's `the_rules_carry_a_striker_as_its_strike_steps`
-/// holds them equal.
+/// off the strike the game draws for it at its beats, its root's travel to the nearest unit: the
+/// fists' the stepping cross (content/humanoid's `stepping::cross_at`), stepping through its
+/// load; the longsword's the slash (`slash::slash_at`), stepping as its feet leave the floor
+/// going over the top. 32 (0.50 m) by the contact in each, the step done as the blow lands;
+/// mmo/game's `the_rules_carry_a_striker_as_its_strike_steps` holds them equal.
 pub const TRAVEL: [[i32; 64]; 6] = [
     [
         0, 0, 5, 12, 16, 17, 18, 24, 31, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
@@ -212,24 +213,24 @@ pub const TRAVEL: [[i32; 64]; 6] = [
         32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
     ],
     [
-        0, 0, 0, 9, 14, 16, 17, 17, 20, 27, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 19, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
         32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
-        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
     ],
     [
-        0, 0, 5, 12, 16, 17, 18, 24, 31, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
-        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
-        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
-    ],
-    [
-        0, 0, 0, 5, 11, 14, 16, 17, 17, 18, 23, 28, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
-        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
-        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
-    ],
-    [
-        0, 0, 0, 0, 0, 2, 6, 9, 11, 13, 15, 16, 16, 17, 17, 17, 17, 18, 19, 21, 24, 27, 29, 31, 32,
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 17, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
         32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
         32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+    ],
+    [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 21, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+    ],
+    [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 8, 14, 20, 26, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
     ],
 ]
 /// The nearest a strike carries its striker to the foe (units, between their places: 0.69 m): a
@@ -729,6 +730,8 @@ pub struct Seen: Copy {
     pub carried_z: i32 = 0,
     /// Whether it's locked on to the foe (`LOCK_ON`).
     pub locked: bool = false,
+    /// Its weapon (`WEAPONS`: `FISTS`, `LONGSWORD`), so a client draws what it holds.
+    pub weapon: u32 = 0,
 }
 
 impl World {
@@ -871,6 +874,7 @@ fn seen(f: Fighter) -> Seen {
         carried_x: f.carried_x,
         carried_z: f.carried_z,
         locked: f.locked,
+        weapon: f.weapon,
     }
 }
 

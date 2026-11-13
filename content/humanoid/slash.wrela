@@ -6,7 +6,9 @@
 //
 // The written move's keys are read off the source at its own moments (`keys::key_of`): its poses
 // are the source's at those moments, so it plays as the source does, within a stated miss
-// (`the_slash_plays_as_its_source_does`).
+// (`the_slash_plays_as_its_source_does`). And it steps in (`STEP`), as an attack does in the
+// fight: the source's feet already leave the floor together as it goes over the top and land
+// after the blow, so the step is laid in while they're off it, and they land a step on.
 
 use engine::humanoid::{Clip, Rigid, frame_world}
 use engine::keys
@@ -111,9 +113,31 @@ pub fn source_keys() -> [Key; KEYS] {
     out
 }
 
+/// How far the slash steps in (m, ahead): the fight's step for a strike, 32 of its units (mmo/
+/// combat's `sim::TRAVEL`), all of it by the blow, as the stepping cross's is.
+pub const STEP: f32 = 0.5
+
+/// When the source's feet leave the floor together (s): half way between its frames 9 and 10,
+/// 0.083 s before the blow (the footwork read, `wrela tool moves -- --sheet`). Both are off it
+/// from then till after the blow (the right lands 0.017 s after it, the left 0.050).
+pub const LEAVES: f32 = 9.5 / 30.0
+
+/// `k`, the source's keys, stepping in: each carried on by as much of `STEP` as is done by its
+/// moment, the step taken evenly from when the feet leave the floor (`LEAVES`) to the blow, so
+/// it's laid in while neither foot is down. The keys before stand where the source does; those
+/// after, the whole step on, its feet with them, so the feet land a step on and nothing slides.
+pub fn stepped(k: [Key; KEYS]) -> [Key; KEYS] {
+    var out = k
+    for i in 0..KEYS {
+        let done = clamp((k[i].at - LEAVES) / (CONTACT - LEAVES), 0.0, 1.0)
+        out[i] = keys::shifted(k[i], vec3(0.0, 0.0, STEP * done))
+    }
+    out
+}
+
 /// The slash as written, the parts on `chain`'s clocks.
 pub fn slash_with(chain: Chain) -> Written<KEYS> {
-    Written { keys: source_keys(), taste: Taste { chain }, end: STRIKE }
+    Written { keys: stepped(source_keys()), taste: Taste { chain }, end: STRIKE }
 }
 
 /// When the slash goes through its target (s): the source's frame 12, where its sword hand is
@@ -132,19 +156,34 @@ pub const STRIKE: End = STICK.at(ALONG)
 /// laid over it (the fists', `taste`) lags the arm behind its own moments (52.6 cm at the contact,
 /// `the_slash_plays_as_its_source_does`).
 pub fn slash() -> Written<KEYS> {
-    Written { keys: source_keys(), taste: Taste { chain: Chain {} }, end: STRIKE }
+    Written { keys: stepped(source_keys()), taste: Taste { chain: Chain {} }, end: STRIKE }
 }
 
 /// The slash as the fight plays it at its own beats: its contact at `CONTACT`, its follow-through
 /// and finish the active frames' and the recovery's.
 @fuel(2 ** 40)
-pub const SLASH: Move = slash().played(
-    HERO.rig,
-    CONTACT,
+pub const SLASH: Move = slash_at(
     Beats { windup: CONTACT, active: 0.1, recovery: slash().length() - CONTACT - 0.1 },
-    fps: 60.0,
-    fist: 2.0,
 )
+
+/// The slash as a game plays it at `beats` (`engine::written::Written::played`): at 60 a second,
+/// the sword hand closed on its grip, its blade through its target on the frame the rules hit.
+/// The one way the slash is played: the lab's (`SLASH`), the game's (mmo/game's `bodies`).
+pub fn slash_at(beats: Beats) -> Move {
+    slash().played(HERO.rig, CONTACT, beats, fps: 60.0, fist: 2.0)
+}
+
+/// The slash without its step (`stepped`), as a game plays it at `beats`: cut where it stands, for
+/// a fight whose rules don't carry a striker.
+pub fn standing_at(beats: Beats) -> Move {
+    Written { keys: source_keys(), ..slash() }.played(
+        HERO.rig,
+        CONTACT,
+        beats,
+        fps: 60.0,
+        fist: 2.0,
+    )
+}
 
 /// The source itself on the body, held in place, its hands made fists: what the slash is judged
 /// against.
@@ -200,7 +239,7 @@ fn read_index(i: u32) -> u32 {
 
 // ---- tests ---------------------------------------------------------------------------------------
 
-/// The slash plays as its source does. Its keys pose within 14 cm of the source's own frames at
+/// The slash plays as its source does, its step aside (`stepped`). Its keys pose within 14 cm of the source's own frames at
 /// worst (the finish's deep twist, whose spine bends as one trunk turn shared up the spine can't
 /// follow); between them, every frame of the source, its joints within 18 cm and its blade's tip
 /// within 25 cm. On the cut sheet it reads as the source: the hand as fast (within 15%), the hands where the source's are on contact (within 3 cm), the blade as upright on
@@ -220,7 +259,7 @@ fn the_slash_plays_as_its_source_does() {
         "leftFoot",
         "rightFoot",
     ]
-    let m = slash()
+    let m = Written { keys: source_keys(), ..slash() }
     var worst = 0.0
     var tip = 0.0
     for f in 0..c.frames {
@@ -273,5 +312,44 @@ fn the_slash_plays_as_its_source_does() {
             f"at {t} s the sword hand at {h}: the finish, low on the far side",
         )
         t += 1.0 / 60.0
+    }
+}
+
+/// The slash steps in as the fight's strikes do: the body carried `STEP` by the blow and no
+/// further, none of it before its feet leave the floor; its feet leaving and landing as they do
+/// without the step (each within a frame), carried a step on by the time they land, so a foot
+/// slides no more while down than without it (each within 0.5 cm). (Against the fit without its
+/// step, not the source: the source's back foot goes back 96 cm skimming the floor, which the
+/// footwork read takes for a foot that stays down.)
+@test
+fn the_slash_steps_in_as_its_feet_leave_the_floor() {
+    borrow rig = HERO.rig
+    let m = slash()
+    let at_blow = m.root(rig, CONTACT).z
+    let at_end = m.root(rig, m.length()).z
+    assert(
+        abs(at_blow - STEP) < 1.0e-4 && abs(at_end - STEP) < 1.0e-4,
+        f"it steps {at_blow} m by the blow, {at_end} in all",
+    )
+    assert(m.root(rig, LEAVES).z < 1.0e-4, "nothing of the step before the feet leave the floor")
+    let standing = standing_at(
+        Beats { windup: CONTACT, active: 0.1, recovery: slash().length() - CONTACT - 0.1 },
+    )
+    let read = |mv: Move| -> engine::footwork::Footwork {
+        engine::footwork::footwork(mv.clip, mv.root, rig, CONTACT, 0.0, mv.clip.length())
+    }
+    let (ours, without) = (read(SLASH), read(standing))
+    std::io::print(f"stepping {ours.text()}")
+    std::io::print(f"standing {without.text()}")
+    for i in 0..2 {
+        assert(
+            abs(ours.leaves[i] - without.leaves[i]) <= 0.017 &&
+                abs(ours.lands[i] - without.lands[i]) <= 0.017,
+            f"foot {i} leaves and lands as it does standing",
+        )
+        assert(
+            ours.slide[i] <= without.slide[i] + 0.005,
+            f"foot {i} slides {ours.slide[i]} m, standing {without.slide[i]}",
+        )
     }
 }
