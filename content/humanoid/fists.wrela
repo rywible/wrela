@@ -59,7 +59,7 @@ pub fn guard() -> Key {
 
 /// A keyed clip as a move that stays where it stands: no root path to carry, no heading to
 /// turn (its hips' turns are the pose's, not the body's).
-fn in_place(c: Clip) -> Move {
+pub fn in_place(c: Clip) -> Move {
     let n = c.frames
     Move {
         clip: c.clone(),

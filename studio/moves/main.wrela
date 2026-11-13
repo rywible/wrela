@@ -98,6 +98,8 @@ pub fn stances() -> Vec<(Text, Clip)> {
             ("guard", fists::GUARD.clip.clone()),
             ("accad", accad_fists::GUARD.clip.clone()),
             ("bounce", fists::BOUNCE.clone()),
+            ("sword-idle", humanoid::body::SWORD_IDLE_RAW.clone()),
+            ("armed", humanoid::armed::STANCE.clone()),
         ],
     )
 }

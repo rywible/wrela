@@ -1,0 +1,89 @@
+// The armed stance: a fighter standing ready with a longsword (the lab's stand-in, `stick::BOTH`)
+// in both hands. Its shape is the guard the cut in both hands is thrown from (`downcut`'s vom Tag,
+// the hilt at the right shoulder, the point up and back), solved with the weapon held by the keys
+// that hold it: both hands on the grip, the wrists in their range. So a cut begins where the
+// fighter stands. Its life is a source clip's, not written from waves: Quaternius's sword idle
+// (`body::SWORD_IDLE_RAW`, CC0) about its own mean, laid over that shape (`engine::stance::lived`),
+// the feet kept where the shape stands them and both hands kept on the grip.
+
+use engine::humanoid::Clip
+use engine::keys
+use engine::keys::Key
+use engine::playback::{Gaits, Move}
+use engine::stance
+use engine::stride
+use body::HERO
+use fists::{FIGHT_GAITS, in_place}
+use stick::BOTH
+
+/// The armed guard's shape: the cut's first key, its vom Tag.
+@fuel(2 ** 40)
+pub const GUARD_KEY: Key = downcut::cut().keys[0]
+
+/// The armed stance: the sword idle's life over the guard's shape, a loop, its hands made fists.
+@fuel(2 ** 40)
+pub const STANCE: Clip = stride::curled_hands(
+    stance::lived(HERO.rig, body::SWORD_IDLE_RAW.clone(), keys::posed(HERO.rig, GUARD_KEY), BOTH),
+    HERO.rig,
+    2.0,
+)
+
+/// The armed stance as a move that stays where it stands.
+@fuel(2 ** 40)
+pub const GUARD: Move = in_place(STANCE.clone())
+
+/// The gaits of a body ready to fight with the longsword: standing in the armed guard, walking and
+/// running as the fight's.
+@fuel(2 ** 40)
+pub const ARMED_GAITS: Gaits = Gaits { idle: GUARD.clone(), ..FIGHT_GAITS.clone() }
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// The armed stance stands in its solved shape with its source's life: on the stance sheet it
+/// settles and sways as the sword idle does (within a third), its hands and head move as much,
+/// it's never still, and a foot down slides no more than the source's; both hands stay on the
+/// grip all round the loop; and a cut begun at any moment of it doesn't jump.
+@test
+fn the_armed_stance_lives_as_its_source_does() {
+    borrow rig = HERO.rig
+    let a = stance::read(rig, STANCE.clone())
+    let s = stance::read(rig, body::SWORD_IDLE_RAW.clone())
+    std::io::print(a.text("armed").as_str())
+    let near = |x: f32, y: f32| -> bool { abs(x - y) <= max(abs(y) / 3.0, 0.005) }
+    assert(
+        near(a.bounces, s.bounces) && near(a.bounce_high, s.bounce_high),
+        "it settles as the source does",
+    )
+    // (The whole sway: the sheet reads across and fore and aft against the way it reads a stance
+    // facing, off its hands, which differ between the two.)
+    let sway = |x: engine::stance::Stance| -> f32 { length(vec2(x.sway_across, x.sway_fore)) }
+    assert(near(sway(a), sway(s)), f"it sways {sway(a)} m, the source {sway(s)}")
+    assert(
+        near(a.hands_most, s.hands_most) && near(a.head_most, s.head_most),
+        "its hands and head move as the source's",
+    )
+    assert(a.stillest <= 0.05, f"still {a.stillest} s at most")
+    assert(a.slide <= s.slide + 0.005, f"a foot slides {a.slide} m, the source's {s.slide}")
+    // Both hands on the grip, every frame.
+    var off = 0.0
+    for f in 0..STANCE.frames {
+        let w = engine::humanoid::pose_world(rig, STANCE.pose(f32(f) / STANCE.fps))
+        let thing = w[rig.find("rightHand")].then(BOTH.held.grip)
+        let left = thing.then(BOTH.off.inverse())
+        off = max(off, length(w[rig.find("leftHand")].t - left.t))
+    }
+    assert(off < 0.005, f"the left hand {off} m off its grip")
+    // A cut begun at any moment of it: its striking point and hips move no more on its first
+    // frame than a frame of the stance alone moves them.
+    let (e, h, ge, gh) = stance::begun(
+        rig,
+        ARMED_GAITS,
+        [downcut::DOWNCUT.clone()],
+        0,
+        downcut::STRIKE,
+    )
+    std::io::print(
+        f"begun: the striking point {e * 100.0:.1} cm, the hips {h * 100.0:.1}; a frame of the stance {ge * 100.0:.1} and {gh * 100.0:.1}",
+    )
+    assert(e <= ge + 0.01 && h <= gh + 0.005, "a cut begun at any moment doesn't jump")
+}
