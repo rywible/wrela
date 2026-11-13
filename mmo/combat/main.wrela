@@ -766,6 +766,10 @@ fn two_logs() -> Vec<Log> {
     // miss.)
     a.push(Change { frame: 0, input: 12 })
     b.push(Change { frame: 0, input: 15 })
+    // (The second stops at a second and lets the idol come to it: walked on to where the first
+    // starts attacking, it stood under the idol's feet, where its cut's sweep can't meet it, and
+    // only the idol's blows, pushing it back out, `sim::KNOCKBACK`, let it land.)
+    b.push(Change { frame: 60, input: 0 })
     var f: u32 = 80
     while f < 3000 {
         a.push(Change { frame: f, input: 64 | 13 })
