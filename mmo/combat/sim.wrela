@@ -71,7 +71,7 @@ pub const ALL_ROUND: i32 = -1024
 pub const NO_MOVE: u32 = 4294967295
 
 /// Every weapon's moves, by number (`Weapon` names its own).
-pub const MOVES: [Move; 6] = [
+pub const MOVES: [Move; 9] = [
     // Fists: a jab, and a heavier straight.
     Move {
         cost: 25,
@@ -135,6 +135,39 @@ pub const MOVES: [Move; 6] = [
         damage: 26,
         next: NO_MOVE,
     },
+    // The swordsman's (`SWORD`): a cut, a second on from it, and an overhead, each with a tell a
+    // player can answer (`the_swordsman`): a cut's 24 frames, as the idol's quickest parried
+    // blow, its sweep; the overhead's 32.
+    Move {
+        cost: 18,
+        windup: 24,
+        active: 5,
+        recovery: 22,
+        reach: 176,
+        arc: CUT,
+        damage: 12,
+        next: 7,
+    },
+    Move {
+        cost: 18,
+        windup: 24,
+        active: 5,
+        recovery: 26,
+        reach: 176,
+        arc: CUT,
+        damage: 12,
+        next: NO_MOVE,
+    },
+    Move {
+        cost: 30,
+        windup: 32,
+        active: 6,
+        recovery: 34,
+        reach: 192,
+        arc: CUT,
+        damage: 22,
+        next: NO_MOVE,
+    },
 ]
 
 /// A weapon: its light attack (the first of its combo) and its heavy one, as moves.
@@ -144,9 +177,15 @@ pub struct Weapon: Copy + Eq {
 }
 
 /// Every weapon, by number: what a fight's players bring (`World::armed`).
-pub const WEAPONS: [Weapon; 2] = [Weapon { light: 0, heavy: 1 }, Weapon { light: 2, heavy: 5 }]
+pub const WEAPONS: [Weapon; 3] = [
+    Weapon { light: 0, heavy: 1 },
+    Weapon { light: 2, heavy: 5 },
+    Weapon { light: 6, heavy: 8 },
+]
 pub const FISTS: u32 = 0
 pub const LONGSWORD: u32 = 1
+/// The swordsman's weapon (`the_swordsman`): a longsword, its moves his own.
+pub const SWORD: u32 = 2
 // A parry: its window, then its recovery; a boss hit it meets staggers the boss.
 const PARRY_COST: i32 = 10
 pub const PARRY_WINDOW: u32 = 8
@@ -201,7 +240,7 @@ pub const TRAVELLING: bool = true
 /// load; the longsword's the slash (`slash::slash_at`), stepping as its feet leave the floor
 /// going over the top. 32 (0.50 m) by the contact in each, the step done as the blow lands;
 /// mmo/game's `the_rules_carry_a_striker_as_its_strike_steps` holds them equal.
-pub const TRAVEL: [[i32; 64]; 6] = [
+pub const TRAVEL: [[i32; 64]; 9] = [
     [
         0, 0, 5, 12, 16, 17, 18, 24, 31, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
         32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
@@ -232,6 +271,21 @@ pub const TRAVEL: [[i32; 64]; 6] = [
         32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
         32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
     ],
+    [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 13, 19, 26, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+    ],
+    [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 13, 19, 26, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+    ],
+    [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 8, 13, 18,
+        22, 27, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+    ],
 ]
 /// The nearest a strike carries its striker to the foe (units, between their places: 0.69 m): a
 /// man's body and the idol's side by side, each a circle as wide as its shoulders (mmo/game's
@@ -256,20 +310,20 @@ fn into_move(p: Fighter) -> u32 {
 }
 
 /// `p` carried a frame on by its move, from `k` frames into it to the next, along the way it
-/// faces: no nearer `foe` than `NEAREST`.
-fn travels(p: mut Fighter, k: u32, foe: (i32, i32)) {
+/// faces: no nearer `foe` than `nearest` (`NEAREST`, a man and the idol; two men, `BODY` twice).
+fn travels(p: mut Fighter, k: u32, foe: (i32, i32), nearest: i32) {
     let (a, b) = (travelled(p.move_, k), travelled(p.move_, k + 1))
     if a == b {
         return
     }
     let f = p.facing % 16
     let (sx, sz) = (DIR_X[f] * b / 64 - DIR_X[f] * a / 64, DIR_Z[f] * b / 64 - DIR_Z[f] * a / 64)
-    // (The foe's body stops it: as far as keeps it `NEAREST` off, a unit at a time.)
+    // (The foe's body stops it: as far as keeps it `nearest` off, a unit at a time.)
     let steps = max(abs(sx), abs(sz))
     for i in 0..steps {
         let j = steps - i
         let (x, z) = (p.x + sx * j / steps, p.z + sz * j / steps)
-        if reach(x, z, foe.0, foe.1) >= NEAREST ||
+        if reach(x, z, foe.0, foe.1) >= nearest ||
             reach(x, z, foe.0, foe.1) >= reach(p.x, p.z, foe.0, foe.1) {
             p.x = x
             p.z = z
@@ -303,7 +357,7 @@ pub const PIECES: u32 = 2
 /// where the part's within a man's height for some of the piece, 0 where it passes over his head
 /// or under the floor. Read off the move the game draws for each (mmo/game's `bodies::sweep_of`,
 /// held equal by `the_rules_hit_what_the_drawn_strike_sweeps`).
-pub const SWEPT_SHAPES: [[[i32; 9]; 12]; 6] = [
+pub const SWEPT_SHAPES: [[[i32; 9]; 12]; 9] = [
     [
         [10, 11, 10, 11, 14, 31, 14, 31, 1],
         [14, 31, 14, 31, -1, 49, -1, 49, 1],
@@ -379,6 +433,48 @@ pub const SWEPT_SHAPES: [[[i32; 9]; 12]; 6] = [
         [-42, 36, -73, 53, -58, 88, -29, 51, 1],
         [-29, 51, -58, 88, -46, 101, -22, 55, 1],
         [-22, 55, -46, 101, -35, 107, -17, 56, 1],
+        [-17, 56, -35, 107, -17, 111, -10, 57, 1],
+        [-10, 57, -17, 111, -3, 109, -3, 57, 1],
+        [-3, 57, -3, 109, 14, 104, 4, 55, 1],
+        [4, 55, 14, 104, 30, 94, 11, 51, 1],
+        [11, 51, 30, 94, 44, 81, 18, 46, 1],
+        [18, 46, 44, 81, 51, 65, 22, 41, 1],
+        [22, 41, 51, 65, 53, 52, 25, 37, 1],
+        [25, 37, 53, 52, 53, 42, 26, 33, 1],
+    ],
+    [
+        [-52, 13, -68, 10, -74, 51, -43, 36, 1],
+        [-43, 36, -74, 51, -58, 88, -29, 51, 1],
+        [-29, 51, -58, 88, -45, 101, -22, 55, 1],
+        [-22, 55, -45, 101, -35, 107, -17, 56, 1],
+        [-17, 56, -35, 107, -17, 111, -10, 57, 1],
+        [-10, 57, -17, 111, -3, 109, -3, 57, 1],
+        [-3, 57, -3, 109, 14, 104, 4, 55, 1],
+        [4, 55, 14, 104, 30, 94, 11, 51, 1],
+        [11, 51, 30, 94, 44, 81, 18, 46, 1],
+        [18, 46, 44, 81, 51, 65, 22, 41, 1],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ],
+    [
+        [-52, 13, -68, 10, -74, 51, -43, 36, 1],
+        [-43, 36, -74, 51, -58, 88, -29, 51, 1],
+        [-29, 51, -58, 88, -45, 101, -22, 55, 1],
+        [-22, 55, -45, 101, -35, 107, -17, 56, 1],
+        [-17, 56, -35, 107, -17, 111, -10, 57, 1],
+        [-10, 57, -17, 111, -3, 109, -3, 57, 1],
+        [-3, 57, -3, 109, 14, 104, 4, 55, 1],
+        [4, 55, 14, 104, 30, 94, 11, 51, 1],
+        [11, 51, 30, 94, 44, 81, 18, 46, 1],
+        [18, 46, 44, 81, 51, 65, 22, 41, 1],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ],
+    [
+        [-46, 22, -69, 26, -73, 60, -40, 39, 1],
+        [-40, 39, -73, 60, -58, 88, -29, 51, 1],
+        [-29, 51, -58, 88, -47, 100, -22, 54, 1],
+        [-22, 54, -47, 100, -35, 107, -17, 56, 1],
         [-17, 56, -35, 107, -17, 111, -10, 57, 1],
         [-10, 57, -17, 111, -3, 109, -3, 57, 1],
         [-3, 57, -3, 109, 14, 104, 4, 55, 1],
@@ -912,6 +1008,10 @@ pub struct World: Clone + Eq {
     foe: u32,
     full: i32,
     made: u32,
+    /// Whether the foe is the swordsman (`World::against`, `THE_SWORDSMAN`): a man, on a player's
+    /// rules, his weapon `SWORD`; and how many frames he's stood free since his last action.
+    man: bool,
+    rested: u32,
     /// Each player's buttons as of the frame before.
     before: Vec<u32>,
     /// How long a press a player can't act on yet is kept (`BUFFER`, unless a bench asks another:
@@ -947,6 +1047,9 @@ pub struct Seen: Copy {
     pub carried_z: i32 = 0,
     /// Whether it's locked on to the foe (`LOCK_ON`).
     pub locked: bool = false,
+    /// Whether it's the swordsman (`THE_SWORDSMAN`): a man, his move in `MOVES`, where the idol's
+    /// is in `ATTACKS`.
+    pub man: bool = false,
     /// Its weapon (`WEAPONS`: `FISTS`, `LONGSWORD`), so a client draws what it holds.
     pub weapon: u32 = 0,
 }
@@ -965,21 +1068,34 @@ impl World {
     /// The fight's first frame, for a party whose players bring `weapons` (one each, in party
     /// order; at most `MAX_PARTY`; one that isn't a weapon is fists).
     pub fn armed(weapons: [u32]) -> World {
+        World::against(THE_IDOL, weapons)
+    }
+
+    /// The fight's first frame against `foe` (`THE_IDOL`, or `THE_SWORDSMAN`), for a party whose
+    /// players bring `weapons` (as `armed`).
+    pub fn against(foe: u32, weapons: [u32]) -> World {
         let n = if weapons.len() > MAX_PARTY { MAX_PARTY } else { weapons.len() }
         var party: Vec<Fighter> = Vec::new()
         var before: Vec<u32> = Vec::new()
         for i in 0..n {
-            let w = if weapons[i] < WEAPONS.len() { weapons[i] } else { FISTS }
+            // (A player brings fists or the longsword; the swordsman's weapon is his.)
+            let w = if weapons[i] < SWORD { weapons[i] } else { FISTS }
             party.push(Fighter::new(-4 * UNIT + i32(i) * 2 * UNIT, -6 * UNIT, PLAYER_HP, w, AHEAD))
             before.push(0)
         }
+        let man = foe == THE_SWORDSMAN
+        let full = if man { SWORDSMAN_HP * i32(n) } else { BOSSES[THE_IDOL].hp_each * i32(n) }
+        var boss = Fighter::new(0, 6 * UNIT, full, if man { SWORD } else { FISTS }, BACK)
+        boss.locked = man
         World {
             frame: 0,
             party,
-            boss: Fighter::new(0, 6 * UNIT, BOSSES[THE_IDOL].hp_each * i32(n), FISTS, BACK),
-            foe: THE_IDOL,
-            full: BOSSES[THE_IDOL].hp_each * i32(n),
+            boss,
+            foe: if man { THE_IDOL } else { foe },
+            full,
             made: 0,
+            man,
+            rested: 0,
             before,
             buffer: BUFFER,
             still: false,
@@ -1015,12 +1131,18 @@ impl World {
     }
 
     pub fn boss(self) -> Seen {
-        seen(self.boss.clone())
+        Seen { man: self.man, ..seen(self.boss.clone()) }
+    }
+
+    /// Whether the foe is the swordsman (`THE_SWORDSMAN`).
+    pub fn against_man(self) -> bool {
+        self.man
     }
 
     /// The attack the boss is making, from its windup (its tell) to the end of its recovery.
     pub fn boss_attack(self) -> Option<Attack> {
-        if self.boss.move_ < ATTACKS.len() &&
+        if !self.man &&
+            self.boss.move_ < ATTACKS.len() &&
             (self.boss.act == WINDUP || self.boss.act == ACTIVE || self.boss.act == RECOVER) {
             Some(ATTACKS[self.boss.move_])
         } else {
@@ -1150,18 +1272,29 @@ pub fn step(w: mut World, inputs: [u32]) {
             p.locked = !p.locked
         }
         let foe = (w.boss.x, w.boss.z)
-        step_player(mut p, stick, pressed & !LOCK_ON, w.buffer, foe)
+        // (Against the swordsman, two men: their bodies stop a strike's step as a man's do.)
+        let nearest = if w.man { BODY * 2 } else { NEAREST }
+        step_player(mut p, stick, pressed & !LOCK_ON, w.buffer, foe, nearest)
         if p.act == ACTIVE && !p.landed && w.boss.hp > 0 {
             let m = MOVES[p.move_]
             let (dx, dz) = (w.boss.x - p.x, w.boss.z - p.z)
-            // (The idol about the striker: across to its left and ahead, as its sweep has them.)
-            let (fx, fz) = (DIR_X[p.facing % 16], DIR_Z[p.facing % 16])
-            let (across, ahead) = ((dx * fz - dz * fx) / 64, (dx * fx + dz * fz) / 64)
-            let j = into_move(p) - m.windup
-            let met = if SWEEPING { swept(p.move_, j, across, ahead, IDOL_BODY) } else {
-                reach(p.x, p.z, w.boss.x, w.boss.z) <= m.reach && within(p.facing, dx, dz, m.arc)
-            }
-            if met {
+            let met = meets(p, w.boss.x, w.boss.z, if w.man { BODY } else { IDOL_BODY })
+            // (The swordsman parrying, facing the strike: it's met by his parry, and the one who
+            // struck it is staggered, as a parried idol is.)
+            let parried = met &&
+                w.man &&
+                w.boss.act == PARRYING &&
+                within(w.boss.facing, -dx, -dz, PARRY_ARC)
+            if parried {
+                p.landed = true
+                p.act = STAGGERED
+                p.timer = PARRIED_FOR
+                p.move_ = NO_MOVE
+                p.hold = hold_of(m.damage)
+                p.buffered = 0
+                p.kept = 0
+                boss_hold = max(boss_hold, hold_of(m.damage))
+            } else if met {
                 p.landed = true
                 w.boss.hp -= m.damage
                 p.dealt += u32(m.damage)
@@ -1171,14 +1304,20 @@ pub fn step(w: mut World, inputs: [u32]) {
                 if w.boss.act != WINDUP && w.boss.act != ACTIVE {
                     boss_hold = max(boss_hold, hold_of(m.damage))
                 }
-                // Pushed away from its striker, a quarter as far as a man is.
+                // Pushed away from its striker: the idol a quarter as far as a man is, the
+                // swordsman as far.
                 let (px, pz) = (p.x, p.z)
-                pushed(mut w.boss, px, pz, push_of(hold_of(m.damage)) * IDOL_TAKES / 4)
+                let takes = if w.man { 4 } else { IDOL_TAKES }
+                pushed(mut w.boss, px, pz, push_of(hold_of(m.damage)) * takes / 4)
             }
         }
         w.party[i] = take p
     }
-    step_boss(BOSSES[w.foe], w.full, mut w.made, mut w.boss, mut w.party, w.still)
+    if w.man {
+        step_swordsman(mut w)
+    } else {
+        step_boss(BOSSES[w.foe], w.full, mut w.made, mut w.boss, mut w.party, w.still)
+    }
     w.boss.hold = max(w.boss.hold, boss_hold)
     w.frame += 1
     if w.boss.hp <= 0 {
@@ -1198,6 +1337,191 @@ pub fn step(w: mut World, inputs: [u32]) {
     } else if w.frame >= MAX_FRAMES {
         w.over = true
     }
+}
+
+// ---- the swordsman ----------------------------------------------------------------------------
+
+/// The foes a fight can be against (`World::against`): the idol (`BOSSES`' `THE_IDOL`), or the
+/// swordsman: a man as big as a player, with a longsword (`SWORD`), on a player's rules. His
+/// strikes step in (`TRAVEL`) and meet what they sweep (`SWEPT_SHAPES`); he's pushed as a man is;
+/// a parry staggers him (`SWORDSMAN_STAGGER`), and he parries (`PARRIED_FOR` staggers who he
+/// parries).
+///
+/// **His tells.** A person answers what they see in some 12 to 24 frames at 60 a second (the
+/// bots' reactions on the bench), and a parry must be up `PARRY_WINDOW` (8) frames before the
+/// blow it meets lands, so a blow is answerable with a parry if its windup is at least the
+/// reaction and the window: 24 frames for a reaction of 16, and the cut's 24 is the idol's
+/// quickest parried blow's, its sweep. His overhead's 32 is answerable at 24. His second cut,
+/// on from the first in its recovery, is a tell of its own, 24 frames as the first.
+///
+/// **His pattern**, the same on every client (read off the fight as it is, and how far through
+/// it he is): he locks on to the nearest standing player; free, he keeps his distance
+/// (`SWORDSMAN_KEEP` off, out of a longsword's sweep), and once he's stood `SWORDSMAN_REST`
+/// frames he makes his pattern's next (`SWORDSMAN_PATTERN`): steps in to where his strike's step
+/// lands it in reach and cuts, cuts twice, or brings the overhead; or stands on guard and parries
+/// the next strike made at him (or, none made in `SWORDSMAN_GUARD` frames, goes on). After each, he
+/// backs off to his distance.
+pub const THE_SWORDSMAN: u32 = 1
+/// His health, for each player in the party (the idol's is 300).
+pub const SWORDSMAN_HP: i32 = 120
+/// How long a parry staggers him (frames: the idol's sweep's, the shortest of its parried
+/// blows', is 60; a man recovers sooner), and how long his parry staggers who he parries.
+pub const SWORDSMAN_STAGGER: u32 = 48
+pub const PARRIED_FOR: u32 = 36
+/// How far off he keeps (units: 2.5 m, past the longsword's sweep, 1.73 m and a body), how long he
+/// stands free between actions (frames), and how long he holds his guard for a strike to parry.
+pub const SWORDSMAN_KEEP: i32 = 160
+pub const SWORDSMAN_REST: u32 = 50
+pub const SWORDSMAN_GUARD: u32 = 90
+/// His pattern's actions, and the pattern.
+pub const CUT_ONCE: u32 = 0
+pub const CUT_TWICE: u32 = 1
+pub const OVERHEAD: u32 = 2
+pub const ON_GUARD: u32 = 3
+pub const SWORDSMAN_PATTERN: [u32; 6] = [
+    CUT_ONCE,
+    ON_GUARD,
+    CUT_TWICE,
+    OVERHEAD,
+    ON_GUARD,
+    CUT_ONCE,
+]
+
+/// Whether `p`'s strike, on its active frame, meets a body `body` wide whose middle is at (`x`,
+/// `z`): by its sweep (`SWEPT`), or its reach and arc.
+fn meets(p: Fighter, x: i32, z: i32, body: i32) -> bool {
+    let m = MOVES[p.move_]
+    let (dx, dz) = (x - p.x, z - p.z)
+    // (Across to its left and ahead, as its sweep has them.)
+    let (fx, fz) = (DIR_X[p.facing % 16], DIR_Z[p.facing % 16])
+    let (across, ahead) = ((dx * fz - dz * fx) / 64, (dx * fx + dz * fz) / 64)
+    let j = into_move(p) - m.windup
+    if SWEEPING { swept(p.move_, j, across, ahead, body) } else {
+        reach(p.x, p.z, x, z) <= m.reach && within(p.facing, dx, dz, m.arc)
+    }
+}
+
+/// The swordsman a frame on: his pattern's say, as a player's stick and presses, through a
+/// player's rules (`step_player`); and his strike, on its active frames, meeting each player it
+/// sweeps, once: a parry facing it staggers him, a dodge passes it, else it lands.
+fn step_swordsman(w: mut World) {
+    if w.boss.hp <= 0 {
+        return
+    }
+    // The nearest standing player, the first of equals.
+    var target = w.party.len()
+    var best: i32 = 0
+    for i in 0..w.party.len() {
+        if w.party[i].hp > 0 {
+            let d = reach(w.boss.x, w.boss.z, w.party[i].x, w.party[i].z)
+            if target == w.party.len() || d < best {
+                target = i
+                best = d
+            }
+        }
+    }
+    if target == w.party.len() || w.still {
+        // (Stood still for a bench: held and pushed, but no move of his own.)
+        if w.boss.hold > 0 {
+            w.boss.hold -= 1
+        } else {
+            shoved(mut w.boss)
+        }
+        return
+    }
+    let t = w.party[target].clone()
+    let (stick, pressed) = swordsman_says(w, t)
+    let foe = (t.x, t.z)
+    let was = w.boss.act
+    step_player(mut w.boss, stick, pressed, 0, foe, BODY * 2)
+    if w.boss.act == IDLE {
+        w.rested += 1
+    } else {
+        w.rested = 0
+    }
+    if was == IDLE && w.boss.act != IDLE {
+        w.made += 1
+    }
+    if w.boss.act == ACTIVE && !w.boss.landed {
+        let m = MOVES[w.boss.move_]
+        var parried = false
+        var struck = false
+        for i in 0..w.party.len() {
+            var p = w.party[i].clone()
+            if p.hp > 0 && meets(w.boss, p.x, p.z, BODY) {
+                let facing_it = within(p.facing, w.boss.x - p.x, w.boss.z - p.z, PARRY_ARC)
+                if p.act == PARRYING && facing_it {
+                    parried = true
+                    p.hold = hold_of(m.damage)
+                } else if p.act != DODGING {
+                    p.hp -= m.damage
+                    p.hold = hold_of(m.damage)
+                    // Pushed away from him, as far as the blow's heavy.
+                    pushed(mut p, w.boss.x, w.boss.z, push_of(hold_of(m.damage)))
+                    p.buffered = 0
+                    p.kept = 0
+                    struck = true
+                }
+                w.party[i] = take p
+            }
+        }
+        if struck || parried {
+            w.boss.landed = true
+            w.boss.hold = hold_of(m.damage)
+        }
+        if parried {
+            w.boss.act = STAGGERED
+            w.boss.timer = SWORDSMAN_STAGGER
+            w.boss.move_ = NO_MOVE
+        }
+    }
+}
+
+/// What the swordsman presses, and his stick, against his target `t`: his pattern's next, once
+/// he's rested; else keeping his distance.
+fn swordsman_says(w: World, t: Fighter) -> (u32, u32) {
+    let b = w.boss.clone()
+    let (dx, dz) = (t.x - b.x, t.z - b.z)
+    let d = reach(b.x, b.z, t.x, t.z)
+    let toward = direction(dx, dz)
+    let walk = |speed: u32| -> u32 { 1 + toward * 3 + speed }
+    let away = |speed: u32| -> u32 { 1 + ((toward + 8) % 16) * 3 + speed }
+    let does = SWORDSMAN_PATTERN[w.made % SWORDSMAN_PATTERN.len()]
+    // Striking: the second cut pressed in the first's recovery, if he means two.
+    if b.act != IDLE {
+        let chaining = b.act == RECOVER && b.move_ == WEAPONS[SWORD].light
+        let means_two = SWORDSMAN_PATTERN[(w.made + SWORDSMAN_PATTERN.len() - 1) %
+            SWORDSMAN_PATTERN.len()] ==
+            CUT_TWICE
+        return (0, if chaining && means_two { ATTACK } else { 0 })
+    }
+    // Free: rested, his pattern's next; else to his distance.
+    let keep = |speed: u32| -> u32 {
+        if d > SWORDSMAN_KEEP + 24 { walk(speed) } else if d < SWORDSMAN_KEEP - 24 {
+            away(speed)
+        } else { 0 }
+    }
+    // (He goes at the locked run, `LOCKED_SPEED`'s fastest.)
+    if w.rested < SWORDSMAN_REST {
+        return (keep(2), 0)
+    }
+    if does == ON_GUARD {
+        // A strike at him, about to land: parried. None in the while: on to the next.
+        if t.act == WINDUP && t.move_ != NO_MOVE && t.timer <= PARRY_WINDOW / 2 && d <= 220 {
+            return (0, PARRY)
+        }
+        if w.rested >= SWORDSMAN_REST + SWORDSMAN_GUARD {
+            // (Passing his guard by: a guard that meets nothing is a turn of the pattern.)
+            return (0, PARRY)
+        }
+        return (keep(2), 0)
+    }
+    let m = if does == OVERHEAD { WEAPONS[SWORD].heavy } else { WEAPONS[SWORD].light }
+    let lands = d - travelled(m, MOVES[m].windup)
+    if lands <= reach_of(m, BODY) - 24 {
+        return (0, if does == OVERHEAD { HEAVY } else { ATTACK })
+    }
+    (walk(2), 0)
 }
 
 /// The fight, from its party's size and each player's input log, everyone with the longsword.
@@ -1251,7 +1575,7 @@ fn begin(p: mut Fighter, m: u32) -> bool {
 }
 
 @deterministic
-fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32, foe: (i32, i32)) {
+fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32, foe: (i32, i32), nearest: i32) {
     // A press it can't act on yet is kept (`buffer` frames), the latest over any before it: one
     // slot, which a combo's next cut is taken from as any other press is.
     if fresh != 0 {
@@ -1292,7 +1616,7 @@ fn step_player(p: mut Fighter, stick: u32, fresh: u32, buffer: u32, foe: (i32, i
         // Striking, it's carried on by its move.
         if p.move_ != NO_MOVE && (p.act == WINDUP || p.act == ACTIVE || p.act == RECOVER) {
             let k = into_move(p)
-            travels(mut p, k, foe)
+            travels(mut p, k, foe, nearest)
         }
         if p.timer > 0 {
             p.timer -= 1
@@ -2315,7 +2639,7 @@ fn every_way_goes_at_its_pace() {
                 p.locked = locked
                 let stick = 1 + u32(dir) * 3 + u32(size)
                 for _ in 0..60 {
-                    step_player(mut p, stick, 0, BUFFER, (0, 50 * UNIT))
+                    step_player(mut p, stick, 0, BUFFER, (0, 50 * UNIT), NEAREST)
                 }
                 let speed = if locked { LOCKED_SPEED[size] } else { SPEED[size] }
                 let (wx, wz) = (DIR_X[dir] * speed * 60 / 64, DIR_Z[dir] * speed * 60 / 64)
@@ -2326,4 +2650,123 @@ fn every_way_goes_at_its_pace() {
             }
         }
     }
+}
+
+/// The swordsman's tells are answerable: each of his strikes winds up for at least a reaction of
+/// 16 frames and a parry's window (`PARRY_WINDOW`) before it lands.
+@test
+fn the_swordsmans_tells_can_be_answered() {
+    let s = WEAPONS[SWORD]
+    for m in [s.light, MOVES[s.light].next, s.heavy] {
+        assert(MOVES[m].windup >= 16 + PARRY_WINDOW, f"his move {m} winds up {MOVES[m].windup}")
+    }
+}
+
+/// Against a player who stands and doesn't answer, the swordsman comes to him, steps in and cuts:
+/// it lands, and pushes the player the whole of a man's push; then, resting, he backs off to his
+/// distance (`SWORDSMAN_KEEP`).
+@test
+fn the_swordsman_keeps_off_then_steps_in_and_cuts() {
+    var w = World::against(THE_SWORDSMAN, [LONGSWORD])
+    assert(w.boss().man && w.boss().weapon == SWORD, "the swordsman, his sword")
+    var cut = false
+    for _ in 0..1200 {
+        step(mut w, [0])
+        if w.party[0].hp < PLAYER_HP {
+            cut = true
+            break
+        }
+    }
+    let first = MOVES[WEAPONS[SWORD].light]
+    assert(cut, "he steps in and cuts")
+    assert(w.party[0].hp == PLAYER_HP - first.damage, "a cut's damage")
+    // (Held at the contact, then carried the whole of a man's push.)
+    for _ in 0..30 {
+        step(mut w, [0])
+    }
+    let carried = length(vec2(f32(w.party[0].carried_x), f32(w.party[0].carried_z)))
+    let push = f32(push_of(hold_of(first.damage)))
+    assert(
+        carried - push <= 2.0 && push - carried <= 2.0,
+        f"pushed {carried} units, a man's push {push}",
+    )
+    // Then, resting, he backs off to his distance.
+    for _ in 0..SWORDSMAN_REST - 10 {
+        step(mut w, [0])
+    }
+    let d = reach(w.boss.x, w.boss.z, w.party[0].x, w.party[0].z)
+    assert(
+        w.boss.act == IDLE && d >= SWORDSMAN_KEEP - 32 && d <= SWORDSMAN_KEEP + 32,
+        f"resting, he keeps {d} units off",
+    )
+}
+
+/// A parry that meets the swordsman's cut staggers him `SWORDSMAN_STAGGER` frames, and a cut made
+/// while he's staggered lands and pushes him as a man is pushed.
+@test
+fn a_parried_swordsman_is_open() {
+    var w = World::against(THE_SWORDSMAN, [LONGSWORD])
+    // Facing him, standing where it is (locked on; else turned to him each frame by its stick,
+    // which would walk it in), parrying his cut as it's about to land.
+    var input: u32 = if LOCKING { LOCK_ON << 6 } else { 0 }
+    var staggered = false
+    for _ in 0..600 {
+        let to = direction(w.boss.x - w.party[0].x, w.boss.z - w.party[0].z)
+        if !LOCKING {
+            w.party[0].facing = to
+        }
+        if w.boss.act == WINDUP && w.boss.timer == 4 && w.party[0].act == IDLE {
+            input = input ^ (PARRY << 6)
+        }
+        step(mut w, [input & BUTTON_BITS])
+        if w.boss.act == STAGGERED {
+            staggered = true
+            break
+        }
+    }
+    assert(staggered, "a parry staggers him")
+    assert(w.party[0].hp == PLAYER_HP, "and nothing lands on the one parrying")
+    let hp = w.boss.hp
+    let (cx, cz) = (w.boss.carried_x, w.boss.carried_z)
+    // Open: cut at him while he's staggered.
+    for _ in 0..12 {
+        step(mut w, [input & BUTTON_BITS])
+    }
+    input = input ^ (ATTACK << 6)
+    var landed = false
+    for _ in 0..40 {
+        step(mut w, [input & BUTTON_BITS])
+        landed = landed || w.boss.hp < hp
+    }
+    assert(landed, "a cut lands on him while he's open")
+    let cut = MOVES[WEAPONS[LONGSWORD].light]
+    let moved = length(vec2(f32(w.boss.carried_x - cx), f32(w.boss.carried_z - cz)))
+    assert(
+        moved - f32(push_of(hold_of(cut.damage))) <= 2.0 &&
+            f32(push_of(hold_of(cut.damage))) - moved <= 2.0,
+        f"pushed {moved} units, as a man is",
+    )
+}
+
+/// On guard, the swordsman parries a strike made at him: the one who struck is staggered
+/// (`PARRIED_FOR`) and he takes nothing.
+@test
+fn the_swordsman_on_guard_parries() {
+    var w = World::against(THE_SWORDSMAN, [LONGSWORD])
+    // On guard, rested, where a cut meets him once its step's taken (none with `TRAVELLING` off).
+    w.made = 1
+    w.rested = SWORDSMAN_REST
+    let cut = WEAPONS[LONGSWORD].light
+    w.party[0].x = 0
+    w.party[0].z = w.boss.z - 100 - travelled(cut, MOVES[cut].windup)
+    w.party[0].facing = AHEAD
+    let hp = w.boss.hp
+    var input = ATTACK << 6
+    var parried = false
+    for _ in 0..60 {
+        step(mut w, [input])
+        parried = parried || w.party[0].act == STAGGERED
+    }
+    assert(parried, "he parries, and the one who struck is staggered")
+    assert(w.boss.hp == hp, "and the strike doesn't land")
 }
