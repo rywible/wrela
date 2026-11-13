@@ -40,8 +40,8 @@ use humanoid::look::{SUN, Shot}
 use humanoid::paint::{backdrop, body, ground, paint_backdrop, paint_body, paint_ground}
 use humanoid::solved
 use combat::sim::{
-    ACTIVE, ATTACKS, DODGE_FRAMES, DODGING, HZ, IDLE, MAX_PARTY, MOVES, NO_MOVE, PARRYING, RECOVER,
-    STAGGERED, Seen, WINDUP, World,
+    ACTIVE, ATTACKS, DODGE_FRAMES, DODGING, HZ, IDLE, MAX_PARTY, MOVES, NO_MOVE, PARRYING, PUSH,
+    RECOVER, STAGGERED, Seen, WINDUP, World,
 }
 use ui::draw::Renderer
 
@@ -174,6 +174,8 @@ pub struct Body: Copy {
     pub role: u32,
     pub knock: Knock,
     pub shock: Shock,
+    /// How far the rules' pushes had carried it as last seen (m, along the floor).
+    pub carried: vec3,
 }
 
 /// What a body's pending blow is to it (`Body::role`).
@@ -181,11 +183,12 @@ pub const NOTHING: u32 = 0
 pub const STRUCK: u32 = 1
 pub const STRIKER: u32 = 2
 
-/// How the fight's bodies take blows and give them (`engine::contact::Give`): in place. The rules
-/// have no knockback and judge every hit at their own place, so a body is drawn where they put it
-/// (its whole body driven back nowhere), its head, trunk and guard giving as the blow says, its
-/// lean at most a hand's width (`LEAN_MOST`) however many blows land.
-pub const GIVE: Give = Give { back: 0.0, lean: 0.1, most: 1.0 }
+/// How the fight's bodies take blows and give them (`engine::contact::Give`). A blow drives a body
+/// no further than the rules push it (mmo/combat's knockback): a body is drawn where they put it,
+/// its whole body's drive the rules' push (`Knock::carried`; drawn behind it at most two of the
+/// heaviest pushes, `carry`) and none of its own (`back`), its head, trunk and guard giving as the
+/// blow says, its lean at most a hand's width (`LEAN_MOST`) however many blows land.
+pub const GIVE: Give = Give { back: 0.0, lean: 0.1, most: 1.0, carry: 2.0 * f32(PUSH) / UNIT }
 
 /// How far a blow may lean a drawn body's head off where its moves have it (m): a hand's width.
 pub const LEAN_MOST: f32 = 0.1
@@ -193,6 +196,11 @@ pub const LEAN_MOST: f32 = 0.1
 /// The most frames the rules hold a blow (mmo/combat's `hold_of`): a blow held that long is as
 /// heavy as a fight's blows get.
 const MOST_HOLD: u32 = 8
+
+/// How far the rules' pushes have carried `seen` in all (m).
+pub fn carried_of(seen: Seen) -> vec3 {
+    vec3(f32(seen.carried_x) / UNIT, 0.0, f32(seen.carried_z) / UNIT)
+}
 
 /// Where the rules put `seen` (m).
 pub fn place_of(seen: Seen) -> vec3 {
@@ -216,12 +224,13 @@ impl Body {
             role: NOTHING,
             knock: Knock::none(),
             shock: Shock::none(),
+            carried: carried_of(seen),
         }
     }
 }
 
-/// Where body `b` is drawn (on the floor, m): the rules' place, its drift, and how far blows have
-/// knocked it (none, as `GIVE` gives).
+/// Where body `b` is drawn (on the floor, m): the rules' place, its drift, and how far behind a
+/// push the knock's drive still has it.
 pub fn drawn_at(b: Body) -> vec3 {
     b.mover.place + b.mover.drift + b.mover.knocked
 }
@@ -272,7 +281,9 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
     // Going where the rules took it, as fast as they did; standing, turned the way they face it.
     let facing = heading_of(seen.facing)
     let steps = if frame > b.frame { f32(frame - b.frame) } else { 0.0 }
-    let moved = at - b.at
+    // What of its move is the rules' push, not a walk: drawn as the blow's drive (`Knock`).
+    let pushed = carried_of(seen) - b.carried
+    let moved = at - b.at - pushed
     var stick = if seen.act == IDLE && steps > 0.0 { moved * (f32(HZ) / steps) } else {
         vec3(0.0)
     }
@@ -306,6 +317,10 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
     }
     // Reeling, it's held out for as long as the rules hold it staggered.
     b.knock.reeling(seen.act == STAGGERED)
+    // (The push moves its place and is held back by its drive at once, so it's drawn where it was
+    // and goes there at the drive's pace.)
+    b.mover.place += pushed
+    b.knock.carried(pushed)
     let still = if held { 0.0 } else { dt }
     b.knock.step(mut b.mover, GIVE, still)
     b.shock.step(GIVE, still)
@@ -334,10 +349,12 @@ pub fn follow(b: mut Body, seen: Seen, frame: u32, mask: [f32; 64], dt: f32) -> 
         b.mover.heading = playback::wrapped(h)
         b.mover.spin = spin
     }
-    // Its place is the rules': what it's off by is drift, which dies away.
+    // Its place is the rules': what it's off by is drift, which dies away (a push, the knock's
+    // drive, laid in above).
     let off = at - b.mover.place
     b.mover.place = at
     b.mover.drift -= vec3(off.x, 0.0, off.z)
+    b.carried = carried_of(seen)
     b.act = seen.act
     b.move_ = seen.move_
     b.hp = seen.hp
@@ -810,8 +827,8 @@ fn every_strike_puts_its_fist_on_its_contact_on_the_frame_the_rules_hit() {
 }
 
 /// A fight's blows are laid into the bodies: the idol struck by a jab gives as the hold breaks
-/// (its head turned off what its guard gives it), and the jab's arm shocked. And it gives in
-/// place: through blow on blow, no body is drawn off the rules' place by them, nor its head
+/// (its head turned off what its guard gives it), and the jab's arm shocked. And through blow on
+/// blow, no body is drawn further behind the rules' pushes than `GIVE.carry`, nor its head
 /// leaned more than a hand's width (`LEAN_MOST`).
 @test
 fn a_blow_the_rules_land_knocks_the_one_struck_and_shocks_the_striker() {
@@ -849,11 +866,53 @@ fn a_blow_the_rules_land_knocks_the_one_struck_and_shocks_the_striker() {
         }
     }
     assert(b.blows > 3, f"blows land: {b.blows}")
-    assert(off < 1.0e-4, f"a body's drawn {off} m off the rules' place by blows")
+    assert(off <= GIVE.carry, f"a body's drawn {off} m behind the rules' pushes")
     assert(lean <= LEAN_MOST, f"a body's head leaned {lean} m by blows")
     // (Drawn off the rules' place at all, by blows or the drift a change of move leaves: no more
     // than main's fight ever was, 0.535 m on `wrela tool feel`'s bench.)
     assert(drawn < 0.6, f"a body's drawn {drawn} m off the rules' place")
     assert(knocked > 0.02, f"the idol's head knocked {knocked} rad")
     assert(shocked > 0.02, f"the jab's arm shocked {shocked} rad")
+}
+
+/// A player the idol's slam lands on is pushed by the rules (mmo/combat's knockback), and drawn
+/// so: held where it stood through the hold, then carried to where the rules put it by the knock's
+/// drive, its feet stepping after it; it doesn't walk there (its push isn't read as a stick), and
+/// it ends on the rules' place.
+@test
+fn a_push_the_rules_give_is_drawn_as_the_knocks_drive() {
+    var w = World::armed([combat::sim::FISTS])
+    var b = Bodies::new()
+    let dt = 1.0 / 60.0
+    var input: u32 = 0
+    var pushed = 0.0
+    var walked = false
+    var stepped = false
+    // (The player stands; the idol walks in and makes its pattern till a slam lands.)
+    for _ in 0..2400 {
+        combat::sim::step(mut w, [input])
+        let _ = b.follow(w, dt)
+        let body = b.body(1)
+        let p = w.player(0)
+        if length(carried_of(p)) > 0.3 && pushed == 0.0 {
+            pushed = length(carried_of(p))
+        }
+        if pushed > 0.0 {
+            walked = walked || body.mover.doing != playback::STANDING
+            stepped = stepped || body.mover.feet[0].step > 0.0 || body.mover.feet[1].step > 0.0
+        }
+        if pushed > 0.0 && body.knock.still() && length(body.mover.knocked) < 0.01 {
+            break
+        }
+        let _ = input
+        input = 0
+    }
+    assert(pushed > 0.3, f"a heavy blow pushes the player {pushed} m")
+    let body = b.body(1)
+    assert(
+        length(drawn_at(body) - place_of(w.player(0))) < 0.05,
+        "and it's drawn on the rules' place",
+    )
+    assert(!walked, "carried, not walking")
+    assert(stepped, "its feet stepping after it")
 }

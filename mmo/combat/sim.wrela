@@ -406,9 +406,12 @@ struct Fighter: Clone + Eq {
     hold: u32,
     buffered: u32,
     kept: u32,
-    /// What's left of a push a blow gave it (units), carried out once its hold breaks (`shoved`).
+    /// What's left of a push a blow gave it (units), carried out once its hold breaks (`shoved`),
+    /// and how far pushes have carried it in all (units), for a client to tell a push from a walk.
     shove_x: i32,
     shove_z: i32,
+    carried_x: i32,
+    carried_z: i32,
 }
 
 impl Fighter {
@@ -432,6 +435,8 @@ impl Fighter {
             kept: 0,
             shove_x: 0,
             shove_z: 0,
+            carried_x: 0,
+            carried_z: 0,
         }
     }
 }
@@ -514,8 +519,11 @@ fn shoved(f: mut Fighter) {
         return
     }
     let (sx, sz) = (eased(f.shove_x), eased(f.shove_z))
+    let (x0, z0) = (f.x, f.z)
     f.x = clamp(f.x + sx, -ARENA, ARENA)
     f.z = clamp(f.z + sz, -ARENA, ARENA)
+    f.carried_x += f.x - x0
+    f.carried_z += f.z - z0
     f.shove_x -= sx
     f.shove_z -= sz
 }
@@ -574,6 +582,10 @@ pub struct Seen: Copy {
     pub facing: u32,
     /// The frames it's held still at a contact (`hold_of`).
     pub hold: u32 = 0,
+    /// How far pushes have carried it in all (units): what of its moves is a blow's push, not a
+    /// walk.
+    pub carried_x: i32 = 0,
+    pub carried_z: i32 = 0,
 }
 
 impl World {
@@ -709,6 +721,8 @@ fn seen(f: Fighter) -> Seen {
         move_: f.move_,
         facing: f.facing,
         hold: f.hold,
+        carried_x: f.carried_x,
+        carried_z: f.carried_z,
     }
 }
 
