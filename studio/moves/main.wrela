@@ -73,7 +73,17 @@ pub const USAGE: Text = "usage: wrela tool moves -- [move ...] | --contact | --s
 /// (content/humanoid's `stick`), until the longsword's cuts are written (8c, piece 11).
 pub fn cuts() -> Vec<(Text, Clip, engine::held::Held, f32)> {
     Vec::from(
-        [("cross-stick", solved::CROSS.clip.clone(), humanoid::stick::STICK, solved::CONTACT)],
+        [
+            ("cross-stick", solved::CROSS.clip.clone(), humanoid::stick::STICK, solved::CONTACT),
+            (
+                "downcut",
+                humanoid::downcut::DOWNCUT.clip.clone(),
+                humanoid::stick::BOTH.held,
+                humanoid::downcut::CONTACT,
+            ),
+            // (Quaternius's sword cut, the stick in the hand its sword was: a reference.)
+            ("sword-take", humanoid::body::SWORD_ATTACK_RAW.clone(), humanoid::stick::STICK, -1.0),
+        ],
     )
 }
 

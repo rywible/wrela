@@ -31,7 +31,7 @@
 
 use humanoid::{Clip, NONE, Pose, Rig, pose_world}
 use playback::{ACTIVE, CANCEL, Mark, Move, RECOVER, WINDUP}
-use keys::{Key, key_in, posed, shifted}
+use keys::{Key, both_hands, hands_of, key_in, posed, shifted}
 use std::collections::Vec
 use stride::curled_hands
 use timing::RATE
@@ -223,7 +223,9 @@ impl<const N: u32> Written<N> {
                 out.hips = p.hips
             }
         }
-        out
+        // Both hands on what's held: the other hand follows the holding hand on the grip, on the
+        // holding hand's clock, not the trunk's.
+        both_hands(rig, out, self.keys[0].wield)
     }
 
     /// Where the move has carried its root along the floor by `time` (s from its start): its
@@ -383,7 +385,7 @@ impl<const N: u32> Written<N> {
         let k = shifted(self.keys[key], -self.keys[key].travel)
         let w = pose_world(rig, posed(rig, k))
         let whole = length(w[elbow].t - w[shoulder].t) + length(w[wrist].t - w[elbow].t)
-        let spot = if self.arm(rig) == 0 { k.fists[0] } else { k.fists[1] }
+        let spot = hands_of(k)[self.arm(rig)].t
         length(spot - w[shoulder].t) / max(whole, 1.0e-5)
     }
 
@@ -405,6 +407,37 @@ impl<const N: u32> Written<N> {
         let fore = normalize(w[wrist].t - w[elbow].t)
         let axis = w[shoulder].q.inverse().rotate(normalize(cross(up, fore)))
         acos(clamp(dot(axis, real), -1.0, 1.0)) / DEG
+    }
+
+    /// How far (degrees) what the move holds (its keys' `wield`) has its edge off the way the
+    /// point `along` its length (0 the hilt, 1 the tip) goes over the step of 1 / `RATE` s that
+    /// ends at `time`: 0 edge first, 90 flat to its way, 180 its back first. The cut sheet's
+    /// read (`engine::cut`) where a solve can follow it. 90 where nothing's held or it's still.
+    pub fn edge(self, rig: Rig, time: f32, along: f32) -> f32 {
+        let held = self.keys[0].wield.held
+        let hand = held.hand_of(rig)
+        if !held.held() || hand == NONE {
+            return 90.0
+        }
+        let now = pose_world(rig, self.pose(rig, time))[hand]
+        let before = pose_world(rig, self.pose(rig, time - 1.0 / RATE))[hand]
+        let e = held.at(along)
+        let v = e.on(now) - e.on(before)
+        if length(v) < 1.0e-6 {
+            return 90.0
+        }
+        acos(clamp(dot(held.edge_at(now), normalize(v)), -1.0, 1.0)) / DEG
+    }
+
+    /// How far (degrees) arm `arm`'s wrist is bent at `time` (0 the left, 1 the right): its
+    /// hand's turn off its forearm's, as the rest has them.
+    pub fn wrist(self, rig: Rig, time: f32, arm: u32) -> f32 {
+        let a = arm_of(rig, arm)
+        let p = self.pose(rig, time)
+        let q = p.turns[a[3]]
+        let rest = rig.rests()[a[3]].q
+        let d = rest.inverse().mul(q)
+        2.0 * acos(clamp(abs(d.v.w), 0.0, 1.0)) / DEG
     }
 
     /// The striking end's fastest step (m/s) of `steps` steps of 1 / `RATE` s from `from`

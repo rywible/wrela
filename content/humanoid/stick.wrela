@@ -4,6 +4,7 @@
 // has none, but its reads want one) the way the knuckles face.
 
 use engine::held::Held
+use engine::keys::Wield
 use engine::humanoid::Rigid
 use engine::creature::{Creature, creature, hard}
 use std::field::{Surface, round_cone}
@@ -11,9 +12,13 @@ use hakuro::hakuro::{Cloth, skeleton}
 use body::HERO
 use solved
 
-/// How long the stick is past the fist (m), and how far its butt shows below it.
+/// How long the stick is past the fist (m), and how far its butt shows below it: room for the
+/// other fist below the first, held in both hands (`BOTH`).
 pub const LENGTH: f32 = 0.9
-pub const BUTT: f32 = 0.06
+pub const BUTT: f32 = 0.2
+/// How far below the right fist the left holds it, held in both (m: a fist's width and a little,
+/// as a longsword's grip is held, the one hand by the cross and the other by the pommel).
+pub const SPAN: f32 = 0.11
 /// How thick it is (m).
 pub const THICK: f32 = 0.018
 
@@ -41,6 +46,24 @@ fn stick() -> Held {
     }
 }
 
+/// The stick in both fists: the right by its hilt as `STICK` holds it, the left a `SPAN` below,
+/// held as the right holds it (through the fist, out past the thumb), its knuckles the edge's way
+/// too.
+@fuel(2 ** 40)
+pub const BOTH: Wield = Wield { held: STICK, off: left_grip(), both: true }
+
+fn left_grip() -> Rigid {
+    borrow rig = HERO.rig
+    let hand = rig.rest_world()[rig.find("leftHand")]
+    // At rest (the arm out to the left, palm down), as the right's mirrored: the fist's middle,
+    // the stick ahead through it, its edge out along the arm; the fist a `SPAN` down the stick
+    // from its hilt.
+    let fist = hand.t + vec3(0.08, -0.01, 0.0)
+    let own = Quat::axis_angle(vec3(1.0, 0.0, 0.0), 1.5707963)
+    let thing = Rigid { q: own, t: fist + vec3(0.0, 0.0, SPAN) }
+    hand.inverse().then(thing)
+}
+
 // ---- tests ---------------------------------------------------------------------------------------
 
 /// The stick sits as gripped: at rest, its hilt in the fist and its tip a stick's length straight
@@ -58,6 +81,17 @@ fn the_stick_is_held_as_a_fist_holds_one() {
         "its edge out along the arm",
     )
     assert(abs(STICK.length() - LENGTH) < 1.0e-5)
+    // In both fists: the left's grip puts the left fist a `SPAN` down from the hilt, the edge
+    // out along its own arm.
+    let left = rig.rest_world()[rig.find("leftHand")]
+    let thing = left.then(BOTH.off)
+    let lfist = left.t + vec3(0.08, -0.01, 0.0)
+    let at = thing.t + thing.q.rotate(vec3(0.0, -SPAN, 0.0))
+    assert(length(at - lfist) < 1.0e-4, f"the left fist {lfist} on the stick at {at}")
+    assert(
+        length(thing.q.rotate(STICK.edge) - vec3(1.0, 0.0, 0.0)) < 1.0e-3,
+        "its edge out along the left arm",
+    )
 }
 
 /// The stick as Hakuro holds it (content/hakuro's skeleton, his right hand's bone): a plain

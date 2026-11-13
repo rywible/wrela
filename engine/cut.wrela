@@ -82,9 +82,9 @@ pub fn cut(clip: Clip, rig: Rig, held: Held, contact: f32) -> Cut {
             path += length(step)
             out.hand_fastest = max(out.hand_fastest, length(r.at[i] - r.at[i - 1]) * RATE)
             if length(step) > 1.0e-5 {
-                let off = acos(clamp(abs(dot(held.edge_at(frame(i)), normalize(step))), 0.0, 1.0))
-                // (0 edge first: the edge along the way it goes.)
-                let a = 90.0 - off * DEG
+                // (0 edge first: the edge along the way it goes, either edge; 90 flat to it.)
+                let a = acos(clamp(abs(dot(held.edge_at(frame(i)), normalize(step))), 0.0, 1.0)) *
+                    DEG
                 out.edge_worst = max(out.edge_worst, abs(a))
                 if i == i_c {
                     out.edge_on = abs(a)

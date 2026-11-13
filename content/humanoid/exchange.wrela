@@ -29,6 +29,7 @@ use body::HERO
 use fists::FIGHT_GAITS
 use solved
 use stepping
+use downcut
 use stick
 
 /// The hit-stop: how long both bodies hold at contact (s).
@@ -103,14 +104,15 @@ pub struct Tune: Copy + Eq {
     pub recoil: f32 = X_RECOIL,
     /// How heavy the blow is (`engine::contact::Hit::weight`).
     pub weight: f32 = 1.0,
-    /// Whether the striker holds the lab's stand-in stick (`stick::STICK`): the blow lands where
-    /// along it the head is, going the way the stick goes there, and it's drawn trailing.
+    /// Whether the striker holds the lab's stand-in stick (`stick::BOTH`), in both hands, and cuts
+    /// with it (`downcut::DOWNCUT`) in place of the cross: the blow lands where along it the head
+    /// is, going the way the stick goes there, and it's drawn trailing.
     pub stick: bool = false,
 }
 
 /// What the striker holds, as `t` says.
 pub fn held_of(t: Tune) -> Held {
-    if t.stick { stick::STICK } else { engine::held::NOTHING }
+    if t.stick { stick::BOTH.held } else { engine::held::NOTHING }
 }
 
 pub const TUNED: Tune = Tune {
@@ -153,18 +155,37 @@ pub const FOE_AT: vec3 = foe_at(giant: false)
 @fuel(2 ** 40)
 pub const GIANT_AT: vec3 = foe_at(giant: true)
 
-fn foe_at(giant: bool) -> vec3 {
+/// Where the one struck stands for the cut (the stick in both hands): his neck where the cut
+/// lands.
+@fuel(2 ** 40)
+pub const CUT_FOE_AT: vec3 = foe_at(giant: false, hit: CUT_POINT)
+
+/// Where the cut's striking point is on its contact (the world), thrown from the origin.
+@fuel(2 ** 40)
+pub const CUT_POINT: vec3 = turned(downcut::cut().end(HERO.rig, downcut::CONTACT), HEADING)
+
+fn foe_at(giant: bool, hit: vec3 = KNUCKLES) -> vec3 {
     let (p, s) = if giant {
         ((in_guard("leftLowerLeg") + in_guard("leftFoot")) * 0.5, X_SCALE)
     } else { (in_guard("head") - vec3(0.0, 0.1, 0.0), 1.0) }
-    let to = KNUCKLES + BLOW * 0.1
+    let to = hit + BLOW * 0.1
     let r = turned(p, FACING_BACK) * s
     vec3(to.x - r.x, 0.0, to.z - r.z)
 }
 
+/// Where the one struck (not the giant) stands, as `t` says: where the cut lands, or the cross.
+fn foe_of(t: Tune) -> vec3 {
+    if t.stick { CUT_FOE_AT } else { FOE_AT }
+}
+
+/// When the striker's strike lands (s into it), as `t` says: the cut's, or the cross's.
+fn contact_of(t: Tune) -> f32 {
+    if t.stick { downcut::CONTACT } else { stepping::CONTACT }
+}
+
 /// Where the one struck is drawn: turned to face the striker, the giant `X_SCALE` times as big.
 pub fn place(t: Tune) -> mat4 {
-    let (at, s) = if t.giant { (GIANT_AT, X_SCALE) } else { (FOE_AT, 1.0) }
+    let (at, s) = if t.giant { (GIANT_AT, X_SCALE) } else { (foe_of(t), 1.0) }
     let (x, z) = (
         turned(vec3(1.0, 0.0, 0.0), FACING_BACK),
         turned(vec3(0.0, 0.0, 1.0), FACING_BACK),
@@ -244,12 +265,19 @@ pub struct Exchange: Clone {
     from_hit: f32,
 }
 
-/// What the striker does: stands out of reach, throws the cross stepping in (`CROSS`), and steps
-/// back to where he stood (`BACK`).
+/// What the striker does: stands out of reach, throws the cross stepping in (`CROSS`), or with the
+/// stick the cut (`CUT`), and steps back to where he stood (`BACK`, `CUT_BACK`).
 @fuel(2 ** 40)
-const MOVES: [Move; 2] = [stepping::CROSS.clone(), stepping::BACK.clone()]
+const MOVES: [Move; 4] = [
+    stepping::CROSS.clone(),
+    stepping::BACK.clone(),
+    downcut::DOWNCUT.clone(),
+    downcut::BACK.clone(),
+]
 const CROSS: u32 = 0
 const BACK: u32 = 1
+const CUT: u32 = 2
+const CUT_BACK: u32 = 3
 
 impl Exchange {
     /// Both in their guards, the cross to be thrown `after` s on (below 0: none till a press).
@@ -261,7 +289,7 @@ impl Exchange {
             then: humanoid::NONE,
             striker: Mover::standing(vec3(0.0), HEADING, FIGHT_GAITS),
             struck: Mover::standing(if t.giant { GIANT_AT } else {
-                FOE_AT
+                foe_of(t)
             }, FACING_BACK, FIGHT_GAITS),
             drawer: Drawer::new(),
             mask: playback::upper_body(HERO.rig),
@@ -291,9 +319,9 @@ impl Exchange {
     /// A press: the cross thrown now, through `t`, from wherever the two stand. (Who's struck
     /// changing stands him anew.)
     pub fn again(mut self, t: Tune) {
-        if t.giant != self.tune.giant {
+        if t.giant != self.tune.giant || t.stick != self.tune.stick {
             self.struck = Mover::standing(
-                if t.giant { GIANT_AT } else { FOE_AT },
+                if t.giant { GIANT_AT } else { foe_of(t) },
                 FACING_BACK,
                 FIGHT_GAITS,
             )
@@ -317,8 +345,8 @@ impl Exchange {
         self.landed = false
         var act = humanoid::NONE
         if self.throw && self.clock >= 0.0 {
-            act = CROSS
-            self.then = BACK
+            act = if t.stick { CUT } else { CROSS }
+            self.then = if t.stick { CUT_BACK } else { BACK }
             self.throw = false
         } else if self.then != humanoid::NONE && self.striker.acting == humanoid::NONE {
             act = self.then
@@ -339,16 +367,16 @@ impl Exchange {
             how: Handling {},
             dt: contact::paced(dt, held: holding, grind: t.grind),
         )
-        let striking = self.striker.acting == 0
+        let striking = self.striker.acting == CROSS || self.striker.acting == CUT
         let now = self.striker.act_time
-        if striking && was < stepping::CONTACT - 0.12 && now >= stepping::CONTACT - 0.12 {
+        if striking && was < contact_of(t) - 0.12 && now >= contact_of(t) - 0.12 {
             self.swing = true
         }
         // The blow lands as the cross reaches its contact.
         let holds = held_of(t)
         let w_now = pose_world(rig, pose)
         let hand_now = w_now[rig.find("rightHand")]
-        if striking && self.since < 0.0 && now >= stepping::CONTACT {
+        if striking && self.since < 0.0 && now >= contact_of(t) {
             let place = playback::placed(self.striker)
             let fist = (place * vec4(RIGHT_FIST.in_pose(rig, w_now), 1.0)).xyz
             self.hit = Hit { at: fist, way: BLOW, weight: t.weight, hold: t.hold }
@@ -403,7 +431,7 @@ impl Exchange {
             mut self.drawer,
             self.striker,
             MOVES,
-            [look, anime::PLAIN, anime::PLAIN],
+            [look, anime::PLAIN, look, anime::PLAIN],
             rig,
             self.mask,
             pose,
@@ -441,7 +469,7 @@ impl Exchange {
             self.shown_place,
         )
         self.from_hit = if self.since >= 0.0 { self.since } else if striking {
-            self.striker.act_time - stepping::CONTACT
+            self.striker.act_time - contact_of(t)
         } else { -1.0e6 }
         self.kick.step(give, dt)
     }
