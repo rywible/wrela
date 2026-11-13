@@ -1,0 +1,195 @@
+// The slash: a sword cut written from a source and followed through. Quaternius's `Sword_Attack`
+// (Universal Animation Library, CC0; `body::SWORD_ATTACK_RAW`) is the source, read whole on the
+// sheets: a one-handed cut from a guard low at the right hip, loaded up over the right shoulder,
+// brought over the top and down through ahead at shoulder height, followed through to a finish
+// low on the far side, held a beat, and swung back round to the guard.
+//
+// The written move's keys are read off the source at its own moments (`keys::key_of`): its poses
+// are the source's at those moments, so it plays as the source does, within a stated miss
+// (`the_slash_plays_as_its_source_does`).
+
+use engine::humanoid::{Clip, Rigid, frame_world}
+use engine::keys
+use engine::keys::{BARE, Key, LINEAR, SETTLE, SMOOTH, SNAP, Wield}
+use engine::written::{Beats, Chain, Taste, Written}
+use engine::playback::Move
+use engine::end::End
+use body::HERO
+use stick::{BOTH, STICK}
+
+/// Whether the second hand holds the grip too (`stick::BOTH`), or the cut's one-handed, as its
+/// source is: a choice, asked of Ryan; as the source does until he answers.
+pub const BOTH_HANDS: bool = false
+
+/// What the slash holds, as `BOTH_HANDS` says.
+@fuel(2 ** 40)
+pub const WIELD: Wield = if BOTH_HANDS { BOTH } else {
+    Wield { held: STICK, off: BARE.off, both: false }
+}
+
+/// The source's moments (its frames, at its own 30 a second), and how the body comes into each:
+/// eased into and out of the beat in the load (the source's hand gathers speed and slows into it),
+/// gathering speed into the swing, evenly through the moments it's moving, so it never stops where
+/// the source doesn't, and settling into the finish and home:
+/// the guard; the load, held a beat; setting off; over the top; through the target (where it
+/// would meet a foe, its hand fastest); down through ahead and round; the finish, low on the far
+/// side; held there; swung back up and round; home in the guard.
+pub const FRAMES: [u32; 15] = [0, 5, 9, 10, 11, 12, 13, 14, 15, 23, 25, 27, 30, 33, 38]
+pub const EASES: [u32; 15] = [
+    SMOOTH,
+    SMOOTH,
+    SNAP,
+    LINEAR,
+    LINEAR,
+    LINEAR,
+    LINEAR,
+    LINEAR,
+    SETTLE,
+    SMOOTH,
+    SNAP,
+    LINEAR,
+    LINEAR,
+    LINEAR,
+    SETTLE,
+]
+/// Through the target: the source's frame 12, 0.40 s.
+pub const CONTACT_KEY: u32 = 5
+
+/// The source's pose at frame `f` (its bones in the body's space).
+fn source_at(f: u32) -> [Rigid; 64] {
+    borrow rig = HERO.rig
+    let c = body::SWORD_ATTACK_RAW.clone()
+    let v = frame_world(rig, c.turns, f, rig.base.t + rig.base.q.rotate(c.hips[f]))
+    var out = [Rigid::identity(); 64]
+    for b in 0..v.len() {
+        out[b] = v[b]
+    }
+    out
+}
+
+/// The keys read off the source at its moments.
+pub fn source_keys() -> [Key; 15] {
+    borrow rig = HERO.rig
+    let fps = body::SWORD_ATTACK_RAW.fps
+    var out = [Key { at: 0.0, fists: [vec3(0.0); 2], feet: [vec4(0.0); 2] }; 15]
+    for i in 0..15 {
+        out[i] = keys::key_of(rig, source_at(FRAMES[i]), f32(FRAMES[i]) / fps, EASES[i], WIELD)
+    }
+    out
+}
+
+/// The slash as written, the parts on `chain`'s clocks.
+pub fn slash_with(chain: Chain) -> Written<15> {
+    Written { keys: source_keys(), taste: Taste { chain }, end: STRIKE }
+}
+
+/// When the slash goes through its target (s): the source's frame 12, where its sword hand is
+/// fastest, as a cut lands.
+pub const CONTACT: f32 = 0.40
+
+/// Where along the blade it strikes (0 the hilt, 1 the tip).
+pub const ALONG: f32 = 0.75
+
+/// What it strikes with.
+@fuel(2 ** 40)
+pub const STRIKE: End = STICK.at(ALONG)
+
+/// The slash as written: its keys read off the source, the parts on no chain of their own. The
+/// source carries its own order from the hips out to the blade in its timing; a fighter's chain
+/// laid over it (the fists', `taste`) lags the arm behind its own moments (52.6 cm at the contact,
+/// `the_slash_plays_as_its_source_does`).
+pub fn slash() -> Written<15> {
+    Written { keys: source_keys(), taste: Taste { chain: Chain {} }, end: STRIKE }
+}
+
+/// The slash as the fight plays it at its own beats: its contact at `CONTACT`, its follow-through
+/// and finish the active frames' and the recovery's.
+@fuel(2 ** 40)
+pub const SLASH: Move = slash().played(
+    HERO.rig,
+    CONTACT,
+    Beats { windup: CONTACT, active: 0.1, recovery: slash().length() - CONTACT - 0.1 },
+    fps: 60.0,
+    fist: 2.0,
+)
+
+/// The source itself on the body, held in place, its hands made fists: what the slash is judged
+/// against.
+@fuel(2 ** 40)
+pub const SOURCE: Move = fists::in_place(
+    engine::stride::curled_hands(body::SWORD_ATTACK_RAW.clone(), HERO.rig, 2.0),
+)
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// The slash plays as its source does. Its keys pose within 14 cm of the source's own frames at
+/// worst (the finish's deep twist, whose spine bends as one trunk turn shared up the spine can't
+/// follow); between them, every frame of the source, its joints within 18 cm and its blade's tip
+/// within 25 cm. On the cut sheet it reads as the source: the hand as fast (within a
+/// tenth), the hands where the source's are on contact (within 3 cm), the blade as upright on
+/// the way over; and it's followed through to a finish low on the far side, held a beat (the
+/// sword hand left of the body and below 70 cm from 0.50 s to 0.75 s).
+@test
+fn the_slash_plays_as_its_source_does() {
+    borrow rig = HERO.rig
+    let c = body::SWORD_ATTACK_RAW.clone()
+    let names = [
+        "hips",
+        "head",
+        "leftHand",
+        "rightHand",
+        "leftLowerArm",
+        "rightLowerArm",
+        "leftFoot",
+        "rightFoot",
+    ]
+    let m = slash()
+    var worst = 0.0
+    var tip = 0.0
+    for f in 0..c.frames {
+        let s = source_at(f)
+        let w = m.world(rig, f32(f) / c.fps)
+        for n in names {
+            worst = max(worst, length(w[rig.find(n)].t - s[rig.find(n)].t))
+        }
+        let (_, ts) = STICK.ends_at(s[rig.find("rightHand")])
+        let (_, tw) = STICK.ends_at(w[rig.find("rightHand")])
+        tip = max(tip, length(ts - tw))
+    }
+    var keyed = 0.0
+    for i in 0..15 {
+        let s = source_at(FRAMES[i])
+        let w = engine::humanoid::pose_world(rig, keys::posed(rig, m.keys[i]))
+        for n in names {
+            keyed = max(keyed, length(w[rig.find(n)].t - s[rig.find(n)].t))
+        }
+    }
+    std::io::print(
+        f"the slash against its source: keys within {keyed * 100.0:.1} cm, its joints {worst * 100.0:.1} cm, its tip {tip * 100.0:.1} cm",
+    )
+    assert(keyed <= 0.14 && worst <= 0.18 && tip <= 0.25, "the slash plays as its source does")
+    let ours = engine::cut::cut(SLASH.clip, rig, STICK, CONTACT)
+    let theirs = engine::cut::cut(SOURCE.clip, rig, STICK, CONTACT)
+    assert(
+        abs(ours.hand_fastest - theirs.hand_fastest) <= 0.1 * theirs.hand_fastest,
+        f"the hand {ours.hand_fastest} m/s, the source's {theirs.hand_fastest}",
+    )
+    assert(
+        abs(ours.hand_y - theirs.hand_y) <= 0.03 &&
+            abs(ours.hand_ahead - theirs.hand_ahead) <= 0.03,
+        "the hands where the source's are on contact",
+    )
+    assert(
+        abs(ours.upright - theirs.upright) <= 5.0,
+        f"the blade {ours.upright} deg up on the way over, the source's {theirs.upright}",
+    )
+    var t = 0.50
+    while t <= 0.75 {
+        let h = m.world(rig, t)[rig.find("rightHand")].t
+        assert(
+            h.x > 0.2 && h.y < 0.7,
+            f"at {t} s the sword hand at {h}: the finish, low on the far side",
+        )
+        t += 1.0 / 60.0
+    }
+}

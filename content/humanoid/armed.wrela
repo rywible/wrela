@@ -19,12 +19,17 @@ use stick::BOTH
 
 /// The armed guard's shape: the cut's first key, its vom Tag.
 @fuel(2 ** 40)
-pub const GUARD_KEY: Key = downcut::cut().keys[0]
+pub const GUARD_KEY: Key = slash::slash().keys[0]
 
 /// The armed stance: the sword idle's life over the guard's shape, a loop, its hands made fists.
 @fuel(2 ** 40)
 pub const STANCE: Clip = stride::curled_hands(
-    stance::lived(HERO.rig, body::SWORD_IDLE_RAW.clone(), keys::posed(HERO.rig, GUARD_KEY), BOTH),
+    stance::lived(
+        HERO.rig,
+        body::SWORD_IDLE_RAW.clone(),
+        keys::posed(HERO.rig, GUARD_KEY),
+        slash::WIELD,
+    ),
     HERO.rig,
     2.0,
 )
@@ -84,7 +89,7 @@ fn locked_gaits() -> Vec<Move> {
 /// The armed stance stands in its solved shape with its source's life: on the stance sheet it
 /// settles and sways as the sword idle does (within a third), its hands and head move as much,
 /// it's never still, and a foot down slides no more than the source's; both hands stay on the
-/// grip all round the loop; and a cut begun at any moment of it doesn't jump.
+/// grip all round the loop if both hold it; and a cut begun at any moment of it doesn't jump.
 @test
 fn the_armed_stance_lives_as_its_source_does() {
     borrow rig = HERO.rig
@@ -106,7 +111,7 @@ fn the_armed_stance_lives_as_its_source_does() {
     )
     assert(a.stillest <= 0.05, f"still {a.stillest} s at most")
     assert(a.slide <= s.slide + 0.005, f"a foot slides {a.slide} m, the source's {s.slide}")
-    // Both hands on the grip, every frame.
+    // Both hands on the grip, every frame, if both hold it (`slash::WIELD`).
     var off = 0.0
     for f in 0..STANCE.frames {
         let w = engine::humanoid::pose_world(rig, STANCE.pose(f32(f) / STANCE.fps))
@@ -114,20 +119,25 @@ fn the_armed_stance_lives_as_its_source_does() {
         let left = thing.then(BOTH.off.inverse())
         off = max(off, length(w[rig.find("leftHand")].t - left.t))
     }
-    assert(off < 0.005, f"the left hand {off} m off its grip")
+    assert(!slash::WIELD.both || off < 0.005, f"the left hand {off} m off its grip")
     // A cut begun at any moment of it: its striking point and hips move no more on its first
     // frame than a frame of the stance alone moves them.
     let (e, h, ge, gh) = stance::begun(
         rig,
         ARMED_GAITS,
-        [downcut::DOWNCUT.clone()],
+        [slash::SLASH.clone()],
         0,
-        downcut::STRIKE,
+        slash::STRIKE,
     )
     std::io::print(
         f"begun: the striking point {e * 100.0:.1} cm, the hips {h * 100.0:.1}; a frame of the stance {ge * 100.0:.1} and {gh * 100.0:.1}",
     )
-    assert(e <= ge + 0.01 && h <= gh + 0.005, "a cut begun at any moment doesn't jump")
+    // (No more than the cut moves it on its own first frame, from its guard, and a frame of the
+    // stance: its striking point's a long lever out along the blade.)
+    let m = slash::slash()
+    let own = length(m.end(rig, 1.0 / 60.0) - m.end(rig, 0.0))
+    std::io::print(f"begun: the cut's own first frame moves its striking point {own * 100.0:.1} cm")
+    assert(e <= own + ge + 0.005 && h <= gh + 0.005, "a cut begun at any moment doesn't jump")
 }
 
 /// Locked on, the armed fighter goes every way about the foe on his feet (`engine::locked`'s

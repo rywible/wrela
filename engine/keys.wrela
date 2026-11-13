@@ -479,6 +479,96 @@ fn arm_reach(
     }
 }
 
+/// The turn `q` as a key writes a turn (`turn_of`'s degrees): its yaw about up, then its pitch
+/// about x, then its roll about z.
+pub fn degrees_of(q: Quat) -> vec3 {
+    let (x, y, z) = (
+        q.rotate(vec3(1.0, 0.0, 0.0)),
+        q.rotate(vec3(0.0, 1.0, 0.0)),
+        q.rotate(vec3(0.0, 0.0, 1.0)),
+    )
+    vec3(asin(clamp(-z.y, -1.0, 1.0)), atan2(z.x, z.z), atan2(x.y, y.y)) / DEG
+}
+
+/// A key read off a pose: what key, at `at` (s) and eased as `ease` says, poses a body as `w`
+/// has it (its bones in the body's space, `humanoid::pose_world`'s, on `rig`), holding what `wield`
+/// says as `w`'s hand holds it. Its hips' place and turn, its trunk's turn above them (shared among
+/// the spine as a key shares it), each collar's, where the head looks, each wrist and which way
+/// each elbow bends, each foot's ball, turn and heel; what's held, by where the holding hand has
+/// it. A move fitted to a source (a capture, a hand-made clip) is keys read off it at its own
+/// moments.
+pub fn key_of(rig: Rig, w: [Rigid; 64], at: f32, ease: u32, wield: Wield) -> Key {
+    let rw = rig.rest_frames()
+    let find = |n: str| -> u32 { rig.find(n) }
+    let hips = find("hips")
+    let hips_q = w[hips].q.mul(rw[hips].q.inverse())
+    let chest = find("upperChest")
+    let trunk = w[chest].q.mul(rw[chest].q.inverse()).mul(hips_q.inverse())
+    let head = find("head")
+    let ahead = rw[head].q.inverse().rotate(vec3(0.0, 0.0, 1.0))
+    let arms = [
+        [find("leftUpperArm"), find("leftLowerArm"), find("leftHand")],
+        [find("rightUpperArm"), find("rightLowerArm"), find("rightHand")],
+    ]
+    var fists = [vec3(0.0); 2]
+    var elbows = [vec3(0.0, -1.0, 0.0); 2]
+    for i in 0..2 {
+        let (u, l, h) = (arms[i][0], arms[i][1], arms[i][2])
+        fists[i] = w[h].t
+        let pole = w[l].t - (w[u].t + w[h].t) * 0.5
+        if length(pole) > 1.0e-4 {
+            elbows[i] = normalize(pole)
+        }
+    }
+    var feet = [vec4(0.0); 2]
+    var lifts = [0.0; 2]
+    for i in 0..2 {
+        let l = leg_of(rig, if i == 0 { 1.0 } else { -1.0 })
+        let toe = if l.toes != NONE { l.toes } else { l.ankle }
+        let q = w[l.ankle].q.mul(rw[l.ankle].q.inverse())
+        let d = q.rotate(vec3(0.0, 0.0, 1.0))
+        let yaw = atan2(d.x, d.z) / DEG
+        let heel = asin(clamp(-d.y, -1.0, 1.0)) / DEG
+        feet[i] = vec4(w[toe].t.x, w[toe].t.z, yaw, heel)
+        lifts[i] = max(w[toe].t.y - rw[toe].t.y, 0.0)
+    }
+    var k = Key {
+        at,
+        ease,
+        hips: w[hips].t - rw[hips].t,
+        hips_turn: degrees_of(hips_q),
+        trunk: degrees_of(trunk),
+        look: w[head].t + w[head].q.rotate(ahead) * 3.0,
+        fists,
+        elbows,
+        feet,
+        lifts,
+        wield,
+    }
+    if wield.held() {
+        let hand = w[find(wield.held.hand)]
+        let (hilt, tip) = wield.held.ends_at(hand)
+        k.hilt = hilt
+        k.point = normalize(tip - hilt)
+        k.edge = wield.held.edge_at(hand)
+    }
+    // The trunk: what's left of the chest's turn once the key's posed, taken up again, a few
+    // times (a key shares its trunk's turn evenly up the spine, which the source needn't).
+    for _ in 0..4 {
+        let p = humanoid::pose_world(rig, posed(rig, k))
+        k.trunk += degrees_of(w[chest].q.mul(p[chest].q.inverse()))
+    }
+    // Each collar: what turns it from where the key, posed without, puts it to where `w` has it.
+    let bare = humanoid::pose_world(rig, posed(rig, k))
+    let collars = [find("leftShoulder"), find("rightShoulder")]
+    for i in 0..2 {
+        if collars[i] != NONE {
+            k.collars[i] = degrees_of(w[collars[i]].q.mul(bare[collars[i]].q.inverse()))
+        }
+    }
+    k
+}
+
 /// The key `keys` set at `time` (s): the two either side mixed as the later one's ease says,
 /// the first before them and the last after.
 pub fn key_at(keys: [Key], time: f32) -> Key {
