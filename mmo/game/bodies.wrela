@@ -48,7 +48,7 @@ use humanoid::paint::{backdrop, body, ground, paint_backdrop, paint_body, paint_
 use humanoid::{armed, slash, solved, stepping, stick}
 use combat::sim::{
     ACTIVE, ATTACKS, DODGE_FRAMES, DODGING, FISTS, HZ, IDLE, LONGSWORD, MAX_PARTY, MOVES, NO_MOVE,
-    PARRYING, PUSH, RECOVER, STAGGERED, Seen, TRAVEL, TRAVELLING, WEAPONS, WINDUP, World,
+    SWORD, PARRYING, PUSH, RECOVER, STAGGERED, Seen, TRAVEL, TRAVELLING, WEAPONS, WINDUP, World,
 }
 use ui::draw::Renderer
 
@@ -60,9 +60,9 @@ pub const IDOL_SCALE: f32 = 1.6
 
 /// The one-offs a body acts, by index: each player's move (`MOVES`), each of the boss's attacks
 /// (from `BOSS_STRIKES`, `ATTACKS`), the dodge, the parry and the hit taken.
-pub const BOSS_STRIKES: u32 = 6
-pub const ACT_DODGE: u32 = 13
-pub const ACT_PARRY: u32 = 14
+pub const BOSS_STRIKES: u32 = 9
+pub const ACT_DODGE: u32 = 16
+pub const ACT_PARRY: u32 = 17
 
 /// The solved cross at a move's beats (`engine::written::Written::played`): its keys laid on
 /// the move's frames, its contact on the frame the rules hit, the first of its active ones. (The
@@ -97,7 +97,7 @@ pub fn weapon_of(m: u32) -> u32 {
 /// fists' the cross (`stepped_at`); each stepping as the rules carry it (`TRAVELLING`), or not.
 fn player_strike(i: u32) -> Move {
     let m = MOVES[i]
-    if weapon_of(i) == LONGSWORD {
+    if bladed(weapon_of(i)) {
         let beats = Beats::of_frames(m.windup, m.active, m.recovery, f32(HZ))
         if TRAVELLING { slash::slash_at(beats) } else { slash::standing_at(beats) }
     } else {
@@ -107,19 +107,19 @@ fn player_strike(i: u32) -> Move {
 
 /// What a fighter with `weapon` holds: the longsword the stand-in, as the slash holds it.
 pub fn held_of(weapon: u32) -> Held {
-    if weapon == LONGSWORD { slash::WIELD.held } else { held::NOTHING }
+    if bladed(weapon) { slash::WIELD.held } else { held::NOTHING }
 }
 
 /// What strikes with `weapon`'s blows: the longsword the striking point along its blade
 /// (`slash::STRIKE`), the fists the right fist.
 pub fn strikes_with(weapon: u32) -> End {
-    if weapon == LONGSWORD { slash::STRIKE } else { RIGHT_FIST }
+    if bladed(weapon) { slash::STRIKE } else { RIGHT_FIST }
 }
 
 /// The part that strikes with `weapon` in a body posed `w` (its bones, the body's space): the
 /// longsword's blade, from its cross to its point (`stick::CROSS_AT`); the fists' fist, a point.
 pub fn striking_part(weapon: u32, w: [engine::humanoid::Rigid; 64]) -> (vec3, vec3) {
-    if weapon == LONGSWORD {
+    if bladed(weapon) {
         let h = held_of(weapon)
         (h.at(stick::CROSS_AT / stick::LENGTH).in_pose(HERO.rig, w), h.at(1.0).in_pose(HERO.rig, w))
     } else {
@@ -210,7 +210,7 @@ pub fn sweep_of(i: u32) -> [[i32; 9]; 12] {
 /// (the body's space, as a played move's pose has it): the slash's, a player's stepping cross's
 /// as `TRAVELLING` plays it, each less the step it's taken by then; else the standing cross's.
 pub fn contact_of(weapon: u32, boss: bool) -> vec3 {
-    if weapon == LONGSWORD && !boss {
+    if bladed(weapon) && !boss {
         let s = slash::slash()
         s.end(HERO.rig, slash::CONTACT) - s.root(HERO.rig, slash::CONTACT)
     } else if !boss && TRAVELLING {
@@ -240,9 +240,9 @@ fn dodged() -> Move {
 }
 
 @fuel(2 ** 40)
-pub const ACTS: [Move; 15] = acts()
+pub const ACTS: [Move; 18] = acts()
 
-fn acts() -> [Move; 15] {
+fn acts() -> [Move; 18] {
     let m = |i: u32| -> Move {
         player_strike(i)
     }
@@ -256,6 +256,9 @@ fn acts() -> [Move; 15] {
         m(3),
         m(4),
         m(5),
+        m(6),
+        m(7),
+        m(8),
         b(0),
         b(1),
         b(2),
@@ -270,12 +273,15 @@ fn acts() -> [Move; 15] {
 
 /// How each is drawn: a hard strike as a strike (on twos, an impact frame), a light one lighter,
 /// the rest as they play.
-pub const LOOKS: [Look; 15] = [
+pub const LOOKS: [Look; 18] = [
     LIGHT,
     STRIKE,
     LIGHT,
     LIGHT,
     STRIKE,
+    STRIKE,
+    LIGHT,
+    LIGHT,
     STRIKE,
     STRIKE,
     STRIKE,
@@ -314,7 +320,13 @@ pub const ARMED: Gaits = Gaits { idle: armed::GUARD.clone(), holds: true, ..GAIT
 
 /// Each weapon's gaits (`WEAPONS`: the fists', the longsword's).
 @fuel(2 ** 40)
-pub const GAITS_OF: [Gaits; 2] = [GAITS.clone(), ARMED.clone()]
+pub const GAITS_OF: [Gaits; 3] = [GAITS.clone(), ARMED.clone(), ARMED.clone()]
+
+/// Whether `weapon` is a blade (`WEAPONS`: the longsword, the swordsman's): held, struck with its
+/// blade, played as the slash.
+pub fn bladed(weapon: u32) -> bool {
+    weapon == LONGSWORD || weapon == SWORD
+}
 
 /// How a fighting body follows its stick: it sets off and stops at once (the rules do), without
 /// the actor's own first and last steps.
@@ -923,7 +935,7 @@ impl Ring {
                 cull: Cull::Back,
                 depth: engine::view::NEAREST,
             )
-            if self.bodies.body(k).weapon == LONGSWORD {
+            if bladed(self.bodies.body(k).weapon) {
                 draw(
                     p,
                     body.bind(

@@ -344,13 +344,16 @@ fn windows() -> String {
     var t = String::from(
         "## Each move's windows\n\nFrames, as the rules have them. A combo's window is the recovery a light press goes on from.\n\n| Move | Windup | Active | Recovery | Combo window | Reach (m) | Damage |\n|---|---|---|---|---|---|---|\n",
     )
-    let names: [Text; 6] = [
+    let names: [Text; 9] = [
         "Fists, jab",
         "Fists, straight",
         "Longsword, cut 1",
         "Longsword, cut 2",
         "Longsword, cut 3",
         "Longsword, overhead",
+        "Swordsman, cut",
+        "Swordsman, second cut",
+        "Swordsman, overhead",
     ]
     for i in 0..MOVES.len() {
         let m = MOVES[i]
@@ -635,6 +638,9 @@ fn meets() -> String {
         "Longsword, cut 2",
         "Longsword, cut 3",
         "Longsword, overhead",
+        "Swordsman, cut",
+        "Swordsman, second cut",
+        "Swordsman, overhead",
     ]
     let r = f32(combat::sim::BODY) / bodies::UNIT
     for i in 0..MOVES.len() {
