@@ -8,11 +8,12 @@
 // difference a rollback makes taken up as the body's drift (`Mover::drift`), which dies away
 // rather than jumping.
 //
-// The moves are stand-ins, every one hand-keyed or written in Wrela: a strike with the longsword is
-// the slash (content/humanoid's `slash`), a fighter with it standing in the armed guard with the
-// lab's stand-in in its hand (`armed`, `stick`); a strike with the fists the cross, a player's
-// thrown with a step (`stepping`) as far as the rules carry it (`sim::TRAVELLING`; else the
-// standing cross, `solved`), and the idol's standing; each timed to its move's frames; the dodge is the roll
+// The moves are stand-ins, every one hand-keyed or written in Wrela, each timed to its move's
+// frames. A strike with the longsword is the slash (content/humanoid's `slash`), a fighter with it
+// standing in the armed guard with the lab's stand-in in its hand (`armed`, `stick`); a strike
+// with the fists is the cross, a player's thrown with a step (`stepping`; with
+// `sim::TRAVELLING` off the standing cross, `solved`), and the idol's standing. Each player's
+// strike steps as far as the rules carry it (`sim::TRAVEL`). The dodge is the roll
 // (content/moves); a parry is the step back. A blow is no clip (`engine::contact`): both bodies
 // are held still through the rules' hold, and as it breaks the one struck is knocked along the
 // blow and the blow runs back up the striker's arm, each laid into its inertia; the camera's
@@ -93,11 +94,12 @@ pub fn weapon_of(m: u32) -> u32 {
 }
 
 /// Move `i` (`MOVES`) as its weapon's strike, at its frames: the longsword's the slash, the
-/// fists' the cross (`stepped_at`).
+/// fists' the cross (`stepped_at`); each stepping as the rules carry it (`TRAVELLING`), or not.
 fn player_strike(i: u32) -> Move {
     let m = MOVES[i]
     if weapon_of(i) == LONGSWORD {
-        slash::slash_at(Beats::of_frames(m.windup, m.active, m.recovery, f32(HZ)))
+        let beats = Beats::of_frames(m.windup, m.active, m.recovery, f32(HZ))
+        if TRAVELLING { slash::slash_at(beats) } else { slash::standing_at(beats) }
     } else {
         stepped_at(m.windup, m.active, m.recovery)
     }

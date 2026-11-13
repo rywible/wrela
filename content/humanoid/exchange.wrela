@@ -194,14 +194,26 @@ pub const FOE_AT: vec3 = foe_at(giant: false)
 @fuel(2 ** 40)
 pub const GIANT_AT: vec3 = foe_at(giant: true)
 
-/// Where the one struck stands for the cut (the stick in both hands): his neck where the cut
-/// lands.
+/// Where the one struck stands for the cut: his neck where the slash lands, stepping in from out
+/// of reach as the cross does; or for its source (`Tune::source`), which cuts where it stands,
+/// where that lands.
 @fuel(2 ** 40)
 pub const CUT_FOE_AT: vec3 = foe_at(giant: false, hit: CUT_POINT)
+@fuel(2 ** 40)
+pub const SOURCE_FOE_AT: vec3 = foe_at(giant: false, hit: SOURCE_POINT)
 
-/// Where the cut's striking point is on its contact (the world), thrown from the origin.
+/// Where the cut's striking point is on its contact (the world), thrown from the origin, its
+/// step in it; and where it is without the step (the source's).
 @fuel(2 ** 40)
 pub const CUT_POINT: vec3 = turned(slash::slash().end(HERO.rig, slash::CONTACT), HEADING)
+@fuel(2 ** 40)
+pub const SOURCE_POINT: vec3 = turned(
+    slash::slash().end(HERO.rig, slash::CONTACT) - slash::slash().root(HERO.rig, slash::CONTACT),
+    HEADING,
+)
+
+/// How fast the armed striker backs off to where he stood (m/s): a walk.
+const HOME_SPEED: f32 = 0.9
 
 fn foe_at(giant: bool, hit: vec3 = KNUCKLES) -> vec3 {
     let (p, s) = if giant {
@@ -214,7 +226,7 @@ fn foe_at(giant: bool, hit: vec3 = KNUCKLES) -> vec3 {
 
 /// Where the one struck (not the giant) stands, as `t` says: where the cut lands, or the cross.
 fn foe_of(t: Tune) -> vec3 {
-    if t.stick { CUT_FOE_AT } else { FOE_AT }
+    if t.stick { if t.source { SOURCE_FOE_AT } else { CUT_FOE_AT } } else { FOE_AT }
 }
 
 /// The gaits both stand and step in, as `t` says: armed with the stand-in in both hands (its
@@ -283,6 +295,10 @@ pub struct Exchange: Clone {
     /// What the striker does once he's done with what he's doing (`CROSS`, `BACK`;
     /// `humanoid::NONE` nothing).
     then: u32,
+    /// Whether, armed, he backs off to where he stood once his cut's done: his armed lock-on
+    /// gaits back off with the sword held in its guard, where a step (`stepping::BACK`) is the
+    /// fists'.
+    home: bool,
     striker: Mover,
     struck: Mover,
     drawer: Drawer,
@@ -314,8 +330,9 @@ pub struct Exchange: Clone {
 }
 
 /// What the striker does: stands out of reach, throws the cross stepping in (`CROSS`) and steps
-/// back to where he stood (`BACK`); or, armed, cuts with the slash (`CUT`), or its source itself
-/// (`SOURCE_CUT`), where he stands.
+/// back to where he stood (`BACK`); or, armed, cuts with the slash stepping in (`CUT`) and backs
+/// off to where he stood (`Exchange::home`), or with its source itself (`SOURCE_CUT`), where he
+/// stands.
 @fuel(2 ** 40)
 const MOVES: [Move; 4] = [
     stepping::CROSS.clone(),
@@ -336,6 +353,7 @@ impl Exchange {
             clock: -after,
             throw: after >= 0.0,
             then: humanoid::NONE,
+            home: false,
             striker: Mover::standing(vec3(0.0), HEADING, GAITS[armed_of(t)]),
             struck: Mover::standing(if t.giant { GIANT_AT } else {
                 foe_of(t)
@@ -396,6 +414,8 @@ impl Exchange {
         if self.throw && self.clock >= 0.0 {
             act = if t.stick { if t.source { SOURCE_CUT } else { CUT } } else { CROSS }
             self.then = if t.stick { humanoid::NONE } else { BACK }
+            // (The slash steps in, as the cross does; its source stands where it cuts.)
+            self.home = t.stick && !t.source
             self.throw = false
         } else if self.then != humanoid::NONE && self.striker.acting == humanoid::NONE {
             act = self.then
@@ -408,6 +428,18 @@ impl Exchange {
         // (The lock-on scene: no blow, his stick going round the one struck, facing him while he's
         // locked on.)
         var stick = vec3(0.0)
+        if self.home && self.striker.acting == humanoid::NONE && act == humanoid::NONE {
+            // Backing off to where he stood, facing the one struck: at a walk, slowing in.
+            let off = vec3(-self.striker.place.x, 0.0, -self.striker.place.z)
+            if length(off) < 0.01 {
+                self.home = false
+                self.striker.unlocked()
+            } else {
+                stick = off / length(off) * min(length(off) * 3.0, HOME_SPEED)
+                let d = self.struck.place - self.striker.place
+                self.striker.facing(atan2(d.x, d.z))
+            }
+        }
         if t.circle {
             act = humanoid::NONE
             self.then = humanoid::NONE
