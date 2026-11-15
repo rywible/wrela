@@ -471,11 +471,10 @@ pub(package) fn painted(
 fn stood(s: mut State, shot: Shot) {
     if HERO > 0.5 {
         let (width, height) = (s.width, s.height)
-        // (Brought up to the screen over the frames, he's drawn unjittered, finer, and each
-        // pixel takes the finer sample this drawing's rays went through: `aboard::laid`.)
-        let gathered = s.shown_rows > f32(height)
+        // (Brought up to the screen over the frames, he's drawn once a pixel through the
+        // drawing's own jittered rays, not finer and averaged down: `aboard::laid`.)
         s.aboard.draw(
-            if gathered { s.plain } else { shot },
+            shot,
             s.heavens,
             mut s.colour,
             mut s.marks,
@@ -483,7 +482,7 @@ fn stood(s: mut State, shot: Shot) {
             width,
             height,
             s.overhead,
-            vec3(s.jitter, if gathered { 1.0 } else { 0.0 }),
+            s.shown_rows > f32(height),
         )
     }
 }

@@ -136,6 +136,9 @@ pub struct Shot: Copy + GpuData {
     /// screen (pixels).
     pub crop: vec4 = vec4(1.0, 1.0, 0.0, 0.0),
     pub crop_at: vec2 = vec2(0.0),
+    /// How many times finer each way than the drawing the traveller's own targets are
+    /// (`aboard::FINER`, or 1 where the drawing is brought up over the frames).
+    pub finer: f32 = 2.0,
     /// The rows of the screen the drawing is brought up to over the frames (`engine::upscale`),
     /// where that's more than its own (0: its own). What a surface holds in a pixel it sizes by
     /// these (`rows`), not by the drawing's: each of its samples is one of the screen's pixels'

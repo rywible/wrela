@@ -98,6 +98,8 @@ pub struct Aboard {
     under_normal: Texture<Rgba8>,
     width: u32,
     height: u32,
+    // (How many times finer his targets are than the drawing, as they're made: `laid`'s.)
+    finer: u32,
 }
 
 /// He's drawn at this many times the screen's resolution each way, and his samples averaged
@@ -135,6 +137,7 @@ pub fn aboard() -> Aboard {
         under_normal: texture(width: 1, height: 1),
         width: 1,
         height: 1,
+        finer: FINER,
     }
 }
 
@@ -681,8 +684,8 @@ pub fn hero_pixel<F: Parts<Cloth>>(
     let s = shot
     let t = length(v.world - s.eye)
     let behind = painted.load(
-        u32(pixel.position.x) / FINER + u32(s.crop_at.x),
-        u32(pixel.position.y) / FINER + u32(s.crop_at.y),
+        u32(pixel.position.x) / u32(s.finer) + u32(s.crop_at.x),
+        u32(pixel.position.y) / u32(s.finer) + u32(s.crop_at.y),
     )
     // (Compared as stored, in log2 of the distance at half precision: a step there is about
     // 0.3% of it at the boat's range, so the margin is a little more than one.)
@@ -777,8 +780,8 @@ pub fn charted_pixel<const A: u32, const R: u32>(
     let s = shot
     let t = length(v.world - s.eye)
     let behind = painted.load(
-        u32(pixel.position.x) / FINER + u32(s.crop_at.x),
-        u32(pixel.position.y) / FINER + u32(s.crop_at.y),
+        u32(pixel.position.x) / u32(s.finer) + u32(s.crop_at.x),
+        u32(pixel.position.y) / u32(s.finer) + u32(s.crop_at.y),
     )
     if behind.x < log2(t) - 0.006 {
         discard()
@@ -1003,27 +1006,22 @@ pub fn laid(
     under_normal: Texture<Rgba8>,
     // (His box's corner on the screen: his targets and the copy under them are his box's.)
     origin: vec2,
-    // Where the drawing is brought up to the screen over the frames (`engine::upscale`; z 1):
-    // where in its pixel this drawing's rays went (x, y). Then each pixel takes the one of his
-    // finer samples that lies there, not their mean: the upscaler gathers them over the frames
-    // as fine as he's drawn, where their mean was already a blur the drawing's pixel wide.
-    pick: vec3,
+    // How many times finer each way his targets are than the drawing (`Shot::finer`): `FINER`,
+    // or 1 where the drawing is brought up to the screen over the frames (`engine::upscale`).
+    // There he's drawn once a pixel through the drawing's own jittered rays, and the upscaler
+    // gathers him as fine as the screen: averaged down from finer samples first, each of his
+    // samples was already a blur the drawing's pixel wide, and three in four of them thrown away.
+    finer: u32,
 ) -> Targets3<vec4, vec4, vec4> {
     let x = u32(pixel.position.x) - u32(origin.x)
     let y = u32(pixel.position.y) - u32(origin.y)
-    let one = pick.z > 0.5
-    let at = clamp(floor((vec2(0.5) + pick.xy) * f32(FINER)), vec2(0.0), vec2(f32(FINER) - 1.0))
-    let picked = u32(at.x) + u32(at.y) * FINER
     var sum = vec4(0.0)
     var hits = 0.0
     var m = vec4(0.0)
     var n = vec4(0.0)
-    for k in 0..FINER * FINER {
-        if one && k != picked {
-            continue
-        }
-        let sx = x * FINER + k % FINER
-        let sy = y * FINER + k / FINER
+    for k in 0..finer * finer {
+        let sx = x * finer + k % finer
+        let sy = y * finer + k / finer
         let mk = marks.load(sx, sy)
         if mk.y != 0.0 {
             sum += colour.load(sx, sy)
@@ -1035,27 +1033,26 @@ pub fn laid(
     if hits == 0.0 {
         discard()
     }
-    let all = if one { 1.0 } else { f32(FINER * FINER) }
+    let all = f32(finer * finer)
+    // (His ink's reach: a pixel and a half of the drawing, in his targets' samples.)
+    let reach = max(3 * i32(finer) / 2, 1)
     if INKED > 0.5 {
         // His ink: where, a finer sample or two off, he ends (his outline) or his surface jumps
         // back (where an arm crosses his body, the coat over his legs).
         var ink = 0.0
-        for k in 0..FINER * FINER {
-            if one && k != picked {
-                continue
-            }
-            let sx = i32(x * FINER + k % FINER)
-            let sy = i32(y * FINER + k / FINER)
+        for k in 0..finer * finer {
+            let sx = i32(x * finer + k % finer)
+            let sy = i32(y * finer + k / finer)
             let here = marks.load(u32(sx), u32(sy))
             if here.y != 0.0 {
                 // (Three finer samples out, eight ways: a line about a pixel and a half wide.)
                 for j in 0..8 {
-                    let ox = if j == 0 || j == 4 || j == 5 { 3 } else if j == 1 ||
+                    let ox = if j == 0 || j == 4 || j == 5 { reach } else if j == 1 ||
                         j == 6 ||
-                        j == 7 { -3 } else { 0 }
-                    let oy = if j == 2 || j == 4 || j == 6 { 3 } else if j == 3 ||
+                        j == 7 { -reach } else { 0 }
+                    let oy = if j == 2 || j == 4 || j == 6 { reach } else if j == 3 ||
                         j == 5 ||
-                        j == 7 { -3 } else { 0 }
+                        j == 7 { -reach } else { 0 }
                     let o = marks.load(u32(max(sx + ox, 0)), u32(max(sy + oy, 0)))
                     if o.y == 0.0 || o.x - here.x > 0.03 {
                         ink += 1.0
@@ -1330,16 +1327,18 @@ impl Aboard {
         height: u32,
         // (The sky's colours the same for every pixel of the drawing: `paint::overhead_once`.)
         once: GpuBuffer<vec4>,
-        // (Which of his finer samples each pixel takes, where the drawing is brought up to the
-        // screen over the frames: `laid`'s `pick`. `shot` is then the drawing's unjittered.)
-        pick: vec3,
+        // (Whether the drawing is brought up to the screen over the frames: he's then drawn
+        // once a pixel, not `FINER` times each way: `laid`'s `finer`.)
+        gathered: bool,
     ) {
         // His targets cover his box on the screen, not the screen: he's a hundredth of it from
         // the opening's shot, and three targets four times the screen's pixels, cleared and
         // laid each drawing, cost more than everything drawn into them.
         let (bx, by, bw, bh) = boxed(shot, width, height)
-        if bw != self.width || bh != self.height {
-            let (w, h) = (bw * FINER, bh * FINER)
+        let finer = if gathered { 1 } else { FINER }
+        if bw != self.width || bh != self.height || finer != self.finer {
+            self.finer = finer
+            let (w, h) = (bw * finer, bh * finer)
             self.colour = texture(width: w, height: h)
             self.marks = texture(width: w, height: h)
             self.normal = texture(width: w, height: h)
@@ -1360,6 +1359,7 @@ impl Aboard {
                 1.0 - (sh - 2.0 * origin.y) / f32(bh),
             ),
             crop_at: origin,
+            finer: f32(finer),
             ..shot,
         }
         // (The scene moves on its own drawings, `sea::held`: his cloth and his lagged palette
@@ -1618,7 +1618,7 @@ impl Aboard {
                 under_marks: self.under_marks,
                 under_normal: self.under_normal,
                 origin: origin,
-                pick: pick,
+                finer: finer,
             ),
             vertices: 3,
         )
