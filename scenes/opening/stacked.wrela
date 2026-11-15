@@ -11,7 +11,7 @@
 // skerry (the least, proud, is wider than that level's cell); the far pass starts a little short
 // of it (`rock::SHORT`), so its depth's error is covered too.
 
-use rock::{NEAR, how_far, placed, view_proj}
+use rock::{NEAR, how_far, placed, seen, view_proj}
 use stacks::{TALLEST, stacks, stacks_near, stacks_reach}
 use look::Shot
 use engine::creature::{CreatureField, Placed}
@@ -117,7 +117,10 @@ pub fn step_stacks(st: mut Stacked, s: Shot) -> bool {
     if stacks_near(s.eye.xz - near, s.eye.xz + near, 4.0) {
         return false
     }
-    let scale = max(length(vec3(vp[0].x, vp[1].x, vp[2].x)), length(vec3(vp[0].y, vp[1].y, vp[2].y)))
+    let scale = max(
+        length(vec3(vp[0].x, vp[1].x, vp[2].x)),
+        length(vec3(vp[0].y, vp[1].y, vp[2].y)),
+    )
     for i in 0..st.len() {
         if st.drawn(i) {
             continue
@@ -162,7 +165,7 @@ pub fn reach_stacks(
         keep_depth: drew,
     )
     for i in 0..st.len() {
-        if !st.drawn(i) {
+        if !st.drawn(i) || !seen(vp, st.cubes[i]) {
             continue
         }
         borrow m = st.mesh(i)
