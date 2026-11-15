@@ -8,7 +8,7 @@
 use main::{IDS, LOOK}
 use look::{INK, LIFT, PAPER, ROCK, SEA, SKIFF, SKY, Shot, band, hash2, luma, noise, ray}
 use engine::light::{LUMA, Light, aces, display, srgb}
-use std::gpu::{FragCoord, Rgba16Float, Rgba8, Texture}
+use std::gpu::{FragCoord, Rgba16Float, Rgba8, Sampler, Texture}
 
 /// The render's light as the clean look shows it: the filmic shoulder taken half on each channel,
 /// half on the light's luminance with its hue kept, so a bright orange sky rolls off toward a warm
@@ -258,27 +258,95 @@ fn laid_in(colour: Texture<Rgba16Float>, light: Light, px: vec2, size: vec2, r: 
     sum / weight
 }
 
-/// The light that blooms off what's brightest round `px`, in a spiral of taps out to about 34 px
-/// (at 720 lines), each pixel's spiral turned its own way so no ring of copies shows.
-fn bloom(
-    colour: Texture<Rgba16Float>,
+// ---- the glow ------------------------------------------------------------------------------
+//
+// The light that blooms off what's brightest was a spiral of sixteen taps round every pixel of
+// the drawing, each tap toned for the screen, and each pixel's spiral turned its own way: a
+// third of this pass's time, and a grain in the glow that changed each drawing. It's made once
+// a drawing instead, in two small pictures `GLOW_DOWN` times smaller each way: the light past
+// white gathered from each block of the drawing's pixels (`glow_gather`), then spread over the
+// same sixteen rings the spiral stepped through, each ring whole (`glow_spread`): what the
+// spirals gave on average, with no grain. The ink reads it once a pixel, between its texels.
+
+/// How many times smaller each way the glow's pictures are than the drawing.
+pub const GLOW_DOWN: u32 = 4
+
+/// The glow's picture for a drawing `size` pixels: its size.
+pub fn glow_size(width: u32, height: u32) -> (u32, u32) {
+    ((width + GLOW_DOWN - 1) / GLOW_DOWN, (height + GLOW_DOWN - 1) / GLOW_DOWN)
+}
+
+/// The glow's first picture: the light past white (`bloom`'s `over`) in a block of `GLOW_DOWN`
+/// by `GLOW_DOWN` of the drawing's pixels, their mean (rgb); and the brightest of them, in the
+/// drawing's own light at the exposure (a), which says whether any glint there throws a glare.
+@fragment
+pub fn glow_gather(
+    pixel: FragCoord,
     light: Light,
-    px: vec2,
+    colour: Texture<Rgba16Float>,
     size: vec2,
-    scale: f32,
-    clean: bool,
-) -> vec3 {
+) -> vec4 {
+    let clean = LOOK > 2.5
+    let corner = floor(pixel.position.xy) * f32(GLOW_DOWN) + vec2(0.5)
     var g = vec3(0.0)
-    let spin = hash2(px) * 6.2831853
+    var top = 0.0
+    for j in 0..GLOW_DOWN {
+        for i in 0..GLOW_DOWN {
+            let raw = at(colour, corner + vec2(f32(i), f32(j)), size).xyz
+            let c = seen(light, raw, clean)
+            g += c * max(luma(c) - 0.8, 0.0)
+            top = max(top, dot(raw, LUMA) * light.exposure)
+        }
+    }
+    vec4(g / f32(GLOW_DOWN * GLOW_DOWN), min(top, 60000.0))
+}
+
+/// How many places round each ring the spread reads.
+const GLOW_ROUND: u32 = 6
+
+/// The glow's second picture, which the ink reads: the gathered light spread over `bloom`'s
+/// sixteen rings (2 to 32 px out at 720 lines, each weighed as its tap was), each ring read at
+/// `GLOW_ROUND` places, each ring's turned from the last's (rgb); and the brightest pixel within
+/// a glare's reach of this texel (a).
+@fragment
+pub fn glow_spread(
+    pixel: FragCoord,
+    gathered: Texture<Rgba16Float>,
+    smp: Sampler,
+    size: vec2,
+) -> vec4 {
+    let scale = size.y / 720.0
+    let low = vec2(f32(gathered.width()), f32(gathered.height()))
+    let p = pixel.position.xy
+    var g = vec3(0.0)
     for i in 0..16 {
         let fi = f32(i)
-        let a = fi * 2.3999632 + spin
-        let r = scale * (2.0 + 2.0 * fi)
-        let c = seen(light, at(colour, px + vec2(cos(a), sin(a)) * r, size).xyz, clean)
-        let over = max(luma(c) - 0.8, 0.0)
-        g += c * over / (1.0 + fi * 0.18)
+        let r = scale * (2.0 + 2.0 * fi) / f32(GLOW_DOWN)
+        var ring = vec3(0.0)
+        for j in 0..GLOW_ROUND {
+            let a = (f32(j) / f32(GLOW_ROUND)) * 6.2831853 + fi * 2.3999632
+            let uv = clamp(
+                (p + vec2(cos(a), sin(a)) * r) / low,
+                vec2(0.5) / low,
+                vec2(1.0) - vec2(0.5) / low,
+            )
+            ring += gathered.sample_level(smp, uv).rgb
+        }
+        g += ring / f32(GLOW_ROUND) / (1.0 + fi * 0.18)
     }
-    g / 16.0
+    // (A glare reaches 6.6 px at 720 lines: the texels that far off, and one more.)
+    let reach = i32(ceil(6.6 * scale / f32(GLOW_DOWN))) + 1
+    var top = 0.0
+    var y = -reach
+    while y <= reach {
+        var x = -reach
+        while x <= reach {
+            top = max(top, at(gathered, p + vec2(f32(x), f32(y)), low).a)
+            x += 1
+        }
+        y += 1
+    }
+    vec4(g / 16.0, top)
 }
 
 const AROUND = [
@@ -300,6 +368,9 @@ pub fn ink(
     colour: Texture<Rgba16Float>,
     marks: Texture<Rgba16Float>,
     normal: Texture<Rgba8>,
+    // (The glow made of `colour` for this drawing: `glow_spread`.)
+    glow: Texture<Rgba16Float>,
+    smp: Sampler,
     settled: u32,
 ) -> vec4 {
     let s = shot
@@ -329,7 +400,6 @@ pub fn ink(
     // Where one thing meets another (a silhouette), the colour softened with its neighbours', so
     // the edge isn't the pixels' stair.
     var meets = 0.0
-    var ring = vec3(0.0)
     for i in 0..4 {
         let q = px + AROUND[i]
         let mq = at(marks, q, size)
@@ -338,9 +408,19 @@ pub fn ink(
         if abs(mq.y - m0.y) > 0.5 || abs(mq.x - m0.x) > step_ {
             meets = 1.0
         }
-        ring += seen(light, at(colour, q, size).xyz, clean)
     }
-    c0 = mix(c0, (c0 + ring) * 0.2, meets * 0.8)
+    // (Its neighbours' colours read and toned only where it meets something: elsewhere they
+    // weighed nothing. And not where the drawing is brought up to the screen over the frames
+    // (`settled`, `engine::upscale`): its jitter gathers the edge finer than this softens it,
+    // and softened first over the drawing's own pixels it was a blur several of the screen's
+    // wide.)
+    if meets > 0.0 && settled == 0 {
+        var ring = vec3(0.0)
+        for i in 0..4 {
+            ring += seen(light, at(colour, px + AROUND[i], size).xyz, clean)
+        }
+        c0 = mix(c0, (c0 + ring) * 0.2, meets * 0.8)
+    }
     let c0 = if drawn { styled(s, c0, px, m0, n0.xyz * 2.0 - 1.0, light.sun, scale, seed) } else {
         toned(s, c0, px, m0, scale, seed)
     }
@@ -591,8 +671,14 @@ pub fn ink(
         let glow_k = (if clean { 0.32 } else if cel { 0.3 } else { 0.35 }) * (if m0.y == SKIFF {
             0.4
         } else { 1.0 })
-        c += bloom(colour, light, px, size, scale, clean) * glow_k * s.style
-        if m0.y == SEA {
+        let glowed = glow.sample_level(
+            smp,
+            px / (vec2(f32(glow.width()), f32(glow.height())) * f32(GLOW_DOWN)),
+        )
+        c += glowed.rgb * glow_k * s.style
+        // (A glare only where some pixel in its reach is bright enough to throw one: `glare`'s
+        // `over`. Elsewhere its twenty-four reads summed to nothing.)
+        if m0.y == SEA && glowed.a > 2.0 {
             c += glare(colour, light, px, size, scale) * s.style
         }
         let lum = luma(c)

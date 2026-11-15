@@ -9,12 +9,12 @@ use main::{
 }
 use aboard::{Aboard, aboard}
 use heavens::{Heavens, heavens}
-use look::{SUN, Shot, shot_at}
+use look::{ROCK, SKIFF, SKY, SUN, Shot, TILE, rows, shot_at}
 use sea::{HULL_MID, MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Swell, Waves}
 use engine::stir::Stir
 use wake::{STIRRED, pressed, sunk, under, washed}
-use engine::upscale::{Body, NO_BODY, Pinhole}
+use engine::upscale::{Body, NO_BODY, Pinhole, Upscale, jitter_for, shown, upscaled}
 use paint::{OVERHEAD, overhead_once, paint, paint_fill, paint_half}
 use yonder::{
     FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, far_merge, vista_carry, vista_lay, vista_look,
@@ -25,10 +25,10 @@ use engine::far::{
     KEPT, MOST_SIDE, SWEEP, Vista, aimed, jumped, strayed, texels_needed, turn_texels, vista_fits,
     vista_side,
 }
-use ink::ink
+use ink::{glow_gather, glow_size, glow_spread, ink}
 use rock::{Rock, reach, rock, step_rock}
-use stacked::{Stacked, reach_stacks, stacked, step_stacks}
-use weather::weather
+use stacked::{Stacked, back_stacks, reach_stacks, stacked, step_stacks}
+use weather::{RAIN_SIDE, rain_field, strike, weather}
 use sail::{Rig, key, let_go, rest, step}
 use std::collections::swap
 use std::io::Pending
@@ -50,6 +50,9 @@ const STIR_AFT: f32 = 8.0
 /// over a pixel, the rest once.
 const LIVE_FINE: f32 = 0.3
 
+/// The sea's kind, as the upscaler is told it (`look::SEA`; `sea::SEA` is its state).
+const SEA_KIND: f32 = 2.0
+
 pub struct State {
     pub(package) heavens: Heavens,
     /// The open sea, summed each drawing.
@@ -61,6 +64,12 @@ pub struct State {
     pub(package) normal: Texture<Rgba8>,
     /// The painted scene with the weather laid over it (`weather`): what the ink reads.
     pub(package) aired: Texture<Rgba16Float>,
+    /// The glow off what's brightest in the drawing (`ink::glow_gather`, `ink::glow_spread`),
+    /// which the ink reads.
+    pub(package) glow_gathered: Texture<Rgba16Float>,
+    pub(package) glow: Texture<Rgba16Float>,
+    /// The rain round the eye this drawing (`weather::rain_field`), which the weather reads.
+    pub(package) rained: Texture<Rgba16Float>,
     /// The rock and the cathedral as their own pass met them over the drawings (`yonder`): this
     /// drawing's (their light, what the ink reads, the normal), the last's beside it, and where
     /// from and how many drawings they hold.
@@ -91,6 +100,10 @@ pub struct State {
     pub(package) rock: Rock,
     pub(package) reach: Texture<Rg32Float>,
     pub(package) reach_depth: DepthTexture,
+    /// How far each pixel is to the far side of the last of the stacks' meshes on its ray
+    /// (`stacked::back_stacks`), with its depth: where the stacks' march stops.
+    pub(package) reach_back: Texture<Rg32Float>,
+    pub(package) reach_back_depth: DepthTexture,
     /// The sea stacks as meshes (`stacked`), drawn into `reach` after the rock's.
     pub(package) stacks: Stacked,
     /// The rock and the cathedral in a picture of their own, pinned to the world (`main::VISTA`):
@@ -150,6 +163,8 @@ pub struct State {
     /// This drawing's shot unjittered: the far pass's, which settles its own pixels.
     pub(package) plain: Shot,
     pub(package) upscaled_frames: u32,
+    /// The rows of the screen the drawing is brought up to (`look::Shot::lines`), or 0.
+    pub(package) shown_rows: f32,
     /// The skiff's frame this drawing and the last, for the upscaler.
     pub(package) body: Body,
     pub(package) last_body: Body,
@@ -201,6 +216,12 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         marks: texture(width: width, height: height),
         normal: texture(width: width, height: height),
         aired: texture(width: width, height: height),
+        rained: texture(width: RAIN_SIDE, height: RAIN_SIDE),
+        glow_gathered: texture(
+            width: glow_size(width, height).0,
+            height: glow_size(width, height).1,
+        ),
+        glow: texture(width: glow_size(width, height).0, height: glow_size(width, height).1),
         yon_colour: texture(width: width, height: height),
         yon_marks: texture(width: width, height: height),
         yon_normal: texture(width: width, height: height),
@@ -232,6 +253,8 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         stacks: stacked(),
         reach: texture(width: width, height: height),
         reach_depth: depth_texture(width, height),
+        reach_back: texture(width: width, height: height),
+        reach_back_depth: depth_texture(width, height),
         vista: aimed(shot.eye, isle_extent(), size: f32(VISTA_SIZE), margin: 0.04),
         vista_aimed: false,
         vista_colour: writable_texture::<Rgba16Float>(width: VISTA_SIZE, height: VISTA_SIZE),
@@ -266,6 +289,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         pinhole: pinhole_of(shot),
         last_pinhole: pinhole_of(shot),
         upscaled_frames: 0,
+        shown_rows: 0.0,
         body: NO_BODY,
         last_body: NO_BODY,
         plain: shot,
@@ -384,6 +408,9 @@ pub(package) fn sized(s: mut State, width: u32, height: u32) {
         s.marks = texture(width: width, height: height)
         s.normal = texture(width: width, height: height)
         s.aired = texture(width: width, height: height)
+        let (gw, gh) = glow_size(width, height)
+        s.glow_gathered = texture(width: gw, height: gh)
+        s.glow = texture(width: gw, height: gh)
         s.yon_colour = texture(width: width, height: height)
         s.yon_marks = texture(width: width, height: height)
         s.yon_normal = texture(width: width, height: height)
@@ -407,6 +434,8 @@ pub(package) fn sized(s: mut State, width: u32, height: u32) {
         s.half_normal = texture(width: (width + 1) / 2, height: height)
         s.reach = texture(width: width, height: height)
         s.reach_depth = depth_texture(width, height)
+        s.reach_back = texture(width: width, height: height)
+        s.reach_back_depth = depth_texture(width, height)
         s.far_colour = texture(width: width, height: height)
         s.far_marks = texture(width: width, height: height)
         s.far_normal = texture(width: width, height: height)
@@ -443,8 +472,11 @@ pub(package) fn painted(
 fn stood(s: mut State, shot: Shot) {
     if HERO > 0.5 {
         let (width, height) = (s.width, s.height)
+        // (Brought up to the screen over the frames, he's drawn unjittered, finer, and each
+        // pixel takes the finer sample this drawing's rays went through: `aboard::laid`.)
+        let gathered = s.shown_rows > f32(height)
         s.aboard.draw(
-            shot,
+            if gathered { s.plain } else { shot },
             s.heavens,
             mut s.colour,
             mut s.marks,
@@ -452,6 +484,7 @@ fn stood(s: mut State, shot: Shot) {
             width,
             height,
             s.overhead,
+            vec3(s.jitter, if gathered { 1.0 } else { 0.0 }),
         )
     }
 }
@@ -467,6 +500,7 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
         look: LOOK,
         lantern: LANTERN,
         fine,
+        lines: s.shown_rows,
         ..shot_at(START + time, s.width, s.height, KINETIC, view, rig, s.ocean.swell),
     }
     // (Settled into the hollow its own bow wave leaves, as the drawing before measured it.)
@@ -533,6 +567,16 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
         mut s.reach_depth,
     )
     s.yon.stacked = if stacked { 1 } else { 0 }
+    if stacked {
+        let _ = back_stacks(
+            s.stacks,
+            shot,
+            whole,
+            s.unbaked,
+            mut s.reach_back,
+            mut s.reach_back_depth,
+        )
+    }
     if VISTA {
         label("vista")
         aim_vista(mut s, shot)
@@ -576,6 +620,12 @@ const VISTA_READY: u32 = VISTA_EARLY
 /// The most looks at the vista a drawing (`yonder::vista_look`): the biggest, at its fast pace.
 const VISTA_LOOKS: u32 = MOST_SIDE * MOST_SIDE / VISTA_FAST
 
+/// Once the vista has been looked at whole `VISTA_SETTLED` times under a still light (each
+/// texel that many looks, a pixel four texels' worth: a mean another look moves by a sixteenth
+/// of what one look differs by), one drawing in `VISTA_REST` looks at it again.
+const VISTA_SETTLED: u32 = 16
+const VISTA_REST: u32 = 4
+
 /// How many drawings the vista takes to fade in as it's laid in, or out as it's put by.
 const VISTA_FADE: f32 = 16.0
 
@@ -601,7 +651,7 @@ fn aim_vista(s: mut State, shot: Shot) {
         shot.eye,
         b,
         VISTA_MARGIN,
-        rows: shot.resolution.y,
+        rows: rows(shot),
         focal: shot.focal,
     )
     s.vista_fits = vista_fits(shot.eye, b, needed, slack: if s.vista_fits { 1.1 } else { 1.0 })
@@ -743,7 +793,11 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
     label("vista")
     // (The vista laid in over what the far pass met (`yonder::far_merge`), once it's ready.)
     let merged = VISTA && s.vista_shown > 0.0
-    if VISTA && from == 0 && s.vista_aimed {
+    // (Once it's settled and the light is still, it's looked at one drawing in `VISTA_REST`:
+    // enough for a light that changes slowly to come through.)
+    let stirred = s.vista_stirred || abs(hv.storm - s.vista_storm) > STILL_STORM
+    let resting = s.vista_sweeps >= VISTA_SETTLED && !stirred && s.yon_seq % VISTA_REST != 0
+    if VISTA && from == 0 && s.vista_aimed && !resting {
         // The vista's texels whose turn it is looked at once more (`yonder::vista_look`), and laid
         // in (`yonder::vista_lay`): once a drawing, with its first band of the paint's.
         let vshot = vista_shot(s.vista, s.plain)
@@ -752,7 +806,6 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
         let period = vista_period(s)
         let turn = s.vista_turn
         let side = u32(s.vista.size)
-        let stirred = s.vista_stirred || abs(hv.storm - s.vista_storm) > STILL_STORM
         dispatch(
             vista_look.bind(
                 shot: vshot,
@@ -827,6 +880,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 smp: hv.linear,
                 field: s.isle_field,
                 reach: s.reach,
+                back: s.reach_back,
                 once: s.overhead.items(),
             ),
             vertices: 3,
@@ -872,6 +926,7 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 past_normal: s.past_normal,
                 field: s.isle_field,
                 reach: s.reach,
+                back: s.reach_back,
                 once: s.overhead.items(),
             ),
             vertices: 3,
@@ -997,6 +1052,11 @@ pub(package) fn weathered(s: mut State, shot: Shot) {
     if (OFF & 256) != 0 { return }
     borrow hv = s.heavens
     label("weather")
+    if shot.storm > 0.0 {
+        let rp = begin_pass(mut s.rained, clear: vec4(0.0, 0.0, 0.0, 1.0))
+        draw(rp, cover, rain_field.bind(shot: shot), vertices: 3)
+        rp.end()
+    }
     let p = begin_pass(mut s.aired, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         p,
@@ -1011,11 +1071,93 @@ pub(package) fn weathered(s: mut State, shot: Shot) {
             smp: hv.linear,
             colour: s.colour,
             marks: s.marks,
+            rained: s.rained,
             once: s.overhead.items(),
         ),
         vertices: 3,
     )
     p.end()
+}
+
+/// The glow off what's brightest in the drawing as the ink will read it (the weathered paint, or
+/// the paint where the weather is left out), into `State::glow`, for the ink.
+pub(package) fn glowed(s: mut State) {
+    borrow hv = s.heavens
+    borrow colour = if (OFF & 256) != 0 { s.colour } else { s.aired }
+    let size = vec2(f32(s.width), f32(s.height))
+    let g = begin_pass(mut s.glow_gathered, clear: vec4(0.0))
+    draw(g, cover, glow_gather.bind(light: hv.light, colour: colour, size: size), vertices: 3)
+    g.end()
+    let p = begin_pass(mut s.glow, clear: vec4(0.0))
+    draw(
+        p,
+        cover,
+        glow_spread.bind(gathered: s.glow_gathered, smp: hv.linear, size: size),
+        vertices: 3,
+    )
+    p.end()
+}
+
+/// The inked drawing (`State::inked`, at the drawing's size) brought up to a screen `width` by
+/// `height` over the frames before (`engine::upscale`), into the upscaler's history, and the
+/// next drawing's rays moved on within their pixels. The history just written is `latest`.
+pub(package) fn brought_up(s: mut State, shot: Shot, width: u32, height: u32) {
+    if s.history_size != (width, height) {
+        s.history_a = texture(width: width, height: height)
+        s.history_b = texture(width: width, height: height)
+        s.history_size = (width, height)
+        s.fresh = true
+    }
+    borrow hv = s.heavens
+    // (Lightning lights everything for a few frames: a still thing's history is then clipped as
+    // any other's, so the flash is on it at once and gone at once.)
+    let flash = strike(shot).now * shot.storm
+    let u = Upscale {
+        now: s.pinhole,
+        last: s.last_pinhole,
+        jitter: s.jitter,
+        out: vec2(f32(width), f32(height)),
+        fresh: if s.fresh { 1 } else { 0 },
+        mover: SKIFF,
+        body: s.body,
+        last_body: s.last_body,
+        restless: SEA_KIND,
+        // (Its finest waves a pixel shows run about 0.4 m/s; a drawing is a 60th of a second
+        // or less.)
+        restless_step: 0.4 / 60.0,
+        // (The sky and all that's built or rock: kinds `SKY` and `ROCK` to `TILE`.)
+        still: (1 << u32(SKY)) | ((1 << (u32(TILE) + 1)) - (1 << u32(ROCK))),
+        changing: if flash > 0.02 { 1.0 } else { 0.0 },
+    }
+    if s.flip {
+        let p = begin_pass(mut s.history_b, clear: vec4(0.0))
+        draw(
+            p,
+            cover,
+            upscaled.bind(u, scene: s.inked, far: s.marks, history: s.history_a, smp: hv.linear),
+            vertices: 3,
+        )
+        p.end()
+    } else {
+        let p = begin_pass(mut s.history_a, clear: vec4(0.0))
+        draw(
+            p,
+            cover,
+            upscaled.bind(u, scene: s.inked, far: s.marks, history: s.history_b, smp: hv.linear),
+            vertices: 3,
+        )
+        p.end()
+    }
+    s.flip = !s.flip
+    s.fresh = false
+    s.last_pinhole = s.pinhole
+    s.last_body = s.body
+    s.upscaled_frames += 1
+    s.jitter = jitter_for(
+        s.upscaled_frames,
+        vec2(f32(s.width), f32(s.height)),
+        vec2(f32(width), f32(height)),
+    )
 }
 
 /// The scene for another program, drawn at `width` by `height`.
@@ -1040,6 +1182,11 @@ pub fn play(
     orbit: f32,
     framing: f32,
     bands: u32,
+    // The screen it's shown on (px), where the drawing is smaller: `image` is then the drawing
+    // brought up to that size over the frames before (`engine::upscale`), as fine as the screen
+    // where the scene holds still, not the drawing itself for the page to stretch. (0, 0), or
+    // no larger than the drawing: `image` is the drawing.
+    screen: (u32, u32) = (0, 0),
 ) -> bool {
     // (The rig stepped to the drawing's own time, as all else in it is: stepped to the frame's,
     // a drawing held over two frames carried two frames' motion into the next, every fifth frame
@@ -1050,6 +1197,8 @@ pub fn play(
         s.band = 0
         s.drawn = -1.0
     }
+    let gathered = screen.1 > height && screen.0 > width
+    let (out_w, out_h) = if gathered { screen } else { (width, height) }
     let drawing = held(START + time)
     if s.band == 0 {
         // (In one band, a drawing every frame: a frame that falls in the last's drawing still
@@ -1058,6 +1207,11 @@ pub fn play(
             return false
         }
         s.drawn = drawing
+        s.shown_rows = if gathered { f32(out_h) } else { 0.0 }
+        if !gathered {
+            s.jitter = vec2(0.0)
+            s.fresh = true
+        }
         s.shot = prepared(mut s, time, 0, orbit, framing, fine: LIVE_FINE)
     }
     let shot = s.shot
@@ -1071,14 +1225,49 @@ pub fn play(
     }
     s.band = 0
     stood(mut s, shot)
-    if s.spare_size != (width, height) {
-        s.spare = texture(width: width, height: height)
-        s.spare_size = (width, height)
+    if s.spare_size != (out_w, out_h) {
+        s.spare = texture(width: out_w, height: out_h)
+        s.spare_size = (out_w, out_h)
     }
     weathered(mut s, shot)
+    label("ink")
+    glowed(mut s)
+    if gathered {
+        // Inked at its own size, brought up to the screen's over the frames, and that put in
+        // `image`.
+        {
+            borrow hv = s.heavens
+            borrow colour = if (OFF & 256) != 0 { s.colour } else { s.aired }
+            let p = begin_pass(mut s.inked, clear: vec4(0.0, 0.0, 0.0, 1.0))
+            draw(
+                p,
+                cover,
+                ink.bind(
+                    shot: shot,
+                    light: hv.light,
+                    colour: colour,
+                    marks: s.marks,
+                    normal: s.normal,
+                    glow: s.glow,
+                    smp: hv.linear,
+                    settled: 1,
+                ),
+                vertices: 3,
+            )
+            p.end()
+        }
+        label("upscale")
+        brought_up(mut s, shot, out_w, out_h)
+        let p = begin_pass(mut s.spare, clear: vec4(0.0, 0.0, 0.0, 1.0))
+        borrow now = if s.flip { s.history_a } else { s.history_b }
+        draw(p, cover, shown.bind(history: now), vertices: 3)
+        p.end()
+        swap(mut s.image, mut s.spare)
+        swap(mut s.image_size, mut s.spare_size)
+        return true
+    }
     borrow hv = s.heavens
     borrow colour = if (OFF & 256) != 0 { s.colour } else { s.aired }
-    label("ink")
     let p = begin_pass(mut s.spare, clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         p,
@@ -1089,6 +1278,8 @@ pub fn play(
             colour: colour,
             marks: s.marks,
             normal: s.normal,
+            glow: s.glow,
+            smp: hv.linear,
             settled: 0,
         ),
         vertices: 3,
@@ -1097,6 +1288,11 @@ pub fn play(
     swap(mut s.image, mut s.spare)
     swap(mut s.image_size, mut s.spare_size)
     true
+}
+
+/// The upscaler's history last written (`brought_up`).
+pub(package) fn latest(s: State) -> borrow Texture<Rgba16Float> {
+    if s.flip { s.history_a } else { s.history_b }
 }
 
 /// Whether the sky has cooked whole: the scene is fit to be seen.

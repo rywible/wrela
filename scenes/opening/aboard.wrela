@@ -562,16 +562,64 @@ const FAR: f32 = 400.0
 /// A point of the world in the shot's clip space: as `look::ray` casts its pixels.
 pub fn clip_of(s: Shot, p: vec3) -> vec4 {
     let r = p - s.eye
-    let x = dot(r, s.right)
-    let y = dot(r, s.up)
-    let z = dot(r, s.forward)
+    // (A drawing whose rays are moved within their pixels (`played::jittered`, for the upscaler)
+    // has its `forward` leant by that much across and up: taken back out for how far the point
+    // is, and the picture slid by it instead, as its rays are. Cast with the leant `forward`
+    // alone he hardly moved, while the upscaler took him to have moved with the rest: put down
+    // a quarter of a pixel off, another way each frame, and gathered into a blur.)
+    let lean = vec2(dot(s.forward, s.right), dot(s.forward, s.up))
+    let ahead = normalize(s.forward - s.right * lean.x - s.up * lean.y)
+    let z = dot(r, ahead)
+    let x = dot(r, s.right) - lean.x * z
+    let y = dot(r, s.up) - lean.y * z
+    // (Into his own targets where they cover his box alone: `Shot::crop`.)
     vec4(
-        s.focal * x * s.resolution.y / s.resolution.x,
-        s.focal * y,
+        s.focal * x * s.resolution.y / s.resolution.x * s.crop.x + s.crop.z * z,
+        s.focal * y * s.crop.y + s.crop.w * z,
         (z - NEAR) * FAR / (FAR - NEAR),
         z,
     )
 }
+
+/// The part of a screen `width` by `height` he's drawn in: its corner and its size (pixels), the
+/// size in steps of `BOX_STEP` so his targets are seldom made again. Every joint the shot holds
+/// him by, each with `BOX_ROUND` m round it (his head and hair over his neck, his coat's tails
+/// as they fly); the whole screen where he's close enough to fill it.
+fn boxed(s: Shot, width: u32, height: u32) -> (u32, u32, u32, u32) {
+    let joints = [
+        s.hips,
+        s.neck + vec3(0.0, 0.25, 0.0),
+        s.fore_hand,
+        s.aft_hand,
+        s.fore_foot,
+        s.aft_foot,
+    ]
+    var lo = vec2(f32(width), f32(height))
+    var hi = vec2(0.0)
+    for j in joints {
+        let world = s.boat + s.boat_x * j.x + s.boat_y * j.y + s.boat_z * j.z
+        let c = clip_of(Shot { crop: vec4(1.0, 1.0, 0.0, 0.0), ..s }, world)
+        if c.w < BOX_ROUND + 0.2 {
+            return (0, 0, width, height)
+        }
+        let at = vec2(
+            (c.x / c.w * 0.5 + 0.5) * f32(width),
+            (0.5 - c.y / c.w * 0.5) * f32(height),
+        )
+        let r = BOX_ROUND * s.focal * f32(height) * 0.5 / (c.w - BOX_ROUND)
+        lo = min(lo, at - vec2(r))
+        hi = max(hi, at + vec2(r))
+    }
+    lo = clamp(lo, vec2(0.0), vec2(f32(width), f32(height)))
+    hi = clamp(hi, lo, vec2(f32(width), f32(height)))
+    let w = min(((u32(hi.x - lo.x) + BOX_STEP) / BOX_STEP) * BOX_STEP, width)
+    let h = min(((u32(hi.y - lo.y) + BOX_STEP) / BOX_STEP) * BOX_STEP, height)
+    (min(u32(lo.x), width - w), min(u32(lo.y), height - h), w, h)
+}
+
+/// How far round each of his joints his box reaches (m), and the step its size goes in (pixels).
+const BOX_ROUND: f32 = 0.9
+const BOX_STEP: u32 = 128
 
 @vertex
 pub fn hero_vertex(v: VertexIndex, verts: [SkinVertex], palette: [mat4], shot: Shot) -> HeroVertex {
@@ -632,7 +680,10 @@ pub fn hero_pixel<F: Parts<Cloth>>(
 ) -> Targets3<vec4, vec4, vec4> {
     let s = shot
     let t = length(v.world - s.eye)
-    let behind = painted.load(u32(pixel.position.x) / FINER, u32(pixel.position.y) / FINER)
+    let behind = painted.load(
+        u32(pixel.position.x) / FINER + u32(s.crop_at.x),
+        u32(pixel.position.y) / FINER + u32(s.crop_at.y),
+    )
     // (Compared as stored, in log2 of the distance at half precision: a step there is about
     // 0.3% of it at the boat's range, so the margin is a little more than one.)
     if behind.x < log2(t) - 0.006 {
@@ -725,7 +776,10 @@ pub fn charted_pixel<const A: u32, const R: u32>(
     }
     let s = shot
     let t = length(v.world - s.eye)
-    let behind = painted.load(u32(pixel.position.x) / FINER, u32(pixel.position.y) / FINER)
+    let behind = painted.load(
+        u32(pixel.position.x) / FINER + u32(s.crop_at.x),
+        u32(pixel.position.y) / FINER + u32(s.crop_at.y),
+    )
     if behind.x < log2(t) - 0.006 {
         discard()
     }
@@ -927,9 +981,11 @@ pub fn copied(
     colour: Texture<Rgba16Float>,
     marks: Texture<Rgba16Float>,
     normal: Texture<Rgba8>,
+    // (His box's corner on the screen: the copy is of his box alone.)
+    origin: vec2,
 ) -> Targets3<vec4, vec4, vec4> {
-    let x = u32(pixel.position.x)
-    let y = u32(pixel.position.y)
+    let x = u32(pixel.position.x) + u32(origin.x)
+    let y = u32(pixel.position.y) + u32(origin.y)
     Targets3 { first: colour.load(x, y), second: marks.load(x, y), third: normal.load(x, y) }
 }
 
@@ -945,14 +1001,27 @@ pub fn laid(
     under_colour: Texture<Rgba16Float>,
     under_marks: Texture<Rgba16Float>,
     under_normal: Texture<Rgba8>,
+    // (His box's corner on the screen: his targets and the copy under them are his box's.)
+    origin: vec2,
+    // Where the drawing is brought up to the screen over the frames (`engine::upscale`; z 1):
+    // where in its pixel this drawing's rays went (x, y). Then each pixel takes the one of his
+    // finer samples that lies there, not their mean: the upscaler gathers them over the frames
+    // as fine as he's drawn, where their mean was already a blur the drawing's pixel wide.
+    pick: vec3,
 ) -> Targets3<vec4, vec4, vec4> {
-    let x = u32(pixel.position.x)
-    let y = u32(pixel.position.y)
+    let x = u32(pixel.position.x) - u32(origin.x)
+    let y = u32(pixel.position.y) - u32(origin.y)
+    let one = pick.z > 0.5
+    let at = clamp(floor((vec2(0.5) + pick.xy) * f32(FINER)), vec2(0.0), vec2(f32(FINER) - 1.0))
+    let picked = u32(at.x) + u32(at.y) * FINER
     var sum = vec4(0.0)
     var hits = 0.0
     var m = vec4(0.0)
     var n = vec4(0.0)
     for k in 0..FINER * FINER {
+        if one && k != picked {
+            continue
+        }
         let sx = x * FINER + k % FINER
         let sy = y * FINER + k / FINER
         let mk = marks.load(sx, sy)
@@ -966,12 +1035,15 @@ pub fn laid(
     if hits == 0.0 {
         discard()
     }
-    let all = f32(FINER * FINER)
+    let all = if one { 1.0 } else { f32(FINER * FINER) }
     if INKED > 0.5 {
         // His ink: where, a finer sample or two off, he ends (his outline) or his surface jumps
         // back (where an arm crosses his body, the coat over his legs).
         var ink = 0.0
         for k in 0..FINER * FINER {
+            if one && k != picked {
+                continue
+            }
             let sx = i32(x * FINER + k % FINER)
             let sy = i32(y * FINER + k / FINER)
             let here = marks.load(u32(sx), u32(sy))
@@ -1258,18 +1330,37 @@ impl Aboard {
         height: u32,
         // (The sky's colours the same for every pixel of the drawing: `paint::overhead_once`.)
         once: GpuBuffer<vec4>,
+        // (Which of his finer samples each pixel takes, where the drawing is brought up to the
+        // screen over the frames: `laid`'s `pick`. `shot` is then the drawing's unjittered.)
+        pick: vec3,
     ) {
-        if width != self.width || height != self.height {
-            let (w, h) = (width * FINER, height * FINER)
+        // His targets cover his box on the screen, not the screen: he's a hundredth of it from
+        // the opening's shot, and three targets four times the screen's pixels, cleared and
+        // laid each drawing, cost more than everything drawn into them.
+        let (bx, by, bw, bh) = boxed(shot, width, height)
+        if bw != self.width || bh != self.height {
+            let (w, h) = (bw * FINER, bh * FINER)
             self.colour = texture(width: w, height: h)
             self.marks = texture(width: w, height: h)
             self.normal = texture(width: w, height: h)
             self.depth = depth_texture(width: w, height: h)
-            self.under_colour = texture(width: width, height: height)
-            self.under_marks = texture(width: width, height: height)
-            self.under_normal = texture(width: width, height: height)
-            self.width = width
-            self.height = height
+            self.under_colour = texture(width: bw, height: bh)
+            self.under_marks = texture(width: bw, height: bh)
+            self.under_normal = texture(width: bw, height: bh)
+            self.width = bw
+            self.height = bh
+        }
+        let origin = vec2(f32(bx), f32(by))
+        let (sw, sh) = (f32(width), f32(height))
+        let shot = Shot {
+            crop: vec4(
+                sw / f32(bw),
+                sh / f32(bh),
+                (sw - 2.0 * origin.x) / f32(bw) - 1.0,
+                1.0 - (sh - 2.0 * origin.y) / f32(bh),
+            ),
+            crop_at: origin,
+            ..shot,
         }
         // (The scene moves on its own drawings, `sea::held`: his cloth and his lagged palette
         // step only when the drawing does, by the time it moved. Stepped every frame, a drawing
@@ -1507,9 +1598,15 @@ impl Aboard {
             mut self.under_normal,
             clear: vec4(0.0),
         )
-        draw(c, cover, copied.bind(colour: colour, marks: marks, normal: normal), vertices: 3)
+        draw(
+            c,
+            cover,
+            copied.bind(colour: colour, marks: marks, normal: normal, origin: origin),
+            vertices: 3,
+        )
         c.end()
         let q = begin_pass3(mut colour, mut marks, mut normal, keep: true)
+        q.scissor(bx, by, bw, bh)
         draw(
             q,
             cover,
@@ -1520,6 +1617,8 @@ impl Aboard {
                 under_colour: self.under_colour,
                 under_marks: self.under_marks,
                 under_normal: self.under_normal,
+                origin: origin,
+                pick: pick,
             ),
             vertices: 3,
         )

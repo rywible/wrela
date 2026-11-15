@@ -8,7 +8,7 @@
 use main::{FREEBOARD, HERO, LOOK, LOW_CLOUD, OFF, WAKE_DEBUG}
 use look::{
     STORM_BEHIND, STORM_HORIZON, STORM_LOW, GILT, GLASS, ISLE, ROCK, SEA, SKIFF, SKY, STONE, Shot,
-    band, cells, hash2, luma, fbm, noise, ray,
+    band, cells, hash2, luma, fbm, noise, ray, rows,
 }
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
 use wind::{air_over}
@@ -328,7 +328,7 @@ fn trace_sea(s: Shot, waves: Waves, stir: [vec4], o: vec3, d: vec3, far: f32) ->
     var i = 0
     while i < 40 && !under && t < limit {
         let p = o + d * t
-        let foot = t * 2.0 / (s.resolution.y * s.focal * slant)
+        let foot = t * 2.0 / (rows(s) * s.focal * slant)
         let f = p.y - sea_level(s, waves, stir, p, foot)
         if f < 0.0 {
             under = true
@@ -348,7 +348,7 @@ fn trace_sea(s: Shot, waves: Waves, stir: [vec4], o: vec3, d: vec3, far: f32) ->
         for _ in 0..8 {
             let m = (lo + hi) * 0.5
             let p = o + d * m
-            let foot = m * 2.0 / (s.resolution.y * s.focal * slant)
+            let foot = m * 2.0 / (rows(s) * s.focal * slant)
             let f = p.y - sea_level(s, waves, stir, p, foot)
             if f < 0.0 {
                 hi = m
@@ -387,7 +387,7 @@ fn trace_far(s: Shot, waves: Waves, o: vec3, d: vec3, far: f32, from: f32) -> f3
         let p = o + d * t
         // (Read as a few pixels across hold it, not as foreshortened down the ray: the crests'
         // outline is what's drawn here.)
-        let foot = t * 8.0 / (s.resolution.y * s.focal)
+        let foot = t * 8.0 / (rows(s) * s.focal)
         let f = p.y - level_at(waves, vec2(p.x, p.z), foot, 0.0)
         if hi > 0.0 {
             if f < 0.0 { hi = t } else { lo = t }
@@ -921,7 +921,7 @@ fn sea_shade(
     // finer than a pixel is averaged, not stairs or crawl; and the slopes it lost roughening the
     // glint instead (`engine::ocean::surface_at`). By the hull its shorter waves are broken, so
     // the skiff sits in the water it's drawn on.
-    let px_m = t * 2.0 / (s.resolution.y * s.focal)
+    let px_m = t * 2.0 / (rows(s) * s.focal)
     // Where the skiff has stirred the water (`engine::stir`): its waves, and the froth it's left.
     let st = stir_on(stir, s.stir_at, xz)
     // (The short waves are broken by the hull, and laid flat where its wake's churned them: the
@@ -1481,7 +1481,7 @@ fn sea_shade(
     let wake_tone = WAKE_TONE + 0.2 * lace + 0.3 * grain
     c = mix(c, foam_light * wake_tone, max(max(foam * 0.9, wake), splash))
     // The crests' ink strokes and pale lips, light: the ink sits on the water's form.
-    let footprint = t * 2.0 / (s.resolution.y * s.focal)
+    let footprint = t * 2.0 / (rows(s) * s.focal)
     let crest_ink = if LOOK > 2.5 { vec2(0.0) } else {
         strokes(xz, s.held, footprint, d, wave) * clamp(1.0 - t / 70.0, 0.0, 1.0)
     }

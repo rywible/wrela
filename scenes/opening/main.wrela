@@ -18,8 +18,8 @@
 use heavens::heavens
 use look::{SEA, SKIFF, SUN}
 use ink::ink
-use engine::upscale::{Upscale, jitter_of, shown, upscaled}
-use played::{State, cover, painted, sized, targets, weathered}
+use engine::upscale::shown
+use played::{State, brought_up, cover, glowed, latest, painted, sized, targets, weathered}
 use sail::key
 use std::input::events
 use std::gpu::{
@@ -251,27 +251,25 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let w = if low { max(u32(f32(width) * RENDER_SCALE + 0.5), 1) } else { width }
     let h = if low { max(u32(f32(height) * RENDER_SCALE + 0.5), 1) } else { height }
     sized(mut s, w, h)
-    if UPSCALE && low && s.history_size != (width, height) {
-        s.history_a = texture(width: width, height: height)
-        s.history_b = texture(width: width, height: height)
-        s.history_size = (width, height)
-        s.fresh = true
-    }
     // The player's keys: W sheets in, S lets the sail fly, A and D steer.
     for e in events() {
         key(mut s.rig, e)
     }
+    s.shown_rows = if UPSCALE && low { f32(height) } else { 0.0 }
     let shot = painted(mut s, time, VIEW, 0.0, framing: FRAMING, fine: FINE)
     weathered(mut s, shot)
+    label("ink")
+    glowed(mut s)
     borrow hv = s.heavens
     borrow colour = if (OFF & 256) != 0 { s.colour } else { s.aired }
-    label("ink")
     let inked = ink.bind(
         shot: shot,
         light: hv.light,
         colour: colour,
         marks: s.marks,
         normal: s.normal,
+        glow: s.glow,
+        smp: hv.linear,
         settled: if low && UPSCALE { 1 } else { 0 },
     )
     if !low {
@@ -300,46 +298,10 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         return
     }
     // Brought up over the frames before (`engine::upscale`), and the next frame's rays jittered.
-    let u = Upscale {
-        now: s.pinhole,
-        last: s.last_pinhole,
-        jitter: s.jitter,
-        out: vec2(f32(width), f32(height)),
-        fresh: if s.fresh { 1 } else { 0 },
-        mover: SKIFF,
-        body: s.body,
-        last_body: s.last_body,
-        restless: SEA,
-    }
-    if s.flip {
-        let p = begin_pass(mut s.history_b, clear: vec4(0.0))
-        draw(
-            p,
-            cover,
-            upscaled.bind(u, scene: s.inked, far: s.marks, history: s.history_a, smp: hv.linear),
-            vertices: 3,
-        )
-        p.end()
-    } else {
-        let p = begin_pass(mut s.history_a, clear: vec4(0.0))
-        draw(
-            p,
-            cover,
-            upscaled.bind(u, scene: s.inked, far: s.marks, history: s.history_b, smp: hv.linear),
-            vertices: 3,
-        )
-        p.end()
-    }
-    borrow now = if s.flip { s.history_b } else { s.history_a }
+    brought_up(mut s, shot, width, height)
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-    draw(screen, cover, shown.bind(history: now), vertices: 3)
+    draw(screen, cover, shown.bind(history: latest(s)), vertices: 3)
     screen.present()
-    s.flip = !s.flip
-    s.fresh = false
-    s.last_pinhole = s.pinhole
-    s.last_body = s.body
-    s.upscaled_frames += 1
-    s.jitter = jitter_of(s.upscaled_frames)
 }
 
 /// The inked drawing (`from` px) brought up to the screen (`to` px): Catmull-Rom, its sixteen

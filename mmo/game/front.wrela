@@ -1269,6 +1269,8 @@ pub fn frame<A: Account>(
         orbit: f.orbit,
         framing: f.framing,
         bands: BANDS,
+        // (Brought up to the screen's own size over the frames where it's drawn smaller.)
+        screen: (width, height),
     ) &&
         ready(f.scene) {
         f.cooked = true
@@ -1301,7 +1303,12 @@ pub fn frame<A: Account>(
         shown: f.shown,
         veil: f.words,
         dim: f.menu,
-        texel: vec2(1.0 / f32(max(wide, 1)), 1.0 / f32(max(high, 1))),
+        // (Of the image as it comes: the drawing's size, or the screen's where the scene
+        // brought it up itself.)
+        texel: vec2(
+            1.0 / f32(max(f.scene.image.width(), 1)),
+            1.0 / f32(max(f.scene.image.height(), 1)),
+        ),
     }
     let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(pass, cover, laid.bind(v: veil, image: f.scene.image, smp: f.smp), vertices: 3)
