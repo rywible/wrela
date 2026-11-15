@@ -162,7 +162,7 @@ pub fn back_stacks(
     let vp = view_proj(s)
     let pass = begin_pass_with_depth(mut out, mut depth, clear: vec4(0.0), clear_depth: 0.0)
     for i in 0..st.len() {
-        if !st.drawn(i) {
+        if !st.drawn(i) || !seen(vp, st.cubes[i]) {
             continue
         }
         borrow m = st.mesh(i)
