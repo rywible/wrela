@@ -71,6 +71,12 @@ pub struct Upscale: Copy + GpuData {
     /// sky whose clouds drift): a bit each, bit `k` kind `k` (kinds under 32). Its history is
     /// kept unclipped. 0: none.
     pub still: u32 = 0,
+    /// Of the still kinds, those that change slowly all the same (a sky whose scud drifts and
+    /// whose rain runs down it), a bit each as `still`: kept unclipped and gathered at their
+    /// edges as a still thing is, but with a little of each frame, read between the drawing's
+    /// pixels, taken everywhere. Held outright, each pixel showed the sky as it was when its
+    /// sample last fell, its neighbours' at other moments: a fine hatch. 0: none.
+    pub slow: u32 = 0,
     /// How much the light on everything is changing this frame (lightning, a storm coming on),
     /// 0 to 1: at 1, a still thing's history is clipped as any other's, so the change comes
     /// through at once.
@@ -126,8 +132,19 @@ pub fn jitter_for(frame: u32, size: vec2, out: vec2) -> vec2 {
     let i = if n == 2 { [0, 3, 1, 2][turn] } else if n == 3 { (turn * 4) % 9 } else {
         [0, 10, 2, 8, 5, 15, 7, 13, 1, 11, 3, 9, 4, 14, 6, 12][turn]
     }
-    let within = WITHIN[(frame / (n * n)) % 4]
+    // (Another place within the pixel every second round: a scene that draws only some of its
+    // pixels a frame, by turns, takes its turns by the round (`round_of`), and each of its
+    // pixels then sees every place.)
+    let within = WITHIN[(frame / (2 * n * n)) % 4]
     (vec2(f32(i % n), f32(i / n)) + vec2(0.5) + within) / f32(n) - vec2(0.5)
+}
+
+/// How many times round the screen's pixels the jitter has been by frame `frame` (`jitter_for`):
+/// what a scene that draws only some of its pixels a frame takes its turns by, so each of its
+/// pixels is drawn at each of the screen's pixels in it.
+pub fn round_of(frame: u32, size: vec2, out: vec2) -> u32 {
+    let n = u32(ceil(max(out.x / size.x, out.y / size.y) - 0.01))
+    if n < 2 || n > 4 { frame } else { frame / (n * n) }
 }
 
 /// Four places in a pixel, on a turned grid: each its own row and column.
@@ -180,7 +197,7 @@ const SETTLED: f32 = 0.5
 
 /// On a restless surface (`Upscale::restless`), the most of a frame taken where no sample fell
 /// on the pixel (where its pattern moves a pixel or more a frame), and how tight its box.
-const RESTLESS: f32 = 0.5
+const RESTLESS: f32 = 0.9
 const RESTLESS_BOX: f32 = 1.0
 
 /// How tight a mover's box and anything else's (in the neighbourhood's spreads).
@@ -197,9 +214,16 @@ const SLANT: f32 = 0.1
 /// between a near thing and a far one.
 const EDGE: f32 = 0.5
 
+/// Of each frame, the least taken at such an edge where what's there may move.
+const MOVING_EDGE: f32 = 0.75
+
 /// How far (the screen's pixels) the eye's own travel may have slid a still thing since the last
 /// frame and its history still be kept where no sample fell on it.
 const SLID: f32 = 0.25
+
+/// What a scene writes in a pixel's alpha where it didn't draw the pixel this frame but filled
+/// it between its neighbours (a scene that draws only some of its pixels a frame, by turns).
+pub const FILLED: f32 = 2.0
 
 /// What the history keeps beside a pixel's colour: how far what it holds is (log₂ m, `depth`),
 /// and whether it's still (its sign).
@@ -246,14 +270,43 @@ fn history_at(h: Texture<Rgba16Float>, smp: Sampler, p: vec2, size: vec2) -> vec
 /// nor darker than the darkest. Catmull-Rom overshoots an edge a little, and a history that's
 /// read so every frame and never clipped (a still thing's) has each frame's overshoot read
 /// again by the next: a grain that grows until it's all there is.
-fn history_within(h: Texture<Rgba16Float>, smp: Sampler, p: vec2, size: vec2) -> vec3 {
-    let c = clamp(floor(p - vec2(0.5)), vec2(0.0), size - vec2(2.0))
+///
+///
+/// Its alpha: 1 where the texels it's read from all hold what the texel `p` lies in holds (as
+/// far, and still or not as it is), 0 where one of the four round `p` holds something else:
+/// there what's read between them is a mix of two things. Where the four agree but a corner of
+/// the sixteen Catmull-Rom reads doesn't, it's read from the four alone, straight between them.
+fn history_within(h: Texture<Rgba16Float>, smp: Sampler, p: vec2, size: vec2) -> vec4 {
+    let c = clamp(floor(p - vec2(0.5)), vec2(1.0), size - vec2(3.0))
     let (x, y) = (u32(c.x), u32(c.y))
-    let a = h.load(x, y).rgb
-    let b = h.load(x + 1, y).rgb
-    let d = h.load(x, y + 1).rgb
-    let e = h.load(x + 1, y + 1).rgb
-    clamp(history_at(h, smp, p, size), min(min(a, b), min(d, e)), max(max(a, b), max(d, e)))
+    let a = h.load(x, y)
+    let b = h.load(x + 1, y)
+    let d = h.load(x, y + 1)
+    let e = h.load(x + 1, y + 1)
+    let own = h.load(u32(p.x), u32(p.y)).a
+    let one = abs(a.a - own) < SAME &&
+        abs(b.a - own) < SAME &&
+        abs(d.a - own) < SAME &&
+        abs(e.a - own) < SAME
+    if !one {
+        return vec4(a.rgb, 0.0)
+    }
+    let wide = abs(h.load(x - 1, y - 1).a - own) < SAME &&
+        abs(h.load(x + 2, y - 1).a - own) < SAME &&
+        abs(h.load(x - 1, y + 2).a - own) < SAME &&
+        abs(h.load(x + 2, y + 2).a - own) < SAME
+    if !wide {
+        let f = clamp(p - vec2(0.5) - c, vec2(0.0), vec2(1.0))
+        return vec4(mix(mix(a.rgb, b.rgb, f.x), mix(d.rgb, e.rgb, f.x), f.y), 1.0)
+    }
+    vec4(
+        clamp(
+            history_at(h, smp, p, size),
+            min(min(a.rgb, b.rgb), min(d.rgb, e.rgb)),
+            max(max(a.rgb, b.rgb), max(d.rgb, e.rgb)),
+        ),
+        1.0,
+    )
 }
 
 /// The output pixel's colour, this frame's samples (`scene`, the drawing's size; its alpha how
@@ -298,8 +351,11 @@ pub fn upscaled(
             // (Where its ray went: the pixel's middle, moved by the jitter as far as its alpha
             // says, 0 where the scene settled it at the middle itself. Weighed by how far that
             // is from this pixel in the screen's pixels.)
-            let d = (at + vec2(0.5) + u.jitter * sample.a - q) / k
-            let w = exp(-2.29 * dot(d, d))
+            let d = (at + vec2(0.5) + u.jitter * min(sample.a, 1.0) - q) / k
+            // (A pixel the scene didn't draw this frame but filled between its neighbours
+            // (`FILLED`) is no sample: it's read between, as the rest of the drawing, but never
+            // taken as what fell on a pixel.)
+            let w = if sample.a > 1.5 { 0.0 } else { exp(-2.29 * dot(d, d)) }
             if w > most {
                 most = w
                 hit = c
@@ -317,7 +373,7 @@ pub fn upscaled(
     let spread = sqrt(max(square / 9.0 - mean * mean, vec3(0.0)))
     // This frame alone at the pixel: the drawing read between its pixels (Catmull-Rom), from
     // where its rays went; and where a sample fell on the pixel itself, that sample.
-    let moved = scene.load(u32(base.x), u32(base.y)).a
+    let moved = min(scene.load(u32(base.x), u32(base.y)).a, 1.0)
     let once = history_at(scene, smp, q - u.jitter * moved, size)
     let restless = hit_kind == u.restless
     // (A restless surface by how far its pattern moves a frame, in the pixels it's shown in:
@@ -356,8 +412,14 @@ pub fn upscaled(
         return vec4(now, kept(hit_far, still && lands))
     }
     // What the history holds there, and what of: how far it was, and whether it's still.
-    let h = history_within(history, smp, was_px, u.out)
-    let held = history.load(u32(was_px.x), u32(was_px.y)).a
+    // (Read between its texels where they all hold one thing; where they don't, at the edge of
+    // what the pixel holds, the one texel it lies in. Read between a sail's texels and the
+    // sky's, the sky beside the sail took some of the sail each frame, and being still, kept
+    // it: a dust of dark specks left behind wherever the sail had been.)
+    let between = history_within(history, smp, was_px, u.out)
+    let nearest_texel = history.load(u32(was_px.x), u32(was_px.y))
+    let h = if between.a > 0.5 { between.rgb } else { nearest_texel.rgb }
+    let held = nearest_texel.a
     let held_still = held < 0.0 && u.changing < 0.5
     let held_far = abs(held) - 8.0
     // How far the nearest sample's point was from the last frame's eye: the history holds the
@@ -366,10 +428,18 @@ pub fn upscaled(
     let same = abs(held_far - expected) < SAME + min(0.5 * (farthest - nearest), SLANT)
     // The same still surface: the history as it is, and where a sample fell on the pixel, a
     // little of it: the pixel comes to hold the mean of the samples that fell in it.
-    // (Where the scene settled the pixel at its middle itself, read as one drawing is.)
+    // (The sample itself, never the drawing read between its pixels: a little of that each
+    // frame, and a still thing settles part way to the drawing's blur, with its neighbours'
+    // colours in it. Where the scene settled the pixel at its middle itself, read as one
+    // drawing is.)
     let gathered = mix(HIT_STILL * landed, SETTLED, 1.0 - moved)
+    let sampled = mix(hit, once, 1.0 - moved)
+    let slow = still && ((u.slow >> u32(hit_kind)) & 1) == 1
     if same && still && held_still {
-        return vec4(max(mix(h, now, gathered), vec3(0.0)), kept(hit_far, true))
+        if slow {
+            return vec4(max(mix(h, now, max(gathered, KEEP)), vec3(0.0)), kept(hit_far, true))
+        }
+        return vec4(max(mix(h, sampled, gathered), vec3(0.0)), kept(hit_far, true))
     }
     if !same && held_still {
         // Not the surface the samples met, but a still one, and the eye's own travel hasn't
@@ -381,7 +451,10 @@ pub fn upscaled(
             //   missed stays, and the sky beside a sail isn't painted with the sail because
             //   the sample next door met it. (If something has come in front here, a sample
             //   falls on the pixel within a few frames and says so.)
-            if !lands {
+            // Unless the nearest sample met something nearer that isn't still: a thing that
+            // moves has come in front, and waiting for a sample to fall here left a mast a
+            // dotted line of the sky behind it.
+            if !lands && (still || hit_far >= held_far) {
                 return vec4(h, held)
             }
             // - and what the sample that fell here met is still too: the edge between two
@@ -390,7 +463,7 @@ pub fn upscaled(
             //   covers, not whichever the last sample met.
             if still {
                 return vec4(
-                    max(mix(h, now, gathered), vec3(0.0)),
+                    max(mix(h, sampled, gathered), vec3(0.0)),
                     kept(min(held_far, hit_far), true),
                 )
             }
@@ -408,15 +481,27 @@ pub fn upscaled(
     let reach = max(max(abs(off.x) / half.x, abs(off.y) / half.y), abs(off.z) / half.z)
     let clipped = if reach > 1.0 { rgb(mean + off / reach) } else { h }
     let unheld = if !same { UNSURE } else if restless { mix(KEEP, RESTLESS, quick) } else { KEEP }
-    let taken = if !same { 1.0 } else if mover { HIT_MOVER } else { HIT }
-    let share = mix(mix(unheld, taken, landed), SETTLED, 1.0 - moved)
+    // (All of a sample that falls on a pixel of a still thing whose history isn't yet its own:
+    // the first true sample of it there, after what was in front moved off. Taken in part, what
+    // was left of the other thing was then kept with it.)
+    let taken = if !same || (still && !held_still) { 1.0 } else if mover { HIT_MOVER } else {
+        HIT
+    }
+    // (At an edge between a near thing and a far one that isn't two still things' (those are
+    // gathered above), mostly this frame: the edge may be moving, and a pixel it has just left
+    // would hold what was there until a sample fell on it, a few frames on. A sail swinging
+    // against the sky trailed a fringe of dark specks behind its edge.)
+    let edge = farthest - nearest > EDGE
+    let share = max(
+        mix(mix(unheld, taken, landed), SETTLED, 1.0 - moved),
+        if edge { MOVING_EDGE } else { 0.0 },
+    )
     // (A still thing's from here on only where it was this surface already and a sample fell on
     // it: what's left of another surface's history after one blend isn't kept as a still thing's.)
-    // (Where the history holds another surface, at an edge between a near thing and a far one:
-    // the nearest sample alone. Read between the drawing's pixels there, the near thing's colour
-    // bleeds a pixel out over the far one, a fringe of specks behind a sail's edge as it moves.)
-    let taken_now = if !same && farthest - nearest > EDGE { hit } else { now }
-    vec4(max(mix(clipped, taken_now, share), vec3(0.0)), kept(hit_far, still && same && lands))
+    // (And there the drawing read between its pixels, not the sample that fell on the pixel:
+    // one pixel in four the sample's and the rest between, the edge was a comb.)
+    let shown_now = if edge { once } else { now }
+    vec4(max(mix(clipped, shown_now, share), vec3(0.0)), kept(hit_far, still && same && lands))
 }
 
 /// The history put on the screen as it is.

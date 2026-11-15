@@ -414,7 +414,9 @@ pub fn ink(
     // (`settled`, `engine::upscale`): its jitter gathers the edge finer than this softens it,
     // and softened first over the drawing's own pixels it was a blur several of the screen's
     // wide.)
-    if meets > 0.0 && settled == 0 {
+    // (But still softened on the skiff's own pixels and the sea's: what moves isn't gathered at
+    // its edges (`engine::upscale`'s edges), so its stair would be all there is.)
+    if meets > 0.0 && (settled == 0 || m0.y == SKIFF || m0.y == SEA) {
         var ring = vec3(0.0)
         for i in 0..4 {
             ring += seen(light, at(colour, px + AROUND[i], size).xyz, clean)
@@ -789,5 +791,6 @@ pub fn ink(
     // pass's, which its own drawings settled at the pixel's middle). By its share, not by what
     // the pixel is: a far edge's pixel half covered would flip between the two as it crossed
     // half, and the upscaler read it at a jitter's distance apart.)
-    vec4(c, if settled == 1 { clamp(at(colour, px, size).w, 0.0, 1.0) } else { 1.0 })
+    // (Or 2, where the paint filled the pixel between its neighbours: `engine::upscale::FILLED`.)
+    vec4(c, if settled == 1 { clamp(at(colour, px, size).w, 0.0, 2.0) } else { 1.0 })
 }

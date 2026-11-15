@@ -451,7 +451,6 @@ pub fn yonder(
     past_normal: Texture<Rgba8>,
     field: Texture3d<R32Float>,
     reach: Texture<Rg32Float>,
-    back: Texture<Rg32Float>,
     once: [vec4],
 ) -> Targets3<vec4, vec4, vec4> {
     let s = shot
@@ -494,7 +493,7 @@ pub fn yonder(
     let k = 2.0 / (s.resolution.y * s.focal)
     let sf = stacks_from(reach, yon.stacked, px, s.resolution, t)
     let ts = if (OFF & 2) == 0 {
-        stacks_met(o, d, sf, t, stacks_until(back, yon.stacked, px, s.resolution), k)
+        march_stacks_from(o, d, sf, t, k)
     } else { far }
     var c = vec3(0.0)
     var cover = 0.0
@@ -615,8 +614,7 @@ pub fn yonder(
                     let side = f32(j) * 2.0 - 1.0
                     let pj = px + vec2(1.0, side) * 1.06
                     let fj = stacks_from(reach, yon.stacked, pj, s.resolution, t)
-                    let uj = stacks_until(back, yon.stacked, pj, s.resolution)
-                    same = (stacks_met(o, ray(s, pj), fj, t, uj, k) < t) == (ts < t)
+                    same = (march_stacks_from(o, ray(s, pj), fj, t, k) < t) == (ts < t)
                     j += 1
                 }
                 // (And an edge's mean held short, a few drawings: the stack slides against the
@@ -642,32 +640,6 @@ pub fn yonder(
 
 /// Where the stacks' march through pixel `pf` starts along the ray: by their meshes in `reach`
 /// where they're there (`stacked`), past `hi` where no mesh is near; else from the eye.
-/// How far along the ray through pixel `pf` the stacks' march need go: a little past the far
-/// side of the last mesh in the pixel and the eight round it (`stacked::back_stacks`); no
-/// limit where the meshes don't say (`stacked` 0).
-fn stacks_until(back: Texture<Rg32Float>, stacked: u32, pf: vec2, size: vec2) -> f32 {
-    if stacked != 1 {
-        return 1.0e9
-    }
-    let q = floor(pf)
-    var last = 0.0
-    for j in 0..3 {
-        for i in 0..3 {
-            let at = clamp(q + vec2(f32(i) - 1.0, f32(j) - 1.0), vec2(0.0), size - vec2(1.0))
-            last = max(last, back.load(u32(at.x), u32(at.y)).x)
-        }
-    }
-    last + 2.0
-}
-
-/// `stacks::march_stacks_from` from `from` to `hi`, stopped at `until` (`stacks_until`) if
-/// that's nearer: where the ray meets the stacks, or `hi`.
-fn stacks_met(o: vec3, d: vec3, from: f32, hi: f32, until: f32, k: f32) -> f32 {
-    let top = min(hi, until)
-    let t = march_stacks_from(o, d, from, top, k)
-    if t >= top { hi } else { t }
-}
-
 fn stacks_from(reach: Texture<Rg32Float>, stacked: u32, pf: vec2, size: vec2, hi: f32) -> f32 {
     // (Two metres short of their meshes, not the rock's forty: theirs stand proud of the stone by
     // their coarsest level's error (`stacked::PROUD`), so the stone is never nearer than the mesh.)
@@ -688,7 +660,6 @@ fn meet(
     smp: Sampler,
     field: Texture3d<R32Float>,
     reach: Texture<Rg32Float>,
-    back: Texture<Rg32Float>,
     meshed: u32,
     stacked: u32,
     vista: u32,
@@ -711,14 +682,7 @@ fn meet(
     // (Skipped only where no stack stands past where the rock begins: there the rock may be the
     // nearer, and it's met. The stacks met to the horizon here are the same as met to the rock.)
     let s0 = if skip_rock && is.x < is.y && (OFF & 2) == 0 {
-        stacks_met(
-            o,
-            d,
-            stacks_from(reach, stacked, pf, s.resolution, far),
-            far,
-            stacks_until(back, stacked, pf, s.resolution),
-            k,
-        )
+        march_stacks_from(o, d, stacks_from(reach, stacked, pf, s.resolution, far), far, k)
     } else { far }
     let skip = skip_rock && (s0 >= far || s0 < is.x)
     if from < is.y && (OFF & 1) == 0 && !skip {
@@ -729,14 +693,7 @@ fn meet(
         }
     }
     let ts = if skip_rock && is.x < is.y && (OFF & 2) == 0 { s0 } else if (OFF & 2) == 0 {
-        stacks_met(
-            o,
-            d,
-            stacks_from(reach, stacked, pf, s.resolution, t),
-            t,
-            stacks_until(back, stacked, pf, s.resolution),
-            k,
-        )
+        march_stacks_from(o, d, stacks_from(reach, stacked, pf, s.resolution, t), t, k)
     } else { far }
     var c = vec3(0.0)
     var cover = 0.0
@@ -885,7 +842,6 @@ pub fn yonder_low(
     smp: Sampler,
     field: Texture3d<R32Float>,
     reach: Texture<Rg32Float>,
-    back: Texture<Rg32Float>,
     once: [vec4],
 ) -> Targets3<vec4, vec4, vec4> {
     let q = floor(pixel.position.xy)
@@ -907,7 +863,6 @@ pub fn yonder_low(
         smp,
         field,
         reach,
-        back,
         yon.meshed,
         yon.stacked,
         yon.vista,
@@ -934,7 +889,6 @@ pub fn yonder_low_flat(
     smp: Sampler,
     field: Texture3d<R32Float>,
     reach: Texture<Rg32Float>,
-    _back: Texture<Rg32Float>,
     once: [vec4],
 ) -> Targets3<vec4, vec4, vec4> {
     let pf = floor(pixel.position.xy) * f32(SPARSE) + vec2(0.5)

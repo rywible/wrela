@@ -143,6 +143,12 @@ pub struct Shot: Copy + GpuData {
     /// drawing's own pixels, every sample was already blurred to them, and no number of them
     /// gathered was finer than one drawing.
     pub lines: f32 = 0.0,
+    /// Which of each pair of pixels the paint paints where it paints only every other pixel a drawing
+    /// (`paint::paint_half`) and the drawing is brought up over the frames: 0 or 1, the other
+    /// each round of the upscaler's jitter (`engine::upscale::round_of`), so every pixel is
+    /// painted, not filled, at each of the screen's pixels in it. 0 where it isn't brought up:
+    /// the same pixels every drawing.
+    pub pair: f32 = 0.0,
 }
 
 /// The rows a surface sizes what it holds in a pixel by (`Shot::lines`): the screen's the

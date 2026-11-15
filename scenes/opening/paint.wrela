@@ -12,6 +12,7 @@ use look::{
 }
 use sea::{SEA as SEA_STATE, lee, strokes, tiles}
 use wind::{air_over}
+use engine::upscale::FILLED
 use engine::ocean::{Waves, foam_at, level_at, surface_at, whitecaps}
 use engine::stir::stirred as stir_on
 use wake::{STIRRED, WASH_AT, wash_place}
@@ -2002,7 +2003,9 @@ fn shift(s: Shot, slot: u32, y: u32) -> u32 {
     // glints under the rock would break into dots.)
     let isle = sphere(s.eye, d, bounds(), 1.0e5)
     let over = isle.x < isle.y && s.eye.y + d.y * isle.y > 0.0
-    if near || over { y % 2 } else { 0 }
+    // (The other pixel of each pair on the upscaler's other turn: `Shot::pair`.)
+    let turn = u32(s.pair)
+    if near || over { (y + turn) % 2 } else { turn % 2 }
 }
 
 /// How near the skiff a block's middle ray passes (m, from its middle) to be painted as a
@@ -2103,6 +2106,10 @@ pub fn paint_fill(
     // (How much of the far layer here is the vista's (`far_merge`): none where it's the far
     // pass's own, the stacks, and everything before the vista's laid in.)
     let fnn = yon_normal.load(x, y)
+    // (Filled, not painted: said in its alpha, for the upscaler (`engine::upscale::FILLED`),
+    // which gathers what was painted and never what was filled between two painted pixels,
+    // a mix of what each met.)
+    let c = vec4(c.rgb, FILLED)
     if f.a <= 0.004 || fnn.w <= 0.004 {
         return Targets3 { first: c, second: m, third: nm }
     }
@@ -2128,7 +2135,7 @@ pub fn paint_fill(
             third: vec4(fnn.xyz, nm.w),
         }
     }
-    Targets3 { first: vec4(laid, jittered), second: m, third: nm }
+    Targets3 { first: vec4(laid, FILLED), second: m, third: nm }
 }
 
 /// The colour of drawing pixel (`x`, `y`), which the half didn't paint (`paint_fill`), with

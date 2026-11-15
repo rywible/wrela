@@ -20,9 +20,7 @@ use engine::realize::{Eye, solid}
 use engine::solids::{Tiles, tiles}
 use std::derive::{Box3, Interval}
 use std::field::{Bound, Field, Surface, UNBOUNDED}
-use std::gpu::{
-    Compare, Cull, Depth, DepthTexture, GpuBuffer, Rg32Float, Texture, begin_pass_with_depth, draw,
-}
+use std::gpu::{Cull, DepthTexture, GpuBuffer, Rg32Float, Texture, begin_pass_with_depth, draw}
 
 /// The stacks as a surface, proud of the stone by `PROUD`.
 pub struct Stone: Copy + GpuData {
@@ -138,52 +136,6 @@ pub fn step_stacks(st: mut Stacked, s: Shot) -> bool {
             return false
         }
     }
-    true
-}
-
-/// How far each pixel of `s` is from the eye to the far side of the last of the stacks' meshes
-/// its ray goes through (m; 0 where it goes through none): drawn into `out`. The meshes stand
-/// proud of the stone all round, so past that far side no stone stands on the ray, and the far
-/// pass's march stops there (`yonder::stacks_until`): a ray that grazed a stack's mesh and
-/// missed its stone marched on to the far edge of the archipelago, kilometres of the stacks'
-/// field, a quarter of the far pass's time. Only once the meshes can say where the stacks are
-/// (`ready`, `step_stacks`). Whether it drew.
-pub fn back_stacks(
-    st: Stacked,
-    s: Shot,
-    ready: bool,
-    unbaked: GpuBuffer<vec4>,
-    out: mut Texture<Rg32Float>,
-    depth: mut DepthTexture,
-) -> bool {
-    if !ready {
-        return false
-    }
-    let vp = view_proj(s)
-    let pass = begin_pass_with_depth(mut out, mut depth, clear: vec4(0.0), clear_depth: 0.0)
-    for i in 0..st.len() {
-        if !st.drawn(i) || !seen(vp, st.cubes[i]) {
-            continue
-        }
-        borrow m = st.mesh(i)
-        draw(
-            pass,
-            placed.bind(
-                verts: m.verts.items(),
-                shade: unbaked.items(),
-                cooked: 0,
-                view_proj: vp,
-                eye: s.eye,
-            ),
-            how_far.bind(),
-            indices: m.quads.items(),
-            indirect: m.draw.items(),
-            cull: Cull::None,
-            // (The farthest fragment kept, not the nearest.)
-            depth: Depth { compare: Compare::Greater, write: true },
-        )
-    }
-    pass.end()
     true
 }
 

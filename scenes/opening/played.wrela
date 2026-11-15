@@ -14,7 +14,7 @@ use sea::{HULL_MID, MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Swell, Waves}
 use engine::stir::Stir
 use wake::{STIRRED, pressed, sunk, under, washed}
-use engine::upscale::{Body, NO_BODY, Pinhole, Upscale, jitter_for, shown, upscaled}
+use engine::upscale::{Body, NO_BODY, Pinhole, Upscale, jitter_for, round_of, shown, upscaled}
 use paint::{OVERHEAD, overhead_once, paint, paint_fill, paint_half}
 use yonder::{
     FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, far_merge, vista_carry, vista_lay, vista_look,
@@ -27,7 +27,7 @@ use engine::far::{
 }
 use ink::{glow_gather, glow_size, glow_spread, ink}
 use rock::{Rock, reach, rock, step_rock}
-use stacked::{Stacked, back_stacks, reach_stacks, stacked, step_stacks}
+use stacked::{Stacked, reach_stacks, stacked, step_stacks}
 use weather::{RAIN_SIDE, rain_field, strike, weather}
 use sail::{Rig, key, let_go, rest, step}
 use std::collections::swap
@@ -100,10 +100,6 @@ pub struct State {
     pub(package) rock: Rock,
     pub(package) reach: Texture<Rg32Float>,
     pub(package) reach_depth: DepthTexture,
-    /// How far each pixel is to the far side of the last of the stacks' meshes on its ray
-    /// (`stacked::back_stacks`), with its depth: where the stacks' march stops.
-    pub(package) reach_back: Texture<Rg32Float>,
-    pub(package) reach_back_depth: DepthTexture,
     /// The sea stacks as meshes (`stacked`), drawn into `reach` after the rock's.
     pub(package) stacks: Stacked,
     /// The rock and the cathedral in a picture of their own, pinned to the world (`main::VISTA`):
@@ -165,6 +161,9 @@ pub struct State {
     pub(package) upscaled_frames: u32,
     /// The rows of the screen the drawing is brought up to (`look::Shot::lines`), or 0.
     pub(package) shown_rows: f32,
+    /// Which round of the upscaler's jitter this drawing is in (`engine::upscale::round_of`):
+    /// the paint's turn (`look::Shot::pair`).
+    pub(package) painted_turn: u32,
     /// The skiff's frame this drawing and the last, for the upscaler.
     pub(package) body: Body,
     pub(package) last_body: Body,
@@ -253,8 +252,6 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         stacks: stacked(),
         reach: texture(width: width, height: height),
         reach_depth: depth_texture(width, height),
-        reach_back: texture(width: width, height: height),
-        reach_back_depth: depth_texture(width, height),
         vista: aimed(shot.eye, isle_extent(), size: f32(VISTA_SIZE), margin: 0.04),
         vista_aimed: false,
         vista_colour: writable_texture::<Rgba16Float>(width: VISTA_SIZE, height: VISTA_SIZE),
@@ -290,6 +287,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         last_pinhole: pinhole_of(shot),
         upscaled_frames: 0,
         shown_rows: 0.0,
+        painted_turn: 0,
         body: NO_BODY,
         last_body: NO_BODY,
         plain: shot,
@@ -434,8 +432,6 @@ pub(package) fn sized(s: mut State, width: u32, height: u32) {
         s.half_normal = texture(width: (width + 1) / 2, height: height)
         s.reach = texture(width: width, height: height)
         s.reach_depth = depth_texture(width, height)
-        s.reach_back = texture(width: width, height: height)
-        s.reach_back_depth = depth_texture(width, height)
         s.far_colour = texture(width: width, height: height)
         s.far_marks = texture(width: width, height: height)
         s.far_normal = texture(width: width, height: height)
@@ -501,6 +497,7 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
         lantern: LANTERN,
         fine,
         lines: s.shown_rows,
+        pair: if s.shown_rows > 0.0 { f32(s.painted_turn % 2) } else { 0.0 },
         ..shot_at(START + time, s.width, s.height, KINETIC, view, rig, s.ocean.swell),
     }
     // (Settled into the hollow its own bow wave leaves, as the drawing before measured it.)
@@ -567,16 +564,6 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
         mut s.reach_depth,
     )
     s.yon.stacked = if stacked { 1 } else { 0 }
-    if stacked {
-        let _ = back_stacks(
-            s.stacks,
-            shot,
-            whole,
-            s.unbaked,
-            mut s.reach_back,
-            mut s.reach_back_depth,
-        )
-    }
     if VISTA {
         label("vista")
         aim_vista(mut s, shot)
@@ -880,7 +867,6 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 smp: hv.linear,
                 field: s.isle_field,
                 reach: s.reach,
-                back: s.reach_back,
                 once: s.overhead.items(),
             ),
             vertices: 3,
@@ -926,7 +912,6 @@ fn paint_rows(s: mut State, shot: Shot, from: u32, to: u32) {
                 past_normal: s.past_normal,
                 field: s.isle_field,
                 reach: s.reach,
-                back: s.reach_back,
                 once: s.overhead.items(),
             ),
             vertices: 3,
@@ -1125,8 +1110,10 @@ pub(package) fn brought_up(s: mut State, shot: Shot, width: u32, height: u32) {
         // (Its finest waves a pixel shows run about 0.4 m/s; a drawing is a 60th of a second
         // or less.)
         restless_step: 0.4 / 60.0,
-        // (The sky and all that's built or rock: kinds `SKY` and `ROCK` to `TILE`.)
+        // (The sky and all that's built or rock: kinds `SKY` and `ROCK` to `TILE`. The sky
+        // slowly changing: its rain's streaks run down it and its scud drifts.)
         still: (1 << u32(SKY)) | ((1 << (u32(TILE) + 1)) - (1 << u32(ROCK))),
+        slow: 1 << u32(SKY),
         changing: if flash > 0.02 { 1.0 } else { 0.0 },
     }
     if s.flip {
@@ -1153,11 +1140,9 @@ pub(package) fn brought_up(s: mut State, shot: Shot, width: u32, height: u32) {
     s.last_pinhole = s.pinhole
     s.last_body = s.body
     s.upscaled_frames += 1
-    s.jitter = jitter_for(
-        s.upscaled_frames,
-        vec2(f32(s.width), f32(s.height)),
-        vec2(f32(width), f32(height)),
-    )
+    let (drawn, screen) = (vec2(f32(s.width), f32(s.height)), vec2(f32(width), f32(height)))
+    s.jitter = jitter_for(s.upscaled_frames, drawn, screen)
+    s.painted_turn = round_of(s.upscaled_frames, drawn, screen)
 }
 
 /// The scene for another program, drawn at `width` by `height`.
