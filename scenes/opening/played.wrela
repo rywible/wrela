@@ -610,9 +610,12 @@ const VISTA_READY: u32 = VISTA_EARLY
 const VISTA_LOOKS: u32 = MOST_SIDE * MOST_SIDE / VISTA_FAST
 
 /// Once the vista has been looked at whole `VISTA_SETTLED` times under a still light (each
-/// texel that many looks, a pixel four texels' worth: a mean another look moves by a sixteenth
-/// of what one look differs by), one drawing in `VISTA_REST` looks at it again.
-const VISTA_SETTLED: u32 = 16
+/// texel that many looks, a pixel four texels' worth: a mean another look moves by an eighth
+/// of what one look differs by), one drawing in `VISTA_REST` looks at it again; the looks after
+/// go on into the same mean, up to `engine::far::KEPT`. (Eight, not sixteen: the looks to
+/// sixteen came every drawing for eight seconds more of a page's first thirteen, a millisecond
+/// of each, and the picture under sail measured the same with them a quarter as often.)
+const VISTA_SETTLED: u32 = 8
 const VISTA_REST: u32 = 4
 
 /// How many drawings the vista takes to fade in as it's laid in, or out as it's put by.
