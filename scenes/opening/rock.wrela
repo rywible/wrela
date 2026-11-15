@@ -181,6 +181,22 @@ pub fn step_rock(rock: mut Rock, s: Shot, sun: vec3) -> bool {
     rock.whole()
 }
 
+/// Whether a view (`vp`, `view_proj`) can see any of a tile's cube: its sphere against the
+/// view's sides, and not wholly behind the eye. A tile it can't see isn't drawn: each tile is a
+/// draw of its own, with its own buffers bound, and in a browser a draw costs some forty
+/// microseconds whatever it covers. The sea's stacks are hundreds of tiles, most behind the eye
+/// or off to the sides, and drawing them all was more of a frame than shading the picture.
+pub fn seen(vp: mat4, cube: Box3) -> bool {
+    let r = 0.5 * length(cube.hi - cube.lo)
+    let clip = vp * vec4(0.5 * (cube.lo + cube.hi), 1.0)
+    let scale = max(
+        length(vec3(vp[0].x, vp[1].x, vp[2].x)),
+        length(vec3(vp[0].y, vp[1].y, vp[2].y)),
+    )
+    let rs = r * scale
+    clip.w > -r && abs(clip.x) <= clip.w + rs && abs(clip.y) <= clip.w + rs
+}
+
 /// How far each pixel of `s` is from the eye to the rock's mesh (m), `FAR` where it sees none,
 /// and the shade cooked there (`Shade`, packed: `pack`; -1 on a tile not cooked yet, whose mesh
 /// is new: `unbaked` stands in for its numbers): drawn into `out`. Only once every tile has a
@@ -200,6 +216,9 @@ pub fn reach(
     let vp = view_proj(s)
     let pass = begin_pass_with_depth(mut out, mut depth, clear: vec4(FAR, 0.0, 0.0, 0.0))
     for i in 0..rock.len() {
+        if !seen(vp, rock.cubes[i]) {
+            continue
+        }
         borrow m = rock.mesh(i)
         let cooked = rock.has_baked(i)
         draw(

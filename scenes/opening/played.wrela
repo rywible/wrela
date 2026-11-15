@@ -489,7 +489,10 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
         // (Only as the scene's own drawings come: a frame between two of them, on a screen
         // faster than they are, has moved nothing on.)
         if now != s.washed_at {
-            s.stir.sheet.follow(vec2(afloat.boat.x, afloat.boat.z) - normalize(vec2(afloat.boat_z.x, afloat.boat_z.z)) * STIR_AFT)
+            s.stir.sheet.follow(
+                vec2(afloat.boat.x, afloat.boat.z) -
+                    normalize(vec2(afloat.boat_z.x, afloat.boat_z.z)) * STIR_AFT,
+            )
             let u = under(afloat, s.drawn_swell, now)
             let (press, froth) = pressed(afloat, s.stir.sheet, u)
             s.stir.step(now, press, froth)
@@ -510,12 +513,25 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     // The rock's meshes, and how far each pixel is to them.
     label("rock")
     let ready = step_rock(mut s.rock, shot, s.heavens.light.sun)
-    let meshed = reach(s.rock, shot, ready, s.unbaked, mut s.reach, mut s.reach_depth)
+    // (Not drawn while the vista holds the rock (`vista_in`, the last drawing's): the far pass
+    // doesn't meet the rock then, so nothing reads where its meshes are on the screen, and each
+    // of its tiles is a draw. The drawing the vista is put by, the far pass marches the rock
+    // from its bounds once, as it does before the meshes are ready.)
+    let meshed = !s.vista_in &&
+        reach(s.rock, shot, ready, s.unbaked, mut s.reach, mut s.reach_depth)
     s.yon.meshed = if meshed { 1 } else { 0 }
     label("stacks")
     // (Not stepped when they're not drawn: their meshes would be realized for nothing.)
     let whole = STACKED && step_stacks(mut s.stacks, shot)
-    let stacked = reach_stacks(s.stacks, shot, whole, meshed, s.unbaked, mut s.reach, mut s.reach_depth)
+    let stacked = reach_stacks(
+        s.stacks,
+        shot,
+        whole,
+        meshed,
+        s.unbaked,
+        mut s.reach,
+        mut s.reach_depth,
+    )
     s.yon.stacked = if stacked { 1 } else { 0 }
     if VISTA {
         label("vista")
