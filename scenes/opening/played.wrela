@@ -14,7 +14,7 @@ use sea::{HULL_MID, MID_CALM, RIDDEN, SEA, held}
 use engine::ocean::{Ocean, Swell, Waves}
 use engine::stir::Stir
 use wake::{STIRRED, pressed, sunk, under, washed}
-use engine::upscale::{Body, NO_BODY, Pinhole, Upscale, jitter_for, round_of, shown, upscaled}
+use engine::upscale::{Body, NO_BODY, Pinhole, Upscale, jitter_for, round_of, upscaled}
 use paint::{OVERHEAD, overhead_once, paint, paint_fill, paint_half}
 use yonder::{
     FIELD_SIDE, FIELD_SLABS, REFRESH, Yon, cook_isle, far_merge, vista_carry, vista_lay, vista_look,
@@ -161,6 +161,8 @@ pub struct State {
     pub(package) upscaled_frames: u32,
     /// The rows of the screen the drawing is brought up to (`look::Shot::lines`), or 0.
     pub(package) shown_rows: f32,
+    /// Whether the last drawing `play` finished was brought up to the screen's size (`gathered`).
+    pub(package) gathered: bool,
     /// Which round of the upscaler's jitter this drawing is in (`engine::upscale::round_of`):
     /// the paint's turn (`look::Shot::pair`).
     pub(package) painted_turn: u32,
@@ -180,7 +182,7 @@ pub struct State {
     /// The skiff as the player sails it.
     pub(package) rig: Rig,
     /// The last drawing finished, inked, for a program that plays the scene behind its own
-    /// screen (`play`), and its size; and the texture the next is inked into before they swap,
+    /// screen (`play`), and its size (where it wasn't brought up to the screen's: `gathered`); and the texture the next is inked into before they swap,
     /// so `image` is never one half drawn, nor blank while the scene changes size.
     pub image: Texture<Rgba8>,
     pub(package) image_size: (u32, u32),
@@ -288,6 +290,7 @@ pub(package) fn targets(heavens: take Heavens, width: u32, height: u32) -> State
         upscaled_frames: 0,
         shown_rows: 0.0,
         painted_turn: 0,
+        gathered: false,
         body: NO_BODY,
         last_body: NO_BODY,
         plain: shot,
@@ -1210,9 +1213,9 @@ pub fn play(
     }
     s.band = 0
     stood(mut s, shot)
-    if s.spare_size != (out_w, out_h) {
-        s.spare = texture(width: out_w, height: out_h)
-        s.spare_size = (out_w, out_h)
+    if !gathered && s.spare_size != (width, height) {
+        s.spare = texture(width: width, height: height)
+        s.spare_size = (width, height)
     }
     weathered(mut s, shot)
     label("ink")
@@ -1243,14 +1246,10 @@ pub fn play(
         }
         label("upscale")
         brought_up(mut s, shot, out_w, out_h)
-        let p = begin_pass(mut s.spare, clear: vec4(0.0, 0.0, 0.0, 1.0))
-        borrow now = if s.flip { s.history_a } else { s.history_b }
-        draw(p, cover, shown.bind(history: now), vertices: 3)
-        p.end()
-        swap(mut s.image, mut s.spare)
-        swap(mut s.image_size, mut s.spare_size)
+        s.gathered = true
         return true
     }
+    s.gathered = false
     borrow hv = s.heavens
     borrow colour = if (OFF & 256) != 0 { s.colour } else { s.aired }
     let p = begin_pass(mut s.spare, clear: vec4(0.0, 0.0, 0.0, 1.0))
@@ -1275,8 +1274,15 @@ pub fn play(
     true
 }
 
-/// The upscaler's history last written (`brought_up`).
-pub(package) fn latest(s: State) -> borrow Texture<Rgba16Float> {
+/// Whether the last drawing was brought up to the screen's size (`play`'s `screen`): the page
+/// then shows `latest`, the screen's size, and not `image`.
+pub fn gathered(s: State) -> bool {
+    s.gathered
+}
+
+/// The upscaler's history last written (`brought_up`): the drawing at the screen's size, in
+/// its colours (its alpha is the upscaler's own).
+pub fn latest(s: State) -> borrow Texture<Rgba16Float> {
     if s.flip { s.history_a } else { s.history_b }
 }
 

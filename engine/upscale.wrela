@@ -266,47 +266,47 @@ fn history_at(h: Texture<Rgba16Float>, smp: Sampler, p: vec2, size: vec2) -> vec
     max((a + b + m + d + e) / total, vec3(0.0))
 }
 
-/// `history_at`, held within the four texels round `p`: no brighter than the brightest of them
-/// nor darker than the darkest. Catmull-Rom overshoots an edge a little, and a history that's
-/// read so every frame and never clipped (a still thing's) has each frame's overshoot read
-/// again by the next: a grain that grows until it's all there is.
+/// The history at `p` (its pixels, `size` of them), Catmull-Rom from five bilinear taps as
+/// `history_at` reads it, and (its alpha) whether every texel those taps read holds what the
+/// texel `p` lies in holds (`own`, that texel's alpha: as far, and still or not as it is). A
+/// tap's alpha is the mean of its texels', so it's `own` only if they all are: the taps that
+/// read the colour say for nothing more whether it's one thing's.
 ///
-///
-/// Its alpha: 1 where the texels it's read from all hold what the texel `p` lies in holds (as
-/// far, and still or not as it is), 0 where one of the four round `p` holds something else:
-/// there what's read between them is a mix of two things. Where the four agree but a corner of
-/// the sixteen Catmull-Rom reads doesn't, it's read from the four alone, straight between them.
-fn history_within(h: Texture<Rgba16Float>, smp: Sampler, p: vec2, size: vec2) -> vec4 {
-    let c = clamp(floor(p - vec2(0.5)), vec2(1.0), size - vec2(3.0))
-    let (x, y) = (u32(c.x), u32(c.y))
-    let a = h.load(x, y)
-    let b = h.load(x + 1, y)
-    let d = h.load(x, y + 1)
-    let e = h.load(x + 1, y + 1)
-    let own = h.load(u32(p.x), u32(p.y)).a
+/// Held within the taps: no brighter than the brightest of them nor darker than the darkest.
+/// Catmull-Rom overshoots an edge a little, and a history that's read so every frame and never
+/// clipped (a still thing's) has each frame's overshoot read again by the next: a grain that
+/// grows until it's all there is.
+fn history_within(h: Texture<Rgba16Float>, smp: Sampler, p: vec2, size: vec2, own: f32) -> vec4 {
+    let q = p - vec2(0.5)
+    let c = floor(q)
+    let f = q - c
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f))
+    let w1 = 1.0 + f * f * (-2.5 + 1.5 * f)
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f))
+    let w3 = f * f * (-0.5 + 0.5 * f)
+    let w12 = w1 + w2
+    let t0 = (c - vec2(0.5)) / size
+    let t3 = (c + vec2(2.5)) / size
+    let t12 = (c + vec2(0.5) + w2 / w12) / size
+    let a = h.sample_level(smp, vec2(t12.x, t0.y), 0.0)
+    let b = h.sample_level(smp, vec2(t0.x, t12.y), 0.0)
+    let m = h.sample_level(smp, t12, 0.0)
+    let d = h.sample_level(smp, vec2(t3.x, t12.y), 0.0)
+    let e = h.sample_level(smp, vec2(t12.x, t3.y), 0.0)
     let one = abs(a.a - own) < SAME &&
         abs(b.a - own) < SAME &&
+        abs(m.a - own) < SAME &&
         abs(d.a - own) < SAME &&
         abs(e.a - own) < SAME
-    if !one {
-        return vec4(a.rgb, 0.0)
-    }
-    let wide = abs(h.load(x - 1, y - 1).a - own) < SAME &&
-        abs(h.load(x + 2, y - 1).a - own) < SAME &&
-        abs(h.load(x - 1, y + 2).a - own) < SAME &&
-        abs(h.load(x + 2, y + 2).a - own) < SAME
-    if !wide {
-        let f = clamp(p - vec2(0.5) - c, vec2(0.0), vec2(1.0))
-        return vec4(mix(mix(a.rgb, b.rgb, f.x), mix(d.rgb, e.rgb, f.x), f.y), 1.0)
-    }
-    vec4(
-        clamp(
-            history_at(h, smp, p, size),
-            min(min(a.rgb, b.rgb), min(d.rgb, e.rgb)),
-            max(max(a.rgb, b.rgb), max(d.rgb, e.rgb)),
-        ),
-        1.0,
-    )
+    let total = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y
+    let sum = a.rgb * (w12.x * w0.y) +
+        b.rgb * (w0.x * w12.y) +
+        m.rgb * (w12.x * w12.y) +
+        d.rgb * (w3.x * w12.y) +
+        e.rgb * (w12.x * w3.y)
+    let lo = min(min(min(a.rgb, b.rgb), min(d.rgb, e.rgb)), m.rgb)
+    let hi = max(max(max(a.rgb, b.rgb), max(d.rgb, e.rgb)), m.rgb)
+    vec4(clamp(sum / total, lo, hi), if one { 1.0 } else { 0.0 })
 }
 
 /// The output pixel's colour, this frame's samples (`scene`, the drawing's size; its alpha how
@@ -329,10 +329,12 @@ pub fn upscaled(
     // The pixel's middle on the drawing (its pixels), and the drawing's pixel it lies in.
     let q = pixel.position.xy * k
     let base = floor(q)
-    // This frame's samples round it: the one that fell nearest (its colour, how far it met and
-    // what), the nearest thing any of them met (what the pixel is carried by: what's in front
-    // moves the most), and their colours' mean and spread.
-    var most = 0.0
+    // This frame's samples round it, the four of the drawing's pixels it lies between: the one
+    // that fell nearest (its colour, how far it met and what), the nearest and the farthest
+    // thing any of them met, and their colours' mean and spread. (Four, not the nine round the
+    // pixel it lies in: this pass draws every pixel of the screen, and each of the nine was two
+    // reads.)
+    var most = -1.0
     var hit = vec3(0.0)
     var hit_far = 0.0
     var hit_kind = -1.0
@@ -340,9 +342,10 @@ pub fn upscaled(
     var square = vec3(0.0)
     var nearest = 1.0e9
     var farthest = -1.0e9
-    for j in 0..3 {
-        for i in 0..3 {
-            let at = clamp(base + vec2(f32(i) - 1.0, f32(j) - 1.0), vec2(0.0), size - vec2(1.0))
+    let corner = clamp(floor(q - vec2(0.5)), vec2(0.0), size - vec2(2.0))
+    for j in 0..2 {
+        for i in 0..2 {
+            let at = corner + vec2(f32(i), f32(j))
             let x = u32(at.x)
             let y = u32(at.y)
             let sample = scene.load(x, y)
@@ -369,8 +372,9 @@ pub fn upscaled(
             farthest = max(farthest, f.x)
         }
     }
-    mean /= 9.0
-    let spread = sqrt(max(square / 9.0 - mean * mean, vec3(0.0)))
+    most = max(most, 0.0)
+    mean /= 4.0
+    let spread = sqrt(max(square / 4.0 - mean * mean, vec3(0.0)))
     // This frame alone at the pixel: the drawing read between its pixels (Catmull-Rom), from
     // where its rays went; and where a sample fell on the pixel itself, that sample.
     let moved = min(scene.load(u32(base.x), u32(base.y)).a, 1.0)
@@ -416,8 +420,8 @@ pub fn upscaled(
     // what the pixel holds, the one texel it lies in. Read between a sail's texels and the
     // sky's, the sky beside the sail took some of the sail each frame, and being still, kept
     // it: a dust of dark specks left behind wherever the sail had been.)
-    let between = history_within(history, smp, was_px, u.out)
     let nearest_texel = history.load(u32(was_px.x), u32(was_px.y))
+    let between = history_within(history, smp, was_px, u.out, nearest_texel.a)
     let h = if between.a > 0.5 { between.rgb } else { nearest_texel.rgb }
     let held = nearest_texel.a
     let held_still = held < 0.0 && u.changing < 0.5
