@@ -536,22 +536,12 @@ fn prepared(s: mut State, time: f32, view: u32, orbit: f32, framing: f32, fine: 
     if VISTA {
         label("vista")
         aim_vista(mut s, shot)
-        // (And again as soon as the rock is ready, if it wasn't when the sweep began: else a
-        // whole sweep would march without it.)
-        if s.vista_aimed && (s.vista_turn == 0 || (s.vista_meshed == 0 && ready)) {
-            // (The meshes from the vista's eye: where its looks start marching, and their cooked
-            // shade. Drawn again once a sweep: they're kilometres off, and change only as the
-            // rock's tiles are cooked or met at another level.)
-            let vm = reach(
-                s.rock,
-                vista_shot(s.vista, shot),
-                ready,
-                s.unbaked,
-                mut s.vista_reach,
-                mut s.vista_depth,
-            )
-            s.vista_meshed = if vm { 1 } else { 0 }
-        }
+        // (Its looks march from the rock's bounds, not from where the rock's meshes say
+        // (`rock::reach`), and take their shade from the field. A mesh that had lost a block
+        // anywhere left the looks through that hole unmarched, and the cathedral kept
+        // losing pieces: a spire's side one minute, a chapel's wall the next, as the meshes'
+        // levels changed. The meshes saved the vista's looks 0.17 ms of their 3 a drawing.)
+        s.vista_meshed = 0
         // (Laid in once it has looked at them whole a few times: till then, on a first load, the
         // far pass meets them as it did, and they don't come in a few looks at a time.)
         let laid = s.vista_aimed && s.vista_fits && s.vista_sweeps >= VISTA_READY
