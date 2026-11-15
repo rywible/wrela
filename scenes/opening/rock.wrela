@@ -293,6 +293,20 @@ pub fn baked_at(reach: Texture<Rg32Float>, pf: vec2, size: vec2, t: f32) -> vec2
 /// the mesh's `reach`: a little short of the nearest the mesh is in the pixel and the eight round
 /// it; past `hi` (the isle's bounds' far side) where none of them sees it.
 pub fn march_from(reach: Texture<Rg32Float>, pf: vec2, size: vec2, lo: f32, hi: f32) -> f32 {
+    march_short(reach, pf, size, lo, hi, SHORT)
+}
+
+/// `march_from`, starting `short` m short of the mesh: as far as the mesh may stand inside the
+/// surface it's of (the rock's, by its coarsest level's error; a mesh cut proud of its surface
+/// by that error, as the stacks' is, by nothing but its depth's rounding).
+pub fn march_short(
+    reach: Texture<Rg32Float>,
+    pf: vec2,
+    size: vec2,
+    lo: f32,
+    hi: f32,
+    short: f32,
+) -> f32 {
     let q = floor(pf)
     var near = FAR
     for j in 0..3 {
@@ -301,7 +315,7 @@ pub fn march_from(reach: Texture<Rg32Float>, pf: vec2, size: vec2, lo: f32, hi: 
             near = min(near, reach.load(u32(at.x), u32(at.y)).x)
         }
     }
-    if near >= FAR { hi + 1.0 } else { max(lo, near - SHORT) }
+    if near >= FAR { hi + 1.0 } else { max(lo, near - short) }
 }
 
 /// A box `Isle::interval` clears holds none of the mesh's surface: where it says the field,

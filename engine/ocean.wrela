@@ -23,8 +23,8 @@
 
 use noise::hash2u
 use std::gpu::{
-    Address, GlobalId, LocalId, Rgba16Float, Rgba32Float, Sampler, Shared, Texels, Texture, barrier,
-    dispatch, generate_mips, label, mip_levels, sampler, writable_texture,
+    Address, GlobalId, LocalId, MipStep, Rgba16Float, Rgba32Float, Sampler, Shared, Texels, Texture,
+    barrier, dispatch, label, mip_levels, sampler, writable_texture,
 }
 use std::io::print
 use std::math::{PI, TAU}
@@ -32,6 +32,9 @@ use std::math::{PI, TAU}
 /// A tile's side in texels, each way, and the FFT's passes each way (log₂ of it).
 pub const SIDE: u32 = 256
 const PASSES: u32 = 8
+
+/// The levels a tile's textures keep: 256 texels a side down to 8.
+const MIPS: u32 = 6
 
 /// Whether the FFT runs a line at a time in workgroup memory (`fft_rows`, `fft_columns`), or a
 /// pass a dispatch (`butterfly`, kept to check it by).
@@ -565,7 +568,11 @@ pub fn slope_variance(sea: SeaState, b: Band) -> f32 {
 /// Tile `i` of `sea`, its crests breaking where its Jacobian is `deviations` of its deviation
 /// under 1 (none at all, if 0).
 fn tile(sea: SeaState, i: u32, deviations: f32) -> Tile {
-    let levels = mip_levels(SIDE, SIDE)
+    // (Down to 8 texels a side, not to one: each level is a dispatch of its own for each of a
+    // tile's two textures every frame, and a browser's dispatch costs tens of microseconds
+    // whatever it writes. The last three levels were 24 of a frame's 80 dispatches, to average
+    // a tile whose 8 texel level is its mean already to within what far water shows.)
+    let levels = min(mip_levels(SIDE, SIDE), MIPS)
     let spread = sea.chop * sqrt(slope_variance(sea, band(i)))
     Tile {
         band: band(i),
@@ -640,8 +647,32 @@ fn run(sea: SeaState, t: f32, dt: f32, kept: f32, tile: mut Tile, f: mut Scratch
         ),
         over: (SIDE, SIDE),
     )
-    generate_mips(mut tile.shape, s)
-    generate_mips(mut tile.tilt, s)
+    // Its mips: each level of its shape and its tilt from the level before, both in one
+    // dispatch (`std::gpu::generate_mips` would make it two).
+    for i in 1..MIPS {
+        let size = vec2u(max(SIDE >> i, 1), max(SIDE >> i, 1))
+        dispatch(
+            halve.bind(tile.shape.mip_step(i), tile.tilt.mip_step(i), s, size),
+            groups: ((size.x + 7) / 8, (size.y + 7) / 8, 1),
+        )
+    }
+}
+
+/// A level of a tile's shape and of its tilt, each texel the average of the four under it in
+/// the level before (`s`, linear).
+@compute(8, 8)
+fn halve(
+    shape: mut MipStep<Rgba16Float>,
+    tilt: mut MipStep<Rgba16Float>,
+    s: Sampler,
+    size: vec2u,
+    id: GlobalId,
+) {
+    if id.x < size.x && id.y < size.y {
+        let uv = (vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / vec2(f32(size.x), f32(size.y))
+        shape.store(id, shape.sample(s, uv))
+        tilt.store(id, tilt.sample(s, uv))
+    }
 }
 
 /// What a shader needs of the ocean besides its textures: the tiles' sides (m); the slope

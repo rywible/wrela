@@ -15,10 +15,13 @@
 // while the page shows, and the scene dimmed under the pause menu.
 
 use client::Account
-use opening::played::{State as Scene, input, play, put, ready, release, scene, swung, whereabouts}
+use opening::played::{
+    State as Scene, gathered, input, latest, play, put, ready, release, scene, swung, whereabouts,
+}
 use platform::session::answer_of
 use std::gpu::{
-    ClipPosition, FragCoord, Rgba8, Sampler, Texture, VertexIndex, begin_screen_pass, draw, sampler,
+    ClipPosition, FragCoord, Rgba16Float, Rgba8, Sampler, Texture, VertexIndex, begin_screen_pass,
+    draw, sampler,
 }
 use std::input::{Button, Event, Key, PadButton, events}
 use std::collections::replace
@@ -422,6 +425,20 @@ fn laid(pixel: FragCoord, v: Veil, image: Texture<Rgba8>, smp: Sampler) -> vec4 
         0.25
     let stretch = clamp(t.y * v.size.y - 1.0, 0.0, 1.0)
     let c = max(middle + (middle - round_it) * (SHARPEN * (0.5 + stretch)), vec3(0.0)) * v.shown
+    veiled(c, v, uv)
+}
+
+/// The scene as it brought its own drawing up to the screen's size (`opening::played::latest`):
+/// its pixels as they are, with nothing to filter, under the page's veil.
+@fragment
+fn laid_whole(pixel: FragCoord, v: Veil, image: Texture<Rgba16Float>) -> vec4 {
+    let c = image.load(u32(pixel.position.x), u32(pixel.position.y)).xyz
+    veiled(c * v.shown, v, pixel.position.xy / v.size)
+}
+
+/// The scene's colour `c` at `uv` of the screen under the page's veil: the shade in the bottom
+/// left corner, and the pause menu's dimming.
+fn veiled(c: vec3, v: Veil, uv: vec2) -> vec4 {
     // Measured from the bottom left, in screen heights, so a wide screen keeps its words' corner
     // as dark as a narrow one.
     let aspect = v.size.x / v.size.y
@@ -1269,6 +1286,8 @@ pub fn frame<A: Account>(
         orbit: f.orbit,
         framing: f.framing,
         bands: BANDS,
+        // (Brought up to the screen's own size over the frames where it's drawn smaller.)
+        screen: (width, height),
     ) &&
         ready(f.scene) {
         f.cooked = true
@@ -1301,10 +1320,16 @@ pub fn frame<A: Account>(
         shown: f.shown,
         veil: f.words,
         dim: f.menu,
+        // (Of the image as it comes: the drawing's size, or the screen's where the scene
+        // brought it up itself.)
         texel: vec2(1.0 / f32(max(wide, 1)), 1.0 / f32(max(high, 1))),
     }
     let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-    draw(pass, cover, laid.bind(v: veil, image: f.scene.image, smp: f.smp), vertices: 3)
+    if gathered(f.scene) {
+        draw(pass, cover, laid_whole.bind(v: veil, image: latest(f.scene)), vertices: 3)
+    } else {
+        draw(pass, cover, laid.bind(v: veil, image: f.scene.image, smp: f.smp), vertices: 3)
+    }
     f.renderer.draw(pass, vec2(w, h))
     pass.present()
     Next::Stay { hand }

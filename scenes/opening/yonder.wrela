@@ -12,10 +12,10 @@
 // them fresh, with `falls`.)
 
 use main::{OFF, RELIT, ROCK_SPARSE, SLID, SPARSE}
-use look::{GILT, GLASS, ISLE, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray}
+use look::{GILT, GLASS, ISLE, ROCK, SKY, STONE, Shot, band, fbm, hash2, noise, ray, rows}
 use isle::{FALLS, SCALE, bounds, isle, isle_ao, isle_material, isle_normal, isle_shadow}
 use far::far_off
-use rock::{baked_at, march_from}
+use rock::{baked_at, march_from, march_short}
 use stacks::{march_stacks_from, stacks_albedo, stacks_ao, stacks_normal, stacks_shadow}
 use paint::{Heaven, aired, hazed_far, heaven, lit_solid, overhead, sphere}
 use engine::far::{
@@ -492,7 +492,9 @@ pub fn yonder(
     // The sea's own stacks, nearer.
     let k = 2.0 / (s.resolution.y * s.focal)
     let sf = stacks_from(reach, yon.stacked, px, s.resolution, t)
-    let ts = if (OFF & 2) == 0 { march_stacks_from(o, d, sf, t, k) } else { far }
+    let ts = if (OFF & 2) == 0 {
+        march_stacks_from(o, d, sf, t, k)
+    } else { far }
     var c = vec3(0.0)
     var cover = 0.0
     var marks = vec4(log2(far), SKY, 1.0, 0.0)
@@ -639,7 +641,9 @@ pub fn yonder(
 /// Where the stacks' march through pixel `pf` starts along the ray: by their meshes in `reach`
 /// where they're there (`stacked`), past `hi` where no mesh is near; else from the eye.
 fn stacks_from(reach: Texture<Rg32Float>, stacked: u32, pf: vec2, size: vec2, hi: f32) -> f32 {
-    if stacked == 1 { march_from(reach, pf, size, 0.0, hi) } else { 0.0 }
+    // (Two metres short of their meshes, not the rock's forty: theirs stand proud of the stone by
+    // their coarsest level's error (`stacked::PROUD`), so the stone is never nearer than the mesh.)
+    if stacked == 1 { march_short(reach, pf, size, 0.0, hi, 2.0) } else { 0.0 }
 }
 
 /// What the ray through `pf` (px, the full drawing's, offset already) meets of the rock, the
@@ -1178,9 +1182,20 @@ pub(package) fn falls(
                 let carried = dot(normalize(s.wind), side_dir) * CARRY * max(drop - 60.0, 0.0)
                 let side = dot(vec2(p.x - lip.x, p.z - lip.z), side_dir) - carried
                 let fi = f32(i) * 13.7
-                let px_m = tc * 2.0 / (s.resolution.y * s.focal)
+                let px_m = tc * 2.0 / (rows(s) * s.focal)
                 // The sheet: water still, its strands running down it, breaking up as it goes.
                 let sheet_w = width * (0.5 + drop * 0.0016)
+                // (Off the sheet and past where the plume's body weighs a thousandth: nothing
+                // of this fall is there, and its noise isn't summed. Every ray toward the
+                // rock's side of the world crosses each fall's plane, most of the frame; the
+                // falls themselves are a few hundred pixels of it.)
+                let no_sheet = abs(side) >= sheet_w || drop <= -6.0 || drop >= 420.0
+                let off_plume = abs(side) > 1.75 * (width * 0.6 + drop * 0.2) ||
+                    drop <= 40.0 ||
+                    drop >= 1100.0
+                if no_sheet && off_plume {
+                    continue
+                }
                 let strands = mix(
                     0.55,
                     smoothstep(0.3, 0.75, noise(vec2(side / 7.0 + fi, drop / 40.0 - s.held * 1.6))),
@@ -1585,8 +1600,9 @@ pub fn far_merge(
         smp,
         shot.eye,
         d,
-        ray(shot, pixel.position.xy + vec2(0.25, 0.0)) - d,
-        ray(shot, pixel.position.xy + vec2(0.0, 0.25)) - d,
+        // (A quarter of one of the pixels it's shown in each way: `look::rows`.)
+        ray(shot, pixel.position.xy + vec2(0.25 * shot.resolution.y / rows(shot), 0.0)) - d,
+        ray(shot, pixel.position.xy + vec2(0.0, 0.25 * shot.resolution.y / rows(shot))) - d,
     )
     // (As much of it as is shown: faded in over what the far pass meets as it's laid in, and out
     // as it's put by, not swapped in a drawing.)

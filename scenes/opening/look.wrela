@@ -130,6 +130,34 @@ pub struct Shot: Copy + GpuData {
     /// The wind's mean where the eye is (m/s, toward where it blows: `wind::mean_wind`, eased
     /// as the skiff sails between regions); its gusts over it are `wind::air_over`'s.
     pub wind: vec2,
+    /// A part of the screen drawn into a target of its own (`aboard`: the traveller's finer
+    /// targets cover his box, not the screen): the scale and the shift that take the screen's
+    /// clip space to that target's (1, 1, 0, 0: the screen itself), and the part's corner on the
+    /// screen (pixels).
+    pub crop: vec4 = vec4(1.0, 1.0, 0.0, 0.0),
+    pub crop_at: vec2 = vec2(0.0),
+    /// How many times finer each way than the drawing the traveller's own targets are
+    /// (`aboard::FINER`, or 1 where the drawing is brought up over the frames).
+    pub finer: f32 = 2.0,
+    /// The rows of the screen the drawing is brought up to over the frames (`engine::upscale`),
+    /// where that's more than its own (0: its own). What a surface holds in a pixel it sizes by
+    /// these (`rows`), not by the drawing's: each of its samples is one of the screen's pixels'
+    /// worth, and what they gather over the frames is as fine as the screen. Sized by the
+    /// drawing's own pixels, every sample was already blurred to them, and no number of them
+    /// gathered was finer than one drawing.
+    pub lines: f32 = 0.0,
+    /// Which of each pair of pixels the paint paints where it paints only every other pixel a drawing
+    /// (`paint::paint_half`) and the drawing is brought up over the frames: 0 or 1, the other
+    /// each round of the upscaler's jitter (`engine::upscale::round_of`), so every pixel is
+    /// painted, not filled, at each of the screen's pixels in it. 0 where it isn't brought up:
+    /// the same pixels every drawing.
+    pub pair: f32 = 0.0,
+}
+
+/// The rows a surface sizes what it holds in a pixel by (`Shot::lines`): the screen's the
+/// drawing is brought up to, or the drawing's own.
+pub fn rows(s: Shot) -> f32 {
+    if s.lines > 0.0 { s.lines } else { s.resolution.y }
 }
 
 /// The player's camera (`Rig::framing` 1): how far behind the skiff (m), how high over the sea
@@ -146,6 +174,7 @@ fn soft_max(a: f32, b: f32, k: f32) -> f32 {
     let h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0)
     mix(b, a, h) + k * h * (1.0 - h)
 }
+
 const PLAY_FOCAL: f32 = 1.75
 /// How far the player's camera stands out to windward of the skiff's wake (m): over the
 /// traveller's shoulder, the sail seen across, not edge on.
@@ -219,7 +248,11 @@ pub fn shot_at(
     // little lower the faster it runs.)
     let run = smoothstep(2.0, 10.0, r.shown_rush)
     let surge = clamp(r.shown_speed - r.shown_rush, -1.0, 3.0)
-    let back = PLAY_BACK + 0.8 * CAMERA - 0.3 * run + max(surge, 0.0) * 0.35 + min(surge, 0.0) * 0.15
+    let back = PLAY_BACK +
+        0.8 * CAMERA -
+        0.3 * run +
+        max(surge, 0.0) * 0.35 +
+        min(surge, 0.0) * 0.15
     let beside = vec2(heading.y, -heading.x) * ((PLAY_SIDE + 2.2 * CAMERA) * r.shown_perch)
     let high = vec3(
         r.shown_at.x - heading.x * back + beside.x,
