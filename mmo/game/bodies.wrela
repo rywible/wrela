@@ -42,7 +42,7 @@ use engine::written::Beats
 use humanoid::body::{GAITS_CODE, HERO, ROLL_CODE}
 use humanoid::exchange::{X_STONE, X_TINT}
 use humanoid::fists::{GUARD, STEP_OUT}
-use humanoid::ink::ink
+use humanoid::ink::{Lines, ink}
 use humanoid::look::{SUN, Shot}
 use humanoid::paint::{backdrop, body, ground, paint_backdrop, paint_body, paint_ground}
 use humanoid::{armed, slash, solved, stepping, stick}
@@ -780,6 +780,8 @@ pub struct Ring {
     marks: Texture<Rgba16Float>,
     normal: Texture<Rgba8>,
     depth: DepthTexture,
+    /// Where a line can be on the page (`humanoid::ink::Lines`).
+    lines: Lines,
     width: u32,
     height: u32,
     bodies: Bodies,
@@ -825,6 +827,7 @@ impl Ring {
             marks: texture(width: 640, height: 360),
             normal: texture(width: 640, height: 360),
             depth: depth_texture(width: 640, height: 360),
+            lines: Lines::new(),
             width: 640,
             height: 360,
             bodies: Bodies::new(),
@@ -978,11 +981,18 @@ impl Ring {
             }
         }
         p.end()
+        self.lines.find(self.marks, width, height)
         let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
         draw(
             screen,
             backdrop,
-            ink.bind(shot: shot, colour: self.colour, marks: self.marks, normal: self.normal),
+            ink.bind(
+                shot: shot,
+                colour: self.colour,
+                marks: self.marks,
+                normal: self.normal,
+                near: self.lines.near,
+            ),
             vertices: 3,
         )
         ui.draw(screen, vec2(f32(width), f32(height)))

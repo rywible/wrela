@@ -7,7 +7,8 @@
 // edges of a violent thing, chaos.
 
 use look::{BACKDROP, BODY, GROUND, INK, PAPER, Shot, band, hash2, luma, noise}
-use std::gpu::{FragCoord, Rgba16Float, Rgba8, Texture}
+use paint::backdrop
+use std::gpu::{FragCoord, Rgba16Float, Rgba8, Texture, begin_pass, draw, texture}
 
 /// A pixel's texel of a target, its coordinates clamped to it.
 fn at(t: Texture<Rgba16Float>, p: vec2, size: vec2) -> vec4 {
@@ -78,6 +79,99 @@ fn outline(a: vec4, b: vec4, fold: f32) -> f32 {
     band(abs(a.x - b.x), edge: 0.035, soft: 0.01) * fold
 }
 
+// ---- where a line can be -------------------------------------------------------------------
+//
+// A line is drawn only where what the first pass wrote changes within the pen's reach: a body,
+// the horizon, a seam. That's a hundredth or two of the page, but every pixel looked for one:
+// some sixty reads of the marks and the normals each, nearly all of this pass's time. So the page
+// is first cut into tiles (`TILE` pixels a side), each tile says what its pixels hold
+// (`ink_tiles`), and each then says whether anything within a pen's reach of it could make a
+// line (`ink_near`); a pixel of a tile where nothing could draws the page as it would have
+// (the same to the bit) without looking.
+
+/// A tile's side (px).
+pub const TILE: u32 = 16
+
+/// How far from a pixel the ink reads, at 720 lines (px): a fleck's cell and the reach of the
+/// line it looks for (the strands' shove and pen are within it).
+const REACH: f32 = 16.0
+
+/// What a tile's pixels hold: the least and the most of what was met (`look`'s numbers), and
+/// of the line field.
+@fragment
+pub fn ink_tiles(pixel: FragCoord, marks: Texture<Rgba16Float>, size: vec2) -> vec4 {
+    let corner = floor(pixel.position.xy) * f32(TILE) + vec2(0.5)
+    var lo = vec2(1.0e9)
+    var hi = vec2(-1.0e9)
+    for j in 0..TILE {
+        for i in 0..TILE {
+            let m = at(marks, corner + vec2(f32(i), f32(j)), size)
+            lo = min(lo, m.yz)
+            hi = max(hi, m.yz)
+        }
+    }
+    vec4(lo, hi)
+}
+
+/// Whether a line could be drawn in a tile (1, or 0): among it and the tiles within the ink's
+/// reach of it there's a body, or two things met (the horizon), or the line field changes sign.
+@fragment
+pub fn ink_near(pixel: FragCoord, tiles: Texture<Rgba16Float>, size: vec2) -> vec4 {
+    let scale = size.y / 720.0
+    let count = vec2(f32(tiles.width()), f32(tiles.height()))
+    let p = pixel.position.xy
+    let reach = i32(ceil(REACH * scale / f32(TILE)))
+    var lo = vec2(1.0e9)
+    var hi = vec2(-1.0e9)
+    var y = -reach
+    while y <= reach {
+        var x = -reach
+        while x <= reach {
+            let t = at(tiles, p + vec2(f32(x), f32(y)), count)
+            lo = min(lo, t.xy)
+            hi = max(hi, t.zw)
+            x += 1
+        }
+        y += 1
+    }
+    let lines = hi.x > GROUND + 0.5 || hi.x - lo.x > 0.5 || (lo.y < 0.0 && hi.y >= 0.0)
+    vec4(if lines { 1.0 } else { 0.0 }, 0.0, 0.0, 1.0)
+}
+
+/// Where a line can be on a page (`ink_near`), found each frame from its marks.
+pub struct Lines {
+    tiles: Texture<Rgba16Float>,
+    pub near: Texture<Rgba16Float>,
+    size: (u32, u32),
+}
+
+impl Lines {
+    pub fn new() -> Lines {
+        Lines {
+            tiles: texture(width: 1, height: 1),
+            near: texture(width: 1, height: 1),
+            size: (0, 0),
+        }
+    }
+
+    /// Where a line can be on a page `width` by `height` whose first pass wrote `marks`.
+    pub fn find(mut self, marks: Texture<Rgba16Float>, width: u32, height: u32) {
+        if self.size != (width, height) {
+            let (w, h) = ((width + TILE - 1) / TILE, (height + TILE - 1) / TILE)
+            self.tiles = texture(width: w, height: h)
+            self.near = texture(width: w, height: h)
+            self.size = (width, height)
+        }
+        let size = vec2(f32(width), f32(height))
+        let t = begin_pass(mut self.tiles, clear: vec4(0.0))
+        draw(t, backdrop, ink_tiles.bind(marks: marks, size: size), vertices: 3)
+        t.end()
+        let n = begin_pass(mut self.near, clear: vec4(0.0))
+        draw(n, backdrop, ink_near.bind(tiles: self.tiles, size: size), vertices: 3)
+        n.end()
+    }
+}
+
 const AROUND = [
     vec2(1.0, 0.0),
     vec2(-1.0, 0.0),
@@ -103,6 +197,8 @@ pub fn ink(
     colour: Texture<Rgba16Float>,
     marks: Texture<Rgba16Float>,
     normal: Texture<Rgba8>,
+    // (Where a line can be: `Lines::near`.)
+    near: Texture<Rgba16Float>,
 ) -> vec4 {
     let s = shot
     let size = s.resolution
@@ -176,9 +272,15 @@ pub fn ink(
         let fc = mix(mix(flat, PAPER, bl.y), black, max(band(e, edge: 0.35, soft: 0.1), bl.x))
         return vec4(display(fc), 1.0)
     }
+    // (Where no line can be, the reads that look for one are left out, by loops of no turns: the
+    // line, the flecks and the energy they'd fray by come to nothing there either way.)
+    let lined = near.load(u32(px.x) / TILE, u32(px.y) / TILE).x > 0.5
+    let strands = if lined { 3 } else { 0 }
+    let taps4 = if lined { 4 } else { 0 }
+    let taps8 = if lined { 8 } else { 0 }
     // The energy here: the frame's, or the most of this pixel's and its near neighbours'.
     var local = n0.w
-    for i in 0..4 {
+    for i in 0..taps4 {
         let o = AROUND[i] * 5.0 * scale
         local = max(local, at8(normal, px + o, size).w * 0.8)
     }
@@ -200,7 +302,7 @@ pub fn ink(
     // Strands: the line drawn again by a hand that doesn't quite find it, each stroke pushed off
     // along a slow wander of its own, the more so the more kinetic it is. Quiet, one strand.
     var line = 0.0
-    for k in 0..3 {
+    for k in 0..strands {
         let kk = f32(k)
         let lift = if k == 0 { 1.0 } else { band(energy, 0.3 + 0.12 * kk, 0.06) * (1.0 - dark0) }
         let wander = vec2(
@@ -212,7 +314,7 @@ pub fn ink(
             1.0 + kk
         })
         var e = 0.0
-        for i in 0..8 {
+        for i in 0..taps8 {
             let q = px + shove + AROUND[i] * r * (if k == 0 { 1.0 } else { 0.6 })
             let mq = at(marks, q, size)
             let nq = at8(normal, q, size)
@@ -236,7 +338,7 @@ pub fn ink(
     let dash = 1.0 - band(abs(dot(rel, vec2(-axis.y, axis.x))), 0.7 * scale, 0.3 * scale)
     let dash_len = 1.0 - band(abs(dot(rel, axis)), 2.2 * scale, 0.6 * scale)
     var near_line = 0.0
-    for i in 0..4 {
+    for i in 0..taps4 {
         let q = centre + AROUND[i] * r * 3.0
         near_line = max(
             near_line,

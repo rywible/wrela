@@ -40,7 +40,7 @@ use engine::playback
 use engine::playback::{Gaits, Handling, Move, Mover}
 use engine::review::review
 use engine::stride
-use ink::ink
+use ink::{Lines, ink}
 use look::{Shot, shot_at}
 use paint::{backdrop, body, ground, paint_backdrop, paint_body, paint_ground}
 use std::gpu::{
@@ -170,6 +170,8 @@ pub struct State {
     marks: Texture<Rgba16Float>,
     normal: Texture<Rgba8>,
     depth: DepthTexture,
+    /// Where a line can be on the page (`ink::Lines`).
+    lines: Lines,
     width: u32,
     height: u32,
     /// `SHOW=11`'s body and when it was last stepped.
@@ -268,6 +270,7 @@ pub fn init() -> State {
         marks: texture(width: 640, height: 360),
         normal: texture(width: 640, height: 360),
         depth: depth_texture(width: 640, height: 360),
+        lines: Lines::new(),
         width: 640,
         height: 360,
         mover: if SHOW == 12 {
@@ -901,11 +904,18 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         }
     }
     p.end()
+    s.lines.find(s.marks, width, height)
     let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         screen,
         backdrop,
-        ink.bind(shot: shot, colour: s.colour, marks: s.marks, normal: s.normal),
+        ink.bind(
+            shot: shot,
+            colour: s.colour,
+            marks: s.marks,
+            normal: s.normal,
+            near: s.lines.near,
+        ),
         vertices: 3,
     )
     if SHOW == 29 {
