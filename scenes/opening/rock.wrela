@@ -4,6 +4,12 @@
 // there, a little short, instead of from the isle's bounds: it meets the surface in a few steps,
 // and a pixel the mesh doesn't cover (nor any pixel round it) doesn't march the isle at all. Its
 // light is the traced field's still: the mesh only says where to look.
+//
+// So the mesh must cover everything the field holds, and it's cut proud of the stone (`PROUD`)
+// by its coarsest level's error, as the stacks' is (`stacked`). Cut at the stone itself, what
+// was thinner than a level's cell wasn't in the mesh, and what wasn't in the mesh wasn't
+// marched: the cathedral's spires ended blunt where they narrowed past a cell, its pinnacles
+// and buttresses were gone, and its thin walls were holes with the sky through them.
 
 use main::MESHED
 use isle::{bounds, isle, isle_ao, isle_shadow}
@@ -31,15 +37,45 @@ impl Surface for Isle {
     }
 
     fn distance(self, p: vec3) -> f32 {
-        isle(p).x
+        isle(p).x - PROUD
     }
 
-    /// From its distance at the box's centre and a bound on its steepness, not interval
-    /// arithmetic through the whole field (whose kernel would pass the 256 KiB a pipeline may be).
+    /// From its distance at fifteen places in the box (its middle, its corners and its faces'
+    /// middles) and a bound on its steepness between them, not interval arithmetic through the
+    /// whole field (whose kernel would pass the 256 KiB a pipeline may be).
+    ///
+    /// Not from its middle alone. The field isn't a distance everywhere: outside each of its
+    /// pieces' bounds it's how far those bounds are, and it steps where one piece's bounds end,
+    /// so what it reads at one place bounds little of what it reads a block away. Where a box
+    /// that holds some of the mesh's surface is taken to hold none, the mesh has a hole;
+    /// through a hole in its near side a pixel sees only its far side, the march begins behind
+    /// the stone, and the cathedral's great spire had a band of sky across it.
     fn interval(self, over: Box3) -> Interval {
-        let r = STEEP * 0.5 * length(over.hi - over.lo)
-        let d = isle(over.center()).x
-        Interval { lo: d - r, hi: d + r }
+        let c = over.center()
+        let h = 0.5 * (over.hi - over.lo)
+        var lo = isle(c).x
+        var hi = lo
+        for k in 0..8 {
+            let corner = vec3(
+                if (k & 1) == 0 { -h.x } else { h.x },
+                if (k & 2) == 0 { -h.y } else { h.y },
+                if (k & 4) == 0 { -h.z } else { h.z },
+            )
+            let d = isle(c + corner).x
+            lo = min(lo, d)
+            hi = max(hi, d)
+        }
+        for k in 0..6 {
+            let way = if k < 2 { vec3(h.x, 0.0, 0.0) } else if k < 4 { vec3(0.0, h.y, 0.0) } else {
+                vec3(0.0, 0.0, h.z)
+            }
+            let d = isle(c + way * (if k % 2 == 0 { 1.0 } else { -1.0 })).x
+            lo = min(lo, d)
+            hi = max(hi, d)
+        }
+        // (No point of the box is farther from one of the fifteen than half its half-diagonal.)
+        let r = STEEP * 0.5 * length(h)
+        Interval { lo: lo - PROUD - r, hi: hi - PROUD + r }
     }
 }
 
@@ -49,8 +85,16 @@ impl Field<f32> for Isle {
     }
 }
 
-/// A bound on how steep the isle's distance is (its pieces are scaled, some unevenly).
-const STEEP: f32 = 1.5
+/// How steep the isle's field is taken to be between the places `Isle::interval` reads it. Not
+/// a bound that's proved: the field steps where its pieces' bounds end, so none holds
+/// everywhere. At 1.5 the cathedral's great spire still had two bites out of it from the
+/// opening's shot; at 3 it's whole, there and a minute's sailing on.
+const STEEP: f32 = 3.0
+
+/// How far proud of the stone the mesh stands (m): the coarsest level's error, half its cell (a
+/// tile's first mesh is its coarsest, and stands until the budget comes to it). So nothing of
+/// the stone is outside any level's mesh, and a spire a metre across is in it, sixteen fat.
+const PROUD: f32 = 16.0
 
 /// The isle's meshes, kept by the engine.
 pub type Rock = Tiles<CreatureField<Placed<Isle>>>
@@ -66,7 +110,9 @@ pub const LEVELS = [
 /// A tile's side (m).
 pub const SIDE: f32 = 512.0
 
-/// How far short of the mesh the march starts (m): past the coarsest level's error.
+/// How far short of the mesh the march starts (m), and how far from the mesh the surface the
+/// march meets may be and the mesh's cooked shade still be its own (`baked_at`): past the mesh's
+/// pride and its coarsest level's error.
 pub const SHORT: f32 = 40.0
 
 /// What's cooked onto the rock's meshes (`engine::solids::Bake`): how much of the sun reaches
@@ -77,8 +123,14 @@ pub struct Shade: Copy + GpuData {
 }
 
 impl Bake for Shade {
+    /// (At the stone under the vertex, not at the vertex: the mesh stands `PROUD` of it, and out
+    /// there nothing hides the sky.)
     fn at(self, p: vec3, n: vec3) -> vec4 {
-        vec4(isle_shadow(p + n * LIFT, self.sun, LIFT, 0.5), isle_ao(p, n), 0.0, 0.0)
+        var q = p
+        for _ in 0..3 {
+            q = q - n * (isle(q).x * 0.8)
+        }
+        vec4(isle_shadow(q + n * LIFT, self.sun, LIFT, 0.5), isle_ao(q, n), 0.0, 0.0)
     }
 }
 
@@ -231,4 +283,52 @@ pub fn march_from(reach: Texture<Rg32Float>, pf: vec2, size: vec2, lo: f32, hi: 
         }
     }
     if near >= FAR { hi + 1.0 } else { max(lo, near - SHORT) }
+}
+
+/// A box `Isle::interval` clears holds none of the mesh's surface: where it says the field,
+/// less the mesh's pride, is over nought throughout, it is at every one of 64 places in the
+/// box (and where it says under nought, under). Tried on boxes the size of the two finest
+/// levels' blocks with the cell round them that the realizer takes in, on a lattice over the
+/// cathedral and its great spire. (A guard, not a proof: on this lattice the bound it replaced
+/// cleared no box wrongly either, though the spire it meshed had a band missing.)
+@test
+@fuel(2 ** 38)
+fn a_box_cleared_of_the_isle_holds_none_of_its_meshs_surface() {
+    let field = Isle { unused: 0.0 }
+    var cleared = 0
+    var wrong = 0
+    for level in [2, 3] {
+        // (A block's four cells and one more each way.)
+        let half = LEVELS[level].cell * 3.0
+        var y = look::ISLE.y + 250.0
+        while y < look::ISLE.y + 900.0 {
+            var z = look::ISLE.z - 150.0
+            while z < look::ISLE.z + 150.0 {
+                var x = look::ISLE.x - 240.0
+                while x < look::ISLE.x + 60.0 {
+                    let c = vec3(x, y, z)
+                    let over = Box3 { lo: c - vec3(half), hi: c + vec3(half) }
+                    let said = field.interval(over)
+                    if said.lo > 0.0 || said.hi < 0.0 {
+                        cleared += 1
+                        var crossed = false
+                        for k in 0..64 {
+                            let at = (vec3(f32(k % 4), f32((k / 4) % 4), f32(k / 16)) + vec3(0.5)) /
+                                4.0
+                            let d = field.distance(over.lo + (over.hi - over.lo) * at)
+                            crossed = crossed || (d > 0.0) != (said.lo > 0.0)
+                        }
+                        if crossed {
+                            wrong += 1
+                        }
+                    }
+                    x += 37.0
+                }
+                z += 37.0
+            }
+            y += 37.0
+        }
+    }
+    std::io::print(f"  {cleared} boxes cleared, {wrong} of them holding some of the surface")
+    assert(wrong == 0, f"{wrong} of {cleared} cleared boxes hold some of the mesh's surface")
 }
